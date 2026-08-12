@@ -1,0 +1,596 @@
+//! Editable chart boundary for Uta Studio.
+//!
+//! Analysis artifacts stay in their native, second-based representation. The
+//! editor writes only the authoritative transcript and note segmentation;
+//! target formats such as UltraStar are produced at export time.
+
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+use serde::Serialize;
+use ts_rs::TS;
+
+use crate::{
+    audio_format::{browser_can_decode, export_extension, transcode_audio},
+    authoring::get_audio_paths,
+    cache::{CacheDir, normalize_tempo},
+    error::UtaStudioError,
+    library_db,
+};
+
+fn playable_audio(
+    cache: &CacheDir,
+    file_hash: &str,
+    source_name: &str,
+    source_path: &str,
+) -> Result<String, UtaStudioError> {
+    let source = Path::new(source_path);
+    if !source.is_file() {
+        return Err(UtaStudioError::Other(format!(
+            "audio source is missing: {}",
+            source.display()
+        )));
+    }
+    if browser_can_decode(source) {
+        return Ok(source.to_string_lossy().into_owned());
+    }
+    let extension = export_extension(source);
+    let output = cache.editor_preview_path(file_hash, source_name, extension);
+    let refresh = std::fs::metadata(source)
+        .and_then(|source_meta| {
+            let source_modified = source_meta.modified()?;
+            let output_modified = std::fs::metadata(&output)?.modified()?;
+            Ok(source_modified > output_modified)
+        })
+        .unwrap_or(true);
+    if refresh {
+        let filename = output
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("preview");
+        let temporary = output.with_file_name(format!(".{filename}.tmp.{extension}"));
+        let result = transcode_audio(source, &temporary);
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(temporary);
+            return Err(error);
+        }
+        if output.is_file() {
+            std::fs::remove_file(&output)?;
+        }
+        std::fs::rename(temporary, &output)?;
+    }
+    Ok(output.to_string_lossy().into_owned())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChartAudio {
+    pub instrumental: String,
+    pub vocals: Option<String>,
+    pub original: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChartDocument {
+    pub file_hash: String,
+    pub transcript: serde_json::Value,
+    pub pitch_track: serde_json::Value,
+    pub pitch_notes: serde_json::Value,
+    pub audio: ChartAudio,
+    /// Safe, in-memory compatibility repairs applied to legacy analyzer data.
+    /// Saving the chart persists these normalized timings.
+    pub repaired_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ChartReadiness {
+    pub ready: bool,
+    pub authoring_ready: bool,
+    pub missing: Vec<String>,
+    pub blocked_reason: Option<String>,
+    pub can_repair_pitch: bool,
+}
+
+pub fn chart_readiness(file_hash: &str) -> Result<ChartReadiness, UtaStudioError> {
+    let song = library_db::load_song_by_hash(file_hash)
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?
+        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
+    let only_pitch_missing = !song.authoring_missing.is_empty()
+        && song
+            .authoring_missing
+            .iter()
+            .all(|asset| matches!(asset.as_str(), "pitch_track" | "pitch_notes"));
+    Ok(ChartReadiness {
+        ready: song.editor_ready,
+        authoring_ready: song.authoring_ready,
+        missing: song.authoring_missing,
+        blocked_reason: song.editor_blocked_reason,
+        can_repair_pitch: only_pitch_missing
+            && song.transcript_source != Some(crate::song::TranscriptSource::Usdx),
+    })
+}
+
+pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
+    let song = library_db::load_song_by_hash(file_hash)
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?
+        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
+
+    if song.key_offset != 0 || normalize_tempo(song.tempo) != 1.0 {
+        return Err(UtaStudioError::Other(
+            "Reset key and tempo before editing the source chart".into(),
+        ));
+    }
+
+    let cache = CacheDir::new();
+    let mut transcript = read_json(&cache.transcript_path(file_hash), "transcript")?;
+    let pitch_track = read_json(&cache.pitch_track_path(file_hash), "pitch track")?;
+    let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes")?;
+    let mut repaired_issues = Vec::new();
+    let repaired_timings = normalize_transcript_timings(&mut transcript);
+    if repaired_timings > 0 {
+        repaired_issues.push(format!(
+            "Repaired {repaired_timings} legacy lyric timing{}",
+            if repaired_timings == 1 { "" } else { "s" }
+        ));
+    }
+    let repaired_notes = normalize_pitch_note_timings(&mut pitch_notes);
+    if repaired_notes > 0 {
+        repaired_issues.push(format!(
+            "Repaired {repaired_notes} legacy pitch note{}",
+            if repaired_notes == 1 { "" } else { "s" }
+        ));
+    }
+    validate_transcript(&transcript)?;
+    validate_pitch_notes(&pitch_notes)?;
+
+    let audio = get_audio_paths(file_hash);
+    if !Path::new(&audio.instrumental).is_file() {
+        return Err(UtaStudioError::Other(
+            "instrumental or source audio is not ready".into(),
+        ));
+    }
+
+    Ok(ChartDocument {
+        file_hash: file_hash.to_owned(),
+        transcript,
+        pitch_track,
+        pitch_notes,
+        audio: ChartAudio {
+            instrumental: playable_audio(&cache, file_hash, "instrumental", &audio.instrumental)?,
+            vocals: audio
+                .vocals
+                .as_deref()
+                .map(|path| playable_audio(&cache, file_hash, "vocals", path))
+                .transpose()?,
+            original: playable_audio(&cache, file_hash, "original", &song.path.to_string_lossy())?,
+        },
+        repaired_issues,
+    })
+}
+
+fn normalize_transcript_timings(value: &mut serde_json::Value) -> usize {
+    let Some(segments) = value
+        .get_mut("segments")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return 0;
+    };
+    let mut repaired = 0usize;
+    let mut previous_segment_start = 0.0f64;
+
+    for segment in segments {
+        let original_start = segment
+            .get("start")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(previous_segment_start);
+        let segment_start = if original_start.is_finite() {
+            original_start.max(0.0).max(previous_segment_start)
+        } else {
+            previous_segment_start
+        };
+        if (original_start - segment_start).abs() > f64::EPSILON {
+            segment["start"] = serde_json::Value::from(segment_start);
+            repaired += 1;
+        }
+
+        let original_end = segment
+            .get("end")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|end| end.is_finite())
+            .unwrap_or(segment_start);
+        let mut furthest_word_end = segment_start;
+        if let Some(words) = segment
+            .get_mut("words")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            let original_starts = words
+                .iter()
+                .map(|word| word.get("start").and_then(serde_json::Value::as_f64))
+                .collect::<Vec<_>>();
+            let mut previous_word_start = segment_start;
+            for index in 0..words.len() {
+                let word = &mut words[index];
+                let original_word_start = word
+                    .get("start")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(previous_word_start);
+                let word_start = if original_word_start.is_finite() {
+                    original_word_start
+                        .max(segment_start)
+                        .max(previous_word_start)
+                } else {
+                    previous_word_start
+                };
+                if (original_word_start - word_start).abs() > f64::EPSILON {
+                    word["start"] = serde_json::Value::from(word_start);
+                    repaired += 1;
+                }
+
+                let original_word_end = word
+                    .get("end")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(word_start);
+                let word_end = if original_word_end.is_finite() && original_word_end > word_start {
+                    original_word_end
+                } else {
+                    original_starts
+                        .get(index + 1)
+                        .copied()
+                        .flatten()
+                        .filter(|next| next.is_finite() && *next > word_start)
+                        .or_else(|| (original_end > word_start).then_some(original_end))
+                        .unwrap_or(word_start + 0.04)
+                };
+                if (original_word_end - word_end).abs() > f64::EPSILON {
+                    word["end"] = serde_json::Value::from(word_end);
+                    repaired += 1;
+                }
+                previous_word_start = word_start;
+                furthest_word_end = furthest_word_end.max(word_end);
+            }
+        }
+
+        let segment_end = original_end
+            .max(furthest_word_end)
+            .max(segment_start + 0.04);
+        if (original_end - segment_end).abs() > f64::EPSILON {
+            segment["end"] = serde_json::Value::from(segment_end);
+            repaired += 1;
+        }
+        previous_segment_start = segment_start;
+    }
+    repaired
+}
+
+fn normalize_pitch_note_timings(value: &mut serde_json::Value) -> usize {
+    let Some(notes) = value
+        .get_mut("notes")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return 0;
+    };
+    let was_sorted = notes.windows(2).all(|pair| {
+        pair[0]
+            .get("start")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+            <= pair[1]
+                .get("start")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+    });
+    notes.sort_by(|left, right| {
+        left.get("start")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+            .total_cmp(
+                &right
+                    .get("start")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+            )
+    });
+    let mut repaired = usize::from(!was_sorted);
+    for note in notes {
+        let original_start = note
+            .get("start")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let start = if original_start.is_finite() {
+            original_start.max(0.0)
+        } else {
+            0.0
+        };
+        let original_end = note
+            .get("end")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(start);
+        let end = if original_end.is_finite() && original_end > start {
+            original_end
+        } else {
+            start + 0.03
+        };
+        let original_midi = note
+            .get("midi")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(60.0);
+        let midi = original_midi.clamp(0.0, 127.0).round();
+        let original_confidence = note
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(1.0);
+        let confidence = original_confidence.clamp(0.0, 1.0);
+        let changed = (original_start - start).abs() > f64::EPSILON
+            || (original_end - end).abs() > f64::EPSILON
+            || (original_midi - midi).abs() > f64::EPSILON
+            || (original_confidence - confidence).abs() > f64::EPSILON;
+        if changed {
+            repaired += 1;
+        }
+        note["start"] = serde_json::Value::from(start);
+        note["end"] = serde_json::Value::from(end);
+        note["midi"] = serde_json::Value::from(midi);
+        note["confidence"] = serde_json::Value::from(confidence);
+    }
+    repaired
+}
+
+pub fn save_chart(
+    file_hash: &str,
+    transcript: serde_json::Value,
+    pitch_notes: serde_json::Value,
+) -> Result<(), UtaStudioError> {
+    let song = library_db::load_song_by_hash(file_hash)
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?
+        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
+    if song.key_offset != 0 || normalize_tempo(song.tempo) != 1.0 {
+        return Err(UtaStudioError::Other(
+            "Reset key and tempo before saving the source chart".into(),
+        ));
+    }
+
+    validate_transcript(&transcript)?;
+    validate_pitch_notes(&pitch_notes)?;
+
+    let cache = CacheDir::new();
+    atomic_write_json(&cache.transcript_path(file_hash), &transcript)?;
+    atomic_write_json(&cache.pitch_notes_path(file_hash), &pitch_notes)?;
+    cache.delete_transcript_variants(file_hash);
+    Ok(())
+}
+
+fn read_json(path: &Path, label: &str) -> Result<serde_json::Value, UtaStudioError> {
+    if !path.is_file() {
+        return Err(UtaStudioError::Other(format!("{label} is not ready")));
+    }
+    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+}
+
+fn atomic_write_json(destination: &Path, value: &serde_json::Value) -> Result<(), UtaStudioError> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("chart.json");
+    let temporary: PathBuf =
+        destination.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| -> Result<(), UtaStudioError> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)?;
+        let bytes = serde_json::to_vec_pretty(value)?;
+        file.write_all(&bytes)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn validate_transcript(value: &serde_json::Value) -> Result<(), UtaStudioError> {
+    let segments = value
+        .get("segments")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| UtaStudioError::Other("transcript.segments must be an array".into()))?;
+
+    let mut previous_segment_start = 0.0;
+    for (segment_index, segment) in segments.iter().enumerate() {
+        let start = finite_number(segment, "start", "segment", segment_index)?;
+        let end = finite_number(segment, "end", "segment", segment_index)?;
+        validate_range(start, end, "segment", segment_index)?;
+        if segment_index > 0 && start < previous_segment_start {
+            return Err(UtaStudioError::Other(format!(
+                "segment {segment_index} starts before the preceding segment"
+            )));
+        }
+        previous_segment_start = start;
+
+        let words = segment
+            .get("words")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                UtaStudioError::Other(format!("segment {segment_index}.words must be an array"))
+            })?;
+        let mut previous_word_start = start;
+        for (word_index, word) in words.iter().enumerate() {
+            let word_start = finite_number(word, "start", "word", word_index)?;
+            let word_end = finite_number(word, "end", "word", word_index)?;
+            validate_range(word_start, word_end, "word", word_index)?;
+            if word_index > 0 && word_start < previous_word_start {
+                return Err(UtaStudioError::Other(format!(
+                    "segment {segment_index}, word {word_index} starts before the preceding word"
+                )));
+            }
+            if word_start < start - 0.001 || word_end > end + 0.001 {
+                return Err(UtaStudioError::Other(format!(
+                    "segment {segment_index}, word {word_index} lies outside its segment"
+                )));
+            }
+            if word
+                .get("word")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+            {
+                return Err(UtaStudioError::Other(format!(
+                    "segment {segment_index}, word {word_index} has no text"
+                )));
+            }
+            previous_word_start = word_start;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pitch_notes(value: &serde_json::Value) -> Result<(), UtaStudioError> {
+    let notes = value
+        .get("notes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| UtaStudioError::Other("pitch_notes.notes must be an array".into()))?;
+    let mut previous_start = 0.0;
+    for (index, note) in notes.iter().enumerate() {
+        let start = finite_number(note, "start", "note", index)?;
+        let end = finite_number(note, "end", "note", index)?;
+        validate_range(start, end, "note", index)?;
+        if index > 0 && start < previous_start {
+            return Err(UtaStudioError::Other(format!(
+                "note {index} starts before the preceding note"
+            )));
+        }
+        previous_start = start;
+        let midi = finite_number(note, "midi", "note", index)?;
+        if !(0.0..=127.0).contains(&midi) || midi.fract().abs() > f64::EPSILON {
+            return Err(UtaStudioError::Other(format!(
+                "note {index} MIDI must be an integer between 0 and 127"
+            )));
+        }
+        let confidence = finite_number(note, "confidence", "note", index)?;
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(UtaStudioError::Other(format!(
+                "note {index} confidence must be between 0 and 1"
+            )));
+        }
+        if let Some(kind) = note.get("kind") {
+            let kind = kind.as_str().ok_or_else(|| {
+                UtaStudioError::Other(format!("note {index}.kind must be a string"))
+            })?;
+            if !matches!(
+                kind,
+                "normal" | "golden" | "freestyle" | "rap" | "golden_rap"
+            ) {
+                return Err(UtaStudioError::Other(format!(
+                    "note {index}.kind is not a supported note type"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn finite_number(
+    value: &serde_json::Value,
+    field: &str,
+    label: &str,
+    index: usize,
+) -> Result<f64, UtaStudioError> {
+    let number = value
+        .get(field)
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| {
+            UtaStudioError::Other(format!("{label} {index}.{field} must be a number"))
+        })?;
+    if !number.is_finite() {
+        return Err(UtaStudioError::Other(format!(
+            "{label} {index}.{field} must be finite"
+        )));
+    }
+    Ok(number)
+}
+
+fn validate_range(start: f64, end: f64, label: &str, index: usize) -> Result<(), UtaStudioError> {
+    if start < 0.0 || end <= start {
+        return Err(UtaStudioError::Other(format!(
+            "{label} {index} must have 0 <= start < end"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        normalize_pitch_note_timings, normalize_transcript_timings, validate_pitch_notes,
+        validate_transcript,
+    };
+
+    #[test]
+    fn validates_editor_documents() {
+        let transcript = serde_json::json!({
+            "language": "en",
+            "segments": [{
+                "text": "hello",
+                "start": 1.0,
+                "end": 1.5,
+                "words": [{"word": "hello", "start": 1.0, "end": 1.5}]
+            }]
+        });
+        let notes = serde_json::json!({
+            "format_version": 1,
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9}]
+        });
+        assert!(validate_transcript(&transcript).is_ok());
+        assert!(validate_pitch_notes(&notes).is_ok());
+    }
+
+    #[test]
+    fn normalizes_zero_length_timings_for_the_editor() {
+        let mut transcript = serde_json::json!({
+            "segments": [{
+                "text": "hello world",
+                "start": 1.0,
+                "end": 1.0,
+                "words": [
+                    {"word": "hello", "start": 1.0, "end": 1.0},
+                    {"word": "world", "start": 1.5, "end": 1.5}
+                ]
+            }]
+        });
+        let mut notes = serde_json::json!({
+            "notes": [{"start": 2.0, "end": 2.0, "midi": 60.4, "confidence": 1.2}]
+        });
+        assert!(normalize_transcript_timings(&mut transcript) > 0);
+        assert!(normalize_pitch_note_timings(&mut notes) > 0);
+        validate_transcript(&transcript).unwrap();
+        validate_pitch_notes(&notes).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_midi() {
+        let notes = serde_json::json!({
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 128, "confidence": 0.9}]
+        });
+        assert!(validate_pitch_notes(&notes).is_err());
+    }
+
+    #[test]
+    fn accepts_supported_note_kinds_and_rejects_unknown_ones() {
+        let supported = serde_json::json!({
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9, "kind": "golden"}]
+        });
+        let unsupported = serde_json::json!({
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9, "kind": "spoken"}]
+        });
+        assert!(validate_pitch_notes(&supported).is_ok());
+        assert!(validate_pitch_notes(&unsupported).is_err());
+    }
+}

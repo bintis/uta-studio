@@ -1,0 +1,11 @@
+[package]
+name = "uta-studio-export"
+version = "0.1.0"
+authors = ["bintis"]
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+app-core = { package = "uta-studio-core", path = "../app-core" }
+serde_json = "1"

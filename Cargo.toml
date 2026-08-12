@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["app-core", "client/src-tauri", "xtask", "utz-export"]

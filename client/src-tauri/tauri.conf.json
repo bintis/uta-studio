@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Uta Studio",
+  "version": "0.1.0",
+  "identifier": "org.uta-project.studio",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "create": false,
+        "title": "Uta Studio",
+        "width": 1280,
+        "height": 720,
+        "decorations": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: asset: blob: http://ipc.localhost http://asset.localhost http://127.0.0.1:* http://localhost:*; img-src 'self' asset: blob: http://asset.localhost; media-src 'self' asset: blob: http://asset.localhost; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/.uta-studio/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": "all",
+    "shortDescription": "Uta Studio — AI song generation, chart editing, and export.",
+    "longDescription": "Uta Studio separates vocals, transcribes and aligns lyrics, analyses and edits reference pitch, and exports interoperable .utz and UltraStar song packages. Licensed under the GNU General Public License v3.",
+    "category": "Music",
+    "copyright": "Copyright © 2026 bintis",
+    "publisher": "bintis",
+    "license": "GPL-3.0",
+    "licenseFile": "../../LICENSE",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {}
+}

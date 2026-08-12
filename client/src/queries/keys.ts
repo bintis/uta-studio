@@ -1,0 +1,10 @@
+export const CONFIG = ["config"];
+export const CACHE_STATS = ["cache-stats"];
+export const SONGS = ["songs"];
+export const SONGS_META = ["songs-meta"];
+export const ANALYSIS_QUEUE = ["analysis-queue"];
+export const ANALYSIS_RUNTIME_STATUS = ["analysis-runtime-status"];
+export const MENU = ["menu"];
+export const LYRICS = ["lyrics"];
+export const LRCLIB = ["lrclib"];
+export const MIC_DEVICES = ["mic-devices"];

@@ -1,0 +1,36 @@
+# Rust, Tauri, frontend, and Nix build output
+/target/
+**/target/
+**/node_modules/
+**/dist/
+/result
+/result-*
+/.direnv/
+/.svelte-kit/
+
+# Python bytecode and test caches
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+
+# Local configuration, logs, and editor state
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Site
+site/node_modules/
+site/dist/
+site/docs/book/
+site/.astro/
+
+# Local updater manifest staged before publishing
+latest.json
+
+# Local-only release/updater notes (not for the public repo)
+RELEASING.md

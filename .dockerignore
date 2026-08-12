@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+**/target/
+
+# Node
+client/node_modules/
+**/node_modules/
+client/dist/
+
+# VCS / tooling
+.git/
+.github/
+.cursor/
+
+# Docs site (not needed to build the server)
+site/
+
+# Local secrets / env
+.env
+*.env
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store

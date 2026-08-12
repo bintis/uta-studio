@@ -1,0 +1,15 @@
+[package]
+name = "utz"
+version = "0.1.0"
+authors = ["bintis"]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/uta-project/utz"
+description = "Reader, writer, model, and validator for Uta .utz song packages"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+zip = { version = "4", default-features = false, features = ["deflate"] }
