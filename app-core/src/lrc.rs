@@ -83,21 +83,21 @@ fn parse_word_tokens(content: &str) -> Vec<(f64, String)> {
     let mut i = 0;
 
     while i < content.len() {
-        if content[i..].starts_with('<') {
-            if let Some(close_rel) = content[i..].find('>') {
-                let inner = &content[i + 1..i + close_rel];
-                if let Some(ts) = parse_timestamp(inner) {
-                    if let Some(prev_ts) = cur_ts {
-                        let text = cur_text.trim().to_string();
-                        if !text.is_empty() {
-                            tokens.push((prev_ts, text));
-                        }
+        if content[i..].starts_with('<')
+            && let Some(close_rel) = content[i..].find('>')
+        {
+            let inner = &content[i + 1..i + close_rel];
+            if let Some(ts) = parse_timestamp(inner) {
+                if let Some(prev_ts) = cur_ts {
+                    let text = cur_text.trim().to_string();
+                    if !text.is_empty() {
+                        tokens.push((prev_ts, text));
                     }
-                    cur_text.clear();
-                    cur_ts = Some(ts);
-                    i += close_rel + 1;
-                    continue;
                 }
+                cur_text.clear();
+                cur_ts = Some(ts);
+                i += close_rel + 1;
+                continue;
             }
         }
         let ch = content[i..].chars().next().unwrap();

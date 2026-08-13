@@ -1,9 +1,0 @@
-packages:
-  - "."
-
-# pnpm 11+ build-script approvals. The `onlyBuiltDependencies` /
-# `ignoredBuiltDependencies` lists are gone; everything goes through this
-# single map (true = run the script, false = silently skip).
-allowBuilds:
-  esbuild: true
-  msw: false

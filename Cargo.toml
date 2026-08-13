@@ -1,3 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["app-core", "client/src-tauri", "xtask", "utz-export"]
+members = [
+  "app-core",
+  "desktop",
+  "native-audio",
+  "studio-diagnostics",
+  "xtask",
+  "utz-export",
+]

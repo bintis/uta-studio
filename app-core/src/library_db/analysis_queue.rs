@@ -8,6 +8,8 @@ use rusqlite::params;
 
 use super::connection::{with_conn, with_conn_mut};
 
+type AnalysisQueueRow = (String, String, Option<i64>, Option<String>);
+
 fn upsert_queue_in_tx(
     tx: &rusqlite::Transaction<'_>,
     file_hash: &str,
@@ -58,8 +60,7 @@ pub fn analysis_queue_clear() -> rusqlite::Result<()> {
     })
 }
 
-pub fn analysis_queue_load_rows()
--> rusqlite::Result<Vec<(String, String, Option<i64>, Option<String>)>> {
+pub fn analysis_queue_load_rows() -> rusqlite::Result<Vec<AnalysisQueueRow>> {
     with_conn(|c| {
         let mut stmt = c.prepare(
             "SELECT file_hash, status, analyzing_pct, failed_message FROM analysis_queue",
@@ -76,9 +77,7 @@ pub fn analysis_queue_load_rows()
     })
 }
 
-pub fn analysis_queue_save_rows(
-    rows: &[(String, String, Option<i64>, Option<String>)],
-) -> rusqlite::Result<()> {
+pub fn analysis_queue_save_rows(rows: &[AnalysisQueueRow]) -> rusqlite::Result<()> {
     with_conn_mut(|c| {
         let tx = c.transaction()?;
         tx.execute("DELETE FROM analysis_queue", [])?;

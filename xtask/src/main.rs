@@ -3,11 +3,11 @@ use std::process::{Command, ExitCode};
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let (cmd, tauri_args) = match args.first().map(|s| s.as_str()) {
-        Some("dev") => ("dev", &args[1..]),
+    let (cmd, desktop_args) = match args.first().map(|s| s.as_str()) {
+        Some("dev") => ("run", &args[1..]),
         Some("build") => ("build", &args[1..]),
         _ => {
-            eprintln!("Usage: cargo desktop <dev|build> [extra tauri args...]");
+            eprintln!("Usage: cargo desktop <dev|build> [extra cargo args...]");
             return ExitCode::FAILURE;
         }
     };
@@ -16,12 +16,15 @@ fn main() -> ExitCode {
         .parent()
         .expect("xtask must live one level below workspace root");
 
-    let mut command = Command::new("pnpm");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
     command
-        .current_dir(workspace_root.join("client"))
-        .arg("tauri")
+        .current_dir(workspace_root)
         .arg(cmd)
-        .args(tauri_args);
+        .args(["-p", "uta-studio-desktop"])
+        .args(desktop_args)
+        .env("WINIT_UNIX_BACKEND", "wayland")
+        .env_remove("DISPLAY");
 
     match command.status() {
         Ok(status) => {
@@ -32,7 +35,7 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("Failed to run pnpm: {e}");
+            eprintln!("Failed to run the Uta Studio desktop command: {e}");
             ExitCode::FAILURE
         }
     }

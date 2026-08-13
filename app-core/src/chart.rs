@@ -72,6 +72,69 @@ pub struct ChartAudio {
     pub original: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChartWaveform {
+    pub peaks: Vec<(f32, f32)>,
+    pub duration_secs: f64,
+}
+
+/// Decode a bounded, display-only waveform from an already-authorized chart
+/// audio path. Callers run this while native playback is stopped so decoding
+/// cannot contend with the GStreamer audition clock.
+pub fn decode_chart_waveform(path: &Path) -> Result<ChartWaveform, UtaStudioError> {
+    const SAMPLE_RATE: usize = 4_000;
+    const PEAK_BUCKETS: usize = 6_000;
+
+    if !path.is_file() {
+        return Err(UtaStudioError::Other(format!(
+            "waveform source is missing: {}",
+            path.display()
+        )));
+    }
+    let output = crate::vendor::silent_command(crate::vendor::ffmpeg_path())
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-vn", "-ac", "1", "-ar", "4000", "-f", "f32le", "pipe:1"])
+        .output()?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(UtaStudioError::Other(if detail.is_empty() {
+            format!("ffmpeg could not decode waveform ({})", output.status)
+        } else {
+            format!("ffmpeg could not decode waveform: {detail}")
+        }));
+    }
+    let samples = output
+        .stdout
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .filter(|sample| sample.is_finite())
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return Err(UtaStudioError::Other(
+            "decoded waveform contains no audio samples".to_string(),
+        ));
+    }
+
+    let bucket_count = samples.len().clamp(1, PEAK_BUCKETS);
+    let mut peaks = Vec::with_capacity(bucket_count);
+    for bucket in 0..bucket_count {
+        let start = bucket * samples.len() / bucket_count;
+        let end = ((bucket + 1) * samples.len() / bucket_count).max(start + 1);
+        let mut minimum = 0.0f32;
+        let mut maximum = 0.0f32;
+        for sample in &samples[start..end.min(samples.len())] {
+            minimum = minimum.min(*sample);
+            maximum = maximum.max(*sample);
+        }
+        peaks.push((minimum.clamp(-1.0, 1.0), maximum.clamp(-1.0, 1.0)));
+    }
+    Ok(ChartWaveform {
+        peaks,
+        duration_secs: samples.len() as f64 / SAMPLE_RATE as f64,
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartDocument {
     pub file_hash: String,
@@ -211,8 +274,7 @@ fn normalize_transcript_timings(value: &mut serde_json::Value) -> usize {
                 .map(|word| word.get("start").and_then(serde_json::Value::as_f64))
                 .collect::<Vec<_>>();
             let mut previous_word_start = segment_start;
-            for index in 0..words.len() {
-                let word = &mut words[index];
+            for (index, word) in words.iter_mut().enumerate() {
                 let original_word_start = word
                     .get("start")
                     .and_then(serde_json::Value::as_f64)

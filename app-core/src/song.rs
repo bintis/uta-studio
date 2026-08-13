@@ -102,6 +102,7 @@ pub struct TranscriptMetaInfo {
 }
 
 impl Song {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_path(
         path: &Path,
         file_hash: String,
@@ -288,22 +289,22 @@ pub fn read_transcript_meta(cache: &CacheDir, hash: &str) -> TranscriptMetaInfo 
         no_stems: bool,
     }
     let path = cache.transcript_path(hash);
-    if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok(parsed) = serde_json::from_str::<TranscriptMeta>(&data) {
-            let src = match parsed.source.as_deref() {
-                Some("lyrics") => TranscriptSource::Lyrics,
-                Some("usdx") => TranscriptSource::Usdx,
-                Some("lrc") => TranscriptSource::Lrc,
-                _ => TranscriptSource::Generated,
-            };
-            return TranscriptMetaInfo {
-                source: src,
-                language: parsed.language,
-                key: parsed.key,
-                tempo: parsed.tempo,
-                no_stems: parsed.no_stems,
-            };
-        }
+    if let Ok(data) = std::fs::read_to_string(&path)
+        && let Ok(parsed) = serde_json::from_str::<TranscriptMeta>(&data)
+    {
+        let src = match parsed.source.as_deref() {
+            Some("lyrics") => TranscriptSource::Lyrics,
+            Some("usdx") => TranscriptSource::Usdx,
+            Some("lrc") => TranscriptSource::Lrc,
+            _ => TranscriptSource::Generated,
+        };
+        return TranscriptMetaInfo {
+            source: src,
+            language: parsed.language,
+            key: parsed.key,
+            tempo: parsed.tempo,
+            no_stems: parsed.no_stems,
+        };
     }
     TranscriptMetaInfo {
         source: TranscriptSource::Generated,
@@ -364,10 +365,10 @@ fn read_video_metadata(path: &Path) -> (String, String, String, f64, Option<Vec<
         let stderr = String::from_utf8_lossy(&output.stderr);
         for line in stderr.lines() {
             let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("Duration:") {
-                if let Some(ts) = rest.split(',').next() {
-                    duration_secs = parse_ffmpeg_duration(ts.trim());
-                }
+            if let Some(rest) = trimmed.strip_prefix("Duration:")
+                && let Some(ts) = rest.split(',').next()
+            {
+                duration_secs = parse_ffmpeg_duration(ts.trim());
             }
             if let Some(val) = strip_meta_tag(trimmed, "title") {
                 title = val;

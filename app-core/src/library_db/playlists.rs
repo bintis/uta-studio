@@ -35,8 +35,8 @@ pub fn replace_all_playlists(playlists: &[PlaylistDefinition]) -> rusqlite::Resu
                 }
                 insert_playlist.execute(params![playlist.id, playlist.name.trim()])?;
 
-                // Duplicate entries break React song identity and add little value in
-                // navigation. Keep first occurrence and its upstream ordering.
+                // Duplicate entries break stable song identity and add little value
+                // in navigation. Keep the first occurrence and upstream ordering.
                 let mut seen_song_ids = HashSet::new();
                 for (position, key) in playlist.song_keys.iter().enumerate() {
                     let song_id = find_local.query_row([key], |r| r.get::<_, i64>(0)).ok();

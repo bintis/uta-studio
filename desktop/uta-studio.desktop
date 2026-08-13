@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Uta Studio
+Comment=AI-assisted song chart editor
+Exec=uta-studio
+Icon=uta-studio
+Categories=AudioVideo;Audio;
+Terminal=false

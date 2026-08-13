@@ -1,0 +1,14 @@
+[package]
+name = "uta-studio-diagnostics"
+version = "0.2.0"
+description = "Safe, framework-independent diagnostics for Uta Studio."
+authors = ["bintis"]
+license = "GPL-3.0"
+edition = "2024"
+
+[dependencies]
+app-core = { package = "uta-studio-core", path = "../app-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uta-studio-audio = { path = "../native-audio" }
+utz = { path = "../vendor/utz" }

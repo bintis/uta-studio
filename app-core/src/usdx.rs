@@ -168,10 +168,8 @@ fn parse_usdx_str(content: &str) -> Result<UsdxFile, UtaStudioError> {
                 if !current.is_empty() {
                     phrases.push(std::mem::take(&mut current));
                 }
-                if relative {
-                    if let Some(delta) = leading_int(&trimmed[1..]) {
-                        line_offset += delta;
-                    }
+                if relative && let Some(delta) = leading_int(&trimmed[1..]) {
+                    line_offset += delta;
                 }
             }
             'E' => break,

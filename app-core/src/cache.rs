@@ -17,6 +17,12 @@ pub struct CacheDir {
     pub path: PathBuf,
 }
 
+impl Default for CacheDir {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CacheDir {
     pub fn new() -> Self {
         let path = songs_cache_dir();
@@ -602,7 +608,7 @@ pub fn relocate_app_data_path(new_path: PathBuf) -> Result<PathBuf, String> {
         }
         let mut cfg = crate::config::AppConfig::load();
         cfg.data_path = Some(destination_root.clone());
-        cfg.save();
+        cfg.save()?;
         crate::library_db::reconnect_library_at_root(&destination_root)?;
         return Ok(destination_root);
     }
@@ -622,7 +628,7 @@ pub fn relocate_app_data_path(new_path: PathBuf) -> Result<PathBuf, String> {
 
     let mut cfg = crate::config::AppConfig::load();
     cfg.data_path = Some(destination_root.clone());
-    cfg.save();
+    cfg.save()?;
     cleanup_source_entries(&source_root, &copied);
 
     Ok(destination_root)

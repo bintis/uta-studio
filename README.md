@@ -1,7 +1,7 @@
 # Uta Studio
 
-Uta Studio is the GPL-3.0 desktop authoring application for the Uta Project.
-It is a Rust/Tauri application focused exclusively on producing
+Uta Studio is a GPL-3.0 desktop application for authoring playable song charts.
+It is a native Rust/Bevy application focused exclusively on producing
 editable song charts from local audio and video files.
 
 ## Product boundary
@@ -36,15 +36,17 @@ repository-level [`AGENTS.md`](AGENTS.md).
 
 ```sh
 cargo test -p uta-studio-core --lib
-pnpm --dir client build
 cargo check --workspace
 ```
 
 Run the desktop app with:
 
 ```sh
-pnpm --dir client tauri dev
+cargo desktop dev
 ```
+
+The Linux desktop uses Wayland directly. Uta Studio does not enable an X11
+backend and does not fall back to XWayland.
 
 ## Editing and export
 
@@ -70,7 +72,7 @@ especially [USKMaker](https://github.com/walterfr/UltraStarKaraokeMaker), with
 [UltraStar Play](https://github.com/UltraStar-Deluxe/Play) used as format and
 workflow references. USKMaker and UltraStar Play are MIT-licensed; Yass is
 GPL-3.0-or-later. Their interaction patterns and algorithms were studied, while
-Uta Studio's React/Rust implementation was written for this codebase. Uta
+Uta Studio's native Rust implementation was written for this codebase. Uta
 Studio keeps seconds and MIDI as its internal source model; target-specific beat
 quantization happens only during export.
 
@@ -79,8 +81,8 @@ informed by Roon's public product UI: persistent navigation, a command area,
 right-side metadata inspector, and a bottom authoring dock. It is an adaptation
 for chart production rather than a copy of Roon branding or playback behavior.
 
-The root `icon.png` is the canonical brand artwork. Tauri platform icon files
-and the optimized square derivative are generated from that artwork.
+The root `icon.png` is the canonical brand artwork. Packaged desktop icons and
+the optimized square derivative are generated from that artwork.
 
 ## License
 

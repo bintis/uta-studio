@@ -220,6 +220,13 @@ pub fn export_ultrastar(
     Ok(output.to_path_buf())
 }
 
+/// Parse and validate a completed UltraStar chart. Diagnostics use this after
+/// export so the smoke test proves the file can be consumed, not merely written.
+pub fn validate_ultrastar_chart(path: impl AsRef<Path>) -> Result<(), UtaStudioError> {
+    let content = std::fs::read_to_string(path)?;
+    crate::usdx::validate_usdx_str(&content)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_ultrastar_text(
     title: &str,

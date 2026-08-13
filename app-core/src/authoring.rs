@@ -122,15 +122,15 @@ fn variant_pair_exists(cache: &CacheDir, file_hash: &str, key: &str, tempo: f64)
 }
 
 fn resolve_transcript_path(cache: &CacheDir, file_hash: &str) -> PathBuf {
-    if let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() {
-        if let Some((_key, tempo)) = resolve_effective_key_tempo(&song) {
-            if normalize_tempo(tempo) == 1.0 {
-                return cache.transcript_path(file_hash);
-            }
-            let variant = cache.variant_transcript_path(file_hash, tempo);
-            if variant.is_file() {
-                return variant;
-            }
+    if let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten()
+        && let Some((_key, tempo)) = resolve_effective_key_tempo(&song)
+    {
+        if normalize_tempo(tempo) == 1.0 {
+            return cache.transcript_path(file_hash);
+        }
+        let variant = cache.variant_transcript_path(file_hash, tempo);
+        if variant.is_file() {
+            return variant;
         }
     }
     cache.transcript_path(file_hash)
@@ -146,15 +146,15 @@ pub fn get_audio_paths(file_hash: &str) -> AudioPaths {
     if let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() {
         if song.no_stems {
             let tempo = normalize_tempo(song.tempo);
-            if let Some(key) = song.override_key.as_ref().or(song.key.as_ref()) {
-                if !is_base_original_selection(&song, key, tempo) {
-                    let variant = cache.variant_instrumental_path(file_hash, key, tempo);
-                    if variant.is_file() {
-                        return AudioPaths {
-                            instrumental: variant.to_string_lossy().into_owned(),
-                            vocals: None,
-                        };
-                    }
+            if let Some(key) = song.override_key.as_ref().or(song.key.as_ref())
+                && !is_base_original_selection(&song, key, tempo)
+            {
+                let variant = cache.variant_instrumental_path(file_hash, key, tempo);
+                if variant.is_file() {
+                    return AudioPaths {
+                        instrumental: variant.to_string_lossy().into_owned(),
+                        vocals: None,
+                    };
                 }
             }
             return AudioPaths {

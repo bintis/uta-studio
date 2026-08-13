@@ -133,6 +133,12 @@ where
             "Uta Studio exports must use the .utz extension".into(),
         ));
     }
+    if output.exists() {
+        return Err(UtaStudioError::Other(format!(
+            "refusing to overwrite {}",
+            output.display()
+        )));
+    }
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -275,11 +281,10 @@ where
     let mut last_reported_percent = 0u64;
     let result =
         UtzPackage::write_streaming(manifest, sources, destination, |asset, completed, total| {
-            let percent = if total == 0 {
-                100
-            } else {
-                completed.saturating_mul(100) / total
-            };
+            let percent = completed
+                .saturating_mul(100)
+                .checked_div(total)
+                .unwrap_or(100);
             if percent >= last_logged_percent.saturating_add(10) || percent == 100 {
                 tracing::info!(
                     "[export] {percent}% · {} · {completed}/{total} bytes",
@@ -312,31 +317,14 @@ where
     }
     drop(destination);
 
-    // Windows cannot rename over an existing destination. Preserve the old
-    // export as a private backup until the new package is in place, so even a
-    // replace failure remains recoverable.
-    let backup = output.with_file_name(format!(
-        ".{output_name}.{}.{}.backup",
-        std::process::id(),
-        timestamp
-    ));
-    let had_existing = output.is_file();
-    if had_existing {
-        if let Err(error) = std::fs::rename(output, &backup) {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error.into());
-        }
-    }
-    if let Err(error) = std::fs::rename(&temporary, output) {
-        if had_existing {
-            let _ = std::fs::rename(&backup, output);
-        }
+    // A same-filesystem hard link publishes the fully finalized inode in one
+    // operation and fails if another file appeared at the target meanwhile.
+    // This preserves atomicity without ever replacing an existing user file.
+    if let Err(error) = std::fs::hard_link(&temporary, output) {
         let _ = std::fs::remove_file(&temporary);
         return Err(error.into());
     }
-    if had_existing {
-        let _ = std::fs::remove_file(&backup);
-    }
+    std::fs::remove_file(&temporary)?;
     tracing::info!("[export] Complete · {}", output.display());
     on_progress(ExportProgress {
         phase: "Complete".into(),

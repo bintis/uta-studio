@@ -39,10 +39,11 @@ pub enum SetupStep {
 /// The compute runtime selected before installing the Python environment.
 /// It is deliberately explicit: silently picking CUDA on a mixed-GPU system
 /// can download several GB of the wrong runtime.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum ComputeBackend {
+    #[default]
     Cpu,
     Cuda,
     Intel,
@@ -75,12 +76,6 @@ pub struct ModelInstallStatus {
     pub available: bool,
 }
 
-impl Default for ComputeBackend {
-    fn default() -> Self {
-        Self::Cpu
-    }
-}
-
 impl ComputeBackend {
     fn as_str(self) -> &'static str {
         match self {
@@ -102,7 +97,7 @@ fn onnx_runtime_package(backend: ComputeBackend) -> (&'static str, &'static str)
     }
 }
 
-fn inference_runtime_reinstall_args<'a>(backend: ComputeBackend, python: &'a str) -> Vec<&'a str> {
+fn inference_runtime_reinstall_args(backend: ComputeBackend, python: &str) -> Vec<&str> {
     let (package_name, package_requirement) = onnx_runtime_package(backend);
     vec![
         "pip",
@@ -662,7 +657,7 @@ pub fn run_vendor_setup(
     let mut cfg = crate::config::AppConfig::load();
     cfg.cache_paths = separate_targets;
     cfg.compute_backend = Some(folders.compute_backend.as_str().to_string());
-    cfg.save();
+    cfg.save()?;
 
     // A model choice can make analysis unavailable without invalidating the
     // already verified Python environment. In that case setup should prepare
@@ -763,7 +758,7 @@ pub fn run_vendor_setup(
                     None,
                 );
             },
-            |line| on_log(line),
+            &mut on_log,
         )?;
     }
 
@@ -792,7 +787,7 @@ pub fn run_vendor_setup(
             None,
             None,
         );
-        step_download_openvino_whisper_model_with_output(|line| on_log(line))?;
+        step_download_openvino_whisper_model_with_output(&mut on_log)?;
     }
     if model_target.is_none()
         && folders.compute_backend == ComputeBackend::Intel
@@ -807,7 +802,7 @@ pub fn run_vendor_setup(
             None,
             None,
         );
-        step_download_openvino_separator_models_with_output(|line| on_log(line))?;
+        step_download_openvino_separator_models_with_output(&mut on_log)?;
     }
 
     if model_target.is_none() {
@@ -820,7 +815,7 @@ pub fn run_vendor_setup(
             None,
             None,
         );
-        step_download_pitch_model_with_output(|line| on_log(line))?;
+        step_download_pitch_model_with_output(&mut on_log)?;
     }
 
     emit_setup_progress(
@@ -836,8 +831,8 @@ pub fn run_vendor_setup(
         None,
     );
     match model_target {
-        Some(target) => step_download_model(target, |line| on_log(line))?,
-        None => step_download_selected_models(|line| on_log(line))?,
+        Some(target) => step_download_model(target, &mut on_log)?,
+        None => step_download_selected_models(on_log)?,
     }
 
     mark_ready()?;
@@ -1416,7 +1411,7 @@ fn detect_gpu(backend: ComputeBackend) -> Result<GpuInfo, String> {
                 let smi = nvidia_smi_path().ok_or(
                     "NVIDIA CUDA was selected, but nvidia-smi is unavailable. Choose CPU or install a working NVIDIA driver.",
                 )?;
-                let cuda_index = query_cuda_index(&smi);
+                let cuda_index = query_cuda_index(smi);
                 info!("[vendor] GPU detection: CUDA (index {cuda_index})");
                 Ok(GpuInfo {
                     device: "cuda",

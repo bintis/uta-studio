@@ -1,0 +1,47 @@
+[package]
+name = "uta-studio-desktop"
+version = "0.2.0"
+description = "Bevy desktop application for Uta Studio."
+authors = ["bintis"]
+license = "GPL-3.0"
+edition = "2024"
+
+[[bin]]
+name = "uta-studio"
+path = "src/main.rs"
+
+[dependencies]
+app-core = { package = "uta-studio-core", path = "../app-core" }
+bevy = { version = "0.19.1", default-features = false, features = [
+  "async_executor",
+  "bevy_asset",
+  "bevy_camera",
+  "bevy_color",
+  "bevy_core_pipeline",
+  "bevy_image",
+  "bevy_input_focus",
+  "bevy_log",
+  "bevy_picking",
+  "bevy_render",
+  "bevy_text",
+  "bevy_ui",
+  "bevy_ui_render",
+  "bevy_ui_widgets",
+  "bevy_window",
+  "bevy_winit",
+  "jpeg",
+  "multi_threaded",
+  "png",
+  "std",
+  "ui_picking",
+  "wayland",
+] }
+# ICU otherwise writes debug-build fallback diagnostics directly to stderr,
+# bypassing Bevy's target filter. Route them through the normal logger.
+icu_provider = { version = "=2.2.0", features = ["logging"] }
+open = "=5.3.3"
+# Use the Wayland XDG portal directly; no GTK or X11 file picker backend.
+rfd = { version = "=0.15.4", default-features = false, features = ["async-std", "xdg-portal"] }
+serde_json = "1"
+uta-studio-audio = { path = "../native-audio" }
+uta-studio-diagnostics = { path = "../studio-diagnostics" }

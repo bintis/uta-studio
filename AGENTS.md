@@ -19,13 +19,13 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 
 - Do not introduce avoidable lossy generations. Lossless source or generated audio is stored/exported as FLAC; lossy audio is stored/exported as MP3.
 - Never label lossy bytes as FLAC or a MIME type that does not match the actual payload.
-- The editor auditions supported sources through the binary Tauri IPC boundary with native GStreamer playback. It plays the chosen source unchanged; unsupported containers may get a cached FLAC/MP3 compatibility preview following the rule above. Waveform visualization may read authorized local media separately while playback is stopped.
+- The editor auditions supported sources through the local in-process command boundary with native GStreamer playback. It plays the chosen source unchanged; unsupported containers may get a cached FLAC/MP3 compatibility preview following the rule above. Waveform visualization may read authorized local media separately while playback is stopped.
 - Every export is atomic, validates its target extension, does not silently overwrite user files, and cleans failed temporary output.
 - UTZ and UltraStar are both first-class outputs. Changes to chart authoring must be covered by both exporters where relevant.
 
 ## API and verification
 
-- Every app-owned feature must have a local Tauri command API or be represented by one. Keep `api_capabilities` exactly synchronized with the commands registered in `tauri::generate_handler!`.
+- Every app-owned feature must have a local in-process command API or be represented by one. Keep `api_capabilities` synchronized with the operations exposed by the native desktop shell.
 - Classify each endpoint as `read`, `mutation`, `destructive`, `external`, or `temporary`.
 - `run_feature_diagnostics` must remain safe for user data. It may create verified exports only in a uniquely named temporary directory and must remove that directory. It must never run cache deletion, library disconnection, model installation, chart saves, re-analysis, or other destructive/mutating workflows.
 - Mutation endpoints are tested through unit/contract tests and isolated fixtures. Do not prove that a destructive API works by using the user's actual library, models, or settings.
@@ -47,13 +47,14 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 - **Models & runtime** owns installed tools, acceleration, and downloadable artifacts. **Analysis** owns separator, transcription, alignment, pitch, batching, and sensitivity parameters. Song detail may expose the same analysis defaults for convenient tuning, but must state that existing chart data changes only after re-analysis.
 - Editor lyric and note jumps use an immediate accurate native-audio seek and preserve the current play/pause intent. Space toggles transport once per key press whenever focus is outside an editable field.
 - Treat native audio position as the clock source, but interpolate the visible playhead on animation frames between lightweight status syncs. Timed lyrics with overlapping or very short ranges must use collision-free visual lanes; long lyric controls wrap instead of overlapping adjacent content.
+- The Linux desktop is Wayland-only. Do not enable an X11 window backend or use XWayland as a fallback.
 
 ## Safety and completion checks
 
-- Never expose an unauthenticated HTTP control server. Feature APIs stay inside Tauri IPC unless the user explicitly requests and approves a different security design.
+- Never expose an unauthenticated HTTP control server. Feature APIs stay inside the local process unless the user explicitly requests and approves a different security design.
 - Keep user source media read-only. Opening, revealing, scanning, editing cached chart data, and exporting must never move or delete source songs.
 - Use the repository's Nix dev shell for Rust/Node tools when they are not on `PATH`. Do not treat Nix environment realization as a request to download models.
-- Before final handoff, run Rust formatting/checks/tests, Python compile checks, frontend formatting/lint/typecheck/tests/build, the API registry contract test, real audio decode, real UTZ and UltraStar smoke exports, project-name scan, and a Nix package build.
+- Before final handoff, run Rust formatting/checks/tests, Python compile checks, native UI tests/build, the API registry contract test, real audio decode, real UTZ and UltraStar smoke exports, project-name scan, and a Nix package build.
 - Editor audio is not verified merely because a PipeWire stream exists. Audition a real chart continuously, confirm the stream is running/unmuted, inspect PipeWire quantum errors/xruns, and keep waveform/timeline rendering from blocking playback. Do not judge playback while a high-parallelism build is saturating the machine.
 - The final packaged artifact must be produced by `nix build path:.#uta-studio` and smoke-launched from its wrapped executable.
 

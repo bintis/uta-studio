@@ -35,7 +35,7 @@ pub struct AnalysisQueue {
     pub entries: HashMap<String, QueuedStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct AnalysisTask {
     pub file_hash: String,
@@ -536,11 +536,14 @@ pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) {
         return;
     }
 
-    if let Some(lang) = language {
-        if !lang.is_empty() {
-            let mut config = AppConfig::load();
-            config.set_language_override(file_hash.to_string(), lang);
-            config.save();
+    if let Some(lang) = language
+        && !lang.is_empty()
+    {
+        let mut config = AppConfig::load();
+        config.set_language_override(file_hash.to_string(), lang);
+        if let Err(error) = config.save() {
+            tracing::error!("Could not save language override: {error}");
+            return;
         }
     }
     reanalyze(file_hash, false);
@@ -574,7 +577,10 @@ pub fn realign(file_hash: &str, language: Option<String>) {
     if let Some(lang) = language.as_ref().filter(|lang| !lang.is_empty()) {
         let mut config = AppConfig::load();
         config.set_language_override(file_hash.to_string(), lang.clone());
-        config.save();
+        if let Err(error) = config.save() {
+            tracing::error!("Could not save language override: {error}");
+            return;
+        }
     }
 
     let cache = CacheDir::new();
@@ -1048,7 +1054,7 @@ fn send_and_monitor(
                     update_queue_status(hash, QueuedStatus::Analyzing(pct as usize));
                 }
             }
-            ServerEvent::Done { .. } => return Ok(SongResult::Done),
+            ServerEvent::Done => return Ok(SongResult::Done),
             ServerEvent::Error { kind, msg } => {
                 let kind_s = kind.as_deref().unwrap_or("generic");
                 if kind_s == "oom" {

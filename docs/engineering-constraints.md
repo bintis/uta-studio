@@ -27,11 +27,11 @@ Avoidable lossy generations are forbidden:
 | Lossless (FLAC, WAV/PCM, AIFF, ALAC, etc.) | FLAC |
 | Lossy (MP3, AAC, Opus, Vorbis, etc.) | MP3 |
 
-Editor audition uses native GStreamer playback controlled through binary Tauri IPC and plays the selected source unchanged. Waveform visualization may read authorized local media while playback is stopped. An unsupported container may produce a cached compatibility preview, but it must follow the table and carry the correct MIME type. Exported UTZ/UltraStar assets must be real FLAC or MP3 data, never a renamed file with mismatched bytes.
+Editor audition uses native GStreamer playback through the in-process desktop command boundary and plays the selected source unchanged. Waveform visualization may read authorized local media while playback is stopped. An unsupported container may produce a cached compatibility preview, but it must follow the table and carry the correct MIME type. Exported UTZ/UltraStar assets must be real FLAC or MP3 data, never a renamed file with mismatched bytes.
 
 ## Feature APIs and diagnostics
 
-Every app feature has a local Tauri IPC command. `api_capabilities` is the discoverable manifest and records the area, command name, access class, automation coverage, and description. A test keeps it exactly synchronized with `tauri::generate_handler!`.
+Every app feature is represented by a local in-process command contract. `api_capabilities` is the discoverable manifest and records the area, command name, access class, automation coverage, and description. Contract tests keep command names unique and access classes valid; the Bevy shell calls the same `app-core` operations described by that manifest.
 
 `run_feature_diagnostics` verifies configuration, cache accounting, the SQLite library, navigation facets, folder browsing, runtime status, song loading, chart readiness/loading, audio decoding, and optional real UTZ/UltraStar exports. Export smoke tests use a unique temporary folder and remove it. Diagnostics never clear caches, remove library roots, download models, save charts, or enqueue analysis.
 
@@ -67,12 +67,9 @@ nix develop path:. -c cargo fmt --all -- --check
 nix develop path:. -c cargo check --workspace --all-targets
 nix develop path:. -c cargo test --workspace --all-targets
 python3 -m py_compile app-core/analyzer/*.py
-nix develop path:. -c pnpm --dir client run lint
-nix develop path:. -c pnpm --dir client run test:editor
-nix develop path:. -c pnpm --dir client run build
 nix build path:.#uta-studio --print-build-logs
 ```
 
 In addition, use an analyzed fixture to decode editor audio with ffmpeg and perform real UTZ and UltraStar exports. Validate the UTZ ZIP/manifest/hash metadata, parse the UltraStar chart, decode both exported audio assets, confirm temporary cleanup, and smoke-launch the wrapped Nix executable.
 
-For editor playback, use a real chart for a sustained audition. Confirm the PipeWire stream is running and unmuted, and inspect `pw-top` for quantum errors/xruns during playback. A stream that exists but stutters is a failure. Run this check without a concurrent high-parallelism Rust/Nix build and without test-only WebKit compositing overrides.
+For editor playback, use a real chart for a sustained audition. Confirm the PipeWire stream is running and unmuted, and inspect `pw-top` for quantum errors/xruns during playback. A stream that exists but stutters is a failure. Run this check without a concurrent high-parallelism Rust/Nix build.

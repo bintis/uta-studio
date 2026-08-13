@@ -197,9 +197,7 @@ fn classify_media_file(path: &Path) -> Option<MediaKind> {
         Some(MediaKind::Audio)
     } else if VIDEO_EXTENSIONS.contains(&ext_str) {
         Some(MediaKind::Video)
-    } else if ext_str == "usdx" {
-        Some(MediaKind::Usdx)
-    } else if ext_str == "txt" && usdx::looks_like_usdx(path) {
+    } else if ext_str == "usdx" || (ext_str == "txt" && usdx::looks_like_usdx(path)) {
         Some(MediaKind::Usdx)
     } else {
         None
@@ -325,7 +323,8 @@ fn collect_media_paths(folder: &Path) -> Vec<(PathBuf, MediaKind)> {
 
     let claimed: HashSet<PathBuf> = paths
         .iter()
-        .filter_map(|(p, kind)| matches!(kind, MediaKind::Usdx).then(|| p.clone()))
+        .filter(|(_, kind)| matches!(kind, MediaKind::Usdx))
+        .map(|(path, _)| path.clone())
         .filter_map(|usdx_path| usdx::read_siblings(&usdx_path))
         .flat_map(|s| {
             [Some(s.audio), s.vocals, s.instrumental, s.video]
