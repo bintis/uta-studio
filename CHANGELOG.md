@@ -5,7 +5,7 @@
 Native desktop refactor and authoring-workflow restoration.
 
 - Replaced the legacy web/Tauri shell with a pure Wayland Rust/Bevy desktop UI.
-- 重新用 Bevy 代替 Tauri，重做并美化界面。
+- Reworked the interface with Bevy replacing Tauri, including a fresh polished look and feel.
 - Restored library covers, search, activity and analysis views, song pages,
   settings controls, version information, and contextual file actions.
 - Rebuilt the editor with native GStreamer audition, waveform and pitch guides,
