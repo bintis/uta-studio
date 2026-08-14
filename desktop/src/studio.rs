@@ -11,6 +11,7 @@ use app_core::{
 };
 use bevy::{
     asset::RenderAssetUsages,
+    color::Mix,
     image::{CompressedImageFormats, ImageSampler, ImageType},
     input_focus::{AutoFocus, InputFocus, tab_navigation::TabIndex},
     log::{DEFAULT_FILTER, LogPlugin},
@@ -26,7 +27,6 @@ const LOGO_PATH: &str = "icon.png";
 const ICON_ATLAS_PATH: &str = "desktop/assets/icons/ui-icons.png";
 const ICON_CELL: f32 = 24.0;
 const SIDEBAR_WIDTH: f32 = 265.0;
-const TITLE_BAR_HEIGHT: f32 = 30.0;
 const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
 const EDITOR_PITCH_TOP_PERCENT: f32 = 20.0;
 const EDITOR_PITCH_HEIGHT_PERCENT: f32 = 76.0;
@@ -133,6 +133,8 @@ enum LibraryView {
     Queue,
     Completed,
     Videos,
+    Artists,
+    Albums,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +161,8 @@ impl LibraryView {
             Self::Queue => "Analysis Queue",
             Self::Completed => "Completed Charts",
             Self::Videos => "Video Library",
+            Self::Artists => "Artists",
+            Self::Albums => "Albums",
         }
     }
 
@@ -168,6 +172,7 @@ impl LibraryView {
             Self::Queue => "IN PROGRESS",
             Self::Completed => "READY TO AUTHOR",
             Self::Videos => "VIDEO SOURCES",
+            Self::Artists | Self::Albums => "MY LIBRARY",
         }
     }
 
@@ -177,7 +182,7 @@ impl LibraryView {
                 Self::Queue => Some("queued".to_string()),
                 Self::Completed => Some("analysed".to_string()),
                 Self::Videos => Some("videos".to_string()),
-                Self::All => None,
+                Self::All | Self::Artists | Self::Albums => None,
             },
             ..default()
         }
@@ -695,10 +700,22 @@ struct NativeAudio(#[allow(dead_code)] Arc<uta_studio_audio::EditorAudioPlayer>)
 struct NativeLibraryAudio(Arc<uta_studio_audio::EditorAudioPlayer>);
 
 #[derive(Resource, Default)]
-struct LocalImages(HashMap<PathBuf, Handle<Image>>);
+struct LocalImages {
+    covers: HashMap<PathBuf, Handle<Image>>,
+    ambient_covers: HashMap<PathBuf, Handle<Image>>,
+}
 
 #[derive(Resource, Default)]
 struct UiInvalidated(bool);
+
+/// The authored background of a button before transient hover/press feedback.
+///
+/// UI rebuilds create buttons with intentionally different resting surfaces
+/// (transparent text actions, quiet outlined controls, primary actions, and
+/// full-screen dismiss backdrops). Keeping that value prevents interaction
+/// feedback from flattening every button to the same transparent background.
+#[derive(Component, Clone, Copy)]
+struct RestingButtonBackground(Color);
 
 #[derive(Resource)]
 struct LibraryRefreshTimer(Timer);
@@ -905,8 +922,6 @@ struct EditorWordOriginal {
 
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 enum UiAction {
-    DragWindow,
-    Close,
     Back,
     Home,
     SetLibraryView(LibraryView),
@@ -1093,6 +1108,7 @@ pub fn run() {
                 })
                 .set(WindowPlugin {
                     primary_window: Some(window),
+                    close_when_requested: false,
                     ..default()
                 }),
         )
@@ -1101,6 +1117,7 @@ pub fn run() {
             Update,
             (
                 handle_actions,
+                handle_window_close_requests,
                 handle_fullscreen_shortcut,
                 refresh_library_while_scanning,
                 refresh_analysis_activity,
@@ -1169,7 +1186,7 @@ fn studio_window(config: &AppConfig, dark: bool) -> Window {
         title: "Uta Studio".to_string(),
         name: Some("com.uta-studio.desktop".to_string()),
         resolution: (1280, 720).into(),
-        decorations: false,
+        decorations: true,
         transparent: false,
         resizable: true,
         mode: if config.fullscreen.unwrap_or(false) {
@@ -1261,7 +1278,6 @@ fn render_ui(
             BackgroundColor(theme.background),
         ))
         .with_children(|root| {
-            spawn_title_bar(root, font.clone(), theme);
             if session.route == StudioRoute::Editor {
                 spawn_editor(root, font.clone(), icons.clone(), session, theme);
             } else {
@@ -1403,80 +1419,6 @@ fn spawn_leave_confirmation(
     ));
 }
 
-fn spawn_title_bar(parent: &mut ChildSpawnerCommands, font: Handle<Font>, theme: &StudioTheme) {
-    parent
-        .spawn((
-            Node {
-                width: percent(100),
-                height: px(TITLE_BAR_HEIGHT),
-                flex_shrink: 0.0,
-                align_items: AlignItems::Center,
-                border: UiRect::bottom(px(1)),
-                ..default()
-            },
-            BackgroundColor(if theme.dark {
-                theme.card.with_alpha(0.78)
-            } else {
-                theme.card.with_alpha(0.92)
-            }),
-            BorderColor::all(theme.border.with_alpha(if theme.dark { 0.34 } else { 0.5 })),
-        ))
-        .with_children(|bar| {
-            bar.spawn((
-                Button,
-                UiAction::DragWindow,
-                Node {
-                    height: percent(100),
-                    flex_grow: 1.0,
-                    ..default()
-                },
-                BackgroundColor(Color::NONE),
-            ));
-            bar.spawn(Node {
-                width: px(34),
-                height: percent(100),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            })
-            .with_children(|controls| {
-                spawn_window_button(controls, font, theme, "×", UiAction::Close, false);
-            });
-        });
-}
-
-fn spawn_window_button(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    label: &'static str,
-    action: UiAction,
-    destructive: bool,
-) {
-    parent.spawn((
-        Button,
-        action,
-        Node {
-            width: px(24),
-            height: px(24),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            border_radius: BorderRadius::all(px(6)),
-            ..default()
-        },
-        BackgroundColor(Color::NONE),
-        children![(
-            Text::new(label),
-            TextFont::from(font).with_font_size(15.0),
-            TextColor(if destructive {
-                theme.destructive
-            } else {
-                theme.muted_foreground
-            }),
-        )],
-    ));
-}
-
 fn spawn_icon(
     parent: &mut ChildSpawnerCommands,
     atlas: Handle<Image>,
@@ -1536,6 +1478,62 @@ fn spawn_icon_button(
             }),
         ))
         .with_children(|button| spawn_icon(button, atlas, icon, 16.0, color));
+}
+
+fn spawn_activity_button(
+    parent: &mut ChildSpawnerCommands,
+    atlas: Handle<Image>,
+    theme: &StudioTheme,
+    panel_open: bool,
+    has_active_analysis: bool,
+) {
+    let emphasized = panel_open || has_active_analysis;
+    let color = if has_active_analysis {
+        theme.primary
+    } else if panel_open {
+        theme.foreground
+    } else {
+        theme.muted_foreground
+    };
+    parent
+        .spawn((
+            Node {
+                width: px(34),
+                height: px(34),
+                flex_shrink: 0.0,
+                border: UiRect::all(px(if emphasized { 1 } else { 0 })),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(if has_active_analysis {
+                theme.primary.with_alpha(0.075)
+            } else if panel_open {
+                theme.foreground.with_alpha(0.07)
+            } else {
+                Color::NONE
+            }),
+            BorderColor::all(if has_active_analysis {
+                theme.primary.with_alpha(0.18)
+            } else {
+                theme.border.with_alpha(0.42)
+            }),
+        ))
+        .with_children(|slot| {
+            slot.spawn((
+                Button,
+                UiAction::ToggleActivity,
+                Node {
+                    width: percent(100),
+                    height: percent(100),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border_radius: BorderRadius::all(px(5)),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .with_children(|button| spawn_icon(button, atlas, UiIcon::Queue, 16.0, color));
+        });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1601,7 +1599,7 @@ fn spawn_sidebar(
             sidebar
                 .spawn(Node {
                     width: percent(100),
-                    height: px(68),
+                    height: px(82),
                     flex_shrink: 0.0,
                     align_items: AlignItems::Center,
                     ..default()
@@ -1612,7 +1610,7 @@ fn spawn_sidebar(
                             Button,
                             UiAction::OpenAbout,
                             Node {
-                                height: px(54),
+                                height: px(68),
                                 align_items: AlignItems::Center,
                                 padding: UiRect::right(px(8)),
                                 column_gap: px(10),
@@ -1622,11 +1620,11 @@ fn spawn_sidebar(
                         .with_children(|brand| {
                             brand.spawn((
                                 Node {
-                                    width: px(44),
-                                    height: px(44),
+                                    width: px(66),
+                                    height: px(66),
                                     flex_shrink: 0.0,
                                     overflow: Overflow::clip(),
-                                    border_radius: BorderRadius::all(px(9)),
+                                    border_radius: BorderRadius::all(px(12)),
                                     ..default()
                                 },
                                 ImageNode::new(asset_server.load(LOGO_PATH)),
@@ -1634,7 +1632,7 @@ fn spawn_sidebar(
                             spawn_text(
                                 brand,
                                 font.clone(),
-                                "uta-studio",
+                                "Uta Studio",
                                 18.0,
                                 theme.sidebar_foreground,
                             );
@@ -1716,60 +1714,30 @@ fn spawn_sidebar(
                 );
             }
             spawn_section_label(sidebar, font.clone(), theme, "MY LIBRARY");
-            spawn_sidebar_item(
+            spawn_sidebar_nav_item(
                 sidebar,
                 font.clone(),
                 icons.clone(),
                 theme,
                 UiIcon::Artists,
                 "Artists",
-                0,
+                UiAction::SetLibraryView(LibraryView::Artists),
+                session.route == StudioRoute::Library
+                    && session.library_view == LibraryView::Artists
+                    && session.library_facet.is_none(),
             );
-            for item in session.menu_items.artists.iter().take(3) {
-                let facet = LibraryFacet::Artist {
-                    value: item.value.clone(),
-                    label: item.label.clone(),
-                };
-                spawn_sidebar_filter_item(
-                    sidebar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    None,
-                    format!("  {}", item.label),
-                    item.count.try_into().unwrap_or(usize::MAX),
-                    UiAction::SetLibraryFacet(facet.clone()),
-                    session.route == StudioRoute::Library
-                        && session.library_facet.as_ref() == Some(&facet),
-                );
-            }
-            spawn_sidebar_item(
+            spawn_sidebar_nav_item(
                 sidebar,
                 font.clone(),
                 icons.clone(),
                 theme,
                 UiIcon::Albums,
                 "Albums",
-                0,
+                UiAction::SetLibraryView(LibraryView::Albums),
+                session.route == StudioRoute::Library
+                    && session.library_view == LibraryView::Albums
+                    && session.library_facet.is_none(),
             );
-            for item in session.menu_items.albums.iter().take(3) {
-                let facet = LibraryFacet::Album {
-                    value: item.value.clone(),
-                    label: item.label.clone(),
-                };
-                spawn_sidebar_filter_item(
-                    sidebar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    None,
-                    format!("  {}", item.label),
-                    item.count.try_into().unwrap_or(usize::MAX),
-                    UiAction::SetLibraryFacet(facet.clone()),
-                    session.route == StudioRoute::Library
-                        && session.library_facet.as_ref() == Some(&facet),
-                );
-            }
             if !session.menu_items.playlists.is_empty() {
                 spawn_sidebar_item(
                     sidebar,
@@ -2051,6 +2019,15 @@ fn spawn_workspace(
                 StudioRoute::Library if session.config.library_paths().is_empty() => {
                     spawn_empty_library(workspace, font.clone(), session.scanning, theme);
                 }
+                StudioRoute::Library
+                    if session.library_facet.is_none()
+                        && matches!(
+                            session.library_view,
+                            LibraryView::Artists | LibraryView::Albums
+                        ) =>
+                {
+                    spawn_library_collection(workspace, font.clone(), icons.clone(), session, theme)
+                }
                 StudioRoute::Library => spawn_library(
                     workspace,
                     font.clone(),
@@ -2112,7 +2089,7 @@ fn spawn_top_bar(
                 align_items: AlignItems::Center,
                 padding: UiRect {
                     left: px(12),
-                    right: px(44),
+                    right: px(12),
                     ..default()
                 },
                 border: UiRect::bottom(px(1)),
@@ -2136,20 +2113,13 @@ fn spawn_top_bar(
                 flex_grow: 1.0,
                 ..default()
             });
-            if session.route != StudioRoute::Library {
-                spawn_text(
-                    bar,
-                    font.clone(),
-                    match session.route {
-                        StudioRoute::Library => "Library",
-                        StudioRoute::Folders => "Folders",
-                        StudioRoute::SongDetail => "Song",
-                        StudioRoute::Settings => "Settings",
-                        StudioRoute::Editor => "Editor",
-                    },
-                    11.0,
-                    theme.muted_foreground,
-                );
+            if let Some(title) = match session.route {
+                StudioRoute::Folders => Some("Folders"),
+                StudioRoute::SongDetail => Some("Song"),
+                StudioRoute::Editor => Some("Editor"),
+                StudioRoute::Library | StudioRoute::Settings => None,
+            } {
+                spawn_text(bar, font.clone(), title, 11.0, theme.muted_foreground);
             }
             bar.spawn(Node {
                 position_type: PositionType::Relative,
@@ -2268,29 +2238,19 @@ fn spawn_top_bar(
                         });
                 }
             });
-            spawn_icon_button(
+            let has_active_analysis = session.analysis_tasks.iter().any(|task| {
+                matches!(
+                    task.status,
+                    app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
+                )
+            });
+            spawn_activity_button(
                 bar,
                 icons.clone(),
                 theme,
-                UiIcon::Queue,
-                UiAction::ToggleActivity,
                 session.activity_open,
-                false,
-                34.0,
+                has_active_analysis,
             );
-            if !session.analysis_tasks.is_empty() {
-                bar.spawn((
-                    Node {
-                        width: px(6),
-                        height: px(6),
-                        margin: UiRect::left(px(-8)),
-                        align_self: AlignSelf::FlexStart,
-                        border_radius: BorderRadius::MAX,
-                        ..default()
-                    },
-                    BackgroundColor(theme.primary),
-                ));
-            }
         });
 }
 
@@ -2310,7 +2270,9 @@ fn spawn_library_player(
         .file_hash
         .as_deref()
         .and_then(|hash| app_core::load_song_by_hash(hash).ok().flatten());
-    let song = playback_song.or_else(|| session.selected_song());
+    let Some(song) = playback_song.or_else(|| session.selected_song()) else {
+        return;
+    };
     parent
         .spawn((
             Node {
@@ -2327,23 +2289,6 @@ fn spawn_library_player(
             BorderColor::all(theme.border.with_alpha(0.52)),
         ))
         .with_children(|player| {
-            let Some(song) = song else {
-                spawn_text(
-                    player,
-                    font.clone(),
-                    "Choose a song",
-                    12.0,
-                    theme.foreground,
-                );
-                spawn_text(
-                    player,
-                    font.clone(),
-                    "Open a track to listen to its original source.",
-                    9.0,
-                    theme.muted_foreground,
-                );
-                return;
-            };
             let cover = album_art_handle(&song, asset_server, images, local_images);
             let current = session.library_playback.file_hash.as_deref()
                 == Some(song.file_hash.as_str())
@@ -3184,21 +3129,82 @@ fn spawn_editor(
 ) {
     let Some(editor) = session.editor.as_ref() else {
         parent
-            .spawn(Node {
-                min_height: px(0),
-                flex_grow: 1.0,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            })
-            .with_children(|empty| {
-                spawn_wrapped_text(
-                    empty,
-                    font,
-                    "The chart editor could not be loaded.",
-                    13.0,
-                    theme.muted_foreground,
-                );
+            .spawn((
+                Node {
+                    min_height: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                BackgroundColor(theme.background),
+            ))
+            .with_children(|page| {
+                page.spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(58),
+                        flex_shrink: 0.0,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::horizontal(px(12)),
+                        border: UiRect::bottom(px(1)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.card.with_alpha(0.58)),
+                    BorderColor::all(theme.border.with_alpha(0.55)),
+                ))
+                .with_children(|toolbar| {
+                    spawn_icon_button(
+                        toolbar,
+                        icons,
+                        theme,
+                        UiIcon::ArrowLeft,
+                        UiAction::Back,
+                        false,
+                        false,
+                        34.0,
+                    );
+                    spawn_text(toolbar, font.clone(), "Chart editor", 12.0, theme.foreground);
+                });
+                page.spawn(Node {
+                    min_height: px(0),
+                    flex_grow: 1.0,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                })
+                .with_children(|empty| {
+                    empty
+                        .spawn(Node {
+                            width: px(460),
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: px(10),
+                            ..default()
+                        })
+                        .with_children(|message| {
+                            let loading = session.editor_load_job.receiver.is_some();
+                            spawn_text(
+                                message,
+                                font.clone(),
+                                if loading {
+                                    "Preparing chart editor…"
+                                } else {
+                                    "Chart needs attention"
+                                },
+                                18.0,
+                                theme.foreground,
+                            );
+                            spawn_wrapped_text(
+                                message,
+                                font.clone(),
+                                session.notice.as_deref().unwrap_or(
+                                    "The chart editor could not be loaded. Return to the song and review its analysis status.",
+                                ),
+                                11.0,
+                                theme.muted_foreground,
+                            );
+                        });
+                });
             });
         return;
     };
@@ -3488,61 +3494,79 @@ fn spawn_editor_dock(
             BorderColor::all(theme.border.with_alpha(0.58)),
         ))
         .with_children(|dock| {
-            spawn_icon_button(
-                dock,
-                icons.clone(),
-                theme,
-                if editor.audio_status.playing {
-                    UiIcon::Pause
-                } else {
-                    UiIcon::Play
-                },
-                UiAction::TogglePlayback,
-                true,
-                false,
-                36.0,
-            );
-            spawn_icon_button(
-                dock,
-                icons.clone(),
-                theme,
-                UiIcon::ArrowLeft,
-                UiAction::SeekEditorStart,
-                false,
-                false,
-                30.0,
-            );
-            dock.spawn((
-                EditorClockText,
-                Text::new(format_editor_clock(
-                    editor.visible_position,
-                    editor.audio_status.duration_secs,
-                )),
-                TextFont::from(font.clone()).with_font_size(10.0),
-                TextColor(theme.foreground),
-                TextLayout::no_wrap(),
-            ));
-            let mut audio_options = vec![("instrumental", "Instrumental")];
-            if editor.chart.audio.vocals.is_some() {
-                audio_options.insert(0, ("vocals", "Vocals"));
+            let audio_available = editor.audio_status.loaded && editor.audio_status.error.is_none();
+            if audio_available {
+                spawn_icon_button(
+                    dock,
+                    icons.clone(),
+                    theme,
+                    if editor.audio_status.playing {
+                        UiIcon::Pause
+                    } else {
+                        UiIcon::Play
+                    },
+                    UiAction::TogglePlayback,
+                    true,
+                    false,
+                    36.0,
+                );
+                spawn_icon_button(
+                    dock,
+                    icons.clone(),
+                    theme,
+                    UiIcon::ArrowLeft,
+                    UiAction::SeekEditorStart,
+                    false,
+                    false,
+                    30.0,
+                );
+                dock.spawn((
+                    EditorClockText,
+                    Text::new(format_editor_clock(
+                        editor.visible_position,
+                        editor.audio_status.duration_secs,
+                    )),
+                    TextFont::from(font.clone()).with_font_size(10.0),
+                    TextColor(theme.foreground),
+                    TextLayout::no_wrap(),
+                ));
+                let mut audio_options = vec![("instrumental", "Instrumental")];
+                if editor.chart.audio.vocals.is_some() {
+                    audio_options.insert(0, ("vocals", "Vocals"));
+                }
+                audio_options.push(("original", "Original"));
+                spawn_editor_select(
+                    dock,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    EditorDockSelectKind::AudioSource,
+                    UiIcon::Music,
+                    match editor.audio_source.as_str() {
+                        "vocals" => "Vocals",
+                        "original" => "Original",
+                        _ => "Instrumental",
+                    },
+                    editor.audio_source.as_str(),
+                    &audio_options,
+                    open_select == Some(EditorDockSelectKind::AudioSource),
+                );
+            } else {
+                spawn_icon(
+                    dock,
+                    icons.clone(),
+                    UiIcon::Play,
+                    16.0,
+                    theme.muted_foreground.with_alpha(0.35),
+                );
+                spawn_text(
+                    dock,
+                    font.clone(),
+                    "Audio unavailable · chart editing remains enabled",
+                    9.0,
+                    theme.muted_foreground,
+                );
             }
-            audio_options.push(("original", "Original"));
-            spawn_editor_select(
-                dock,
-                font.clone(),
-                icons.clone(),
-                theme,
-                EditorDockSelectKind::AudioSource,
-                UiIcon::Music,
-                match editor.audio_source.as_str() {
-                    "vocals" => "Vocals",
-                    "original" => "Original",
-                    _ => "Instrumental",
-                },
-                editor.audio_source.as_str(),
-                &audio_options,
-                open_select == Some(EditorDockSelectKind::AudioSource),
-            );
             dock.spawn((
                 Node {
                     width: px(1),
@@ -3732,12 +3756,15 @@ fn spawn_editor_select(
 ) {
     let label = label.into();
     parent
-        .spawn(Node {
-            position_type: PositionType::Relative,
-            height: px(32),
-            flex_shrink: 0.0,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Relative,
+                height: px(32),
+                flex_shrink: 0.0,
+                ..default()
+            },
+            ZIndex(if open { 70 } else { 0 }),
+        ))
         .with_children(|control| {
             control
                 .spawn((
@@ -5109,6 +5136,7 @@ fn spawn_song_detail(
     };
 
     let cover = album_art_handle(&song, asset_server, images, local_images);
+    let ambient_cover = ambient_album_art_handle(&song, asset_server, images, local_images);
     parent
         .spawn((
             SongDetailContent,
@@ -5141,15 +5169,15 @@ fn spawn_song_detail(
                     hero.spawn((
                         Node {
                             position_type: PositionType::Absolute,
-                            left: px(0),
-                            right: px(0),
-                            top: px(0),
-                            bottom: px(0),
+                            left: px(-26),
+                            right: px(-26),
+                            top: px(-26),
+                            bottom: px(-26),
                             overflow: Overflow::clip(),
                             ..default()
                         },
-                        ImageNode::new(cover.clone())
-                            .with_color(Color::srgba(0.34, 0.34, 0.38, 0.34))
+                        ImageNode::new(ambient_cover)
+                            .with_color(Color::srgba(1.0, 1.0, 1.0, 0.84))
                             .with_mode(bevy::ui::widget::NodeImageMode::Stretch),
                     ));
                     hero.spawn((
@@ -5161,7 +5189,18 @@ fn spawn_song_detail(
                             bottom: px(0),
                             ..default()
                         },
-                        BackgroundColor(theme.background.with_alpha(0.68)),
+                        BackgroundColor(Color::srgba(0.012, 0.014, 0.022, 0.46)),
+                    ));
+                    hero.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(0),
+                            right: px(0),
+                            bottom: px(0),
+                            height: percent(48),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.006, 0.008, 0.014, 0.28)),
                     ));
                     hero.spawn((
                         Node {
@@ -5198,14 +5237,14 @@ fn spawn_song_detail(
                                     font.clone(),
                                     "PRODUCTION MASTER",
                                     9.0,
-                                    theme.primary,
+                                    Color::srgb(0.72, 0.68, 1.0),
                                 );
                                 spawn_wrapped_text(
                                     copy,
                                     font.clone(),
                                     song.title.clone(),
                                     34.0,
-                                    theme.foreground,
+                                    Color::srgb(0.97, 0.97, 0.99),
                                 );
                                 spawn_text(
                                     copy,
@@ -5220,7 +5259,7 @@ fn spawn_song_detail(
                                         }
                                     ),
                                     13.0,
-                                    theme.muted_foreground,
+                                    Color::srgba(0.96, 0.96, 0.98, 0.76),
                                 );
                             });
                     });
@@ -5308,7 +5347,7 @@ fn spawn_song_detail(
                                 let current = session.library_playback.file_hash.as_deref()
                                     == Some(song.file_hash.as_str())
                                     && session.library_playback.status.loaded;
-                                spawn_text_button(
+                                spawn_compact_action_button(
                                     actions,
                                     font.clone(),
                                     theme,
@@ -5319,14 +5358,19 @@ fn spawn_song_detail(
                                     } else {
                                         "Play original"
                                     },
-                                    10.0,
                                     if current {
                                         UiAction::ToggleLibraryPlayback
                                     } else {
                                         UiAction::PlayLibrarySong(song.file_hash.clone())
                                     },
                                 );
-                                spawn_song_primary_actions(actions, font.clone(), &song, theme);
+                                spawn_song_primary_actions(
+                                    actions,
+                                    font.clone(),
+                                    &song,
+                                    session,
+                                    theme,
+                                );
                             });
                     });
 
@@ -6128,8 +6172,29 @@ fn spawn_song_primary_actions(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     song: &Song,
+    session: &StudioSession,
     theme: &StudioTheme,
 ) {
+    if let Some(task) = session
+        .analysis_tasks
+        .iter()
+        .find(|task| task.file_hash == song.file_hash)
+        && matches!(
+            task.status,
+            app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
+        )
+    {
+        let label = match task.status {
+            app_core::QueuedStatus::Queued => "Queued for analysis".to_string(),
+            app_core::QueuedStatus::Analyzing(progress) => {
+                format!("Analyzing · {progress}%")
+            }
+            app_core::QueuedStatus::Failed(_) => unreachable!(),
+        };
+        spawn_action_button(parent, font, theme, label, UiAction::ToggleActivity);
+        return;
+    }
+
     if !song.is_analyzed {
         if app_core::analysis_runtime_status().ready {
             spawn_action_button(
@@ -6172,9 +6237,9 @@ fn spawn_song_primary_actions(
         font,
         theme,
         if song.editor_ready {
-            "Open editor"
+            "Edit chart"
         } else {
-            "Check editor"
+            "Prepare & edit"
         },
         UiAction::OpenEditor(song.file_hash.clone()),
     );
@@ -6300,7 +6365,7 @@ fn album_art_handle(
     let Some(path) = song.album_art_path.as_ref() else {
         return asset_server.load(LOGO_PATH);
     };
-    if let Some(handle) = local_images.0.get(path) {
+    if let Some(handle) = local_images.covers.get(path) {
         return handle.clone();
     }
     let Ok(bytes) = std::fs::read(path) else {
@@ -6322,7 +6387,52 @@ fn album_art_handle(
         return asset_server.load(LOGO_PATH);
     };
     let handle = images.add(image);
-    local_images.0.insert(path.clone(), handle.clone());
+    local_images.covers.insert(path.clone(), handle.clone());
+    handle
+}
+
+fn ambient_album_art_handle(
+    song: &Song,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    local_images: &mut LocalImages,
+) -> Handle<Image> {
+    let Some(path) = song.album_art_path.as_ref() else {
+        return asset_server.load(LOGO_PATH);
+    };
+    if let Some(handle) = local_images.ambient_covers.get(path) {
+        return handle.clone();
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return asset_server.load(LOGO_PATH);
+    };
+    let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else {
+        "jpg"
+    };
+    let Ok(decoded) = Image::from_buffer(
+        &bytes,
+        ImageType::Extension(extension),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::default(),
+        RenderAssetUsages::default(),
+    ) else {
+        return asset_server.load(LOGO_PATH);
+    };
+    let Ok(dynamic) = decoded.try_into_dynamic() else {
+        return asset_server.load(LOGO_PATH);
+    };
+    // The main-branch hero uses one enlarged, strongly blurred cover. Produce
+    // that texture once on the CPU instead of faking blur with offset copies.
+    let softened = dynamic.thumbnail(720, 720).fast_blur(22.0);
+    let mut ambient = Image::from_dynamic(softened, true, RenderAssetUsages::default());
+    ambient.sampler = ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor::linear());
+    let handle = images.add(ambient);
+    local_images
+        .ambient_covers
+        .insert(path.clone(), handle.clone());
     handle
 }
 
@@ -6372,25 +6482,30 @@ fn spawn_folders(
                         spawn_wrapped_text(
                             copy,
                             font.clone(),
-                            "Browse every watched location. Uta Studio never moves or deletes source media.",
+                            "Browse watched source locations and open the configured output folder. Uta Studio never moves or deletes source media.",
                             10.0,
                             theme.muted_foreground,
                         );
                     });
-                spawn_text_button(
+                spawn_toolbar_button(
                     header,
                     font.clone(),
+                    icons.clone(),
                     theme,
-                    "↻  Rescan all",
-                    10.0,
+                    UiIcon::Repeat,
+                    "Rescan all",
                     UiAction::RescanLibrary,
+                    false,
                 );
-                spawn_action_button(
+                spawn_toolbar_button(
                     header,
                     font.clone(),
+                    icons.clone(),
                     theme,
-                    "+ Add folder",
+                    UiIcon::Add,
+                    "Add folder",
                     UiAction::ChooseFolder,
+                    false,
                 );
             });
 
@@ -6498,6 +6613,121 @@ fn spawn_folders(
                             10.0,
                             theme.muted_foreground,
                         );
+                    }
+                    roots.spawn((
+                        Node {
+                            width: percent(100),
+                            margin: UiRect::top(px(12)),
+                            padding: UiRect::top(px(12)),
+                            border: UiRect::top(px(1)),
+                            ..default()
+                        },
+                        BorderColor::all(theme.border.with_alpha(0.42)),
+                    ));
+                    spawn_text(
+                        roots,
+                        font.clone(),
+                        "OUTPUT FOLDER",
+                        8.0,
+                        theme.muted_foreground,
+                    );
+                    roots.spawn(Node {
+                        height: px(5),
+                        ..default()
+                    });
+                    if let Some(path) = session.config.export_path.as_ref() {
+                        let selected = session.folder_browser.root.as_ref() == Some(path);
+                        roots
+                            .spawn((
+                                Node {
+                                    width: percent(100),
+                                    min_height: px(52),
+                                    border_radius: BorderRadius::all(px(4)),
+                                    ..default()
+                                },
+                                BackgroundColor(if selected {
+                                    theme.foreground.with_alpha(0.07)
+                                } else {
+                                    Color::NONE
+                                }),
+                            ))
+                            .with_children(|row| {
+                                row.spawn((
+                                    Button,
+                                    UiAction::SelectFolderRoot(path.clone()),
+                                    Node {
+                                        width: percent(100),
+                                        min_height: px(52),
+                                        flex_direction: FlexDirection::Column,
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::FlexStart,
+                                        padding: UiRect::horizontal(px(8)),
+                                        row_gap: px(2),
+                                        border_radius: BorderRadius::all(px(4)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::NONE),
+                                ))
+                                .with_children(|output| {
+                                    spawn_text(
+                                        output,
+                                        font.clone(),
+                                        folder_name(path),
+                                        11.0,
+                                        theme.foreground,
+                                    );
+                                    output
+                                        .spawn(Node {
+                                            width: percent(100),
+                                            overflow: Overflow::clip(),
+                                            ..default()
+                                        })
+                                        .with_children(|path_copy| {
+                                            path_copy.spawn((
+                                                Text::new(path.to_string_lossy().into_owned()),
+                                                TextFont::from(font.clone()).with_font_size(8.0),
+                                                TextColor(
+                                                    theme.muted_foreground.with_alpha(0.64),
+                                                ),
+                                                TextLayout::no_wrap(),
+                                            ));
+                                        });
+                                });
+                            });
+                    } else {
+                        roots
+                            .spawn((
+                                Button,
+                                UiAction::ChooseExportFolder,
+                                Node {
+                                    width: percent(100),
+                                    min_height: px(52),
+                                    flex_direction: FlexDirection::Column,
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::FlexStart,
+                                    padding: UiRect::horizontal(px(8)),
+                                    row_gap: px(2),
+                                    border_radius: BorderRadius::all(px(4)),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.foreground.with_alpha(0.035)),
+                            ))
+                            .with_children(|output| {
+                                spawn_text(
+                                    output,
+                                    font.clone(),
+                                    "System default",
+                                    11.0,
+                                    theme.foreground,
+                                );
+                                spawn_wrapped_text(
+                                    output,
+                                    font.clone(),
+                                    "Choose an output folder",
+                                    8.0,
+                                    theme.muted_foreground,
+                                );
+                            });
                     }
                 });
 
@@ -6804,7 +7034,7 @@ fn spawn_folder_context_menu(
         ZIndex(40),
     ));
     let left = (context.position.x - SIDEBAR_WIDTH - 12.0).max(8.0);
-    let top = (context.position.y - TITLE_BAR_HEIGHT - 58.0).max(8.0);
+    let top = (context.position.y - 58.0).max(8.0);
     parent
         .spawn((
             Node {
@@ -6991,8 +7221,6 @@ fn spawn_settings(
         .with_children(|settings| {
             settings
                 .spawn((
-                    SettingsContent,
-                    ScrollPosition::default(),
                     Node {
                         width: px(224),
                         height: percent(100),
@@ -7041,6 +7269,8 @@ fn spawn_settings(
 
             settings
                 .spawn((
+                    SettingsContent,
+                    ScrollPosition::default(),
                     Node {
                         min_width: px(0),
                         min_height: px(0),
@@ -7094,7 +7324,10 @@ fn spawn_settings(
                 spawn_setup_confirmation(settings, font.clone(), theme, request);
             }
             if let Some(scope) = session.pending_cache_clear {
-                spawn_global_cache_confirmation(settings, font, theme, scope);
+                spawn_global_cache_confirmation(settings, font.clone(), theme, scope);
+            }
+            if let Some(path) = session.folder_browser.pending_remove.as_deref() {
+                spawn_remove_folder_confirmation(settings, font, theme, path);
             }
         });
 }
@@ -7269,98 +7502,188 @@ fn spawn_storage_settings(
         "Storage",
         "Manage watched folders and generated data. Your source media is never moved or deleted.",
     );
-    let paths = session.config.library_paths();
-    let watched = if paths.is_empty() {
-        "No local folders connected.".to_string()
-    } else {
-        paths
-            .iter()
-            .map(|path| path.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Watched folders",
-        watched,
-        Some(("Add folder…", UiAction::ChooseFolder)),
-    );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Library scan",
-        if session.scanning {
-            "Scanning all configured roots."
-        } else {
-            "Refresh metadata for every watched folder."
-        },
-        Some(("Rescan all", UiAction::RescanLibrary)),
-    );
+    spawn_watched_folders_setting(parent, font.clone(), session, theme);
     let export_path = session
         .config
         .export_path
         .as_ref()
         .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Use the last folder chosen by the system dialog.".to_string());
-    spawn_setting_row(
+        .unwrap_or_else(|| "Use the last folder chosen by the system dialog".to_string());
+    spawn_setting_row_with_actions(
         parent,
         font.clone(),
         theme,
         "Default export folder",
-        export_path,
-        Some(("Choose…", UiAction::ChooseExportFolder)),
+        format!(
+            "Every format opens Save As here first. You can still choose another folder for each export.\n\n{export_path}"
+        ),
+        vec![
+            ("Choose…".to_string(), UiAction::ChooseExportFolder),
+            (
+                "Use system default".to_string(),
+                UiAction::ClearExportFolder,
+            ),
+        ],
     );
-    if session.config.export_path.is_some() {
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Export location",
-            "Keep Save As under system control for each format.",
-            Some(("Use system default", UiAction::ClearExportFolder)),
-        );
-    }
     let stats = app_core::CacheStats::calculate();
     let total = stats.songs_bytes + stats.models_bytes + stats.other_bytes;
-    spawn_setting_row(
+    spawn_setting_row_with_actions(
         parent,
-        font.clone(),
+        font,
         theme,
         "Generated storage",
         format!(
-            "Current cache use {} · Songs {} · Models {} · Other {}",
+            "Stems, editable charts, playback previews, AI models, and temporary authoring files.\n\nCurrent cache use {} · Songs {} · Models {} · Other {}",
             format_bytes(total),
             format_bytes(stats.songs_bytes),
             format_bytes(stats.models_bytes),
             format_bytes(stats.other_bytes),
         ),
-        None::<(&'static str, UiAction)>,
+        vec![
+            (
+                "Clear generated cache".to_string(),
+                UiAction::RequestClearCache(CacheClearScope::Generated),
+            ),
+            (
+                "Clear models".to_string(),
+                UiAction::RequestClearCache(CacheClearScope::Models),
+            ),
+        ],
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Generated cache",
-        "Remove stems, editable charts, previews, and temporary authoring variants. Source media is never deleted.",
-        Some((
-            "Clear generated cache…",
-            UiAction::RequestClearCache(CacheClearScope::Generated),
-        )),
-    );
-    spawn_setting_row(
-        parent,
-        font,
-        theme,
-        "Downloaded models",
-        "Remove model artifacts only. The runtime remains installed and analysis becomes unavailable until explicitly downloaded again.",
-        Some((
-            "Clear models…",
-            UiAction::RequestClearCache(CacheClearScope::Models),
-        )),
-    );
+}
+
+fn spawn_watched_folders_setting(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSession,
+    theme: &StudioTheme,
+) {
+    let paths = session.config.library_paths();
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(104),
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(16)),
+                column_gap: px(32),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(
+                    copy,
+                    font.clone(),
+                    "Watched folders",
+                    12.0,
+                    theme.foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    "Add as many music locations as you need. Folder changes are merged into one library.",
+                    10.0,
+                    theme.muted_foreground,
+                );
+                copy.spawn(Node {
+                    height: px(5),
+                    ..default()
+                });
+                if paths.is_empty() {
+                    spawn_wrapped_text(
+                        copy,
+                        font.clone(),
+                        "No local folders connected.",
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                } else {
+                    for path in &paths {
+                        copy.spawn((
+                            Node {
+                                width: percent(100),
+                                min_height: px(30),
+                                align_items: AlignItems::Center,
+                                padding: UiRect::axes(px(9), px(6)),
+                                column_gap: px(8),
+                                border_radius: BorderRadius::all(px(4)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.background.with_alpha(0.32)),
+                        ))
+                        .with_children(|path_row| {
+                            path_row
+                                .spawn(Node {
+                                    min_width: px(0),
+                                    flex_grow: 1.0,
+                                    overflow: Overflow::clip(),
+                                    ..default()
+                                })
+                                .with_children(|path_copy| {
+                                    path_copy.spawn((
+                                        Text::new(path.to_string_lossy().into_owned()),
+                                        TextFont::from(font.clone()).with_font_size(9.0),
+                                        TextColor(theme.muted_foreground),
+                                        TextLayout::no_wrap(),
+                                    ));
+                                });
+                            spawn_compact_action_button(
+                                path_row,
+                                font.clone(),
+                                theme,
+                                "Remove",
+                                UiAction::RequestRemoveFolder(path.clone()),
+                            );
+                        });
+                    }
+                }
+            });
+            spawn_setting_actions(
+                row,
+                font,
+                theme,
+                vec![
+                    ("Add folder…".to_string(), UiAction::ChooseFolder),
+                    ("Rescan all".to_string(), UiAction::RescanLibrary),
+                ],
+            );
+        });
+}
+
+fn spawn_settings_section(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    description: impl Into<String>,
+) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect {
+                left: px(20),
+                right: px(20),
+                top: px(20),
+                bottom: px(7),
+            },
+            row_gap: px(3),
+            ..default()
+        })
+        .with_children(|section| {
+            spawn_text(section, font.clone(), label, 8.0, theme.primary);
+            spawn_wrapped_text(section, font, description, 9.0, theme.muted_foreground);
+        });
 }
 
 fn spawn_model_settings(
@@ -7392,26 +7715,21 @@ fn spawn_model_settings(
         } else {
             "Setup required"
         },
-        if status.ready {
-            "The selected runtime and every required model are available locally.".to_string()
-        } else {
-            format!("Missing: {}", status.missing.join(" · "))
-        },
-        Some(("Check again", UiAction::RefreshRuntimeStatus)),
-    );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Installed tools",
         format!(
-            "ffmpeg · {}   uv · {}   Python · {}   Analyzer · {}",
+            "{}\n\nffmpeg · {}   uv · {}   Python · {}\nAnalyzer · {}   Pitch · {}   Models · {}",
+            if status.ready {
+                "The selected runtime and every required model are available locally.".to_string()
+            } else {
+                format!("Missing: {}", status.missing.join(" · "))
+            },
             availability(status.ffmpeg_available),
             availability(status.uv_available),
             availability(status.system_python_available),
             availability(status.analyzer_available),
+            availability(status.pitch_model_available),
+            availability(status.selected_models_available),
         ),
-        None::<(&'static str, UiAction)>,
+        Some(("Check again", UiAction::RefreshRuntimeStatus)),
     );
     spawn_select_setting_row(
         parent,
@@ -7438,6 +7756,13 @@ fn spawn_model_settings(
             UiAction::RequestSetup(None),
         )),
     );
+    spawn_settings_section(
+        parent,
+        font.clone(),
+        theme,
+        "SELECTED MODEL FILES",
+        "Each button downloads only that selected model. A missing shared runtime is prepared first, after your confirmation.",
+    );
     for model in status.models {
         spawn_setting_row(
             parent,
@@ -7445,14 +7770,14 @@ fn spawn_model_settings(
             theme,
             model.label,
             model.description,
-            if model.available {
-                None
-            } else {
-                Some((
-                    "Download…".to_string(),
-                    UiAction::RequestSetup(Some(model.target)),
-                ))
-            },
+            Some((
+                if model.available {
+                    "Reinstall…".to_string()
+                } else {
+                    "Download…".to_string()
+                },
+                UiAction::RequestSetup(Some(model.target)),
+            )),
         );
     }
 }
@@ -7468,9 +7793,9 @@ fn spawn_analysis_settings(
         parent,
         font.clone(),
         theme,
-        "GENERATION DEFAULTS",
+        "GENERATION",
         "Analysis",
-        "Separator, transcription, alignment, pitch, batching, and sensitivity parameters.",
+        "Controls for newly generated stems, lyric alignment, and pitch analysis. Existing charts change only after re-analysis.",
     );
     spawn_select_setting_row(
         parent,
@@ -7493,29 +7818,54 @@ fn spawn_analysis_settings(
         SettingsSelectKind::AsrEngine,
         session,
     );
-    if !parakeet {
-        spawn_select_setting_row(
-            parent,
-            font.clone(),
-            icons.clone(),
-            theme,
-            "Whisper model",
-            "Larger models trade speed for recognition detail.",
-            SettingsSelectKind::WhisperModel,
-            session,
-        );
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Recognition precision",
-            "Whisper search breadth. Values are clamped between 1 and 16.",
-            session.config.beam_size(),
-            NumericSetting::BeamSize,
-            UiAction::AdjustBeamSize(-1),
-            UiAction::AdjustBeamSize(1),
-        );
-    }
+    spawn_settings_section(
+        parent,
+        font.clone(),
+        theme,
+        if parakeet {
+            "PARAKEET V3 AND COMPATIBILITY FALLBACK"
+        } else {
+            "WHISPER ANALYSIS"
+        },
+        if parakeet {
+            "Parakeet handles supported languages directly. Whisper remains the compatibility fallback for unsupported languages or empty results."
+        } else {
+            "These parameters shape newly generated transcription and word timing."
+        },
+    );
+    spawn_select_setting_row(
+        parent,
+        font.clone(),
+        icons.clone(),
+        theme,
+        if parakeet {
+            "Whisper fallback model"
+        } else {
+            "Whisper model"
+        },
+        if parakeet {
+            "Used only when Parakeet cannot handle the language or returns no words."
+        } else {
+            "Turbo is the balanced default; larger models trade speed for detail."
+        },
+        SettingsSelectKind::WhisperModel,
+        session,
+    );
+    spawn_number_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        if parakeet {
+            "Whisper fallback precision"
+        } else {
+            "Recognition precision"
+        },
+        "Whisper search breadth. Values are clamped between 1 and 16.",
+        session.config.beam_size(),
+        NumericSetting::BeamSize,
+        UiAction::AdjustBeamSize(-1),
+        UiAction::AdjustBeamSize(1),
+    );
     spawn_number_setting_row(
         parent,
         font.clone(),
@@ -7536,8 +7886,12 @@ fn spawn_analysis_settings(
         font.clone(),
         icons.clone(),
         theme,
-        "Word alignment",
-        "Refines transcription output into editable word timings.",
+        if parakeet {
+            "Whisper fallback alignment"
+        } else {
+            "Word alignment"
+        },
+        "Refines Whisper output into editable word timings. Parakeet's direct output skips this step.",
         SettingsSelectKind::AlignBackend,
         session,
     );
@@ -8333,6 +8687,7 @@ fn spawn_select_setting_row(
                 ..default()
             },
             BorderColor::all(theme.border.with_alpha(0.42)),
+            ZIndex(if open { 60 } else { 0 }),
         ))
         .with_children(|row| {
             row.spawn(Node {
@@ -8534,6 +8889,105 @@ fn spawn_setting_row(
                 });
             }
         });
+}
+
+fn spawn_setting_row_with_actions(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    actions: Vec<(String, UiAction)>,
+) {
+    let label = label.into();
+    let description = description.into();
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(92),
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(16)),
+                column_gap: px(32),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    description,
+                    10.0,
+                    theme.muted_foreground,
+                );
+            });
+            spawn_setting_actions(row, font, theme, actions);
+        });
+}
+
+fn spawn_setting_actions(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    actions: Vec<(String, UiAction)>,
+) {
+    parent
+        .spawn(Node {
+            width: px(SETTINGS_CONTROL_WIDTH),
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::FlexEnd,
+            flex_wrap: FlexWrap::Wrap,
+            row_gap: px(8),
+            column_gap: px(8),
+            ..default()
+        })
+        .with_children(|controls| {
+            for (label, action) in actions {
+                spawn_compact_action_button(controls, font.clone(), theme, label, action);
+            }
+        });
+}
+
+fn spawn_compact_action_button(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    action: UiAction,
+) {
+    parent.spawn((
+        Button,
+        action,
+        Node {
+            min_width: px(0),
+            height: px(34),
+            flex_shrink: 0.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::horizontal(px(11)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(6)),
+            ..default()
+        },
+        BackgroundColor(theme.background.with_alpha(0.52)),
+        BorderColor::all(theme.border.with_alpha(0.66)),
+        children![(
+            Text::new(label),
+            TextFont::from(font).with_font_size(9.0),
+            TextColor(theme.foreground),
+            TextLayout::no_wrap(),
+        )],
+    ));
 }
 
 fn spawn_source_file_row(
@@ -8810,13 +9264,16 @@ fn spawn_library_filter_select(
     let current = library_select_value(kind, session);
     let open = session.open_library_select == Some(kind);
     parent
-        .spawn(Node {
-            position_type: PositionType::Relative,
-            width: px(132),
-            height: px(34),
-            flex_shrink: 0.0,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Relative,
+                width: px(132),
+                height: px(34),
+                flex_shrink: 0.0,
+                ..default()
+            },
+            ZIndex(if open { 70 } else { 0 }),
+        ))
         .with_children(|control| {
             control
                 .spawn((
@@ -8940,13 +9397,16 @@ fn spawn_export_all_menu(
 ) {
     let open = session.export_all_open;
     parent
-        .spawn(Node {
-            position_type: PositionType::Relative,
-            width: px(124),
-            height: px(34),
-            flex_shrink: 0.0,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Relative,
+                width: px(124),
+                height: px(34),
+                flex_shrink: 0.0,
+                ..default()
+            },
+            ZIndex(if open { 70 } else { 0 }),
+        ))
         .with_children(|control| {
             control
                 .spawn((
@@ -9061,6 +9521,164 @@ fn spawn_export_all_menu(
                         }
                     });
             }
+        });
+}
+
+fn spawn_library_collection(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    session: &StudioSession,
+    theme: &StudioTheme,
+) {
+    let artists = session.library_view == LibraryView::Artists;
+    let (title, description, icon, items) = if artists {
+        (
+            "Artists",
+            "Browse artists in the main workspace. The sidebar remains a quiet navigation surface.",
+            UiIcon::Artists,
+            &session.menu_items.artists,
+        )
+    } else {
+        (
+            "Albums",
+            "Browse albums in the main workspace. Choose one to see all matching tracks.",
+            UiIcon::Albums,
+            &session.menu_items.albums,
+        )
+    };
+    parent
+        .spawn(Node {
+            min_height: px(0),
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Column,
+            ..default()
+        })
+        .with_children(|page| {
+            page.spawn((
+                Node {
+                    width: percent(100),
+                    padding: UiRect::axes(px(28), px(24)),
+                    flex_direction: FlexDirection::Column,
+                    border: UiRect::bottom(px(1)),
+                    ..default()
+                },
+                BorderColor::all(theme.border.with_alpha(0.55)),
+            ))
+            .with_children(|header| {
+                spawn_text(header, font.clone(), "MY LIBRARY", 9.0, theme.primary);
+                spawn_text(header, font.clone(), title, 34.0, theme.foreground);
+                spawn_wrapped_text(
+                    header,
+                    font.clone(),
+                    format!("{description} · {} total", items.len()),
+                    11.0,
+                    theme.muted_foreground,
+                );
+            });
+            page.spawn((
+                LibrarySongList,
+                ScrollPosition::default(),
+                Node {
+                    min_height: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    align_content: AlignContent::FlexStart,
+                    padding: UiRect::all(px(22)),
+                    row_gap: px(12),
+                    column_gap: px(12),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                },
+            ))
+            .with_children(|list| {
+                for item in items {
+                    let facet = if artists {
+                        LibraryFacet::Artist {
+                            value: item.value.clone(),
+                            label: item.label.clone(),
+                        }
+                    } else {
+                        LibraryFacet::Album {
+                            value: item.value.clone(),
+                            label: item.label.clone(),
+                        }
+                    };
+                    list.spawn((
+                        Button,
+                        UiAction::SetLibraryFacet(facet),
+                        Node {
+                            width: px(230),
+                            min_height: px(72),
+                            align_items: AlignItems::Center,
+                            padding: UiRect::all(px(12)),
+                            column_gap: px(11),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(6)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.card.with_alpha(0.36)),
+                        BorderColor::all(theme.border.with_alpha(0.42)),
+                    ))
+                    .with_children(|card| {
+                        card.spawn((
+                            Node {
+                                width: px(38),
+                                height: px(38),
+                                flex_shrink: 0.0,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(theme.primary.with_alpha(0.09)),
+                        ))
+                        .with_children(|mark| {
+                            spawn_icon(mark, icons.clone(), icon, 17.0, theme.primary);
+                        });
+                        card.spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            copy.spawn((
+                                Text::new(item.label.clone()),
+                                TextFont::from(font.clone()).with_font_size(12.0),
+                                TextColor(theme.foreground),
+                                TextLayout::no_wrap(),
+                            ));
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                format!(
+                                    "{} track{}",
+                                    item.count,
+                                    if item.count == 1 { "" } else { "s" }
+                                ),
+                                9.0,
+                                theme.muted_foreground,
+                            );
+                        });
+                    });
+                }
+                if items.is_empty() {
+                    spawn_wrapped_text(
+                        list,
+                        font,
+                        if artists {
+                            "No artist metadata is available yet."
+                        } else {
+                            "No album metadata is available yet."
+                        },
+                        11.0,
+                        theme.muted_foreground,
+                    );
+                }
+            });
         });
 }
 
@@ -9188,35 +9806,45 @@ fn spawn_library(
                                 session,
                             );
                             if app_core::analysis_runtime_status().ready {
-                                spawn_text_button(
+                                spawn_toolbar_button(
                                     tools,
                                     font.clone(),
+                                    icons.clone(),
                                     theme,
+                                    UiIcon::Sparkles,
                                     "Analyze all",
-                                    10.0,
                                     UiAction::AnalyzeAll,
+                                    false,
                                 );
                             } else {
-                                spawn_text_button(
+                                spawn_toolbar_button(
                                     tools,
                                     font.clone(),
+                                    icons.clone(),
                                     theme,
+                                    UiIcon::Repair,
                                     "Set up analysis",
-                                    10.0,
                                     UiAction::SettingsTab(SettingsTab::Models),
+                                    false,
                                 );
                             }
-                            spawn_text_button(
+                            spawn_toolbar_button(
                                 tools,
                                 font.clone(),
+                                icons.clone(),
                                 theme,
+                                if session.config.song_list_view.as_deref() == Some("grid") {
+                                    UiIcon::List
+                                } else {
+                                    UiIcon::Grid
+                                },
                                 if session.config.song_list_view.as_deref() == Some("grid") {
                                     "Table view"
                                 } else {
                                     "Grid view"
                                 },
-                                10.0,
                                 UiAction::ToggleLibraryLayout,
+                                false,
                             );
                         });
                 });
@@ -9345,7 +9973,7 @@ fn spawn_song_context_menu(
         ZIndex(40),
     ));
     let left = (context.position.x - SIDEBAR_WIDTH - 14.0).max(8.0);
-    let top = (context.position.y - TITLE_BAR_HEIGHT - 58.0).max(8.0);
+    let top = (context.position.y - 58.0).max(8.0);
     parent
         .spawn((
             Node {
@@ -9820,6 +10448,44 @@ fn spawn_text(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_window_close_requests(
+    mut requests: MessageReader<bevy::window::WindowCloseRequested>,
+    mut commands: Commands,
+    audio: Res<NativeAudio>,
+    library_audio: Res<NativeLibraryAudio>,
+    mut session: ResMut<StudioSession>,
+    setup: Res<NativeSetup>,
+    diagnostics: Res<NativeDiagnostics>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    let Some(request) = requests.read().next() else {
+        return;
+    };
+    let has_unsaved_edits = session.editor.as_ref().is_some_and(|editor| editor.dirty);
+    let background_work = session.scanning
+        || session.authoring_busy
+        || setup.receiver.is_some()
+        || diagnostics.receiver.is_some()
+        || session.export_job.receiver.is_some()
+        || session.editor_load_job.receiver.is_some()
+        || session.lyrics_search_job.receiver.is_some()
+        || session.analysis_tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
+            )
+        });
+    if has_unsaved_edits || background_work {
+        session.pending_leave = Some(PendingLeave::Exit);
+        invalidated.0 = true;
+    } else {
+        let _ = audio.0.stop();
+        let _ = library_audio.0.stop();
+        commands.entity(request.window).despawn();
+    }
+}
+
 // Keeping these as separate Bevy system parameters preserves change detection.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_actions(
@@ -9855,7 +10521,6 @@ fn handle_actions(
             continue;
         };
         match action {
-            UiAction::DragWindow => window.start_drag_move(),
             UiAction::ToggleGlobalSearch => {
                 session.search_open = !session.search_open;
                 session.activity_open = false;
@@ -9882,31 +10547,6 @@ fn handle_actions(
             UiAction::CloseAbout => {
                 session.about_open = false;
                 invalidated.0 = true;
-            }
-            UiAction::Close => {
-                bevy::log::info!("Window close requested from the native title bar");
-                let has_unsaved_edits = session.editor.as_ref().is_some_and(|editor| editor.dirty);
-                let background_work = session.scanning
-                    || session.authoring_busy
-                    || setup.receiver.is_some()
-                    || diagnostics.receiver.is_some()
-                    || session.export_job.receiver.is_some()
-                    || session.editor_load_job.receiver.is_some()
-                    || session.lyrics_search_job.receiver.is_some()
-                    || session.analysis_tasks.iter().any(|task| {
-                        matches!(
-                            task.status,
-                            app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
-                        )
-                    });
-                if has_unsaved_edits || background_work {
-                    session.pending_leave = Some(PendingLeave::Exit);
-                    invalidated.0 = true;
-                } else {
-                    let _ = audio.0.stop();
-                    let _ = library_audio.0.stop();
-                    commands.entity(window_entity).despawn();
-                }
             }
             UiAction::Back => {
                 session.open_settings_select = None;
@@ -10480,6 +11120,9 @@ fn handle_actions(
             }
             UiAction::OpenEditor(file_hash) => {
                 session.song_context = None;
+                session.selected_song = Some(file_hash.clone());
+                session.editor = None;
+                session.route = StudioRoute::Editor;
                 if session.library_playback.status.playing
                     && let Ok(status) = library_audio.0.pause()
                 {
@@ -11555,21 +12198,48 @@ fn handle_actions(
 }
 
 fn update_button_visuals(
+    mut commands: Commands,
     theme: Res<StudioTheme>,
-    mut buttons: Query<(&Interaction, &UiAction, &mut BackgroundColor), Changed<Interaction>>,
+    mut buttons: Query<
+        (
+            Entity,
+            &Interaction,
+            &UiAction,
+            &mut BackgroundColor,
+            Option<&RestingButtonBackground>,
+        ),
+        Or<(Added<Button>, Changed<Interaction>)>,
+    >,
 ) {
-    for (interaction, action, mut background) in &mut buttons {
-        *background = match interaction {
-            Interaction::Pressed => BackgroundColor(theme.sidebar_accent.with_alpha(0.72)),
-            Interaction::Hovered => match action {
-                UiAction::Close => BackgroundColor(theme.destructive.with_alpha(0.15)),
-                _ => BackgroundColor(theme.sidebar_accent.with_alpha(0.48)),
-            },
-            Interaction::None => match action {
-                UiAction::ChooseFolder => BackgroundColor(theme.primary),
-                _ => BackgroundColor(Color::NONE),
-            },
-        };
+    for (entity, interaction, action, mut background, resting) in &mut buttons {
+        let has_recorded_background = resting.is_some();
+        let resting = resting.map_or(background.0, |resting| resting.0);
+        if !has_recorded_background {
+            commands
+                .entity(entity)
+                .insert(RestingButtonBackground(resting));
+        }
+        background.0 = button_background(action, *interaction, resting, &theme);
+    }
+}
+
+fn button_background(
+    action: &UiAction,
+    interaction: Interaction,
+    resting: Color,
+    theme: &StudioTheme,
+) -> Color {
+    // Full-surface dismiss targets are intentionally invisible controls. A
+    // hover highlight here reads as if the obscured page itself was selected.
+    if matches!(action, UiAction::CloseActivity) {
+        return resting;
+    }
+    match interaction {
+        Interaction::None => resting,
+        Interaction::Hovered if resting == Color::NONE => theme.sidebar_accent.with_alpha(0.48),
+        Interaction::Pressed if resting == Color::NONE => theme.sidebar_accent.with_alpha(0.72),
+        Interaction::Hovered => resting.mix(&theme.foreground, 0.06),
+        Interaction::Pressed => resting.mix(&theme.foreground, 0.12),
     }
 }
 
@@ -12126,9 +12796,12 @@ fn poll_editor_load_job(
     match result {
         Ok(editor) => {
             bevy::log::info!("Switching the native UI to the loaded chart editor");
+            let audio_notice = editor.audio_status.error.as_ref().map(|error| {
+                format!("Chart editing is available, but native audio is unavailable: {error}")
+            });
             session.editor = Some(editor);
             session.route = StudioRoute::Editor;
-            session.notice = None;
+            session.notice = audio_notice;
         }
         Err(error) => session.notice = Some(error),
     }
@@ -12226,13 +12899,26 @@ fn load_native_editor(
 ) -> Result<NativeEditor, String> {
     bevy::log::info!("Loading chart for the native editor");
     let chart = app_core::load_chart(file_hash).map_err(|error| error.to_string())?;
-    bevy::log::info!("Preparing native editor audio");
-    let status = audio.load(file_hash, "instrumental")?;
-    bevy::log::info!("Decoding the bounded editor waveform");
+    bevy::log::info!("Decoding the bounded editor waveform while playback is stopped");
     let waveform = app_core::decode_chart_waveform(std::path::Path::new(&chart.audio.instrumental))
         .unwrap_or_default();
+    bevy::log::info!("Preparing native editor audio");
+    // Authoring does not depend on playback initialization. Keep the native
+    // audio error on the editor status so transport can explain the problem,
+    // while still allowing the chart and decoded waveform to be edited.
+    let status =
+        editor_audio_status(audio.load_path(std::path::Path::new(&chart.audio.instrumental)));
     bevy::log::info!("Native editor is ready");
     Ok(NativeEditor::new(chart, status, waveform, "instrumental"))
+}
+
+fn editor_audio_status(
+    result: Result<uta_studio_audio::EditorAudioStatus, String>,
+) -> uta_studio_audio::EditorAudioStatus {
+    result.unwrap_or_else(|error| uta_studio_audio::EditorAudioStatus {
+        error: Some(error),
+        ..default()
+    })
 }
 
 fn toggle_editor_playback(
@@ -12281,6 +12967,9 @@ fn play_library_song(
     audio.load_path(&song.path)?;
     audio.set_volume(playback.volume)?;
     let status = audio.play()?;
+    if let Some(error) = status.error.as_ref() {
+        return Err(format!("Could not play the original source: {error}"));
+    }
     playback.file_hash = Some(file_hash.to_string());
     playback.queue_index = playback.queue.iter().position(|hash| hash == file_hash);
     playback.visible_position = status.position_secs;
@@ -14832,6 +15521,9 @@ fn sync_editor_audio(
         if timer.0.tick(time.delta()).just_finished() {
             match audio.0.status() {
                 Ok(status) => {
+                    if let Some(error) = status.error.clone() {
+                        status_error = Some(format!("Editor audio stopped: {error}"));
+                    }
                     editor.visible_position = status.position_secs;
                     editor.audio_status = status;
                     editor.last_audio_sync = Instant::now();
@@ -14878,6 +15570,10 @@ fn sync_library_audio(
         let had_ended = session.library_playback.status.ended;
         match audio.0.status() {
             Ok(status) => {
+                if let Some(error) = status.error.clone() {
+                    session.notice = Some(format!("Library playback stopped: {error}"));
+                    invalidated.0 = true;
+                }
                 session.library_playback.visible_position = status.position_secs;
                 session.library_playback.status = status;
                 session.library_playback.last_audio_sync = Instant::now();
@@ -14958,14 +15654,18 @@ fn update_library_player_ui(
 
 fn validate_source_path(path: &std::path::Path, config: &AppConfig) -> Result<PathBuf, String> {
     let requested = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
-    let allowed = config.library_paths().iter().any(|root| {
+    let mut allowed_roots = config.library_paths();
+    if let Some(export_path) = config.export_path.as_ref() {
+        allowed_roots.push(export_path.clone());
+    }
+    let allowed = allowed_roots.iter().any(|root| {
         std::fs::canonicalize(root)
             .map(|root| requested.starts_with(root))
             .unwrap_or(false)
     });
     allowed
         .then_some(requested)
-        .ok_or_else(|| "Path is outside the configured library".to_string())
+        .ok_or_else(|| "Path is outside configured library and output locations".to_string())
 }
 
 fn open_library_entry(path: &std::path::Path, config: &AppConfig) -> String {
@@ -15202,7 +15902,7 @@ mod tests {
         assert_eq!(window.title, "Uta Studio");
         assert_eq!(window.width(), 1280.0);
         assert_eq!(window.height(), 720.0);
-        assert!(!window.decorations);
+        assert!(window.decorations);
         assert!(!window.transparent);
         assert_eq!(window.window_theme, Some(WindowTheme::Dark));
     }
@@ -15212,6 +15912,46 @@ mod tests {
         assert_eq!(format_duration(0.0), "0:00");
         assert_eq!(format_duration(65.2), "1:05");
         assert_eq!(format_duration(f64::NAN), "0:00");
+    }
+
+    #[test]
+    fn button_feedback_preserves_authored_surfaces_and_activity_backdrop() {
+        let theme = StudioTheme::new(false);
+        let resting = theme.card.with_alpha(0.46);
+        assert_eq!(
+            button_background(
+                &UiAction::ToggleLibraryLayout,
+                Interaction::None,
+                resting,
+                &theme,
+            ),
+            resting
+        );
+        assert_ne!(
+            button_background(
+                &UiAction::ToggleLibraryLayout,
+                Interaction::Hovered,
+                resting,
+                &theme,
+            ),
+            Color::NONE
+        );
+        assert_eq!(
+            button_background(
+                &UiAction::CloseActivity,
+                Interaction::Hovered,
+                theme.background.with_alpha(0.54),
+                &theme,
+            ),
+            theme.background.with_alpha(0.54)
+        );
+    }
+
+    #[test]
+    fn editor_audio_failure_does_not_block_chart_authoring() {
+        let status = editor_audio_status(Err("missing typefind".to_string()));
+        assert!(!status.loaded);
+        assert_eq!(status.error.as_deref(), Some("missing typefind"));
     }
 
     #[test]

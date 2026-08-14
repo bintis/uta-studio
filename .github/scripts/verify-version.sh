@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Verifies the given version string matches the version declared in:
-#   - client/src-tauri/tauri.conf.json
-#   - client/src-tauri/Cargo.toml
-#   - client/package.json
+# Verifies the given version string matches every Uta Studio workspace crate.
 #
 # Exits non-zero with a GitHub Actions error annotation on any mismatch.
 #
@@ -15,16 +12,21 @@ if [ $# -ne 1 ]; then
 fi
 
 TAG_VERSION="$1"
-TAURI_VERSION=$(jq -r '.version' client/src-tauri/tauri.conf.json)
-CARGO_VERSION=$(awk -F'"' '/^version *= *"/ { print $2; exit }' client/src-tauri/Cargo.toml)
-PKG_VERSION=$(jq -r '.version' client/package.json)
+MANIFESTS=(
+  app-core/Cargo.toml
+  desktop/Cargo.toml
+  native-audio/Cargo.toml
+  studio-diagnostics/Cargo.toml
+  utz-export/Cargo.toml
+  xtask/Cargo.toml
+)
 
-printf 'tag:    %s\ntauri:  %s\ncargo:  %s\npkg:    %s\n' \
-  "$TAG_VERSION" "$TAURI_VERSION" "$CARGO_VERSION" "$PKG_VERSION"
-
-if [ "$TAG_VERSION" != "$TAURI_VERSION" ] \
-  || [ "$TAG_VERSION" != "$CARGO_VERSION" ] \
-  || [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-  echo "::error::Tag $TAG_VERSION does not match all manifest versions. Bump tauri.conf.json, Cargo.toml, and package.json, then re-tag."
-  exit 1
-fi
+printf 'tag: %s\n' "$TAG_VERSION"
+for manifest in "${MANIFESTS[@]}"; do
+  manifest_version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' "$manifest")
+  printf '%s: %s\n' "$manifest" "$manifest_version"
+  if [ "$TAG_VERSION" != "$manifest_version" ]; then
+    echo "::error::Tag $TAG_VERSION does not match $manifest ($manifest_version)."
+    exit 1
+  fi
+done

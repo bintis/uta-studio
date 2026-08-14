@@ -149,6 +149,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Reveal media in the OS file manager"
     ),
     capability!(
+        "storage",
+        "open_export_folder",
+        "external",
+        false,
+        "Open the configured export folder with the OS"
+    ),
+    capability!(
         "library",
         "clear_library_source",
         "destructive",

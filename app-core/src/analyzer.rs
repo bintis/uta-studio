@@ -4,7 +4,7 @@ use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,51 @@ fn drain_lines_to_log<R: BufRead + Send + 'static>(mut reader: R, label: &'stati
     });
 }
 
+fn drain_lines_to_log_and_capture<R: BufRead + Send + 'static>(
+    mut reader: R,
+    label: &'static str,
+    captured: Arc<Mutex<VecDeque<String>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {
+                    let trimmed = line.trim_end();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    info!("[analyzer {label}] {trimmed}");
+                    if let Ok(mut lines) = captured.lock() {
+                        if lines.len() == 24 {
+                            lines.pop_front();
+                        }
+                        lines.push_back(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn analyzer_startup_error(
+    error: UtaStudioError,
+    captured: &Arc<Mutex<VecDeque<String>>>,
+) -> UtaStudioError {
+    let details = captured
+        .lock()
+        .ok()
+        .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    if details.is_empty() {
+        error
+    } else {
+        UtaStudioError::Other(format!("{error}\nAnalyzer startup stderr:\n{details}"))
+    }
+}
+
 fn read_ready_handshake<R: BufRead>(reader: &mut R) -> Result<ReadyHandshake, UtaStudioError> {
     let mut line = String::new();
     loop {
@@ -290,6 +335,23 @@ fn spawn_server() -> Result<ServerProcess, UtaStudioError> {
     SERVER_PID.store(pid, Ordering::SeqCst);
     info!("[analyzer] Server process spawned (pid={pid})");
 
+    let startup_stderr = Arc::new(Mutex::new(VecDeque::new()));
+    let stderr_drain = match child.stderr.take() {
+        Some(stderr) => drain_lines_to_log_and_capture(
+            BufReader::new(stderr),
+            "stderr",
+            Arc::clone(&startup_stderr),
+        ),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            SERVER_PID.store(0, Ordering::SeqCst);
+            return Err(UtaStudioError::Other(
+                "Failed to capture server stderr".into(),
+            ));
+        }
+    };
+
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
@@ -308,8 +370,9 @@ fn spawn_server() -> Result<ServerProcess, UtaStudioError> {
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stderr_drain.join();
             SERVER_PID.store(0, Ordering::SeqCst);
-            return Err(e);
+            return Err(analyzer_startup_error(e, &startup_stderr));
         }
     };
     if let Some(device) = handshake.device.as_deref() {
@@ -326,15 +389,14 @@ fn spawn_server() -> Result<ServerProcess, UtaStudioError> {
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stderr_drain.join();
             SERVER_PID.store(0, Ordering::SeqCst);
-            return Err(e);
+            return Err(analyzer_startup_error(e, &startup_stderr));
         }
     };
 
     drain_lines_to_log(stdout_reader, "stdout");
-    if let Some(stderr) = child.stderr.take() {
-        drain_lines_to_log(BufReader::new(stderr), "stderr");
-    }
+    drop(stderr_drain);
 
     Ok(ServerProcess {
         child,
@@ -465,6 +527,13 @@ pub fn enqueue_one(file_hash: &str) {
     ensure_worker_running(&mut state);
 }
 
+fn queue_entry_blocks_enqueue(status: Option<&QueuedStatus>) -> bool {
+    matches!(
+        status,
+        Some(QueuedStatus::Queued | QueuedStatus::Analyzing(_))
+    )
+}
+
 pub fn enqueue_all(filters: &LibraryMenuFilters) {
     let queue = AnalysisQueue::load();
     let mut state = ANALYZER.lock().unwrap();
@@ -474,8 +543,10 @@ pub fn enqueue_all(filters: &LibraryMenuFilters) {
 
     let mut newly_queued = Vec::new();
     for file_hash in pending_hashes {
-        let dominated = !queue.entries.contains_key(&file_hash);
-        if dominated
+        // A failed row is history, not active work. "Analyze all" must be able
+        // to retry it without asking the user to clear the activity log.
+        let blocked_by_active_entry = queue_entry_blocks_enqueue(queue.entries.get(&file_hash));
+        if !blocked_by_active_entry
             && state.active_hash.as_deref() != Some(&file_hash)
             && !state.queue.iter().any(|h| h == &file_hash)
         {
@@ -496,6 +567,41 @@ pub fn enqueue_all(filters: &LibraryMenuFilters) {
 
     if should_start {
         spawn_worker();
+    }
+}
+
+#[cfg(test)]
+mod enqueue_tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{QueuedStatus, queue_entry_blocks_enqueue, validate_analysis_source};
+
+    #[test]
+    fn analyze_all_retries_failed_entries_but_not_active_work() {
+        assert!(!queue_entry_blocks_enqueue(None));
+        assert!(!queue_entry_blocks_enqueue(Some(&QueuedStatus::Failed(
+            "previous failure".into()
+        ))));
+        assert!(queue_entry_blocks_enqueue(Some(&QueuedStatus::Queued)));
+        assert!(queue_entry_blocks_enqueue(Some(&QueuedStatus::Analyzing(
+            42
+        ))));
+    }
+
+    #[test]
+    fn empty_analysis_source_is_rejected_before_server_start() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-empty-analysis-source-{}-{nonce}.flac",
+            std::process::id()
+        ));
+        std::fs::File::create(&path).expect("create empty source fixture");
+        let error = validate_analysis_source(&path).expect_err("empty source must be rejected");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.to_string().contains("source media is empty"));
     }
 }
 
@@ -980,10 +1086,28 @@ fn run_key_pass(
 
 // ─── Local audio preparation ─────────────────────────────────────────
 
+fn validate_analysis_source(path: &Path) -> Result<(), UtaStudioError> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(UtaStudioError::Other(format!(
+            "source media is not a file: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() == 0 {
+        return Err(UtaStudioError::Other(format!(
+            "source media is empty: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn prepare_audio_for_analysis(
     song: &Song,
     _cache: &CacheDir,
 ) -> Result<(Song, PathBuf, String), UtaStudioError> {
+    validate_analysis_source(&song.path)?;
     Ok((song.clone(), song.path.clone(), song.file_hash.clone()))
 }
 

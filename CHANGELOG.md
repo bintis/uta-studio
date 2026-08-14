@@ -13,6 +13,10 @@ Native desktop refactor and authoring-workflow restoration.
 - Added a Roon-inspired library transport with queue, previous/next, shuffle,
   repeat, seeking, volume, and unchanged-source playback.
 - Added collision-safe batch export for every authoring-ready chart.
+- Added a GitHub Actions release workflow that publishes a self-contained
+  x86_64 Linux binary, DEB and RPM packages, plus a Windows x86_64 ZIP.
+- The Windows build provides the native Bevy authoring UI, but editor audio
+  audition remains Linux-only in 0.2.0.
 - Improved narrow-window wrapping, card/side-navigation clipping, title-bar
   integration, canonical branding, and light/dark visual hierarchy.
 

@@ -41,7 +41,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
 icu_provider = { version = "=2.2.0", features = ["logging"] }
 open = "=5.3.3"
 # Use the Wayland XDG portal directly; no GTK or X11 file picker backend.
-rfd = { version = "=0.15.4", default-features = false, features = ["async-std", "xdg-portal"] }
+rfd = { version = "=0.15.4", default-features = false, features = ["async-std", "common-controls-v6", "xdg-portal"] }
 serde_json = "1"
 uta-studio-audio = { path = "../native-audio" }
 uta-studio-diagnostics = { path = "../studio-diagnostics" }

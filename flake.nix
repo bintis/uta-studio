@@ -31,6 +31,12 @@
             gst-plugins-ugly
             gst-libav
           ];
+          # GStreamer is a multi-output package. The default package path can
+          # resolve to its `bin` output, which contains gst-inspect but not the
+          # coreelements plugin that provides typefind. Always build the
+          # runtime search path from each package's library output.
+          gstPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0"
+            (map pkgs.lib.getLib gstPlugins);
           runtimeLibraries = with pkgs; [
             stdenv.cc.cc
             zlib
@@ -83,7 +89,7 @@
                 --set UTA_STUDIO_UV_PATH ${pkgs.uv}/bin/uv \
                 --set UTA_STUDIO_PYTHON_PATH ${pkgs.python311}/bin/python3.11 \
                 --set WINIT_UNIX_BACKEND wayland \
-                --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${pkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstPlugins}" \
+                --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${gstPluginPath}" \
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libxkbcommon pkgs.vulkan-loader ])}" \
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
               runHook postInstall
@@ -107,6 +113,8 @@
             gst-plugins-ugly
             gst-libav
           ];
+          gstPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0"
+            (map pkgs.lib.getLib gstPlugins);
           runtimeLibraries = with pkgs; [
             stdenv.cc.cc
             zlib
@@ -120,7 +128,7 @@
               export UTA_STUDIO_UV_PATH="${pkgs.uv}/bin/uv"
               export UTA_STUDIO_PYTHON_PATH="${pkgs.python311}/bin/python3.11"
               export WINIT_UNIX_BACKEND=wayland
-              export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstPlugins}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"
+              export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libxkbcommon pkgs.vulkan-loader ])}:/run/opengl-driver/lib:''${LD_LIBRARY_PATH:-}"
             '';
           };

@@ -184,10 +184,16 @@ mod linux {
     use super::EditorAudioStatus;
 
     pub fn required_plugins_error() -> Option<String> {
-        let missing = ["playbin", "decodebin", "typefind"]
+        let mut missing = ["playbin", "decodebin", "typefind"]
             .into_iter()
             .filter(|name| gst::ElementFactory::find(name).is_none())
             .collect::<Vec<_>>();
+        if ["pipewiresink", "pulsesink", "autoaudiosink"]
+            .into_iter()
+            .all(|name| gst::ElementFactory::find(name).is_none())
+        {
+            missing.push("audio output sink");
+        }
         (!missing.is_empty()).then(|| {
             format!(
                 "Native audio is missing required GStreamer plugins: {}. Reinstall or relaunch the packaged Uta Studio runtime.",
@@ -218,14 +224,20 @@ mod linux {
                 .build()
                 .map_err(|error| format!("Could not create native audio player: {error}"))?;
 
-            // PulseAudio's PipeWire compatibility sink is stable across common
-            // Wayland compositors. A generous local buffer keeps UI/compositor
-            // activity from starving playback.
-            if let Ok(sink) = gst::ElementFactory::make("pulsesink")
-                .property("buffer-time", 250_000i64)
-                .property("latency-time", 25_000i64)
+            // Uta Studio is Wayland-only, so use PipeWire directly when it is
+            // available. Pulse compatibility and GStreamer's automatic sink
+            // remain safe fallbacks for packaged environments with a smaller
+            // plugin set.
+            let sink = gst::ElementFactory::make("pipewiresink")
                 .build()
-            {
+                .or_else(|_| {
+                    gst::ElementFactory::make("pulsesink")
+                        .property("buffer-time", 250_000i64)
+                        .property("latency-time", 25_000i64)
+                        .build()
+                })
+                .or_else(|_| gst::ElementFactory::make("autoaudiosink").build());
+            if let Ok(sink) = sink {
                 player.set_property("audio-sink", sink);
             }
 

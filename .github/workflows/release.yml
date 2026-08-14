@@ -1,0 +1,175 @@
+name: Package release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package-linux:
+    name: Package Linux binary, DEB and RPM
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Read and verify version
+        id: version
+        shell: bash
+        run: |
+          version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' desktop/Cargo.toml)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            .github/scripts/verify-version.sh "$tag_version"
+            version="$tag_version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build packaged application
+        run: nix build path:.#uta-studio --print-build-logs
+
+      - name: Build self-contained executable
+        shell: bash
+        run: |
+          artifact="uta-studio-${{ steps.version.outputs.version }}-x86_64-linux"
+          nix bundle \
+            --bundler github:NixOS/bundlers#toArx \
+            path:.#uta-studio \
+            --out-link "$artifact"
+          cp --dereference "$artifact" "${artifact}.bin"
+          chmod 0755 "${artifact}.bin"
+
+      - name: Build DEB and RPM packages
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          bundle="uta-studio-${version}-x86_64-linux.bin"
+          root="$RUNNER_TEMP/uta-studio-package"
+          install -Dm755 "$bundle" "$root/usr/bin/uta-studio"
+          install -Dm644 desktop/uta-studio.desktop \
+            "$root/usr/share/applications/uta-studio.desktop"
+          install -Dm644 icon.png \
+            "$root/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
+
+          common=(
+            -s dir
+            -n uta-studio
+            -v "$version"
+            --iteration 1
+            --license GPL-3.0-only
+            --description "AI-assisted song chart editor with UTZ and UltraStar export"
+            --url "https://github.com/${GITHUB_REPOSITORY}"
+            -C "$root"
+          )
+          nix shell nixpkgs#fpm -c fpm "${common[@]}" \
+            -t deb -a amd64 \
+            -p "uta-studio_${version}-1_amd64.deb" .
+          nix shell nixpkgs#fpm -c fpm "${common[@]}" \
+            -t rpm -a x86_64 \
+            -p "uta-studio-${version}-1.x86_64.rpm" .
+          sha256sum \
+            "$bundle" \
+            "uta-studio_${version}-1_amd64.deb" \
+            "uta-studio-${version}-1.x86_64.rpm" \
+            > "uta-studio-${version}-linux.sha256"
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: uta-studio-${{ steps.version.outputs.version }}-linux-packages
+          path: |
+            uta-studio-${{ steps.version.outputs.version }}-x86_64-linux.bin
+            uta-studio_${{ steps.version.outputs.version }}-1_amd64.deb
+            uta-studio-${{ steps.version.outputs.version }}-1.x86_64.rpm
+            uta-studio-${{ steps.version.outputs.version }}-linux.sha256
+          if-no-files-found: error
+
+  package-windows:
+    name: Package Windows x86_64
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read and verify version
+        id: version
+        shell: bash
+        run: |
+          version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' desktop/Cargo.toml)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            .github/scripts/verify-version.sh "$tag_version"
+            version="$tag_version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows executable
+        run: cargo build --release --locked -p uta-studio-desktop
+
+      - name: Assemble portable ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $root = Join-Path $env:RUNNER_TEMP "uta-studio-$version-windows"
+          New-Item -ItemType Directory -Force "$root/bin" | Out-Null
+          New-Item -ItemType Directory -Force "$root/share/uta-studio/desktop/assets/fonts" | Out-Null
+          New-Item -ItemType Directory -Force "$root/share/uta-studio/desktop/assets/icons" | Out-Null
+          Copy-Item target/release/uta-studio.exe "$root/bin/uta-studio.exe"
+          Copy-Item icon.png "$root/share/uta-studio/icon.png"
+          Copy-Item desktop/assets/fonts/NotoSansCJKsc-Regular.otf "$root/share/uta-studio/desktop/assets/fonts/"
+          Copy-Item desktop/assets/icons/ui-icons.svg "$root/share/uta-studio/desktop/assets/icons/"
+          Copy-Item desktop/assets/icons/ui-icons.png "$root/share/uta-studio/desktop/assets/icons/"
+          Compress-Archive -Path "$root/*" -DestinationPath "uta-studio-$version-x86_64-windows.zip"
+          $hash = (Get-FileHash "uta-studio-$version-x86_64-windows.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  uta-studio-$version-x86_64-windows.zip" |
+            Set-Content -NoNewline "uta-studio-$version-windows.sha256"
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: uta-studio-${{ steps.version.outputs.version }}-windows-package
+          path: |
+            uta-studio-${{ steps.version.outputs.version }}-x86_64-windows.zip
+            uta-studio-${{ steps.version.outputs.version }}-windows.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release
+    if: github.ref_type == 'tag'
+    needs:
+      - package-linux
+      - package-windows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download release packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: uta-studio-*-package*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          .github/scripts/extract-changelog-notes.sh "$version" release-notes.md
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: release-notes.md
+          files: release-assets/*
+          fail_on_unmatched_files: true

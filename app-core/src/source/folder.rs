@@ -21,6 +21,14 @@ use super::{MediaSource, SCAN_BATCH_SIZE, ScanContext, flush_batch};
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac", "wma"];
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "webm", "mov", "m4v"];
 
+fn configured_browse_roots(config: &crate::config::AppConfig) -> Vec<PathBuf> {
+    let mut roots = config.library_paths();
+    if let Some(export_path) = config.export_path.as_ref() {
+        roots.push(export_path.clone());
+    }
+    roots
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct LibraryFolderEntry {
@@ -33,14 +41,15 @@ pub struct LibraryFolderEntry {
 pub fn list_library_folder(path: &Path) -> Result<Vec<LibraryFolderEntry>, UtaStudioError> {
     let config = crate::config::AppConfig::load();
     let requested = std::fs::canonicalize(path)?;
-    let allowed = config.library_paths().iter().any(|root| {
+    let allowed_roots = configured_browse_roots(&config);
+    let allowed = allowed_roots.iter().any(|root| {
         std::fs::canonicalize(root)
             .map(|root| requested.starts_with(root))
             .unwrap_or(false)
     });
     if !allowed {
         return Err(UtaStudioError::Other(
-            "folder is outside the configured library".into(),
+            "folder is outside the configured library and output locations".into(),
         ));
     }
 
@@ -83,6 +92,29 @@ pub fn list_library_folder(path: &Path) -> Result<Vec<LibraryFolderEntry>, UtaSt
             .cmp(&(right.kind != "folder", right.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+#[cfg(test)]
+mod browse_root_tests {
+    use super::configured_browse_roots;
+    use crate::{AppConfig, LibrarySource};
+    use std::path::PathBuf;
+
+    #[test]
+    fn configured_output_folder_is_an_authorized_browse_root() {
+        let watched = PathBuf::from("/library");
+        let output = PathBuf::from("/exports");
+        let config = AppConfig {
+            library_source: Some(LibrarySource::Folders {
+                paths: vec![watched.clone()],
+            }),
+            export_path: Some(output.clone()),
+            ..AppConfig::default()
+        };
+
+        let roots = configured_browse_roots(&config);
+        assert_eq!(roots, vec![watched, output]);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
