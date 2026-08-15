@@ -8,6 +8,10 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
+mod pitch;
+
+pub use pitch::{PitchAudition, PitchTone, render_pitch_preview};
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct EditorAudioStatus {
     pub loaded: bool,

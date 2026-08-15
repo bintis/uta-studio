@@ -138,6 +138,7 @@ pub(crate) fn sync_editor_audio(
     time: Res<Time>,
     mut timer: ResMut<EditorAudioSyncTimer>,
     audio: Res<NativeAudio>,
+    tones: Res<NativePitchAudition>,
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
@@ -145,6 +146,7 @@ pub(crate) fn sync_editor_audio(
         return;
     }
     let mut status_error = None;
+    let mut audition_finished = false;
     {
         let Some(editor) = session.editor.as_mut() else {
             return;
@@ -172,6 +174,15 @@ pub(crate) fn sync_editor_audio(
             );
         }
 
+        // A ranged audition ends where the user asked it to, not at the end
+        // of the song.
+        if let Some(until) = editor.audition_until
+            && editor.visible_position >= until
+        {
+            editor.audition_until = None;
+            audition_finished = true;
+        }
+
         if editor.audio_status.playing
             && Instant::now() >= editor.manual_scroll_until
             && editor.visible_position >= editor.viewport_start + editor.viewport_duration * 0.82
@@ -180,6 +191,17 @@ pub(crate) fn sync_editor_audio(
                 (editor.visible_position - editor.viewport_duration * 0.28).max(0.0);
             invalidated.0 = true;
         }
+    }
+    if audition_finished {
+        tones.0.stop();
+        if let Ok(status) = audio.0.pause()
+            && let Some(editor) = session.editor.as_mut()
+        {
+            editor.visible_position = status.position_secs;
+            editor.audio_status = status;
+            editor.last_audio_sync = Instant::now();
+        }
+        invalidated.0 = true;
     }
     if status_error.is_some() {
         session.notice = status_error;

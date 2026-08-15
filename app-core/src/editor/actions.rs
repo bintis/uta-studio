@@ -211,6 +211,42 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         [KeyChord::plain("Space")]
     ),
     action!("seek_start", "Jump to the start", Transport, Read, []),
+    action!(
+        "audition_selection",
+        "Play the selection",
+        Transport,
+        Read,
+        [KeyChord::ctrl("Space")]
+    ),
+    action!(
+        "audition_visible",
+        "Play what is on screen",
+        Transport,
+        Read,
+        [KeyChord::ctrl_shift("Space")]
+    ),
+    action!(
+        "audition_before_selection",
+        "Play into the selection",
+        Transport,
+        Read,
+        []
+    ),
+    action!(
+        "audition_after_selection",
+        "Play out of the selection",
+        Transport,
+        Read,
+        []
+    ),
+    action!("stop_audition", "Stop the audition", Transport, Read, []),
+    action!(
+        "cycle_audition_mode",
+        "Change what the audition plays",
+        Transport,
+        Read,
+        []
+    ),
     // -- view -------------------------------------------------------------
     action!("toggle_lyrics", "Show or hide lyrics", View, Read, []),
     action!(

@@ -223,6 +223,11 @@ pub(crate) enum PendingLeave {
 #[derive(Resource)]
 pub(crate) struct NativeAudio(#[allow(dead_code)] Arc<uta_studio_audio::EditorAudioPlayer>);
 
+/// The synthesized pitch stream. It is a second player so auditioning a note
+/// target never alters, mixes into, or re-encodes the song audio.
+#[derive(Resource)]
+pub(crate) struct NativePitchAudition(pub(crate) Arc<uta_studio_audio::PitchAudition>);
+
 #[derive(Resource, Default)]
 pub(crate) struct UiInvalidated(bool);
 
@@ -381,6 +386,9 @@ pub fn run() {
         .insert_resource(theme)
         .insert_resource(session)
         .insert_resource(NativeAudio(native_audio))
+        .insert_resource(NativePitchAudition(Arc::new(
+            uta_studio_audio::PitchAudition::new(),
+        )))
         .insert_resource(NativeLibraryAudio(native_library_audio))
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
@@ -1821,6 +1829,7 @@ fn handle_actions(
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     audio: Res<NativeAudio>,
     library_audio: Res<NativeLibraryAudio>,
+    pitch_audition: Res<NativePitchAudition>,
     mut session: ResMut<StudioSession>,
     mut setup: ResMut<NativeSetup>,
     mut diagnostics: ResMut<NativeDiagnostics>,
@@ -3030,6 +3039,7 @@ fn handle_actions(
                     &keys,
                     &mut EditorActionContext {
                         audio: &audio.0,
+                        tones: &pitch_audition.0,
                         session: &mut session,
                         invalidated: &mut invalidated,
                     },
@@ -3371,6 +3381,59 @@ mod tests {
         assert_eq!(editor.redo(), Some("Delete notes"));
         assert_eq!(editor.document.note_count(), 1);
         assert_eq!(editor.redo(), None);
+    }
+
+    #[test]
+    fn a_ranged_audition_covers_the_selection_and_its_approaches() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[
+                (4.0, 5.0, 60, "a"),
+                (5.0, 6.0, 62, "b"),
+                (9.0, 10.0, 64, "c"),
+            ]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.viewport_start = 2.0;
+        editor.viewport_duration = 6.0;
+        editor.selected_notes = BTreeSet::from([0, 1]);
+
+        let selection = audition_range(EditorAction::AuditionSelection, &editor).unwrap();
+        assert!((selection.0 - 4.0).abs() < 1e-9);
+        assert!((selection.1 - 6.0).abs() < 1e-9);
+        // The lead-in stops where the selection starts, and the lead-out picks
+        // up where it ends, so a transition is heard from both sides.
+        let before = audition_range(EditorAction::AuditionBeforeSelection, &editor).unwrap();
+        assert!((before.1 - 4.0).abs() < 1e-9);
+        assert!(before.0 < before.1);
+        let after = audition_range(EditorAction::AuditionAfterSelection, &editor).unwrap();
+        assert!((after.0 - 6.0).abs() < 1e-9);
+        assert!(after.1 > after.0);
+        assert_eq!(
+            audition_range(EditorAction::AuditionVisible, &editor),
+            Some((2.0, 8.0))
+        );
+
+        editor.selected_notes.clear();
+        assert!(audition_range(EditorAction::AuditionSelection, &editor).is_none());
+    }
+
+    #[test]
+    fn pitch_audition_sounds_only_the_notes_in_range() {
+        let editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a"), (4.0, 5.0, 62, "b")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        let tones = pitch_tones(&editor.document, 3.5, 6.0);
+        assert_eq!(tones.len(), 1);
+        // Tones are positioned against the start of the audition, and clipped
+        // to it, so the preview lines up with the transport.
+        assert!((tones[0].start_secs - 0.5).abs() < 1e-9);
+        assert!((tones[0].duration_secs - 1.0).abs() < 1e-9);
+        assert!((tones[0].midi - 62.0).abs() < 1e-9);
     }
 
     #[test]
