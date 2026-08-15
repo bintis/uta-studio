@@ -1,7 +1,14 @@
 # 编辑器重构计划：对齐 utz 0.2，参考 Karedi 能力
 
-状态：计划草案（2026-08-15）。目标是让编辑器直接编辑 utz 0.2 的
+状态：执行中（2026-08-15）。目标是让编辑器直接编辑 utz 0.2 的
 `VocalChartV1` 授权模型，并吸收 Karedi 的架构模式与编辑能力。
+
+**范围决定**：不考虑 utz 0.1 兼容，也不做向前兼容。因此分析器产出的
+transcript / pitch_notes 只作为**导入源**，不再是需要同步维护的投影；
+0.1 导出路径不实现。
+
+**进度**：阶段 0、阶段 1 已完成（含 UltraStar 导出改造）。下一步是阶段 2
+的命令系统。
 
 参考材料：
 
@@ -92,31 +99,41 @@ desktop/src/
 `cargo check --workspace`、真实 UTZ + UltraStar 冒烟导出、双导出器覆盖、
 项目名扫描），应用全程可用，无"大爆炸"切换。
 
-### 阶段 0 — 固化基线（约半天）
+### 阶段 0 — 固化基线 ✅
 
-- [ ] 把当前未提交的 0.2 工作（vendored crate、`vocal_chart.rs`、studio.rs
-      改动）按语义拆成清晰 commit 落盘。
-- [ ] 补齐 `migrate_legacy_chart` / `legacy_projections` 边界测试：重叠
-      拒绝、continuation 生成、往返保真。
+- [x] 把未提交的 0.2 工作按语义落盘（commit `a22d788`）。
+- [x] 修复 `studio-diagnostics` 未跟进 0.2 manifest 枚举导致的工作区
+      编译失败；诊断冒烟导出现在会校验导出包内的 vocal chart。
+- [x] 补齐分析器导入边界测试：重叠拒绝、continuation 生成、note kind
+      映射。测试当场抓到并修复了投影往返丢失 `join_before: Space` 的
+      真实 bug。
 
-### 阶段 1 — 模型切换：编辑器直接编辑 `VocalChartV1`（核心，约占 40%）
+### 阶段 1 — 模型切换：编辑器直接编辑 `VocalChartV1` ✅
 
-- [ ] 新建 `app-core/src/editor/document.rs`：`EditorDocument` 包装
-      `VocalChartV1`，建立 `note id → (track, phrase, index)` 索引与时间
-      排序索引；提供只读遍历替代从 JSON 解析的 `chart_notes()`。
-- [ ] 将 studio.rs 中每个 JSON 编辑函数移植为 `EditorDocument` 类型化操作
-      （本阶段可暂用整棵 chart 克隆当快照）：
-  - [ ] note 系：move / resize / insert / remove / split / merge /
-        quantize / shift / cycle-kind（改为设置 `vocal_mode` + `bonus` +
-        `scoring` 三元组）
-  - [ ] 词系：词文本、插入、删除、词边界、词拆分/合并 → token 操作
-  - [ ] phrase 系：拆分/合并真正修改 `VocalPhrase` 结构，不再重建 segment 文本
-- [ ] 从编辑路径移除 `NativeEditor.chart` 的 `transcript`/`pitch_notes`；
-      渲染层（note 节点、歌词行、检查器）改读 `EditorDocument`。
-- [ ] 保存改走 `save_vocal_chart`；UltraStar 导出继续消费
-      `legacy_projections`，行为不变。
-- [ ] 验收：往返稳定性测试——打开旧歌 → 编辑 → 保存 → 重开，
-      save→load→save 字节相同；phrase 结构、词-音符归属、note 模式稳定。
+commit `dd82c3f`（编辑器）与 `ed4b018`（导出）。
+
+- [x] 新建 `app-core/src/editor/`：`EditorDocument` 持有 `VocalChartV1`，
+      内部一律用整数 timebase 单位，提供扁平索引的 note / lyric 只读视图，
+      渲染层不必了解 track→phrase→note 的嵌套。
+- [x] studio.rs 的全部 JSON 编辑函数移植为 `EditorDocument` 类型化操作，
+      语义逐条保留（最小时长、拆分/合并规则、量化、带钳制的位移、剪贴板
+      几何），并补上 JSON 模型无法表达的 continuation 维护：
+  - [x] note 系：move / resize / insert / remove / split / merge /
+        quantize / shift / cycle-kind（`vocal_mode` + `bonus` + `scoring`
+        三元组）/ copy / paste
+  - [x] 词系 → token 操作；**歌词 token 归属于 note**（格式要求），所以
+        「无引导歌词」＝「无 pitch 目标的 note」，拆分音节即拆分其 note
+  - [x] phrase 系：真正修改 `VocalPhrase` 结构
+  - [x] 保守自动修复（排序、最小时长、分离重叠）下沉到模型层并加测试
+- [x] `ChartDocument` 移除 `transcript` / `pitch_notes`，只保留权威 chart
+      与作为可选证据的 `pitch_track`。
+- [x] 保存只写 `save_vocal_chart`；`.utz` 与 UltraStar 导出都读取已保存的
+      chart（原先 `.utz` 导出会重新迁移，直接丢弃编辑成果）。
+- [x] 重新转写 / 重新对齐 / 重新分析音高时失效已保存 chart，避免旧 chart
+      遮蔽新分析结果。
+- [x] note confidence 退出编辑器：它是分析证据，utz 0.2 不把证据放进
+      授权 chart。
+- [x] 验收：app-core 86 项、desktop 22 项测试通过；studio.rs 减少约 1 900 行。
 
 ### 阶段 2 — 命令系统与撤销
 
@@ -155,13 +172,11 @@ desktop/src/
 - [ ] **歌词滚动**（roll left/right）与 token 级歌词编辑器（文本框与
       note 双向同步）。
 
-### 阶段 5 — 导出与兼容收尾
+### 阶段 5 — 导出收尾
 
-- [ ] UltraStar 导出直接从 `VocalChartV1` 投影（消灭最后的 legacy JSON
-      依赖）；rap/golden/freestyle 映射沿用 `legacy_kind`；多轨 →
-      UltraStar duet（P1/P2）。
-- [ ] utz 0.1 兼容导出：派生 `transcript/pitch_track/pitch_notes`，
-      必须写新包、不改用户已有包（规范要求）。
+- [x] UltraStar 导出直接从 `VocalChartV1` 生成（已在阶段 1 完成）。
+- [ ] 多轨 → UltraStar duet（P1/P2），依赖阶段 4 的多轨能力。
+- ~~utz 0.1 兼容导出~~ —— 按范围决定不实现。
 - [ ] pitch evidence：分析器帧级 f0 以 `pitch-evidence` 资产随包导出
       （可选项）；编辑器把它当背景参考渲染，绝不回写 note。
 - [ ] 全量验收：AGENTS.md 完整清单 + `nix build path:.#uta-studio` +
