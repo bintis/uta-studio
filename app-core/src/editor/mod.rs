@@ -17,6 +17,7 @@ pub use actions::{
 };
 pub use document::{
     ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
+    TrackRole, TrackSummary,
 };
 pub use problems::{ChartProblem, ProblemKind, ProblemReport, Severity};
 

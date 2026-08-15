@@ -58,6 +58,9 @@ impl ProblemKind {
 pub struct ChartProblem {
     pub kind: ProblemKind,
     pub message: String,
+    /// Which track the problem is on. Saving validates every track, so the
+    /// panel must be able to point at one the user is not editing.
+    pub track: usize,
     /// Where in the timeline to look, in seconds.
     pub time: f64,
     /// Flattened note index, when the problem belongs to one note.
@@ -118,13 +121,26 @@ const LEAP_SEMITONES: f64 = 12.0;
 const SHORT_NOTE_SECONDS: f64 = 0.06;
 
 pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
-    let notes = document.notes();
-    let lyrics = document.lyrics();
     let mut problems = Vec::new();
+    for track in 0..document.track_count() {
+        report_track(document, track, &mut problems);
+    }
+    problems.sort_by(|left, right| {
+        left.severity()
+            .cmp(&right.severity())
+            .then_with(|| left.time.total_cmp(&right.time))
+    });
+    ProblemReport { problems }
+}
+
+fn report_track(document: &EditorDocument, track: usize, problems: &mut Vec<ChartProblem>) {
+    let notes = document.track_notes(track);
+    let lyrics = document.track_lyrics(track);
 
     for (index, note) in notes.iter().enumerate() {
         if note.end - note.start < SHORT_NOTE_SECONDS {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::NoteTooShort,
                 message: format!(
                     "Note is only {} ms long",
@@ -137,6 +153,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         }
         if !note.pitched && note.scores_pitch {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::MissingPitchTarget,
                 message: "Pitch scoring needs a pitch target".into(),
                 time: note.start,
@@ -146,6 +163,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         }
         if note.scores && note.lyric.is_none() && !note.continues_lyric {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::ScorableNoteWithoutLyric,
                 message: "Scored note has no syllable to sing".into(),
                 time: note.start,
@@ -159,6 +177,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         };
         if note.start < previous.end - 0.001 {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::OverlappingNotes,
                 message: "Notes overlap; the format needs one voice per track".into(),
                 time: note.start,
@@ -167,6 +186,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
             });
         } else if note.phrase != previous.phrase && note.start - previous.end < f64::EPSILON {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::PhrasesTouch,
                 message: "Lyric lines meet with no gap to read them".into(),
                 time: note.start,
@@ -180,6 +200,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
             && (note.midi - previous.midi).abs() > LEAP_SEMITONES
         {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::LargeIntervalLeap,
                 message: format!(
                     "{} semitone leap with no room to breathe",
@@ -195,6 +216,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
     for lyric in &lyrics {
         if lyric.text.trim().is_empty() {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::EmptyLyric,
                 message: "Syllable has no text".into(),
                 time: lyric.start,
@@ -204,6 +226,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         }
         if !lyric.guided {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::LyricWithoutPitch,
                 message: format!("\"{}\" has no pitch to follow", lyric.text.trim()),
                 time: lyric.start,
@@ -213,8 +236,9 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         }
     }
 
-    for (id, time) in document.unresolved_continuations() {
+    for (id, time) in document.unresolved_continuations(track) {
         problems.push(ChartProblem {
+            track,
             kind: ProblemKind::UnresolvedContinuation,
             message: format!("Held syllable {id} has nothing to continue"),
             time,
@@ -228,6 +252,7 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
         let share = golden as f64 / notes.len() as f64;
         if share > GOLDEN_SHARE_LIMIT {
             problems.push(ChartProblem {
+                track,
                 kind: ProblemKind::UnusualGoldenShare,
                 message: format!(
                     "{}% of notes are golden, which stops rewarding anything",
@@ -239,13 +264,6 @@ pub(crate) fn report(document: &EditorDocument) -> ProblemReport {
             });
         }
     }
-
-    problems.sort_by(|left, right| {
-        left.severity()
-            .cmp(&right.severity())
-            .then_with(|| left.time.total_cmp(&right.time))
-    });
-    ProblemReport { problems }
 }
 
 #[cfg(test)]

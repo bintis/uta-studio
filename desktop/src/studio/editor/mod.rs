@@ -7,6 +7,7 @@ mod commands;
 mod input;
 mod panels;
 mod state;
+mod tracks;
 mod view;
 
 pub(crate) use actions::*;
@@ -15,4 +16,5 @@ pub(crate) use commands::*;
 pub(crate) use input::*;
 pub(crate) use panels::*;
 pub(crate) use state::*;
+pub(crate) use tracks::*;
 pub(crate) use view::*;

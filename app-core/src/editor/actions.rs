@@ -13,6 +13,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EditorActionGroup {
     Document,
+    Tracks,
     Transport,
     View,
     Selection,
@@ -24,6 +25,7 @@ impl EditorActionGroup {
     pub fn label(self) -> &'static str {
         match self {
             Self::Document => "Chart",
+            Self::Tracks => "Tracks",
             Self::Transport => "Transport",
             Self::View => "View",
             Self::Selection => "Selection",
@@ -169,6 +171,37 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         Mutation,
         []
     ),
+    // -- tracks -----------------------------------------------------------
+    action!("add_track", "Add track", Tracks, Mutation, []),
+    action!("remove_track", "Remove track", Tracks, Mutation, []),
+    action!(
+        "cycle_track_role",
+        "Change track role",
+        Tracks,
+        Mutation,
+        []
+    ),
+    action!(
+        "toggle_track_scoring",
+        "Score this track",
+        Tracks,
+        Mutation,
+        []
+    ),
+    action!(
+        "select_next_track",
+        "Switch to the next track",
+        Tracks,
+        Read,
+        [KeyChord::ctrl("Tab")]
+    ),
+    action!(
+        "move_selection_to_next_track",
+        "Move selection to the next track",
+        Tracks,
+        Mutation,
+        [KeyChord::ctrl_shift("Tab")]
+    ),
     // -- transport --------------------------------------------------------
     action!(
         "toggle_playback",
@@ -180,6 +213,13 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     action!("seek_start", "Jump to the start", Transport, Read, []),
     // -- view -------------------------------------------------------------
     action!("toggle_lyrics", "Show or hide lyrics", View, Read, []),
+    action!(
+        "toggle_tracks",
+        "Show or hide the track strip",
+        View,
+        Read,
+        []
+    ),
     action!(
         "toggle_inspector",
         "Show or hide the inspector",

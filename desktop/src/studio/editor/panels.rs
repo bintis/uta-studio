@@ -279,22 +279,33 @@ pub(crate) fn spawn_editor_inspector(
                     theme.destructive,
                 );
             }
+            let multi_track = editor.document.track_count() > 1;
             for problem in report.problems.iter().take(EDITOR_PROBLEM_ROWS) {
                 spawn_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     format!(
-                        "{} {} · {}",
+                        "{} {}{} · {}",
                         if problem.severity() == app_core::Severity::Error {
                             "!"
                         } else {
                             "·"
                         },
                         format_duration(problem.time),
+                        if multi_track {
+                            format!(" · T{}", problem.track + 1)
+                        } else {
+                            String::new()
+                        },
                         problem.message
                     ),
-                    UiAction::FocusChartProblem((problem.time * 1000.0).max(0.0) as u64),
+                    // Jumping to a problem also switches to the track it is on,
+                    // so the note it points at is the editable one.
+                    UiAction::FocusChartProblem(
+                        problem.track,
+                        (problem.time * 1000.0).max(0.0) as u64,
+                    ),
                 );
             }
             if report.total() > EDITOR_PROBLEM_ROWS {

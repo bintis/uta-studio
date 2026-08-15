@@ -190,8 +190,9 @@ pub(crate) fn save_editor_chart(editor: &mut NativeEditor) -> String {
         .find(|problem| problem.severity() == app_core::Severity::Error)
     {
         return format!(
-            "Cannot save: {} at {} ({} error(s)). Open the inspector to jump to it.",
+            "Cannot save: {} on track {} at {} ({} error(s)). Open the inspector to jump to it.",
             problem.message,
+            problem.track + 1,
             format_duration(problem.time),
             report.errors()
         );

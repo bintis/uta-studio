@@ -96,6 +96,94 @@ impl NoteKind {
     }
 }
 
+/// What one track of a chart is for. Mirrors the format's `VocalTrackRole`
+/// with the editor-facing naming the track strip and the UltraStar exporter
+/// share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrackRole {
+    #[default]
+    Lead,
+    Duet,
+    Harmony,
+    Backing,
+    Adlib,
+}
+
+impl TrackRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lead => "lead",
+            Self::Duet => "duet",
+            Self::Harmony => "harmony",
+            Self::Backing => "backing",
+            Self::Adlib => "ad-lib",
+        }
+    }
+
+    pub fn from_label(value: &str) -> Self {
+        match value {
+            "duet" => Self::Duet,
+            "harmony" => Self::Harmony,
+            "backing" => Self::Backing,
+            "ad-lib" | "adlib" => Self::Adlib,
+            _ => Self::Lead,
+        }
+    }
+
+    /// Cycle order used by the track strip's role button.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Lead => Self::Duet,
+            Self::Duet => Self::Harmony,
+            Self::Harmony => Self::Backing,
+            Self::Backing => Self::Adlib,
+            Self::Adlib => Self::Lead,
+        }
+    }
+
+    /// Whether a player is expected to sing this track, as opposed to it being
+    /// reference or colour material. Drives the UltraStar duet projection.
+    pub fn is_sung(self) -> bool {
+        matches!(self, Self::Lead | Self::Duet)
+    }
+
+    fn of(role: VocalTrackRole) -> Self {
+        match role {
+            VocalTrackRole::Lead => Self::Lead,
+            VocalTrackRole::Duet => Self::Duet,
+            VocalTrackRole::Harmony => Self::Harmony,
+            VocalTrackRole::Backing => Self::Backing,
+            VocalTrackRole::Adlib => Self::Adlib,
+        }
+    }
+
+    fn to_format(self) -> VocalTrackRole {
+        match self {
+            Self::Lead => VocalTrackRole::Lead,
+            Self::Duet => VocalTrackRole::Duet,
+            Self::Harmony => VocalTrackRole::Harmony,
+            Self::Backing => VocalTrackRole::Backing,
+            Self::Adlib => VocalTrackRole::Adlib,
+        }
+    }
+}
+
+/// A track as the track strip sees it.
+#[derive(Debug, Clone)]
+pub struct TrackSummary {
+    pub index: usize,
+    pub id: String,
+    pub role: TrackRole,
+    pub singer: Option<String>,
+    pub scoring_enabled: bool,
+    pub note_count: usize,
+    pub phrase_count: usize,
+    /// Seconds the track actually sings, for the coverage bar.
+    pub sung_seconds: f64,
+    /// First note start and last note end, in seconds.
+    pub span: (f64, f64),
+}
+
 /// Addresses a lyric token as (phrase ordinal, text-token ordinal). Held notes
 /// carry continuation tokens, which are not separately addressable: they belong
 /// to the text token they continue.
@@ -284,6 +372,231 @@ impl EditorDocument {
         self.chart.tracks.get(self.track)
     }
 
+    // -- tracks -----------------------------------------------------------
+
+    pub fn track_count(&self) -> usize {
+        self.chart.tracks.len()
+    }
+
+    /// Index of the track every note and lyric operation applies to.
+    pub fn active_track_index(&self) -> usize {
+        self.track
+    }
+
+    pub fn set_active_track(&mut self, index: usize) -> bool {
+        if index >= self.chart.tracks.len() || index == self.track {
+            return false;
+        }
+        self.track = index;
+        self.touch();
+        true
+    }
+
+    pub fn tracks(&self) -> Vec<TrackSummary> {
+        self.chart
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(index, track)| {
+                let notes = || track.phrases.iter().flat_map(|phrase| phrase.notes.iter());
+                let sung = notes()
+                    .map(|note| self.to_seconds(note.duration))
+                    .sum::<f64>();
+                let start = notes().map(|note| note.start).min().unwrap_or(0);
+                let end = notes()
+                    .map(|note| note.start.saturating_add(note.duration))
+                    .max()
+                    .unwrap_or(0);
+                TrackSummary {
+                    index,
+                    id: track.id.clone(),
+                    role: TrackRole::of(track.role),
+                    singer: track.singer.clone(),
+                    scoring_enabled: track.scoring_enabled,
+                    note_count: notes().count(),
+                    phrase_count: track.phrases.len(),
+                    sung_seconds: sung,
+                    span: (self.to_seconds(start), self.to_seconds(end)),
+                }
+            })
+            .collect()
+    }
+
+    /// Notes of a track other than the active one, so the timeline can show
+    /// where the other voices sing without making them editable.
+    pub fn track_notes(&self, index: usize) -> Vec<ChartNote> {
+        let Some(track) = self.chart.tracks.get(index) else {
+            return Vec::new();
+        };
+        track
+            .phrases
+            .iter()
+            .enumerate()
+            .flat_map(|(phrase, entry)| entry.notes.iter().map(move |note| (phrase, note)))
+            .enumerate()
+            .map(|(flat, (phrase, note))| self.view_note(flat, phrase, note))
+            .collect()
+    }
+
+    /// Adds an empty track and makes it the active one.
+    pub fn add_track(&mut self, role: TrackRole) -> usize {
+        let id = self.allocate_id("track");
+        self.chart.tracks.push(VocalTrack {
+            id,
+            role: role.to_format(),
+            singer: None,
+            scoring_enabled: role.is_sung(),
+            // A track with no notes has no phrases either; the first note
+            // added to it creates one. Such a track is dropped on save,
+            // because the format requires every track to sing something.
+            phrases: Vec::new(),
+        });
+        self.track = self.chart.tracks.len() - 1;
+        self.touch();
+        self.track
+    }
+
+    /// Removes a track. The chart must keep at least one.
+    pub fn remove_track(&mut self, index: usize) -> bool {
+        if self.chart.tracks.len() < 2 || index >= self.chart.tracks.len() {
+            return false;
+        }
+        self.chart.tracks.remove(index);
+        self.track = self.track.min(self.chart.tracks.len() - 1);
+        self.touch();
+        true
+    }
+
+    pub fn set_track_role(&mut self, index: usize, role: TrackRole) -> bool {
+        let Some(track) = self.chart.tracks.get_mut(index) else {
+            return false;
+        };
+        let role = role.to_format();
+        if track.role == role {
+            return false;
+        }
+        track.role = role;
+        self.touch();
+        true
+    }
+
+    pub fn set_track_singer(&mut self, index: usize, singer: Option<String>) -> bool {
+        let Some(track) = self.chart.tracks.get_mut(index) else {
+            return false;
+        };
+        let singer = singer.filter(|name| !name.trim().is_empty());
+        if track.singer == singer {
+            return false;
+        }
+        track.singer = singer;
+        self.touch();
+        true
+    }
+
+    pub fn set_track_scoring(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(track) = self.chart.tracks.get_mut(index) else {
+            return false;
+        };
+        if track.scoring_enabled == enabled {
+            return false;
+        }
+        track.scoring_enabled = enabled;
+        self.touch();
+        true
+    }
+
+    /// Moves notes off the active track and onto another one, the path the
+    /// format recommends for material that would otherwise overlap. Lyric
+    /// continuations follow the text token they refer to, because the format
+    /// requires a continuation to resolve inside its own track.
+    pub fn move_notes_to_track(&mut self, indices: &BTreeSet<usize>, target: usize) -> usize {
+        if target == self.track || target >= self.chart.tracks.len() || indices.is_empty() {
+            return 0;
+        }
+        let mut flat = self.take_flat();
+        // Take the selection out, plus any later note holding one of its
+        // syllables, so a held note never loses the token it continues.
+        let mut moving_texts = HashSet::new();
+        for index in indices {
+            if let Some(entry) = flat.get(*index) {
+                for token in &entry.note.lyrics {
+                    if let LyricToken::Text(token) = token {
+                        moving_texts.insert(token.id.clone());
+                    }
+                }
+            }
+        }
+        let mut moved = Vec::new();
+        let mut kept = Vec::new();
+        for (index, entry) in flat.drain(..).enumerate() {
+            let continues_moved = entry.note.lyrics.iter().any(|token| {
+                matches!(token, LyricToken::Continuation { continuation_of }
+                    if moving_texts.contains(continuation_of))
+            });
+            if indices.contains(&index) || continues_moved {
+                moved.push(entry.note);
+            } else {
+                kept.push(entry);
+            }
+        }
+        let count = moved.len();
+        self.restore_flat(kept);
+        // Strip continuations the move orphaned in either direction.
+        let orphans = orphaned_continuations(
+            &moved
+                .iter()
+                .map(|note| FlatNote {
+                    phrase: 0,
+                    note: note.clone(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        for note in &mut moved {
+            note.lyrics.retain(|token| {
+                !matches!(token, LyricToken::Continuation { continuation_of }
+                    if orphans.contains(continuation_of))
+            });
+        }
+        let phrase_id = self.allocate_id("phrase");
+        if let Some(track) = self.chart.tracks.get_mut(target) {
+            moved.sort_by_key(|note| note.start);
+            track.phrases.push(VocalPhrase {
+                id: phrase_id,
+                notes: moved,
+            });
+            track
+                .phrases
+                .sort_by_key(|phrase| phrase.notes.first().map(|note| note.start).unwrap_or(0));
+        }
+        // The source track may have lost its remaining continuations.
+        self.prune_orphaned_continuations();
+        self.touch();
+        count
+    }
+
+    fn prune_orphaned_continuations(&mut self) {
+        for track in &mut self.chart.tracks {
+            let mut texts = HashSet::new();
+            for phrase in &track.phrases {
+                for note in &phrase.notes {
+                    for token in &note.lyrics {
+                        if let LyricToken::Text(token) = token {
+                            texts.insert(token.id.clone());
+                        }
+                    }
+                }
+            }
+            for phrase in &mut track.phrases {
+                for note in &mut phrase.notes {
+                    note.lyrics.retain(|token| {
+                        !matches!(token, LyricToken::Continuation { continuation_of }
+                            if !texts.contains(continuation_of))
+                    });
+                }
+            }
+        }
+    }
+
     // -- flattening -------------------------------------------------------
 
     fn flat_len(&self) -> usize {
@@ -352,38 +665,32 @@ impl EditorDocument {
         self.flat_len()
     }
 
+    fn view_note(&self, index: usize, phrase: usize, note: &VocalNote) -> ChartNote {
+        ChartNote {
+            index,
+            id: note.id.clone(),
+            phrase,
+            start: self.to_seconds(note.start),
+            end: self.to_seconds(note.start.saturating_add(note.duration)),
+            midi: note.pitch.map(|pitch| pitch.midi as f64).unwrap_or(60.0),
+            kind: NoteKind::of(note),
+            pitched: note.pitch.is_some(),
+            scores: note.scoring.mode != ScoringMode::None,
+            scores_pitch: note.scoring.mode == ScoringMode::Pitch,
+            golden: note.bonus == NoteBonus::Golden,
+            continues_lyric: note
+                .lyrics
+                .iter()
+                .any(|token| matches!(token, LyricToken::Continuation { .. })),
+            lyric: note.lyrics.iter().find_map(|token| match token {
+                LyricToken::Text(token) => Some(token.text.clone()),
+                LyricToken::Continuation { .. } => None,
+            }),
+        }
+    }
+
     pub fn notes(&self) -> Vec<ChartNote> {
-        let Some(track) = self.active_track() else {
-            return Vec::new();
-        };
-        track
-            .phrases
-            .iter()
-            .enumerate()
-            .flat_map(|(phrase, entry)| entry.notes.iter().map(move |note| (phrase, note)))
-            .enumerate()
-            .map(|(index, (phrase, note))| ChartNote {
-                index,
-                id: note.id.clone(),
-                phrase,
-                start: self.to_seconds(note.start),
-                end: self.to_seconds(note.start.saturating_add(note.duration)),
-                midi: note.pitch.map(|pitch| pitch.midi as f64).unwrap_or(60.0),
-                kind: NoteKind::of(note),
-                pitched: note.pitch.is_some(),
-                scores: note.scoring.mode != ScoringMode::None,
-                scores_pitch: note.scoring.mode == ScoringMode::Pitch,
-                golden: note.bonus == NoteBonus::Golden,
-                continues_lyric: note
-                    .lyrics
-                    .iter()
-                    .any(|token| matches!(token, LyricToken::Continuation { .. })),
-                lyric: note.lyrics.iter().find_map(|token| match token {
-                    LyricToken::Text(token) => Some(token.text.clone()),
-                    LyricToken::Continuation { .. } => None,
-                }),
-            })
-            .collect()
+        self.track_notes(self.track)
     }
 
     // -- lyric views ------------------------------------------------------
@@ -419,7 +726,13 @@ impl EditorDocument {
     }
 
     pub fn lyrics(&self) -> Vec<ChartLyric> {
-        let Some(track) = self.active_track() else {
+        self.track_lyrics(self.track)
+    }
+
+    /// Lyric tokens of any track, for reporting problems the active track
+    /// cannot see.
+    pub fn track_lyrics(&self, index: usize) -> Vec<ChartLyric> {
+        let Some(track) = self.chart.tracks.get(index) else {
             return Vec::new();
         };
         let mut result = Vec::new();
@@ -1457,8 +1770,8 @@ impl EditorDocument {
 
     /// Continuation tokens with no text token to continue, as (id, time). The
     /// format requires every reference to resolve inside its track.
-    pub(crate) fn unresolved_continuations(&self) -> Vec<(String, f64)> {
-        let Some(track) = self.active_track() else {
+    pub(crate) fn unresolved_continuations(&self, index: usize) -> Vec<(String, f64)> {
+        let Some(track) = self.chart.tracks.get(index) else {
             return Vec::new();
         };
         let mut texts = HashSet::new();
@@ -1949,5 +2262,106 @@ mod tests {
         assert!((document.notes()[0].start - 1.5).abs() < 1e-9);
         assert!(document.shift_all(-10.0));
         assert_eq!(document.notes()[0].start, 0.0);
+    }
+
+    #[test]
+    fn a_new_track_becomes_active_and_starts_empty() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        assert_eq!(document.track_count(), 1);
+        let index = document.add_track(TrackRole::Duet);
+        assert_eq!(index, 1);
+        assert_eq!(document.active_track_index(), 1);
+        assert!(document.notes().is_empty());
+        let tracks = document.tracks();
+        assert_eq!(tracks[1].role, TrackRole::Duet);
+        assert!(tracks[1].scoring_enabled);
+        // The lead track keeps its material and its coverage.
+        assert_eq!(tracks[0].note_count, 1);
+        assert!((tracks[0].sung_seconds - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_last_track_cannot_be_removed() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        assert!(!document.remove_track(0));
+        document.add_track(TrackRole::Duet);
+        assert!(document.remove_track(1));
+        assert_eq!(document.track_count(), 1);
+        assert_eq!(document.active_track_index(), 0);
+    }
+
+    #[test]
+    fn moving_a_selection_to_another_track_legalizes_an_overlap() {
+        let mut document = document(&[(0.0, 1.0, 60, "a"), (0.5, 1.5, 62, "b")]);
+        assert!(document.problems().blocks_saving());
+        document.add_track(TrackRole::Duet);
+        document.set_active_track(0);
+        assert_eq!(document.move_notes_to_track(&selection(&[1]), 1), 1);
+        assert_eq!(document.notes().len(), 1);
+        assert_eq!(document.track_notes(1).len(), 1);
+        // Both tracks are now single voiced, so the chart saves.
+        assert!(!document.problems().blocks_saving());
+        document.to_chart().validate().expect("valid chart");
+    }
+
+    #[test]
+    fn a_held_syllable_follows_its_notes_to_the_new_track() {
+        let mut document = document(&[(0.0, 1.0, 60, "held"), (1.0, 2.0, 60, "next")]);
+        // Turn the second note into a continuation of the first syllable.
+        let held = document.chart().tracks[0].phrases[0].notes[0].lyrics[0].clone();
+        let LyricToken::Text(held) = held else {
+            panic!("text token");
+        };
+        document.chart.tracks[0].phrases[0].notes[1].lyrics = vec![LyricToken::Continuation {
+            continuation_of: held.id.clone(),
+        }];
+        document.add_track(TrackRole::Harmony);
+        document.set_active_track(0);
+        assert_eq!(document.move_notes_to_track(&selection(&[0]), 1), 2);
+        assert!(document.notes().is_empty());
+        assert_eq!(document.track_notes(1).len(), 2);
+        document.set_active_track(1);
+        assert!(document.unresolved_continuations(1).is_empty());
+    }
+
+    #[test]
+    fn an_orphaned_continuation_is_dropped_rather_than_moved_alone() {
+        let mut document = document(&[(0.0, 1.0, 60, "held"), (1.0, 2.0, 60, "next")]);
+        let held = document.chart().tracks[0].phrases[0].notes[0].lyrics[0].clone();
+        let LyricToken::Text(held) = held else {
+            panic!("text token");
+        };
+        document.chart.tracks[0].phrases[0].notes[1].lyrics = vec![LyricToken::Continuation {
+            continuation_of: held.id,
+        }];
+        document.add_track(TrackRole::Harmony);
+        document.set_active_track(0);
+        // Moving only the holding note would leave a reference across tracks.
+        assert_eq!(document.move_notes_to_track(&selection(&[1]), 1), 1);
+        assert!(document.track_notes(1)[0].lyric.is_none());
+        assert!(document.unresolved_continuations(1).is_empty());
+        assert!(document.unresolved_continuations(0).is_empty());
+    }
+
+    #[test]
+    fn problems_cover_tracks_the_user_is_not_editing() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        document.add_track(TrackRole::Duet);
+        document.insert_note(0.0, 1.0, 62.0);
+        document.insert_note(0.5, 1.5, 64.0);
+        document.set_active_track(0);
+        let report = document.problems();
+        assert!(report.blocks_saving());
+        assert!(report.problems.iter().any(|problem| problem.track == 1
+            && problem.kind == super::super::ProblemKind::OverlappingNotes));
+    }
+
+    #[test]
+    fn an_empty_track_is_not_persisted() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        document.add_track(TrackRole::Backing);
+        let chart = document.to_chart();
+        assert_eq!(chart.tracks.len(), 1);
+        chart.validate().expect("valid chart");
     }
 }
