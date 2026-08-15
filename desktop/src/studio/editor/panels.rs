@@ -228,6 +228,7 @@ pub(crate) fn spawn_editor_inspector(
                 ] {
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
+                spawn_phrase_editor(inspector, font.clone(), editor, selection.segment, theme);
             } else {
                 spawn_wrapped_text(
                     inspector,
@@ -418,4 +419,91 @@ pub(crate) fn spawn_editor_inspector(
             );
             spawn_action_button(inspector, font, theme, "Redo", UiAction::Editor(EditorAction::Redo));
         });
+}
+
+/// The whole-line lyric editor.
+///
+/// Retyping a line is faster than clicking through its syllables, but the
+/// syllable boundaries have to survive the round trip — so the field shows
+/// them: a space starts a new word, a slash divides syllables inside one.
+fn spawn_phrase_editor(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    editor: &NativeEditor,
+    phrase: usize,
+    theme: &StudioTheme,
+) {
+    parent.spawn(Node {
+        width: percent(100),
+        height: px(1),
+        margin: UiRect::vertical(px(6)),
+        ..default()
+    });
+    spawn_text(parent, font.clone(), "WHOLE LINE", 8.0, theme.primary);
+    parent.spawn((
+        EditorPhraseInput(phrase),
+        EditableText {
+            max_characters: Some(600),
+            visible_width: Some(30.0),
+            ..EditableText::new(&editor.document.phrase_token_text(phrase))
+        },
+        Node {
+            width: percent(100),
+            min_height: px(28),
+            min_width: px(0),
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(8)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(6)),
+            overflow: Overflow::clip(),
+            ..default()
+        },
+        ui_text_font(font.clone(), 10.0),
+        TextColor(theme.foreground),
+        TextCursorStyle {
+            color: theme.editor_selection,
+            selected_text_color: Some(theme.primary_foreground),
+            ..default()
+        },
+        BackgroundColor(theme.background.with_alpha(0.4)),
+        BorderColor::all(theme.border.with_alpha(0.6)),
+        TabIndex(0),
+    ));
+    spawn_wrapped_text(
+        parent,
+        font.clone(),
+        "Space starts a word, slash divides syllables inside it. Extra syllables land on the last note.",
+        9.0,
+        theme.muted_foreground,
+    );
+    // Alignment that is right except for being one note off is the common
+    // failure of automatic transcription, so it gets its own control.
+    for (label, action) in [
+        ("Roll line earlier", EditorAction::RollLyricsLeft),
+        ("Roll line later", EditorAction::RollLyricsRight),
+    ] {
+        spawn_editor_action_button(parent, font.clone(), theme, label, action);
+    }
+}
+
+/// Applies a retyped line back onto the notes it belongs to.
+pub(crate) fn sync_editor_phrase_input(
+    inputs: Query<(&EditableText, &EditorPhraseInput), Changed<EditableText>>,
+    mut session: ResMut<StudioSession>,
+) {
+    let Some(editor) = session.editor.as_mut() else {
+        return;
+    };
+    for (input, marker) in &inputs {
+        let text = input.value().to_string();
+        if text == editor.document.phrase_token_text(marker.0) {
+            continue;
+        }
+        editor.checkpoint("Retype line");
+        if editor.document.set_phrase_token_text(marker.0, &text) {
+            editor.dirty = true;
+        } else {
+            editor.undo.pop();
+        }
+    }
 }

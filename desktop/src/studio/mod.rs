@@ -464,6 +464,7 @@ pub fn run() {
         .add_systems(Update, sync_numeric_settings)
         .add_systems(Update, handle_tap_release)
         .add_systems(Update, sync_editor_word_input)
+        .add_systems(Update, sync_editor_phrase_input)
         .add_systems(Update, sync_editor_singer_input)
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)

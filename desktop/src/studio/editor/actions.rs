@@ -108,6 +108,8 @@ editor_actions! {
     LyricStartLater => "lyric_start_later",
     LyricEndEarlier => "lyric_end_earlier",
     LyricEndLater => "lyric_end_later",
+    RollLyricsLeft => "roll_lyrics_left",
+    RollLyricsRight => "roll_lyrics_right",
     SplitPhrase => "split_phrase",
     MergePhrase => "merge_phrase",
 }
@@ -213,9 +215,8 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         | RaisePitchOctave | LowerPitchOctave => run_note_action(action, ctx),
         AddLyric | DeleteLyrics | SplitLyrics | SyllabizeLyrics | MergeLyrics
         | ShiftLyricEarlier | ShiftLyricLater | LyricStartEarlier | LyricStartLater
-        | LyricEndEarlier | LyricEndLater | SplitPhrase | MergePhrase => {
-            run_lyric_action(action, ctx)
-        }
+        | LyricEndEarlier | LyricEndLater | RollLyricsLeft | RollLyricsRight | SplitPhrase
+        | MergePhrase => run_lyric_action(action, ctx),
     }
 }
 
@@ -1202,6 +1203,33 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.dirty = true;
             } else {
                 editor.undo.pop();
+            }
+        }
+        RollLyricsLeft | RollLyricsRight => {
+            let Some(selection) = editor.selected_word else {
+                ctx.session.notice =
+                    Some("Select a lyric word in the line to roll it.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            };
+            editor.checkpoint(action.label());
+            if editor
+                .document
+                .roll_lyrics(selection.segment, action == RollLyricsRight)
+            {
+                editor.dirty = true;
+                ctx.session.notice = Some(format!(
+                    "Rolled the line one note {}.",
+                    if action == RollLyricsRight {
+                        "later"
+                    } else {
+                        "earlier"
+                    }
+                ));
+            } else {
+                editor.undo.pop();
+                ctx.session.notice =
+                    Some("This line has nothing to roll onto another note.".to_string());
             }
         }
         SplitPhrase => {

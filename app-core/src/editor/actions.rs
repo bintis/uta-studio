@@ -481,6 +481,20 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         Mutation,
         []
     ),
+    action!(
+        "roll_lyrics_left",
+        "Roll the line one note earlier",
+        Lyrics,
+        Mutation,
+        [KeyChord::ctrl("ArrowLeft")]
+    ),
+    action!(
+        "roll_lyrics_right",
+        "Roll the line one note later",
+        Lyrics,
+        Mutation,
+        [KeyChord::ctrl("ArrowRight")]
+    ),
     action!("split_phrase", "Start a new phrase", Lyrics, Mutation, []),
     action!("merge_phrase", "Join the next phrase", Lyrics, Mutation, []),
 ];

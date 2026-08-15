@@ -386,6 +386,10 @@ pub(crate) struct EditorWordInput(pub(crate) WordSelection);
 #[derive(Component)]
 pub(crate) struct InlineEditorWordInput;
 
+/// The whole-line lyric field: the phrase it edits.
+#[derive(Component)]
+pub(crate) struct EditorPhraseInput(pub(crate) usize);
+
 /// The singer-name field of one track in the track strip.
 #[derive(Component)]
 pub(crate) struct EditorSingerInput(pub(crate) usize);

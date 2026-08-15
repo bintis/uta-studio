@@ -1611,6 +1611,162 @@ impl EditorDocument {
         result
     }
 
+    /// The notes of a phrase that can hold a syllable. A note carrying a
+    /// continuation is holding the syllable before it and is not a slot.
+    fn lyric_slots(&self, phrase: usize) -> Vec<usize> {
+        let Some(entry) = self
+            .active_track()
+            .and_then(|track| track.phrases.get(phrase))
+        else {
+            return Vec::new();
+        };
+        (0..entry.notes.len())
+            .filter(|offset| {
+                !entry.notes[*offset]
+                    .lyrics
+                    .iter()
+                    .any(|token| matches!(token, LyricToken::Continuation { .. }))
+            })
+            .collect()
+    }
+
+    /// Moves every syllable in a phrase one note along, wrapping at the ends.
+    ///
+    /// This is the fix for a line that is right except that it sits one note
+    /// off — a very common outcome of automatic alignment, and painful to
+    /// repair syllable by syllable.
+    pub fn roll_lyrics(&mut self, phrase: usize, forward: bool) -> bool {
+        let slots = self.lyric_slots(phrase);
+        if slots.len() < 2 {
+            return false;
+        }
+        let Some(entry) = self
+            .chart
+            .tracks
+            .get_mut(self.track)
+            .and_then(|track| track.phrases.get_mut(phrase))
+        else {
+            return false;
+        };
+        let mut carried = slots
+            .iter()
+            .map(|offset| std::mem::take(&mut entry.notes[*offset].lyrics))
+            .collect::<Vec<_>>();
+        if carried.iter().all(|tokens| tokens.is_empty()) {
+            return false;
+        }
+        if forward {
+            carried.rotate_right(1);
+        } else {
+            carried.rotate_left(1);
+        }
+        for (offset, tokens) in slots.iter().zip(carried) {
+            entry.notes[*offset].lyrics = tokens;
+        }
+        self.touch();
+        true
+    }
+
+    /// The phrase written as its own tokens: a space starts a new word, and a
+    /// slash divides syllables inside one. Reading and writing this text is how
+    /// a whole line gets retyped without clicking through every syllable.
+    ///
+    /// A literal slash in lyric text cannot be expressed here, which is the
+    /// price of the boundaries being visible at all.
+    pub fn phrase_token_text(&self, phrase: usize) -> String {
+        let Some(entry) = self
+            .active_track()
+            .and_then(|track| track.phrases.get(phrase))
+        else {
+            return String::new();
+        };
+        let mut text = String::new();
+        for note in &entry.notes {
+            for token in &note.lyrics {
+                let LyricToken::Text(token) = token else {
+                    continue;
+                };
+                if !text.is_empty() {
+                    text.push(if token.join_before == LyricJoin::Space {
+                        ' '
+                    } else {
+                        '/'
+                    });
+                }
+                text.push_str(&token.text);
+            }
+        }
+        text
+    }
+
+    /// Rewrites a phrase's syllables from the text form above, keeping them on
+    /// the notes that are already there.
+    pub fn set_phrase_token_text(&mut self, phrase: usize, text: &str) -> bool {
+        if self.phrase_token_text(phrase) == text {
+            return false;
+        }
+        let parsed = parse_phrase_tokens(text);
+        let slots = self.lyric_slots(phrase);
+        if slots.is_empty() {
+            return false;
+        }
+        // Reuse the IDs already in the phrase so continuations keep resolving
+        // wherever the syllable they hold ends up.
+        let existing = {
+            let Some(entry) = self
+                .active_track()
+                .and_then(|track| track.phrases.get(phrase))
+            else {
+                return false;
+            };
+            entry
+                .notes
+                .iter()
+                .flat_map(|note| note.lyrics.iter())
+                .filter_map(|token| match token {
+                    LyricToken::Text(token) => Some(token.id.clone()),
+                    LyricToken::Continuation { .. } => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut ids = existing.into_iter();
+        let tokens = parsed
+            .into_iter()
+            .map(|(text, join)| {
+                let id = ids.next().unwrap_or_else(|| self.allocate_id("lyric"));
+                LyricToken::Text(LyricTextToken {
+                    id,
+                    text,
+                    join_before: join,
+                    reading: None,
+                    phonemes: None,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let Some(entry) = self
+            .chart
+            .tracks
+            .get_mut(self.track)
+            .and_then(|track| track.phrases.get_mut(phrase))
+        else {
+            return false;
+        };
+        for offset in &slots {
+            entry.notes[*offset].lyrics.clear();
+        }
+        let last = *slots.last().expect("checked non-empty");
+        for (index, token) in tokens.into_iter().enumerate() {
+            // Syllables past the last note pile onto it rather than vanishing,
+            // so retyping a longer line never silently drops words.
+            let offset = slots.get(index).copied().unwrap_or(last);
+            entry.notes[offset].lyrics.push(token);
+        }
+        self.prune_orphaned_continuations();
+        self.touch();
+        true
+    }
+
     /// The phrase and in-phrase position of a flattened note index.
     fn locate_note(&self, index: usize) -> Option<(usize, usize)> {
         let track = self.active_track()?;
@@ -2000,6 +2156,53 @@ impl EditorDocument {
         self.touch();
         true
     }
+}
+
+/// Splits a phrase's text form into syllables and the join each one takes.
+fn parse_phrase_tokens(text: &str) -> Vec<(String, LyricJoin)> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut join = LyricJoin::None;
+    let mut pending = LyricJoin::None;
+    let mut started = false;
+    for character in text.chars() {
+        let separator = match character {
+            '/' => Some(LyricJoin::None),
+            character if character.is_whitespace() => Some(LyricJoin::Space),
+            _ => None,
+        };
+        match separator {
+            Some(next) => {
+                if started && !current.is_empty() {
+                    tokens.push((std::mem::take(&mut current), join));
+                    started = false;
+                }
+                // Consecutive separators collapse; a space anywhere between two
+                // syllables wins, because it is the stronger break.
+                pending = if pending == LyricJoin::Space || next == LyricJoin::Space {
+                    LyricJoin::Space
+                } else {
+                    LyricJoin::None
+                };
+            }
+            None => {
+                if !started {
+                    join = if tokens.is_empty() {
+                        LyricJoin::None
+                    } else {
+                        pending
+                    };
+                    pending = LyricJoin::None;
+                    started = true;
+                }
+                current.push(character);
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push((current, join));
+    }
+    tokens
 }
 
 fn orphaned_continuations(flat: &[FlatNote]) -> HashSet<String> {
@@ -2416,6 +2619,91 @@ mod tests {
         assert!((document.notes()[0].start - 1.5).abs() < 1e-9);
         assert!(document.shift_all(-10.0));
         assert_eq!(document.notes()[0].start, 0.0);
+    }
+
+    #[test]
+    fn rolling_moves_a_line_one_note_along_and_back() {
+        let mut document = document(&[
+            (0.0, 1.0, 60, "one"),
+            (1.0, 2.0, 62, "two"),
+            (2.0, 3.0, 64, "three"),
+        ]);
+        assert!(document.roll_lyrics(0, true));
+        assert_eq!(
+            document
+                .notes()
+                .iter()
+                .map(|note| note.lyric.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["three", "one", "two"]
+        );
+        assert!(document.roll_lyrics(0, false));
+        assert_eq!(
+            document
+                .notes()
+                .iter()
+                .map(|note| note.lyric.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["one", "two", "three"]
+        );
+    }
+
+    #[test]
+    fn rolling_needs_something_to_roll() {
+        let mut document = document(&[(0.0, 1.0, 60, "only")]);
+        assert!(!document.roll_lyrics(0, true));
+        assert_eq!(document.revision(), 0);
+    }
+
+    #[test]
+    fn a_phrase_reads_and_writes_as_its_own_syllables() {
+        let mut document = document(&[(0.0, 1.0, 60, "won"), (1.0, 2.0, 62, "der")]);
+        // The second syllable joins without a space, so it reads as one word
+        // divided by a slash.
+        document.set_lyric_text(
+            LyricAddress {
+                segment: 0,
+                word: 1,
+            },
+            "der",
+        );
+        let text = document.phrase_token_text(0);
+        assert!(text == "won der" || text == "won/der", "{text}");
+
+        assert!(document.set_phrase_token_text(0, "sun/day morn/ing"));
+        assert_eq!(document.phrase_token_text(0), "sun/day morn/ing");
+        // Four syllables over two notes: the surplus rides on the last note
+        // rather than being dropped.
+        assert_eq!(document.note_count(), 2);
+        assert_eq!(document.lyrics().len(), 4);
+        document.to_chart().validate().expect("valid chart");
+    }
+
+    #[test]
+    fn retyping_a_shorter_line_clears_the_notes_it_no_longer_covers() {
+        let mut document = document(&[
+            (0.0, 1.0, 60, "one"),
+            (1.0, 2.0, 62, "two"),
+            (2.0, 3.0, 64, "three"),
+        ]);
+        assert!(document.set_phrase_token_text(0, "just this"));
+        assert_eq!(
+            document
+                .notes()
+                .iter()
+                .map(|note| note.lyric.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["just", "this", ""]
+        );
+        document.to_chart().validate().expect("valid chart");
+    }
+
+    #[test]
+    fn writing_the_same_text_back_changes_nothing() {
+        let mut document = document(&[(0.0, 1.0, 60, "one"), (1.0, 2.0, 62, "two")]);
+        let text = document.phrase_token_text(0);
+        assert!(!document.set_phrase_token_text(0, &text));
+        assert_eq!(document.revision(), 0);
     }
 
     #[test]
