@@ -20,7 +20,7 @@ use crate::{
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
     library_db,
-    vocal_chart::{legacy_projections, migrate_legacy_chart},
+    vocal_chart::{legacy_projections, migrate_analyzer_chart},
 };
 
 fn playable_audio(
@@ -140,12 +140,11 @@ pub fn decode_chart_waveform(path: &Path) -> Result<ChartWaveform, UtaStudioErro
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartDocument {
     pub file_hash: String,
-    /// Authoritative UTZ 0.2 authoring document. The legacy JSON fields below
-    /// are temporary editor projections while the native UI is migrated.
+    /// The authoritative authoring document. The editor edits this directly.
     pub vocal_chart: VocalChartV1,
-    pub transcript: serde_json::Value,
+    /// Optional frame-level analyzer evidence, rendered behind the notes. It is
+    /// never scoring data and is never written back into the chart.
     pub pitch_track: serde_json::Value,
-    pub pitch_notes: serde_json::Value,
     pub audio: ChartAudio,
     /// Safe, in-memory compatibility repairs applied to legacy analyzer data.
     /// Saving the chart persists these normalized timings.
@@ -193,26 +192,8 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
     }
 
     let cache = CacheDir::new();
-    let mut transcript = read_json(&cache.transcript_path(file_hash), "transcript")?;
     let pitch_track = read_json(&cache.pitch_track_path(file_hash), "pitch track")?;
-    let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes")?;
     let mut repaired_issues = Vec::new();
-    let repaired_timings = normalize_transcript_timings(&mut transcript);
-    if repaired_timings > 0 {
-        repaired_issues.push(format!(
-            "Repaired {repaired_timings} legacy lyric timing{}",
-            if repaired_timings == 1 { "" } else { "s" }
-        ));
-    }
-    let repaired_notes = normalize_pitch_note_timings(&mut pitch_notes);
-    if repaired_notes > 0 {
-        repaired_issues.push(format!(
-            "Repaired {repaired_notes} legacy pitch note{}",
-            if repaired_notes == 1 { "" } else { "s" }
-        ));
-    }
-    validate_transcript(&transcript)?;
-    validate_pitch_notes(&pitch_notes)?;
 
     let vocal_chart = if cache.vocal_chart_path(file_hash).is_file() {
         let chart: VocalChartV1 =
@@ -220,13 +201,29 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
         chart
             .validate()
             .map_err(|error| UtaStudioError::Other(error.to_string()))?;
-        let projections = legacy_projections(&chart);
-        transcript = projections.0;
-        pitch_notes = projections.1;
         chart
     } else {
-        repaired_issues.push("Prepared the legacy chart for UTZ 0.2 note-owned lyrics".into());
-        migrate_legacy_chart(&transcript, &pitch_notes)?
+        // A song that has never been edited still carries only analyzer output.
+        let mut transcript = read_json(&cache.transcript_path(file_hash), "transcript")?;
+        let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes")?;
+        let repaired_timings = normalize_transcript_timings(&mut transcript);
+        if repaired_timings > 0 {
+            repaired_issues.push(format!(
+                "Repaired {repaired_timings} legacy lyric timing{}",
+                if repaired_timings == 1 { "" } else { "s" }
+            ));
+        }
+        let repaired_notes = normalize_pitch_note_timings(&mut pitch_notes);
+        if repaired_notes > 0 {
+            repaired_issues.push(format!(
+                "Repaired {repaired_notes} legacy pitch note{}",
+                if repaired_notes == 1 { "" } else { "s" }
+            ));
+        }
+        validate_transcript(&transcript)?;
+        validate_pitch_notes(&pitch_notes)?;
+        repaired_issues.push("Prepared the analyzer chart for UTZ 0.2 note-owned lyrics".into());
+        migrate_analyzer_chart(&transcript, &pitch_notes)?
     };
 
     let audio = get_audio_paths(file_hash);
@@ -239,9 +236,7 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
     Ok(ChartDocument {
         file_hash: file_hash.to_owned(),
         vocal_chart,
-        transcript,
         pitch_track,
-        pitch_notes,
         audio: ChartAudio {
             instrumental: playable_audio(&cache, file_hash, "instrumental", &audio.instrumental)?,
             vocals: audio
@@ -437,7 +432,7 @@ pub fn save_chart(
 
     validate_transcript(&transcript)?;
     validate_pitch_notes(&pitch_notes)?;
-    let vocal_chart = migrate_legacy_chart(&transcript, &pitch_notes)?;
+    let vocal_chart = migrate_analyzer_chart(&transcript, &pitch_notes)?;
     save_vocal_chart(file_hash, vocal_chart)
 }
 

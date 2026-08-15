@@ -1,6 +1,11 @@
 //! UTZ 0.2 vocal-chart authoring model and legacy analyzer migration.
 
 use serde_json::{Value, json};
+
+use crate::{
+    authoring::{load_pitch_guide, load_transcript},
+    cache::CacheDir,
+};
 use utz::{
     DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
     ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
@@ -23,7 +28,33 @@ struct MigratedNote {
     note: VocalNote,
 }
 
-pub(crate) fn migrate_legacy_chart(
+/// Loads the authoritative vocal chart for a song.
+///
+/// A saved chart is authority: it carries the author's phrase structure, lyric
+/// tokens, and per-note scoring intent, none of which survive a re-migration.
+/// Only a song that has never been edited falls back to migrating analyzer
+/// output.
+pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChartV1, UtaStudioError> {
+    let cache = CacheDir::new();
+    let path = cache.vocal_chart_path(file_hash);
+    if path.is_file() {
+        let chart: VocalChartV1 = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        chart
+            .validate()
+            .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+        return Ok(chart);
+    }
+
+    let transcript = load_transcript(file_hash)?;
+    let guide = load_pitch_guide(file_hash)?
+        .ok_or_else(|| UtaStudioError::Other("pitch track and guide notes are not ready".into()))?;
+    let notes = guide
+        .get("notes")
+        .ok_or_else(|| UtaStudioError::Other("pitch guide has no notes".into()))?;
+    migrate_analyzer_chart(&transcript, notes)
+}
+
+pub fn migrate_analyzer_chart(
     transcript: &Value,
     pitch_notes: &Value,
 ) -> Result<VocalChartV1, UtaStudioError> {
@@ -369,7 +400,7 @@ fn units_to_seconds_with_timebase(value: u64, timebase: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{legacy_projections, migrate_legacy_chart};
+    use super::{legacy_projections, migrate_analyzer_chart};
     use utz::{LyricToken, NoteBonus, ScoringMode, VocalMode};
 
     #[test]
@@ -389,7 +420,7 @@ mod tests {
         let notes = serde_json::json!({
             "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 1.0}]
         });
-        let chart = migrate_legacy_chart(&transcript, &notes).unwrap();
+        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(notes.len(), 2);
         assert!(matches!(notes[0].lyrics[0], LyricToken::Text(_)));
@@ -418,7 +449,7 @@ mod tests {
                 {"start": 0.5, "end": 1.0, "midi": 62, "confidence": 1.0}
             ]
         });
-        let chart = migrate_legacy_chart(&transcript, &notes).unwrap();
+        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
         let (projected_transcript, projected_notes) = legacy_projections(&chart);
         assert_eq!(projected_transcript["segments"][0]["text"], "歌詞");
         assert_eq!(projected_notes["notes"].as_array().unwrap().len(), 2);
@@ -444,7 +475,7 @@ mod tests {
                 {"start": 1.0, "end": 2.0, "midi": 62, "confidence": 1.0}
             ]
         });
-        let error = migrate_legacy_chart(&transcript, &notes)
+        let error = migrate_analyzer_chart(&transcript, &notes)
             .expect_err("overlapping legacy notes must not migrate silently");
         assert!(
             error.to_string().contains("overlap"),
@@ -469,7 +500,7 @@ mod tests {
                 {"start": 1.0, "end": 2.0, "midi": 64, "confidence": 1.0}
             ]
         });
-        let chart = migrate_legacy_chart(&transcript, &notes).unwrap();
+        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(notes.len(), 2);
         let LyricToken::Text(head) = &notes[0].lyrics[0] else {
@@ -513,9 +544,9 @@ mod tests {
                 {"start": 4.0, "end": 5.0, "midi": 65, "confidence": 1.0, "kind": "normal"}
             ]
         });
-        let first = migrate_legacy_chart(&transcript, &notes).unwrap();
+        let first = migrate_analyzer_chart(&transcript, &notes).unwrap();
         let (projected_transcript, projected_notes) = legacy_projections(&first);
-        let second = migrate_legacy_chart(&projected_transcript, &projected_notes).unwrap();
+        let second = migrate_analyzer_chart(&projected_transcript, &projected_notes).unwrap();
         assert_eq!(
             first, second,
             "a projection round trip must not change the authoring model"
@@ -544,7 +575,7 @@ mod tests {
                 {"start": 2.0, "end": 3.0, "midi": 64, "confidence": 1.0, "kind": "golden_rap"}
             ]
         });
-        let chart = migrate_legacy_chart(&transcript, &notes).unwrap();
+        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
         let migrated = &chart.tracks[0].phrases[0].notes;
         assert_eq!(
             (migrated[0].vocal_mode, migrated[0].bonus),

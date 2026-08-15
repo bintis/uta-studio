@@ -534,6 +534,9 @@ impl FolderBrowser {
 
 struct NativeEditor {
     chart: app_core::ChartDocument,
+    /// The authoritative UTZ 0.2 chart under edit. Every note and lyric change
+    /// goes through it; nothing is re-derived from analyzer JSON on save.
+    document: app_core::EditorDocument,
     waveform: app_core::ChartWaveform,
     audio_source: String,
     visible_position: f64,
@@ -555,7 +558,7 @@ struct NativeEditor {
     manual_scroll_until: Instant,
     undo: Vec<ChartSnapshot>,
     redo: Vec<ChartSnapshot>,
-    clipboard_notes: Vec<serde_json::Value>,
+    clipboard_notes: Vec<app_core::ClipboardNote>,
 }
 
 struct LibraryPlayback {
@@ -618,17 +621,12 @@ impl Default for LibraryPlayback {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct WordSelection {
-    segment: usize,
-    word: usize,
-}
+/// A lyric token address: (phrase, syllable). The editor still calls these
+/// words because that is what the lyric lane shows.
+type WordSelection = app_core::LyricAddress;
 
 #[derive(Clone)]
-struct ChartSnapshot {
-    transcript: serde_json::Value,
-    pitch_notes: serde_json::Value,
-}
+struct ChartSnapshot(app_core::VocalChartV1);
 
 impl NativeEditor {
     fn new(
@@ -637,9 +635,11 @@ impl NativeEditor {
         waveform: app_core::ChartWaveform,
         audio_source: impl Into<String>,
     ) -> Self {
-        let notes = chart_notes(&chart);
+        let document = app_core::EditorDocument::new(chart.vocal_chart.clone());
+        let notes = document.notes();
         let pitch_min = notes
             .iter()
+            .filter(|note| note.pitched)
             .map(|note| note.midi)
             .reduce(f64::min)
             .unwrap_or(48.0)
@@ -647,6 +647,7 @@ impl NativeEditor {
             - 2.0;
         let pitch_max = notes
             .iter()
+            .filter(|note| note.pitched)
             .map(|note| note.midi)
             .reduce(f64::max)
             .unwrap_or(72.0)
@@ -654,6 +655,7 @@ impl NativeEditor {
             + 2.0;
         Self {
             chart,
+            document,
             waveform,
             audio_source: audio_source.into(),
             visible_position: audio_status.position_secs,
@@ -684,10 +686,7 @@ impl NativeEditor {
     }
 
     fn snapshot(&self) -> ChartSnapshot {
-        ChartSnapshot {
-            transcript: self.chart.transcript.clone(),
-            pitch_notes: self.chart.pitch_notes.clone(),
-        }
+        ChartSnapshot(self.document.chart().clone())
     }
 
     fn checkpoint(&mut self) {
@@ -699,8 +698,7 @@ impl NativeEditor {
     }
 
     fn restore(&mut self, snapshot: ChartSnapshot) {
-        self.chart.transcript = snapshot.transcript;
-        self.chart.pitch_notes = snapshot.pitch_notes;
+        self.document = app_core::EditorDocument::new(snapshot.0);
         self.selected_note = None;
         self.selected_notes.clear();
         self.selected_word = None;
@@ -770,8 +768,9 @@ struct ChartNoteView {
     start: f64,
     end: f64,
     midi: f64,
-    confidence: f64,
-    kind: String,
+    /// Rhythm, spoken, and freestyle notes carry no pitch target to hit.
+    pitched: bool,
+    kind: app_core::NoteKind,
 }
 
 #[derive(Clone, Debug)]
@@ -5003,8 +5002,8 @@ fn spawn_editor(
         return;
     };
     let song = session.selected_song();
-    let notes = chart_notes(&editor.chart);
-    let lyrics = chart_lyrics(&editor.chart, &notes);
+    let notes = chart_notes(&editor.document);
+    let lyrics = chart_lyrics(&editor.document);
 
     parent
         .spawn((
@@ -5910,7 +5909,7 @@ fn spawn_editor_timeline(
                     let max_points =
                         (((note.end - note.start) * 16.0).ceil() as usize).clamp(2, 14);
                     let contour = abstract_pitch_contour(&note_frames, max_points);
-                    let note_color = editor_note_color(&note.kind, theme);
+                    let note_color = editor_note_color(note.kind, theme);
                     canvas
                         .spawn((
                             Button,
@@ -5933,9 +5932,9 @@ fn spawn_editor_timeline(
                             } else if active {
                                 theme.primary.with_alpha(0.86)
                             } else {
-                                note_color.with_alpha(
-                                    (0.9 + note.confidence.clamp(0.0, 1.0) * 0.08) as f32,
-                                )
+                                // A note with no pitch target reads as guidance
+                                // rather than something to hit.
+                                note_color.with_alpha(if note.pitched { 0.98 } else { 0.72 })
                             }),
                             BorderColor::all(if selected {
                                 theme.editor_selection.with_alpha(1.0)
@@ -6386,7 +6385,7 @@ fn spawn_editor_inspector(
                     font.clone(),
                     format!(
                         "{:.3}s – {:.3}s\nType: {}\nDrag to change time and pitch.",
-                        note.start, note.end, note.kind
+                        note.start, note.end, note.kind.label()
                     ),
                     10.0,
                     theme.muted_foreground,
@@ -6468,7 +6467,7 @@ fn spawn_editor_inspector(
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
             } else if let Some(selection) = editor.selected_word
-                && let Some((text, start, end)) = selected_editor_word(&editor.chart, selection)
+                && let Some((text, start, end)) = selected_editor_word(&editor.document, selection)
             {
                 spawn_text(
                     inspector,
@@ -6548,7 +6547,7 @@ fn spawn_editor_inspector(
                 );
             }
 
-            let issues = analyze_chart_issues(&editor.chart);
+            let issues = analyze_chart_issues(&editor.document);
             inspector.spawn(Node {
                 width: percent(100),
                 height: px(1),
@@ -6623,67 +6622,27 @@ fn spawn_editor_inspector(
 }
 
 fn selected_editor_word(
-    chart: &app_core::ChartDocument,
+    document: &app_core::EditorDocument,
     selection: WordSelection,
 ) -> Option<(String, f64, f64)> {
-    let word = chart
-        .transcript
-        .get("segments")?
-        .as_array()?
-        .get(selection.segment)?
-        .get("words")?
-        .as_array()?
-        .get(selection.word)?;
-    Some((
-        word.get("word")?.as_str()?.to_string(),
-        note_number(word, "start", 0.0),
-        note_number(word, "end", 0.02),
-    ))
+    document.lyric(selection)
 }
 
-fn all_editor_word_selections(transcript: &serde_json::Value) -> BTreeSet<WordSelection> {
-    transcript
-        .get("segments")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .flat_map(|(segment, value)| {
-            value
-                .get("words")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .enumerate()
-                .map(move |(word, _)| WordSelection { segment, word })
-        })
-        .collect()
+fn all_editor_word_selections(document: &app_core::EditorDocument) -> BTreeSet<WordSelection> {
+    document.lyric_addresses()
 }
 
-fn chart_notes(chart: &app_core::ChartDocument) -> Vec<ChartNoteView> {
-    chart
-        .pitch_notes
-        .get("notes")
-        .and_then(serde_json::Value::as_array)
+fn chart_notes(document: &app_core::EditorDocument) -> Vec<ChartNoteView> {
+    document
+        .notes()
         .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(index, note)| {
-            Some(ChartNoteView {
-                index,
-                start: note.get("start")?.as_f64()?,
-                end: note.get("end")?.as_f64()?,
-                midi: note.get("midi")?.as_f64()?,
-                confidence: note
-                    .get("confidence")
-                    .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(1.0),
-                kind: note
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("normal")
-                    .to_string(),
-            })
+        .map(|note| ChartNoteView {
+            index: note.index,
+            start: note.start,
+            end: note.end,
+            midi: note.midi,
+            pitched: note.pitched,
+            kind: note.kind,
         })
         .collect()
 }
@@ -6741,66 +6700,17 @@ fn abstract_pitch_contour(frames: &[ChartPitchFrame], max_points: usize) -> Vec<
         .collect()
 }
 
-fn chart_lyrics(chart: &app_core::ChartDocument, notes: &[ChartNoteView]) -> Vec<ChartLyricView> {
-    let mut lyrics = chart
-        .transcript
-        .get("segments")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .flat_map(|(segment_index, segment)| {
-            let segment_start = segment
-                .get("start")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0);
-            let segment_end = segment
-                .get("end")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(segment_start + 0.04);
-            let words = segment
-                .get("words")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if words.is_empty() {
-                vec![(
-                    segment_index,
-                    0,
-                    segment_start,
-                    segment_end,
-                    segment
-                        .get("text")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                )]
-            } else {
-                words
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(word_index, word)| {
-                        Some((
-                            segment_index,
-                            word_index,
-                            word.get("start")?.as_f64()?,
-                            word.get("end")?.as_f64()?,
-                            word.get("word")?.as_str()?.to_string(),
-                        ))
-                    })
-                    .collect()
-            }
-        })
-        .filter(|(_, _, _, _, text)| !text.trim().is_empty())
-        .collect::<Vec<_>>();
-    lyrics.sort_by(|left, right| left.2.total_cmp(&right.2));
+fn chart_lyrics(document: &app_core::EditorDocument) -> Vec<ChartLyricView> {
+    let mut lyrics = document.lyrics();
+    lyrics.retain(|lyric| !lyric.text.trim().is_empty());
+    lyrics.sort_by(|left, right| left.start.total_cmp(&right.start));
     let mut lane_ends = [f64::NEG_INFINITY; 3];
     lyrics
         .into_iter()
-        .map(|(segment, word, start, end, text)| {
+        .map(|lyric| {
             let lane = lane_ends
                 .iter()
-                .position(|lane_end| *lane_end <= start)
+                .position(|lane_end| *lane_end <= lyric.start)
                 .unwrap_or_else(|| {
                     lane_ends
                         .iter()
@@ -6809,18 +6719,15 @@ fn chart_lyrics(chart: &app_core::ChartDocument, notes: &[ChartNoteView]) -> Vec
                         .map(|(index, _)| index)
                         .unwrap_or(0)
                 });
-            lane_ends[lane] = end.max(start + 0.04);
-            let guided = notes
-                .iter()
-                .any(|note| note.start < end && note.end > start);
+            lane_ends[lane] = lyric.end.max(lyric.start + 0.04);
             ChartLyricView {
-                segment,
-                word,
-                start,
-                end,
-                text,
+                segment: lyric.address.segment,
+                word: lyric.address.word,
+                start: lyric.start,
+                end: lyric.end,
+                text: lyric.text,
                 lane,
-                guided,
+                guided: lyric.guided,
             }
         })
         .collect()
@@ -6848,13 +6755,13 @@ fn midi_note_name(midi: f64) -> String {
     format!("{}{}", NAMES[midi.rem_euclid(12) as usize], midi / 12 - 1)
 }
 
-fn editor_note_color(kind: &str, theme: &StudioTheme) -> Color {
+fn editor_note_color(kind: app_core::NoteKind, theme: &StudioTheme) -> Color {
     match kind {
-        "golden" => Color::srgb(0.94, 0.67, 0.2),
-        "golden_rap" => Color::srgb(0.94, 0.45, 0.18),
-        "rap" => Color::srgb(0.71, 0.43, 0.92),
-        "freestyle" => theme.muted_foreground.with_alpha(0.48),
-        _ => theme.note_normal,
+        app_core::NoteKind::Golden => Color::srgb(0.94, 0.67, 0.2),
+        app_core::NoteKind::GoldenRap => Color::srgb(0.94, 0.45, 0.18),
+        app_core::NoteKind::Rap => Color::srgb(0.71, 0.43, 0.92),
+        app_core::NoteKind::Freestyle => theme.muted_foreground.with_alpha(0.48),
+        app_core::NoteKind::Normal => theme.note_normal,
     }
 }
 
@@ -6890,25 +6797,21 @@ fn lyrics_text(file_hash: &str, mode: LyricsInputMode) -> String {
     let Ok(chart) = app_core::load_chart(file_hash) else {
         return String::new();
     };
-    chart
-        .transcript
-        .get("segments")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|segment| {
-            let text = segment
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .trim();
+    let document = app_core::EditorDocument::new(chart.vocal_chart);
+    (0..document.phrase_count())
+        .filter_map(|phrase| {
+            let text = document.phrase_text(phrase);
+            let text = text.trim();
             if text.is_empty() {
                 return None;
             }
             if mode == LyricsInputMode::TimedLrc {
-                let start = segment
-                    .get("start")
-                    .and_then(serde_json::Value::as_f64)
+                let start = document
+                    .lyric(app_core::LyricAddress {
+                        segment: phrase,
+                        word: 0,
+                    })
+                    .map(|(_, start, _)| start)
                     .unwrap_or(0.0);
                 Some(format!("[{}]{text}", format_lrc_timestamp(start)))
             } else {
@@ -12142,14 +12045,6 @@ fn spawn_select_setting_row(
         });
 }
 
-fn next_choice(current: &str, choices: &[&str]) -> String {
-    let index = choices
-        .iter()
-        .position(|choice| *choice == current)
-        .unwrap_or(0);
-    choices[(index + 1) % choices.len()].to_string()
-}
-
 fn spawn_setting_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -15386,10 +15281,9 @@ fn handle_actions(
             }
             UiAction::SaveEditor => {
                 if let Some(editor) = session.editor.as_mut() {
-                    session.notice = match app_core::save_chart(
+                    session.notice = match app_core::save_vocal_chart(
                         &editor.chart.file_hash,
-                        editor.chart.transcript.clone(),
-                        editor.chart.pitch_notes.clone(),
+                        editor.document.to_chart(),
                     ) {
                         Ok(()) => {
                             editor.dirty = false;
@@ -15423,16 +15317,8 @@ fn handle_actions(
                     let midi = ((editor.pitch_min + editor.pitch_max) / 2.0)
                         .round()
                         .clamp(0.0, 127.0);
-                    let selected = insert_chart_note(
-                        &mut editor.chart.pitch_notes,
-                        serde_json::json!({
-                            "start": start,
-                            "end": start + 0.5,
-                            "midi": midi,
-                            "confidence": 1.0,
-                            "kind": "normal"
-                        }),
-                    );
+                    let selected =
+                        insert_chart_note(&mut editor.document, start, start + 0.5, midi);
                     if let Some(selected) = selected {
                         editor.select_only_note(selected);
                     }
@@ -15448,7 +15334,7 @@ fn handle_actions(
                         let words = editor.selected_word_indices();
                         if !words.is_empty() {
                             editor.checkpoint();
-                            let deleted = delete_editor_words(&mut editor.chart.transcript, &words);
+                            let deleted = delete_editor_words(&mut editor.document, &words);
                             if deleted > 0 {
                                 editor.selected_word = None;
                                 editor.selected_words.clear();
@@ -15463,7 +15349,7 @@ fn handle_actions(
                         continue;
                     }
                     editor.checkpoint();
-                    let removed = remove_chart_notes(&mut editor.chart.pitch_notes, &selected);
+                    let removed = remove_chart_notes(&mut editor.document, &selected);
                     if removed > 0 {
                         editor.selected_note = None;
                         editor.selected_notes.clear();
@@ -15481,7 +15367,7 @@ fn handle_actions(
                         if !words.is_empty() {
                             editor.checkpoint();
                             let next = split_selected_editor_words(
-                                &mut editor.chart.transcript,
+                                &mut editor.document,
                                 &words,
                                 editor.visible_position,
                             );
@@ -15502,11 +15388,8 @@ fn handle_actions(
                         continue;
                     }
                     editor.checkpoint();
-                    let next = split_chart_notes(
-                        &mut editor.chart.pitch_notes,
-                        &selected,
-                        editor.visible_position,
-                    );
+                    let next =
+                        split_chart_notes(&mut editor.document, &selected, editor.visible_position);
                     if !next.is_empty() {
                         editor.selected_note = next.iter().next().copied();
                         editor.selected_notes = next;
@@ -15531,10 +15414,10 @@ fn handle_actions(
                             editor.checkpoint();
                             let merged = if words.len() == 1 {
                                 words.first().copied().filter(|selection| {
-                                    merge_editor_word(&mut editor.chart.transcript, *selection)
+                                    merge_editor_word(&mut editor.document, *selection)
                                 })
                             } else {
-                                merge_selected_editor_words(&mut editor.chart.transcript, &words)
+                                merge_selected_editor_words(&mut editor.document, &words)
                             };
                             if let Some(selection) = merged {
                                 editor.select_only_word(selection);
@@ -15553,11 +15436,9 @@ fn handle_actions(
                         continue;
                     }
                     editor.checkpoint();
-                    if let Some(index) = merge_chart_notes(
-                        &mut editor.chart.pitch_notes,
-                        &selected,
-                        editor.selected_note,
-                    ) {
+                    if let Some(index) =
+                        merge_chart_notes(&mut editor.document, &selected, editor.selected_note)
+                    {
                         editor.select_only_note(index);
                         editor.dirty = true;
                         session.notice = Some("Merged selected notes.".to_string());
@@ -15576,7 +15457,7 @@ fn handle_actions(
                     }
                     editor.checkpoint();
                     let changed = quantize_chart_notes(
-                        &mut editor.chart.pitch_notes,
+                        &mut editor.document,
                         Some(&selected),
                         editor.snap_seconds,
                     );
@@ -15588,18 +15469,14 @@ fn handle_actions(
             UiAction::DuplicateEditorNotes => {
                 if let Some(editor) = session.editor.as_mut() {
                     let selected = editor.selected_note_indices();
-                    let clipboard = copy_chart_notes(&editor.chart.pitch_notes, &selected);
+                    let clipboard = copy_chart_notes(&editor.document, &selected);
                     if clipboard.is_empty() {
                         continue;
                     }
-                    let duration = clipboard
-                        .iter()
-                        .map(|note| note_number(note, "end", 0.03))
-                        .reduce(f64::max)
-                        .unwrap_or(0.03);
+                    let duration = editor.document.clipboard_span(&clipboard);
                     editor.checkpoint();
                     let inserted = paste_chart_notes(
-                        &mut editor.chart.pitch_notes,
+                        &mut editor.document,
                         &clipboard,
                         editor.visible_position.max(duration + 0.01),
                     );
@@ -15613,7 +15490,7 @@ fn handle_actions(
             UiAction::RepairEditorChart => {
                 if let Some(editor) = session.editor.as_mut() {
                     editor.checkpoint();
-                    if repair_editor_chart(&mut editor.chart) {
+                    if repair_editor_chart(&mut editor.document) {
                         editor.selected_note = None;
                         editor.selected_notes.clear();
                         editor.selected_word = None;
@@ -15659,7 +15536,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut() {
                     editor.checkpoint();
                     let seconds = f64::from(*direction) * 0.01;
-                    shift_all_chart_timings(&mut editor.chart, seconds);
+                    shift_all_chart_timings(&mut editor.document, seconds);
                     editor.dirty = true;
                     session.notice = Some(format!(
                         "Shifted the whole chart by {}10 ms.",
@@ -15671,7 +15548,7 @@ fn handle_actions(
             UiAction::CopyEditorNote => {
                 if let Some(editor) = session.editor.as_mut() {
                     let selected = editor.selected_note_indices();
-                    editor.clipboard_notes = copy_chart_notes(&editor.chart.pitch_notes, &selected);
+                    editor.clipboard_notes = copy_chart_notes(&editor.document, &selected);
                     session.notice = Some(format!(
                         "Copied {} selected note(s).",
                         editor.clipboard_notes.len()
@@ -15685,7 +15562,7 @@ fn handle_actions(
                 {
                     editor.checkpoint();
                     let inserted = paste_chart_notes(
-                        &mut editor.chart.pitch_notes,
+                        &mut editor.document,
                         &editor.clipboard_notes,
                         editor.visible_position,
                     );
@@ -15703,7 +15580,7 @@ fn handle_actions(
                         continue;
                     }
                     editor.checkpoint();
-                    let changed = cycle_chart_note_kinds(&mut editor.chart.pitch_notes, &selected);
+                    let changed = cycle_chart_note_kinds(&mut editor.document, &selected);
                     if changed > 0 {
                         editor.dirty = true;
                         session.notice = Some("Changed selected note type(s).".to_string());
@@ -15770,7 +15647,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut() {
                     editor.checkpoint();
                     if let Some(selection) = insert_editor_word(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         editor.selected_word,
                         editor.visible_position,
                     ) {
@@ -15798,7 +15675,7 @@ fn handle_actions(
                         continue;
                     }
                     editor.checkpoint();
-                    let deleted = delete_editor_words(&mut editor.chart.transcript, &words);
+                    let deleted = delete_editor_words(&mut editor.document, &words);
                     if deleted > 0 {
                         editor.selected_word = None;
                         editor.selected_words.clear();
@@ -15823,7 +15700,7 @@ fn handle_actions(
                         .iter()
                         .filter(|selection| {
                             shift_editor_word(
-                                &mut editor.chart.transcript,
+                                &mut editor.document,
                                 **selection,
                                 f64::from(*direction) * 0.01,
                             )
@@ -15847,7 +15724,7 @@ fn handle_actions(
                 {
                     editor.checkpoint();
                     if adjust_editor_word_boundary(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         selection,
                         f64::from(*direction) * 0.01,
                         0.0,
@@ -15863,7 +15740,7 @@ fn handle_actions(
                 {
                     editor.checkpoint();
                     if adjust_editor_word_boundary(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         selection,
                         0.0,
                         f64::from(*direction) * 0.01,
@@ -15881,7 +15758,7 @@ fn handle_actions(
                     }
                     editor.checkpoint();
                     let next = split_selected_editor_words(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         &words,
                         editor.visible_position,
                     );
@@ -15904,11 +15781,12 @@ fn handle_actions(
                     let words = editor.selected_word_indices();
                     editor.checkpoint();
                     let merged = if words.len() == 1 {
-                        words.first().copied().filter(|selection| {
-                            merge_editor_word(&mut editor.chart.transcript, *selection)
-                        })
+                        words
+                            .first()
+                            .copied()
+                            .filter(|selection| merge_editor_word(&mut editor.document, *selection))
                     } else {
-                        merge_selected_editor_words(&mut editor.chart.transcript, &words)
+                        merge_selected_editor_words(&mut editor.document, &words)
                     };
                     if let Some(selection) = merged {
                         editor.select_only_word(selection);
@@ -15928,8 +15806,7 @@ fn handle_actions(
                     && let Some(selection) = editor.selected_word
                 {
                     editor.checkpoint();
-                    if let Some(next) = split_editor_phrase(&mut editor.chart.transcript, selection)
-                    {
+                    if let Some(next) = split_editor_phrase(&mut editor.document, selection) {
                         editor.select_only_word(next);
                         editor.dirty = true;
                         session.notice = Some("Started a new lyric phrase.".to_string());
@@ -15946,8 +15823,7 @@ fn handle_actions(
                     && let Some(selection) = editor.selected_word
                 {
                     editor.checkpoint();
-                    if let Some(next) = merge_editor_phrase(&mut editor.chart.transcript, selection)
-                    {
+                    if let Some(next) = merge_editor_phrase(&mut editor.document, selection) {
                         editor.select_only_word(next);
                         editor.dirty = true;
                         session.notice = Some("Joined the following lyric phrase.".to_string());
@@ -16105,14 +15981,14 @@ fn sync_editor_word_input(
     };
     for (input, marker) in &inputs {
         let text = input.value().to_string();
-        let current = selected_editor_word(&editor.chart, marker.0)
+        let current = selected_editor_word(&editor.document, marker.0)
             .map(|(text, _, _)| text)
             .unwrap_or_default();
         if text == current {
             continue;
         }
         editor.checkpoint();
-        if update_editor_word_text(&mut editor.chart.transcript, marker.0, &text) {
+        if update_editor_word_text(&mut editor.document, marker.0, &text) {
             editor.dirty = true;
         } else {
             editor.undo.pop();
@@ -17054,7 +16930,7 @@ fn handle_editor_keyboard(
     if control && keys.just_pressed(KeyCode::KeyA) {
         if let Some(editor) = session.editor.as_mut() {
             if editor.selected_word.is_some() {
-                let words = all_editor_word_selections(&editor.chart.transcript);
+                let words = all_editor_word_selections(&editor.document);
                 editor.selected_word = words.iter().next().copied();
                 editor.selected_words = words;
                 editor.selected_note = None;
@@ -17067,7 +16943,7 @@ fn handle_editor_keyboard(
                 invalidated.0 = true;
                 return;
             }
-            let count = chart_notes(&editor.chart).len();
+            let count = chart_notes(&editor.document).len();
             editor.selected_notes = (0..count).collect();
             editor.selected_note = (count > 0).then_some(0);
             editor.selected_word = None;
@@ -17080,10 +16956,9 @@ fn handle_editor_keyboard(
     }
     if control && keys.just_pressed(KeyCode::KeyS) {
         if let Some(editor) = session.editor.as_mut() {
-            session.notice = match app_core::save_chart(
+            session.notice = match app_core::save_vocal_chart(
                 &editor.chart.file_hash,
-                editor.chart.transcript.clone(),
-                editor.chart.pitch_notes.clone(),
+                editor.document.to_chart(),
             ) {
                 Ok(()) => {
                     editor.dirty = false;
@@ -17098,7 +16973,7 @@ fn handle_editor_keyboard(
     if control && keys.just_pressed(KeyCode::KeyC) {
         if let Some(editor) = session.editor.as_mut() {
             let selected = editor.selected_note_indices();
-            editor.clipboard_notes = copy_chart_notes(&editor.chart.pitch_notes, &selected);
+            editor.clipboard_notes = copy_chart_notes(&editor.document, &selected);
             session.notice = Some(format!("Copied {} note(s).", editor.clipboard_notes.len()));
             invalidated.0 = true;
         }
@@ -17110,9 +16985,9 @@ fn handle_editor_keyboard(
             if selected.is_empty() {
                 return;
             }
-            editor.clipboard_notes = copy_chart_notes(&editor.chart.pitch_notes, &selected);
+            editor.clipboard_notes = copy_chart_notes(&editor.document, &selected);
             editor.checkpoint();
-            let removed = remove_chart_notes(&mut editor.chart.pitch_notes, &selected);
+            let removed = remove_chart_notes(&mut editor.document, &selected);
             editor.selected_note = None;
             editor.selected_notes.clear();
             editor.dirty |= removed > 0;
@@ -17127,7 +17002,7 @@ fn handle_editor_keyboard(
         {
             editor.checkpoint();
             let inserted = paste_chart_notes(
-                &mut editor.chart.pitch_notes,
+                &mut editor.document,
                 &editor.clipboard_notes,
                 editor.visible_position,
             );
@@ -17142,18 +17017,22 @@ fn handle_editor_keyboard(
     if control && keys.just_pressed(KeyCode::KeyD) {
         if let Some(editor) = session.editor.as_mut() {
             let selected = editor.selected_note_indices();
-            let clipboard = copy_chart_notes(&editor.chart.pitch_notes, &selected);
+            let clipboard = copy_chart_notes(&editor.document, &selected);
             if clipboard.is_empty() {
                 return;
             }
             let selected_end = selected
                 .iter()
-                .filter_map(|index| chart_notes(&editor.chart).get(*index).map(|note| note.end))
+                .filter_map(|index| {
+                    chart_notes(&editor.document)
+                        .get(*index)
+                        .map(|note| note.end)
+                })
                 .reduce(f64::max)
                 .unwrap_or(editor.visible_position);
             editor.checkpoint();
             let inserted = paste_chart_notes(
-                &mut editor.chart.pitch_notes,
+                &mut editor.document,
                 &clipboard,
                 selected_end + editor.snap_seconds.max(0.02),
             );
@@ -17172,7 +17051,7 @@ fn handle_editor_keyboard(
                 let words = editor.selected_word_indices();
                 if !words.is_empty() {
                     editor.checkpoint();
-                    let deleted = delete_editor_words(&mut editor.chart.transcript, &words);
+                    let deleted = delete_editor_words(&mut editor.document, &words);
                     if deleted > 0 {
                         editor.selected_word = None;
                         editor.selected_words.clear();
@@ -17187,7 +17066,7 @@ fn handle_editor_keyboard(
                 return;
             }
             editor.checkpoint();
-            let removed = remove_chart_notes(&mut editor.chart.pitch_notes, &selected);
+            let removed = remove_chart_notes(&mut editor.document, &selected);
             if removed > 0 {
                 editor.selected_note = None;
                 editor.selected_notes.clear();
@@ -17203,11 +17082,8 @@ fn handle_editor_keyboard(
             let selected = editor.selected_note_indices();
             if !selected.is_empty() {
                 editor.checkpoint();
-                let next = split_chart_notes(
-                    &mut editor.chart.pitch_notes,
-                    &selected,
-                    editor.visible_position,
-                );
+                let next =
+                    split_chart_notes(&mut editor.document, &selected, editor.visible_position);
                 editor.selected_note = next.iter().next().copied();
                 editor.selected_notes = next;
                 editor.dirty = true;
@@ -17222,11 +17098,9 @@ fn handle_editor_keyboard(
             let selected = editor.selected_note_indices();
             if selected.len() > 1 {
                 editor.checkpoint();
-                if let Some(index) = merge_chart_notes(
-                    &mut editor.chart.pitch_notes,
-                    &selected,
-                    editor.selected_note,
-                ) {
+                if let Some(index) =
+                    merge_chart_notes(&mut editor.document, &selected, editor.selected_note)
+                {
                     editor.select_only_note(index);
                     editor.dirty = true;
                     session.notice = Some("Merged selected notes.".to_string());
@@ -17241,11 +17115,7 @@ fn handle_editor_keyboard(
             let selected = editor.selected_note_indices();
             if !selected.is_empty() && editor.snap_seconds > 0.0 {
                 editor.checkpoint();
-                quantize_chart_notes(
-                    &mut editor.chart.pitch_notes,
-                    Some(&selected),
-                    editor.snap_seconds,
-                );
+                quantize_chart_notes(&mut editor.document, Some(&selected), editor.snap_seconds);
                 editor.dirty = true;
                 session.notice = Some("Quantized selected note(s).".to_string());
                 invalidated.0 = true;
@@ -17255,7 +17125,7 @@ fn handle_editor_keyboard(
     }
     if keys.just_pressed(KeyCode::Tab) {
         if let Some(editor) = session.editor.as_mut() {
-            let count = chart_notes(&editor.chart).len();
+            let count = chart_notes(&editor.document).len();
             if count > 0 {
                 let next = editor.selected_note.map_or(0, |index| {
                     if shift {
@@ -17309,7 +17179,7 @@ fn handle_editor_keyboard(
                 .iter()
                 .filter(|selection| {
                     shift_editor_word(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         **selection,
                         if left { -time_step } else { time_step },
                     )
@@ -17350,7 +17220,7 @@ fn handle_editor_keyboard(
                 0.0
             };
             shift_chart_notes(
-                &mut editor.chart.pitch_notes,
+                &mut editor.document,
                 &selected,
                 seconds,
                 semitones,
@@ -17514,14 +17384,10 @@ fn handle_editor_pointer_capture(
                         .clamp(0.0, 127.0);
                     editor.checkpoint();
                     if let Some(index) = insert_chart_note(
-                        &mut editor.chart.pitch_notes,
-                        serde_json::json!({
-                            "start": start,
-                            "end": start + editor.snap_seconds.max(0.25),
-                            "midi": midi,
-                            "confidence": 1.0,
-                            "kind": "normal"
-                        }),
+                        &mut editor.document,
+                        start,
+                        start + editor.snap_seconds.max(0.25),
+                        midi,
                     ) {
                         editor.select_only_note(index);
                         editor.dirty = true;
@@ -17585,7 +17451,7 @@ fn handle_editor_pointer_capture(
             (*interaction == Interaction::Pressed).then_some(lyric.selection)
         });
         if let Some((selection, edge)) = pressed_lyric_resize {
-            if let Some((_, start, end)) = selected_editor_word(&editor.chart, selection) {
+            if let Some((_, start, end)) = selected_editor_word(&editor.document, selection) {
                 editor.checkpoint();
                 capture.drag = Some(EditorDrag::ResizeLyric {
                     selection,
@@ -17628,7 +17494,7 @@ fn handle_editor_pointer_capture(
                 let originals = selected
                     .into_iter()
                     .filter_map(|selection| {
-                        selected_editor_word(&editor.chart, selection).map(|(_, start, end)| {
+                        selected_editor_word(&editor.document, selection).map(|(_, start, end)| {
                             EditorWordOriginal {
                                 selection,
                                 start,
@@ -17647,7 +17513,7 @@ fn handle_editor_pointer_capture(
             editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
             invalidated.0 = true;
         } else if let Some((index, edge)) = pressed_resize {
-            if let Some(note) = chart_notes(&editor.chart)
+            if let Some(note) = chart_notes(&editor.document)
                 .into_iter()
                 .find(|note| note.index == index)
             {
@@ -17683,7 +17549,7 @@ fn handle_editor_pointer_capture(
                 editor.select_only_note(index);
             }
             let selected = editor.selected_note_indices();
-            let originals = chart_notes(&editor.chart)
+            let originals = chart_notes(&editor.document)
                 .into_iter()
                 .filter(|note| selected.contains(&note.index))
                 .map(|note| EditorNoteOriginal {
@@ -17787,7 +17653,7 @@ fn handle_editor_pointer_capture(
                 let end = start + (original.end - original.start).max(0.03);
                 let midi = (original.midi + pitch_delta).round().clamp(0.0, 127.0);
                 moved += usize::from(move_chart_note(
-                    &mut editor.chart.pitch_notes,
+                    &mut editor.document,
                     original.index,
                     start,
                     end,
@@ -17820,7 +17686,7 @@ fn handle_editor_pointer_capture(
                     (original_end + time_delta).max(original_start + 0.02),
                 ),
             };
-            if resize_chart_note(&mut editor.chart.pitch_notes, index, start, end) {
+            if resize_chart_note(&mut editor.document, index, start, end) {
                 editor.dirty = true;
             } else {
                 capture.drag = None;
@@ -17847,7 +17713,7 @@ fn handle_editor_pointer_capture(
                     snap_lyric_move_to_notes(
                         &originals,
                         proposed_delta,
-                        &chart_notes(&editor.chart),
+                        &chart_notes(&editor.document),
                         snap_tolerance,
                     )
                 })
@@ -17861,7 +17727,7 @@ fn handle_editor_pointer_capture(
                 .iter()
                 .filter(|word| {
                     set_editor_word_timing(
-                        &mut editor.chart.transcript,
+                        &mut editor.document,
                         word.selection,
                         word.start + time_delta,
                         word.end + time_delta,
@@ -17887,7 +17753,7 @@ fn handle_editor_pointer_capture(
             let snap_tolerance = (f64::from(EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX / size.x)
                 * viewport_duration)
                 .min(EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS);
-            let note_boundaries = chart_notes(&editor.chart);
+            let note_boundaries = chart_notes(&editor.document);
             let allow_snap = !keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
             let (start, end, guide) = match edge {
                 NoteEdge::Start => {
@@ -17908,7 +17774,7 @@ fn handle_editor_pointer_capture(
                 }
             };
             capture.alignment_guide = guide;
-            if set_editor_word_timing(&mut editor.chart.transcript, selection, start, end) {
+            if set_editor_word_timing(&mut editor.document, selection, start, end) {
                 editor.dirty = true;
             } else {
                 capture.drag = None;
@@ -17950,7 +17816,7 @@ fn handle_editor_pointer_capture(
             let midi_max = pitch_max - f64::from(top) * pitch_span;
             let midi_min = pitch_max - f64::from(bottom) * pitch_span;
             let mut selected = base;
-            for note in chart_notes(&editor.chart) {
+            for note in chart_notes(&editor.document) {
                 if note.end >= time_start
                     && note.start <= time_end
                     && note.midi >= midi_min
@@ -18028,1063 +17894,173 @@ fn nearest_note_boundary(time: f64, notes: &[ChartNoteView], tolerance: f64) -> 
 }
 
 fn move_chart_note(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     index: usize,
     start: f64,
     end: f64,
     midi: f64,
 ) -> bool {
-    let Some(note) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|notes| notes.get_mut(index))
-    else {
-        return false;
-    };
-    note["start"] = serde_json::Value::from(start);
-    note["end"] = serde_json::Value::from(end);
-    note["midi"] = serde_json::Value::from(midi);
-    true
+    document.move_note(index, start, end, midi)
 }
 
 fn resize_chart_note(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     index: usize,
     start: f64,
     end: f64,
 ) -> bool {
-    let Some(note) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|notes| notes.get_mut(index))
-    else {
-        return false;
-    };
-    note["start"] = serde_json::Value::from(start);
-    note["end"] = serde_json::Value::from(end);
-    true
+    document.resize_note(index, start, end)
 }
 
 fn insert_chart_note(
-    pitch_notes: &mut serde_json::Value,
-    note: serde_json::Value,
+    document: &mut app_core::EditorDocument,
+    start: f64,
+    end: f64,
+    midi: f64,
 ) -> Option<usize> {
-    let notes = pitch_notes.get_mut("notes")?.as_array_mut()?;
-    let start = note
-        .get("start")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let index = notes.partition_point(|existing| {
-        let existing = existing
-            .get("start")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        existing <= start
-    });
-    notes.insert(index, note);
-    Some(index)
-}
-
-fn round_millis(value: f64) -> f64 {
-    (value * 1000.0).round() / 1000.0
+    document.insert_note(start, end, midi)
 }
 
 fn copy_chart_notes(
-    pitch_notes: &serde_json::Value,
+    document: &app_core::EditorDocument,
     indices: &BTreeSet<usize>,
-) -> Vec<serde_json::Value> {
-    let Some(notes) = pitch_notes
-        .get("notes")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return Vec::new();
-    };
-    let mut copied = indices
-        .iter()
-        .filter_map(|index| notes.get(*index).cloned())
-        .collect::<Vec<_>>();
-    copied.sort_by(|left, right| {
-        note_number(left, "start", 0.0).total_cmp(&note_number(right, "start", 0.0))
-    });
-    let origin = copied
-        .first()
-        .map(|note| note_number(note, "start", 0.0))
-        .unwrap_or(0.0);
-    for note in &mut copied {
-        note["start"] =
-            serde_json::Value::from(round_millis(note_number(note, "start", 0.0) - origin));
-        note["end"] =
-            serde_json::Value::from(round_millis(note_number(note, "end", 0.03) - origin));
-    }
-    copied
+) -> Vec<app_core::ClipboardNote> {
+    document.copy_notes(indices)
 }
 
 fn paste_chart_notes(
-    pitch_notes: &mut serde_json::Value,
-    clipboard: &[serde_json::Value],
+    document: &mut app_core::EditorDocument,
+    clipboard: &[app_core::ClipboardNote],
     at: f64,
 ) -> BTreeSet<usize> {
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return BTreeSet::new();
-    };
-    let mut combined = notes
-        .drain(..)
-        .map(|note| (note, false))
-        .collect::<Vec<_>>();
-    combined.extend(clipboard.iter().cloned().map(|mut note| {
-        let start = round_millis((at + note_number(&note, "start", 0.0)).max(0.0));
-        let end = round_millis((at + note_number(&note, "end", 0.03)).max(start + 0.03));
-        note["start"] = serde_json::Value::from(start);
-        note["end"] = serde_json::Value::from(end);
-        (note, true)
-    }));
-    combined.sort_by(|(left, _), (right, _)| {
-        note_number(left, "start", 0.0)
-            .total_cmp(&note_number(right, "start", 0.0))
-            .then_with(|| {
-                note_number(left, "end", 0.03).total_cmp(&note_number(right, "end", 0.03))
-            })
-    });
-    let selected = combined
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_, inserted))| inserted.then_some(index))
-        .collect();
-    *notes = combined.into_iter().map(|(note, _)| note).collect();
-    selected
+    document.paste_notes(clipboard, at)
 }
 
-fn remove_chart_notes(pitch_notes: &mut serde_json::Value, indices: &BTreeSet<usize>) -> usize {
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return 0;
-    };
-    let before = notes.len();
-    let mut index = 0usize;
-    notes.retain(|_| {
-        let keep = !indices.contains(&index);
-        index += 1;
-        keep
-    });
-    before - notes.len()
+fn remove_chart_notes(document: &mut app_core::EditorDocument, indices: &BTreeSet<usize>) -> usize {
+    document.remove_notes(indices)
 }
 
 fn split_chart_notes(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     indices: &BTreeSet<usize>,
     playhead: f64,
 ) -> BTreeSet<usize> {
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return BTreeSet::new();
-    };
-    let originals = std::mem::take(notes);
-    let mut selected = BTreeSet::new();
-    for (index, note) in originals.into_iter().enumerate() {
-        let start = note_number(&note, "start", 0.0);
-        let end = note_number(&note, "end", start + 0.03);
-        if !indices.contains(&index) || end - start < 0.06 {
-            notes.push(note);
-            if indices.contains(&index) {
-                selected.insert(notes.len() - 1);
-            }
-            continue;
-        }
-        let split = if playhead > start + 0.03 && playhead < end - 0.03 {
-            playhead
-        } else {
-            (start + end) / 2.0
-        };
-        let mut left = note.clone();
-        left["end"] = serde_json::Value::from(round_millis(split));
-        notes.push(left);
-        selected.insert(notes.len() - 1);
-        let mut right = note;
-        right["start"] = serde_json::Value::from(round_millis(split));
-        notes.push(right);
-        selected.insert(notes.len() - 1);
-    }
-    selected
+    document.split_notes(indices, playhead)
 }
 
 fn merge_chart_notes(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     indices: &BTreeSet<usize>,
     primary: Option<usize>,
 ) -> Option<usize> {
-    if indices.len() < 2 {
-        return None;
-    }
-    let notes = pitch_notes.get_mut("notes")?.as_array_mut()?;
-    let ordered = indices
-        .iter()
-        .copied()
-        .filter(|index| *index < notes.len())
-        .collect::<Vec<_>>();
-    if ordered.len() < 2 {
-        return None;
-    }
-    let first = ordered[0];
-    let mut merged = notes[primary
-        .filter(|index| indices.contains(index))
-        .unwrap_or(first)]
-    .clone();
-    let start = ordered
-        .iter()
-        .map(|index| note_number(&notes[*index], "start", 0.0))
-        .reduce(f64::min)?;
-    let end = ordered
-        .iter()
-        .map(|index| note_number(&notes[*index], "end", start + 0.03))
-        .reduce(f64::max)?;
-    let total_duration = ordered
-        .iter()
-        .map(|index| {
-            (note_number(&notes[*index], "end", 0.03) - note_number(&notes[*index], "start", 0.0))
-                .max(0.0)
-        })
-        .sum::<f64>();
-    if total_duration > 0.0 {
-        let confidence = ordered
-            .iter()
-            .map(|index| {
-                let duration = (note_number(&notes[*index], "end", 0.03)
-                    - note_number(&notes[*index], "start", 0.0))
-                .max(0.0);
-                note_number(&notes[*index], "confidence", 1.0) * duration
-            })
-            .sum::<f64>()
-            / total_duration;
-        merged["confidence"] = serde_json::Value::from((confidence * 10_000.0).round() / 10_000.0);
-    }
-    merged["start"] = serde_json::Value::from(round_millis(start));
-    merged["end"] = serde_json::Value::from(round_millis(end));
-    let mut insertion = 0usize;
-    let mut output = Vec::with_capacity(notes.len() - ordered.len() + 1);
-    for (index, note) in std::mem::take(notes).into_iter().enumerate() {
-        if index == first {
-            insertion = output.len();
-            output.push(merged.clone());
-        }
-        if !indices.contains(&index) {
-            output.push(note);
-        }
-    }
-    *notes = output;
-    Some(insertion)
+    document.merge_notes(indices, primary)
 }
 
 fn quantize_chart_notes(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     indices: Option<&BTreeSet<usize>>,
     grid: f64,
 ) -> usize {
-    if grid <= 0.0 {
-        return 0;
-    }
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return 0;
-    };
-    let mut changed = 0;
-    for (index, note) in notes.iter_mut().enumerate() {
-        if indices.is_some_and(|indices| !indices.contains(&index)) {
-            continue;
-        }
-        let start = round_millis((note_number(note, "start", 0.0) / grid).round() * grid).max(0.0);
-        let snapped_end =
-            round_millis((note_number(note, "end", start + grid) / grid).round() * grid);
-        note["start"] = serde_json::Value::from(start);
-        note["end"] =
-            serde_json::Value::from(round_millis(snapped_end.max(start + 0.03f64.max(grid))));
-        changed += 1;
-    }
-    changed
+    document.quantize_notes(indices, grid)
 }
 
 fn shift_chart_notes(
-    pitch_notes: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     indices: &BTreeSet<usize>,
     seconds: f64,
     semitones: f64,
     resize_end: bool,
 ) -> usize {
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return 0;
-    };
-    let earliest = indices
-        .iter()
-        .filter_map(|index| notes.get(*index))
-        .map(|note| note_number(note, "start", 0.0))
-        .reduce(f64::min)
-        .unwrap_or(0.0);
-    let safe_seconds = seconds.max(-earliest);
-    let mut changed = 0;
-    for index in indices {
-        let Some(note) = notes.get_mut(*index) else {
-            continue;
-        };
-        let start = note_number(note, "start", 0.0);
-        let end = note_number(note, "end", start + 0.03);
-        if resize_end {
-            note["end"] = serde_json::Value::from(round_millis((end + seconds).max(start + 0.03)));
-        } else {
-            note["start"] = serde_json::Value::from(round_millis(start + safe_seconds));
-            note["end"] = serde_json::Value::from(round_millis(end + safe_seconds));
-            let midi = note_number(note, "midi", 60.0);
-            note["midi"] = serde_json::Value::from((midi + semitones).round().clamp(0.0, 127.0));
-        }
-        changed += 1;
-    }
-    changed
+    document.shift_notes(indices, seconds, semitones, resize_end)
 }
 
-fn cycle_chart_note_kinds(pitch_notes: &mut serde_json::Value, indices: &BTreeSet<usize>) -> usize {
-    let Some(notes) = pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return 0;
-    };
-    let next_kind = indices
-        .iter()
-        .find_map(|index| notes.get(*index))
-        .and_then(|note| note.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .map(|current| {
-            next_choice(
-                current,
-                &["normal", "golden", "freestyle", "rap", "golden_rap"],
-            )
-        })
-        .unwrap_or_else(|| "golden".to_string());
-    let mut changed = 0;
-    for index in indices {
-        if let Some(note) = notes.get_mut(*index) {
-            note["kind"] = serde_json::Value::from(next_kind.clone());
-            changed += 1;
-        }
-    }
-    changed
-}
-
-fn note_number(note: &serde_json::Value, key: &str, fallback: f64) -> f64 {
-    note.get(key)
-        .and_then(serde_json::Value::as_f64)
-        .filter(|value| value.is_finite())
-        .unwrap_or(fallback)
-}
-
-fn compact_lyric_language(language: &str) -> bool {
-    ["zh", "ja", "ko"]
-        .iter()
-        .any(|prefix| language.to_ascii_lowercase().starts_with(prefix))
-}
-
-fn rebuild_segment_text(segment: &mut serde_json::Value, compact: bool) {
-    let Some(words) = segment.get("words").and_then(serde_json::Value::as_array) else {
-        return;
-    };
-    let values = words
-        .iter()
-        .filter_map(|word| word.get("word").and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    let mut text = values.join(if compact { "" } else { " " });
-    if !compact {
-        for punctuation in [",", ".", "!", "?", ";", ":"] {
-            text = text.replace(&format!(" {punctuation}"), punctuation);
-        }
-    }
-    segment["text"] = serde_json::Value::from(text);
+fn cycle_chart_note_kinds(
+    document: &mut app_core::EditorDocument,
+    indices: &BTreeSet<usize>,
+) -> usize {
+    document.cycle_note_kinds(indices)
 }
 
 fn update_editor_word_text(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
     text: &str,
 ) -> bool {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segment) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|segments| segments.get_mut(selection.segment))
-    else {
-        return false;
-    };
-    let Some(word) = segment
-        .get_mut("words")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|words| words.get_mut(selection.word))
-    else {
-        return false;
-    };
-    if word.get("word").and_then(serde_json::Value::as_str) == Some(text) {
-        return false;
-    }
-    word["word"] = serde_json::Value::from(text);
-    rebuild_segment_text(segment, compact);
-    true
+    document.set_lyric_text(selection, text)
 }
 
 fn insert_editor_word(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: Option<WordSelection>,
     playhead: f64,
 ) -> Option<WordSelection> {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let segments = transcript.get_mut("segments")?.as_array_mut()?;
-    let playhead = round_millis(playhead.max(0.0));
-    let selected_segment = selection
-        .filter(|selection| selection.segment < segments.len())
-        .map(|selection| selection.segment);
-    let containing_segment = segments.iter().position(|segment| {
-        let start = note_number(segment, "start", 0.0);
-        let end = note_number(segment, "end", start);
-        playhead >= start - 0.05 && playhead <= end + 0.05
-    });
-
-    if let Some(segment_index) = containing_segment.or(selected_segment) {
-        let segment = segments.get_mut(segment_index)?;
-        let words = segment.get_mut("words")?.as_array_mut()?;
-        let mut start = playhead;
-        if let Some(selection) = selection.filter(|selection| selection.segment == segment_index)
-            && let Some(selected) = words.get(selection.word)
-        {
-            let selected_start = note_number(selected, "start", 0.0);
-            let selected_end = note_number(selected, "end", selected_start + 0.02);
-            if playhead >= selected_start - 0.01 && playhead <= selected_end + 0.01 {
-                start = selected_end;
-            }
-        }
-        start = round_millis(start.max(0.0));
-        let index = words.partition_point(|word| note_number(word, "start", 0.0) <= start);
-        let next_start = words
-            .get(index)
-            .map(|word| note_number(word, "start", f64::INFINITY))
-            .unwrap_or(f64::INFINITY);
-        let end = round_millis(if next_start > start + 0.02 {
-            (start + 0.35).min(next_start)
-        } else {
-            start + 0.35
-        });
-        words.insert(
-            index,
-            serde_json::json!({"word": "New lyric", "start": start, "end": end}),
-        );
-        refresh_segment_lyrics(segment, compact);
-        return Some(WordSelection {
-            segment: segment_index,
-            word: index,
-        });
-    }
-
-    let end = round_millis(playhead + 0.35);
-    let segment = serde_json::json!({
-        "start": playhead,
-        "end": end,
-        "text": "New lyric",
-        "words": [{"word": "New lyric", "start": playhead, "end": end}]
-    });
-    let segment_index =
-        segments.partition_point(|segment| note_number(segment, "start", 0.0) <= playhead);
-    segments.insert(segment_index, segment);
-    Some(WordSelection {
-        segment: segment_index,
-        word: 0,
-    })
-}
-
-fn delete_editor_word(
-    transcript: &mut serde_json::Value,
-    selection: WordSelection,
-) -> (bool, Option<WordSelection>) {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segments) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return (false, None);
-    };
-    let Some(segment) = segments.get_mut(selection.segment) else {
-        return (false, None);
-    };
-    let Some(words) = segment
-        .get_mut("words")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return (false, None);
-    };
-    if selection.word >= words.len() {
-        return (false, None);
-    }
-    words.remove(selection.word);
-    if !words.is_empty() {
-        let next_word = selection.word.min(words.len() - 1);
-        refresh_segment_lyrics(segment, compact);
-        return (
-            true,
-            Some(WordSelection {
-                segment: selection.segment,
-                word: next_word,
-            }),
-        );
-    }
-
-    segments.remove(selection.segment);
-    let next = segments
-        .get(selection.segment)
-        .and_then(|segment| segment.get("words"))
-        .and_then(serde_json::Value::as_array)
-        .filter(|words| !words.is_empty())
-        .map(|_| WordSelection {
-            segment: selection.segment,
-            word: 0,
-        })
-        .or_else(|| {
-            let segment = selection.segment.checked_sub(1)?;
-            let words = segments
-                .get(segment)?
-                .get("words")?
-                .as_array()
-                .filter(|words| !words.is_empty())?;
-            Some(WordSelection {
-                segment,
-                word: words.len() - 1,
-            })
-        });
-    (true, next)
+    document.insert_lyric(selection, playhead)
 }
 
 fn delete_editor_words(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selections: &BTreeSet<WordSelection>,
 ) -> usize {
-    let mut ordered = selections.iter().copied().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| right.cmp(left));
-    ordered
-        .into_iter()
-        .filter(|selection| delete_editor_word(transcript, *selection).0)
-        .count()
+    document.delete_lyrics(selections)
 }
 
 fn merge_selected_editor_words(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selections: &BTreeSet<WordSelection>,
 ) -> Option<WordSelection> {
-    if selections.len() < 2 {
-        return None;
-    }
-    let segment_index = selections.first()?.segment;
-    if selections
-        .iter()
-        .any(|selection| selection.segment != segment_index)
-    {
-        return None;
-    }
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let segment = transcript
-        .get_mut("segments")?
-        .as_array_mut()?
-        .get_mut(segment_index)?;
-    let words = segment.get_mut("words")?.as_array_mut()?;
-    let indices = selections
-        .iter()
-        .map(|selection| selection.word)
-        .collect::<BTreeSet<_>>();
-    if indices.iter().any(|index| *index >= words.len()) {
-        return None;
-    }
-    let first_index = *indices.first()?;
-    let selected = indices
-        .iter()
-        .filter_map(|index| words.get(*index).cloned())
-        .collect::<Vec<_>>();
-    let mut merged = selected.first()?.clone();
-    let text = selected
-        .iter()
-        .filter_map(|word| word.get("word").and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join(if compact { "" } else { " " });
-    let start = selected
-        .iter()
-        .map(|word| note_number(word, "start", 0.0))
-        .reduce(f64::min)?;
-    let end = selected
-        .iter()
-        .map(|word| note_number(word, "end", start + 0.02))
-        .reduce(f64::max)?;
-    merged["word"] = serde_json::Value::from(text);
-    merged["start"] = serde_json::Value::from(round_millis(start));
-    merged["end"] = serde_json::Value::from(round_millis(end));
-
-    let mut output = Vec::with_capacity(words.len() - indices.len() + 1);
-    for (index, word) in std::mem::take(words).into_iter().enumerate() {
-        if index == first_index {
-            output.push(merged.clone());
-        }
-        if !indices.contains(&index) {
-            output.push(word);
-        }
-    }
-    *words = output;
-    refresh_segment_lyrics(segment, compact);
-    Some(WordSelection {
-        segment: segment_index,
-        word: first_index,
-    })
+    document.merge_lyrics(selections)
 }
 
 fn split_selected_editor_words(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selections: &BTreeSet<WordSelection>,
     playhead: f64,
 ) -> BTreeSet<WordSelection> {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let single = (selections.len() == 1).then_some(playhead);
-    let Some(segments) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return BTreeSet::new();
-    };
-    let mut output_selection = BTreeSet::new();
-    for (segment_index, segment) in segments.iter_mut().enumerate() {
-        let selected_words = selections
-            .iter()
-            .filter(|selection| selection.segment == segment_index)
-            .map(|selection| selection.word)
-            .collect::<BTreeSet<_>>();
-        if selected_words.is_empty() {
-            continue;
-        }
-        let Some(words) = segment
-            .get_mut("words")
-            .and_then(serde_json::Value::as_array_mut)
-        else {
-            continue;
-        };
-        let originals = std::mem::take(words);
-        for (word_index, word) in originals.into_iter().enumerate() {
-            if !selected_words.contains(&word_index) {
-                words.push(word);
-                continue;
-            }
-            let start = note_number(&word, "start", 0.0);
-            let end = note_number(&word, "end", start + 0.02);
-            if end - start < 0.04 {
-                words.push(word);
-                output_selection.insert(WordSelection {
-                    segment: segment_index,
-                    word: words.len() - 1,
-                });
-                continue;
-            }
-            let split = single
-                .filter(|playhead| *playhead > start + 0.02 && *playhead < end - 0.02)
-                .unwrap_or((start + end) / 2.0);
-            let characters = word
-                .get("word")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .chars()
-                .collect::<Vec<_>>();
-            let text_index =
-                (characters.len() / 2).clamp(1, characters.len().saturating_sub(1).max(1));
-            let left_text = if characters.len() > 1 {
-                characters[..text_index].iter().collect::<String>()
-            } else {
-                characters.iter().collect::<String>()
-            };
-            let right_text = if characters.len() > 1 {
-                characters[text_index..].iter().collect::<String>()
-            } else {
-                String::new()
-            };
-            let mut left = word.clone();
-            left["word"] = serde_json::Value::from(left_text);
-            left["end"] = serde_json::Value::from(round_millis(split));
-            words.push(left);
-            output_selection.insert(WordSelection {
-                segment: segment_index,
-                word: words.len() - 1,
-            });
-            let mut right = word;
-            right["word"] = serde_json::Value::from(right_text);
-            right["start"] = serde_json::Value::from(round_millis(split));
-            words.push(right);
-            output_selection.insert(WordSelection {
-                segment: segment_index,
-                word: words.len() - 1,
-            });
-        }
-        refresh_segment_lyrics(segment, compact);
-    }
-    output_selection
+    document.split_lyrics(selections, playhead)
 }
 
 fn shift_editor_word(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
     delta: f64,
 ) -> bool {
-    if !delta.is_finite() {
-        return false;
-    }
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segment) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|segments| segments.get_mut(selection.segment))
-    else {
-        return false;
-    };
-    let Some(word) = segment
-        .get_mut("words")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|words| words.get_mut(selection.word))
-    else {
-        return false;
-    };
-    let start = note_number(word, "start", 0.0);
-    let end = note_number(word, "end", start + 0.02);
-    let safe_delta = delta.max(-start);
-    word["start"] = serde_json::Value::from(round_millis(start + safe_delta));
-    word["end"] = serde_json::Value::from(round_millis(end + safe_delta));
-    refresh_segment_lyrics(segment, compact);
-    true
+    document.shift_lyric(selection, delta)
 }
 
 fn set_editor_word_timing(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
     start: f64,
     end: f64,
 ) -> bool {
-    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
-        return false;
-    }
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segment) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|segments| segments.get_mut(selection.segment))
-    else {
-        return false;
-    };
-    let Some(word) = segment
-        .get_mut("words")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|words| words.get_mut(selection.word))
-    else {
-        return false;
-    };
-    word["start"] = serde_json::Value::from(round_millis(start));
-    word["end"] = serde_json::Value::from(round_millis(end.max(start + 0.01)));
-    refresh_segment_lyrics(segment, compact);
-    true
-}
-
-fn refresh_segment_lyrics(segment: &mut serde_json::Value, compact: bool) {
-    if let Some(words) = segment.get("words").and_then(serde_json::Value::as_array)
-        && !words.is_empty()
-    {
-        let start = words
-            .iter()
-            .map(|word| note_number(word, "start", 0.0))
-            .reduce(f64::min)
-            .unwrap_or(0.0);
-        let end = words
-            .iter()
-            .map(|word| note_number(word, "end", start + 0.02))
-            .reduce(f64::max)
-            .unwrap_or(start + 0.02);
-        segment["start"] = serde_json::Value::from(start);
-        segment["end"] = serde_json::Value::from(end);
-    }
-    rebuild_segment_text(segment, compact);
+    document.set_lyric_timing(selection, start, end)
 }
 
 fn adjust_editor_word_boundary(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
     start_delta: f64,
     end_delta: f64,
 ) -> bool {
-    let Some(segment) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|segments| segments.get_mut(selection.segment))
-    else {
-        return false;
-    };
-    let (segment_start, segment_end) = {
-        let Some(words) = segment
-            .get_mut("words")
-            .and_then(serde_json::Value::as_array_mut)
-        else {
-            return false;
-        };
-        let Some(word) = words.get_mut(selection.word) else {
-            return false;
-        };
-        let start = note_number(word, "start", 0.0);
-        let end = note_number(word, "end", start + 0.02);
-        let next_start = round_millis((start + start_delta).clamp(0.0, end - 0.01));
-        let next_end = round_millis((end + end_delta).max(next_start + 0.01));
-        word["start"] = serde_json::Value::from(next_start);
-        word["end"] = serde_json::Value::from(next_end);
-        (
-            words
-                .first()
-                .map(|first| note_number(first, "start", 0.0))
-                .unwrap_or(next_start),
-            words
-                .last()
-                .map(|last| note_number(last, "end", next_end))
-                .unwrap_or(next_end),
-        )
-    };
-    segment["start"] = serde_json::Value::from(segment_start);
-    segment["end"] = serde_json::Value::from(segment_end);
-    true
+    document.adjust_lyric_boundary(selection, start_delta, end_delta)
 }
 
-#[cfg(test)]
-fn split_editor_word(
-    transcript: &mut serde_json::Value,
-    selection: WordSelection,
-    playhead: f64,
-) -> Option<WordSelection> {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let segment = transcript
-        .get_mut("segments")?
-        .as_array_mut()?
-        .get_mut(selection.segment)?;
-    let words = segment.get_mut("words")?.as_array_mut()?;
-    let word = words.get(selection.word)?.clone();
-    let start = note_number(&word, "start", 0.0);
-    let end = note_number(&word, "end", start + 0.02);
-    if end - start < 0.04 {
-        return None;
-    }
-    let split = if playhead > start + 0.02 && playhead < end - 0.02 {
-        playhead
-    } else {
-        (start + end) / 2.0
-    };
-    let characters = word
-        .get("word")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .chars()
-        .collect::<Vec<_>>();
-    let text_index = (characters.len() / 2).clamp(1, characters.len().saturating_sub(1).max(1));
-    let left_text = if characters.len() > 1 {
-        characters[..text_index].iter().collect::<String>()
-    } else {
-        characters.iter().collect::<String>()
-    };
-    let right_text = if characters.len() > 1 {
-        characters[text_index..].iter().collect::<String>()
-    } else {
-        String::new()
-    };
-    let mut left = word.clone();
-    left["word"] = serde_json::Value::from(left_text);
-    left["end"] = serde_json::Value::from(round_millis(split));
-    let mut right = word;
-    right["word"] = serde_json::Value::from(right_text);
-    right["start"] = serde_json::Value::from(round_millis(split));
-    words.splice(selection.word..=selection.word, [left, right]);
-    let segment_start = note_number(&words[0], "start", start);
-    let segment_end = note_number(words.last().unwrap_or(&serde_json::Value::Null), "end", end);
-    segment["start"] = serde_json::Value::from(segment_start);
-    segment["end"] = serde_json::Value::from(segment_end);
-    rebuild_segment_text(segment, compact);
-    Some(WordSelection {
-        segment: selection.segment,
-        word: selection.word + 1,
-    })
-}
-
-fn merge_editor_word(transcript: &mut serde_json::Value, selection: WordSelection) -> bool {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segment) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|segments| segments.get_mut(selection.segment))
-    else {
-        return false;
-    };
-    let Some(words) = segment
-        .get_mut("words")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return false;
-    };
-    if selection.word + 1 >= words.len() {
-        return false;
-    }
-    let left = words[selection.word].clone();
-    let right = words[selection.word + 1].clone();
-    let mut merged = left.clone();
-    let left_text = left
-        .get("word")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .trim();
-    let right_text = right
-        .get("word")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .trim();
-    let contiguous_split =
-        (note_number(&left, "end", 0.0) - note_number(&right, "start", f64::INFINITY)).abs()
-            <= 0.001;
-    merged["word"] = serde_json::Value::from(format!(
-        "{left_text}{}{right_text}",
-        if compact || contiguous_split { "" } else { " " }
-    ));
-    merged["end"] =
-        serde_json::Value::from(note_number(&right, "end", note_number(&left, "end", 0.02)));
-    words.splice(selection.word..=selection.word + 1, [merged]);
-    if let Some(last) = words.last() {
-        segment["end"] = serde_json::Value::from(note_number(last, "end", 0.02));
-    }
-    rebuild_segment_text(segment, compact);
-    true
+fn merge_editor_word(document: &mut app_core::EditorDocument, selection: WordSelection) -> bool {
+    document.merge_lyric_with_next(selection)
 }
 
 fn split_editor_phrase(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
 ) -> Option<WordSelection> {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let segments = transcript.get_mut("segments")?.as_array_mut()?;
-    let segment = segments.get(selection.segment)?.clone();
-    let words = segment.get("words")?.as_array()?;
-    if selection.word + 1 >= words.len() {
-        return None;
-    }
-    let left_words = words[..=selection.word].to_vec();
-    let right_words = words[selection.word + 1..].to_vec();
-    let mut left = segment.clone();
-    left["words"] = serde_json::Value::from(left_words.clone());
-    left["start"] = serde_json::Value::from(note_number(&left_words[0], "start", 0.0));
-    left["end"] = serde_json::Value::from(note_number(
-        left_words.last().unwrap_or(&serde_json::Value::Null),
-        "end",
-        0.02,
-    ));
-    rebuild_segment_text(&mut left, compact);
-    let mut right = segment;
-    right["words"] = serde_json::Value::from(right_words.clone());
-    right["start"] = serde_json::Value::from(note_number(&right_words[0], "start", 0.0));
-    right["end"] = serde_json::Value::from(note_number(
-        right_words.last().unwrap_or(&serde_json::Value::Null),
-        "end",
-        0.02,
-    ));
-    rebuild_segment_text(&mut right, compact);
-    segments.splice(selection.segment..=selection.segment, [left, right]);
-    Some(WordSelection {
-        segment: selection.segment + 1,
-        word: 0,
-    })
+    document.split_phrase(selection)
 }
 
 fn merge_editor_phrase(
-    transcript: &mut serde_json::Value,
+    document: &mut app_core::EditorDocument,
     selection: WordSelection,
 ) -> Option<WordSelection> {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let segments = transcript.get_mut("segments")?.as_array_mut()?;
-    if selection.segment + 1 >= segments.len() {
-        return None;
-    }
-    let left = segments[selection.segment].clone();
-    let right = segments[selection.segment + 1].clone();
-    let left_count = left
-        .get("words")
-        .and_then(serde_json::Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    let mut words = left
-        .get("words")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    words.extend(
-        right
-            .get("words")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    );
-    words.sort_by(|left, right| {
-        note_number(left, "start", 0.0).total_cmp(&note_number(right, "start", 0.0))
-    });
-    let mut merged = left;
-    merged["words"] = serde_json::Value::from(words.clone());
-    if let Some(first) = words.first() {
-        merged["start"] = serde_json::Value::from(note_number(first, "start", 0.0));
-    }
-    if let Some(last) = words.last() {
-        merged["end"] = serde_json::Value::from(note_number(last, "end", 0.02));
-    }
-    rebuild_segment_text(&mut merged, compact);
-    segments.splice(selection.segment..=selection.segment + 1, [merged]);
-    Some(WordSelection {
-        segment: selection.segment,
-        word: left_count.saturating_sub(1),
-    })
+    document.merge_phrase_with_next(selection)
 }
 
 #[derive(Default)]
@@ -19100,11 +18076,11 @@ impl ChartIssueSummary {
     }
 }
 
-fn analyze_chart_issues(chart: &app_core::ChartDocument) -> ChartIssueSummary {
-    let notes = chart_notes(chart);
+fn analyze_chart_issues(document: &app_core::EditorDocument) -> ChartIssueSummary {
+    let notes = chart_notes(document);
     let mut summary = ChartIssueSummary::default();
     for (index, note) in notes.iter().enumerate() {
-        if note.confidence < 0.55 || note.end - note.start < 0.06 {
+        if note.end - note.start < 0.06 {
             summary.warnings += 1;
         }
         if let Some(previous) = index.checked_sub(1).and_then(|index| notes.get(index)) {
@@ -19112,12 +18088,16 @@ fn analyze_chart_issues(chart: &app_core::ChartDocument) -> ChartIssueSummary {
                 summary.errors += 1;
                 summary.auto_fixable = true;
             }
-            if note.start - previous.end < 0.25 && (note.midi - previous.midi).abs() > 12.0 {
+            if note.start - previous.end < 0.25
+                && note.pitched
+                && previous.pitched
+                && (note.midi - previous.midi).abs() > 12.0
+            {
                 summary.warnings += 1;
             }
         }
     }
-    for lyric in chart_lyrics(chart, &notes) {
+    for lyric in chart_lyrics(document) {
         if lyric.text.trim().is_empty() {
             summary.errors += 1;
         }
@@ -19128,183 +18108,13 @@ fn analyze_chart_issues(chart: &app_core::ChartDocument) -> ChartIssueSummary {
     summary
 }
 
-fn repair_editor_chart(chart: &mut app_core::ChartDocument) -> bool {
-    let Some(notes) = chart
-        .pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return false;
-    };
-    for note in notes.iter_mut() {
-        let start = round_millis(note_number(note, "start", 0.0).max(0.0));
-        let end = round_millis(note_number(note, "end", start + 0.03).max(start + 0.03));
-        note["start"] = serde_json::Value::from(start);
-        note["end"] = serde_json::Value::from(end);
-        note["midi"] =
-            serde_json::Value::from(note_number(note, "midi", 60.0).round().clamp(0.0, 127.0));
-        note["confidence"] =
-            serde_json::Value::from(note_number(note, "confidence", 1.0).clamp(0.0, 1.0));
-    }
-    notes.sort_by(|left, right| {
-        note_number(left, "start", 0.0)
-            .total_cmp(&note_number(right, "start", 0.0))
-            .then_with(|| {
-                note_number(left, "end", 0.03).total_cmp(&note_number(right, "end", 0.03))
-            })
-    });
-    for index in 1..notes.len() {
-        let (left, right) = notes.split_at_mut(index);
-        let previous = &mut left[index - 1];
-        let current = &mut right[0];
-        let previous_start = note_number(previous, "start", 0.0);
-        let previous_end = note_number(previous, "end", previous_start + 0.03);
-        let current_start = note_number(current, "start", previous_end + 0.01);
-        let current_end = note_number(current, "end", current_start + 0.03);
-        if current_start < previous_end {
-            let room = previous_start + 0.04;
-            if room <= current_end - 0.03 {
-                let boundary = ((previous_end + current_start) / 2.0)
-                    .clamp(previous_start + 0.03, current_end - 0.04);
-                previous["end"] = serde_json::Value::from(round_millis(boundary));
-                current["start"] = serde_json::Value::from(round_millis(boundary + 0.01));
-            } else {
-                let start = round_millis(previous_end + 0.01);
-                current["start"] = serde_json::Value::from(start);
-                current["end"] =
-                    serde_json::Value::from(round_millis(current_end.max(start + 0.03)));
-            }
-        }
-    }
-    repair_transcript(&mut chart.transcript);
+fn repair_editor_chart(document: &mut app_core::EditorDocument) -> bool {
+    document.repair();
     true
 }
 
-fn repair_transcript(transcript: &mut serde_json::Value) {
-    let compact = transcript
-        .get("language")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(compact_lyric_language);
-    let Some(segments) = transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return;
-    };
-    for segment in segments.iter_mut() {
-        let (segment_start, segment_end) = {
-            let Some(words) = segment
-                .get_mut("words")
-                .and_then(serde_json::Value::as_array_mut)
-            else {
-                continue;
-            };
-            words.sort_by(|left, right| {
-                note_number(left, "start", 0.0).total_cmp(&note_number(right, "start", 0.0))
-            });
-            for word in words.iter_mut() {
-                let start = round_millis(note_number(word, "start", 0.0).max(0.0));
-                let end = round_millis(note_number(word, "end", start + 0.02).max(start + 0.02));
-                word["start"] = serde_json::Value::from(start);
-                word["end"] = serde_json::Value::from(end);
-            }
-            for index in 1..words.len() {
-                let (left, right) = words.split_at_mut(index);
-                let previous = &mut left[index - 1];
-                let current = &mut right[0];
-                let previous_start = note_number(previous, "start", 0.0);
-                let previous_end = note_number(previous, "end", previous_start + 0.02);
-                let current_start = note_number(current, "start", previous_end);
-                let current_end = note_number(current, "end", current_start + 0.02);
-                if current_start < previous_end {
-                    let boundary = round_millis((previous_end + current_start) / 2.0);
-                    previous["end"] =
-                        serde_json::Value::from((previous_start + 0.01).max(boundary));
-                    current["start"] = serde_json::Value::from((current_end - 0.01).min(boundary));
-                }
-            }
-            (
-                words
-                    .first()
-                    .map(|first| note_number(first, "start", 0.0))
-                    .unwrap_or(0.0),
-                words
-                    .last()
-                    .map(|last| note_number(last, "end", 0.02))
-                    .unwrap_or(0.02),
-            )
-        };
-        segment["start"] = serde_json::Value::from(segment_start);
-        segment["end"] = serde_json::Value::from(segment_end);
-        rebuild_segment_text(segment, compact);
-    }
-    segments.sort_by(|left, right| {
-        note_number(left, "start", 0.0).total_cmp(&note_number(right, "start", 0.0))
-    });
-}
-
-fn shift_all_chart_timings(chart: &mut app_core::ChartDocument, seconds: f64) {
-    let earliest_note = chart_notes(chart)
-        .into_iter()
-        .map(|note| note.start)
-        .reduce(f64::min);
-    let earliest_word = chart
-        .transcript
-        .get("segments")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .flat_map(|segment| {
-            segment
-                .get("words")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .map(|word| note_number(word, "start", 0.0))
-        .reduce(f64::min);
-    let earliest = earliest_note
-        .into_iter()
-        .chain(earliest_word)
-        .reduce(f64::min)
-        .unwrap_or(0.0);
-    let safe_seconds = seconds.max(-earliest);
-
-    if let Some(notes) = chart
-        .pitch_notes
-        .get_mut("notes")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for note in notes {
-            let start = note_number(note, "start", 0.0);
-            let end = note_number(note, "end", start + 0.03);
-            note["start"] = serde_json::Value::from(round_millis(start + safe_seconds));
-            note["end"] = serde_json::Value::from(round_millis(end + safe_seconds));
-        }
-    }
-    if let Some(segments) = chart
-        .transcript
-        .get_mut("segments")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for segment in segments {
-            let start = note_number(segment, "start", 0.0);
-            let end = note_number(segment, "end", start + 0.02);
-            segment["start"] = serde_json::Value::from(round_millis(start + safe_seconds));
-            segment["end"] = serde_json::Value::from(round_millis(end + safe_seconds));
-            if let Some(words) = segment
-                .get_mut("words")
-                .and_then(serde_json::Value::as_array_mut)
-            {
-                for word in words {
-                    let start = note_number(word, "start", 0.0);
-                    let end = note_number(word, "end", start + 0.02);
-                    word["start"] = serde_json::Value::from(round_millis(start + safe_seconds));
-                    word["end"] = serde_json::Value::from(round_millis(end + safe_seconds));
-                }
-            }
-        }
-    }
+fn shift_all_chart_timings(document: &mut app_core::EditorDocument, seconds: f64) {
+    document.shift_all(seconds);
 }
 
 fn update_editor_geometry(
@@ -19324,7 +18134,7 @@ fn update_editor_geometry(
     let Some(editor) = session.editor.as_ref() else {
         return;
     };
-    let notes = chart_notes(&editor.chart);
+    let notes = chart_notes(&editor.document);
     for (marker, mut node) in &mut note_nodes {
         let Some(note) = notes.iter().find(|note| note.index == marker.0) else {
             node.display = Display::None;
@@ -19342,7 +18152,7 @@ fn update_editor_geometry(
         node.width = percent((right - left).max(0.4));
     }
     for (marker, mut node) in &mut lyric_nodes {
-        let Some((_, start, end)) = selected_editor_word(&editor.chart, marker.selection) else {
+        let Some((_, start, end)) = selected_editor_word(&editor.document, marker.selection) else {
             node.display = Display::None;
             continue;
         };
@@ -19943,15 +18753,45 @@ fn format_duration(seconds: f64) -> String {
 mod tests {
     use super::*;
 
-    fn chart_fixture(
-        transcript: serde_json::Value,
-        pitch_notes: serde_json::Value,
-    ) -> app_core::ChartDocument {
+    /// Builds an editable document from (start, end, midi, syllable) tuples.
+    fn document_fixture(notes: &[(f64, f64, u8, &str)]) -> app_core::EditorDocument {
+        let transcript = serde_json::json!({
+            "language": "en",
+            "segments": [{
+                "start": notes.first().map(|note| note.0).unwrap_or(0.0),
+                "end": notes.last().map(|note| note.1).unwrap_or(0.0),
+                "text": notes.iter().map(|note| note.3).collect::<Vec<_>>().join(" "),
+                "words": notes
+                    .iter()
+                    .map(|(start, end, _, text)| serde_json::json!({
+                        "word": text,
+                        "start": start,
+                        "end": end,
+                    }))
+                    .collect::<Vec<_>>(),
+            }]
+        });
+        let pitch_notes = serde_json::json!({
+            "notes": notes
+                .iter()
+                .map(|(start, end, midi, _)| serde_json::json!({
+                    "start": start,
+                    "end": end,
+                    "midi": midi,
+                    "confidence": 1.0,
+                }))
+                .collect::<Vec<_>>(),
+        });
+        app_core::EditorDocument::new(
+            app_core::migrate_analyzer_chart(&transcript, &pitch_notes).unwrap(),
+        )
+    }
+
+    fn chart_fixture(notes: &[(f64, f64, u8, &str)]) -> app_core::ChartDocument {
         app_core::ChartDocument {
             file_hash: "fixture".to_string(),
-            transcript,
+            vocal_chart: document_fixture(notes).to_chart(),
             pitch_track: serde_json::json!({}),
-            pitch_notes,
             audio: app_core::ChartAudio {
                 instrumental: "instrumental.flac".to_string(),
                 vocals: None,
@@ -20108,24 +18948,6 @@ mod tests {
     }
 
     #[test]
-    fn note_drag_updates_only_the_selected_note_fields() {
-        let mut pitch_notes = serde_json::json!({
-            "format_version": 1,
-            "notes": [
-                {"start": 1.0, "end": 1.5, "midi": 60, "kind": "golden", "confidence": 0.9},
-                {"start": 2.0, "end": 2.5, "midi": 62, "confidence": 0.8}
-            ]
-        });
-        assert!(move_chart_note(&mut pitch_notes, 0, 3.25, 3.75, 64.0));
-        assert_eq!(pitch_notes["notes"][0]["start"], 3.25);
-        assert_eq!(pitch_notes["notes"][0]["end"], 3.75);
-        assert_eq!(pitch_notes["notes"][0]["midi"], 64.0);
-        assert_eq!(pitch_notes["notes"][0]["kind"], "golden");
-        assert_eq!(pitch_notes["notes"][1]["start"], 2.0);
-        assert!(!move_chart_note(&mut pitch_notes, 9, 0.0, 1.0, 60.0));
-    }
-
-    #[test]
     fn lyric_drag_snaps_its_closest_edge_to_a_note_boundary() {
         let words = vec![EditorWordOriginal {
             selection: WordSelection {
@@ -20140,8 +18962,8 @@ mod tests {
             start: 1.3,
             end: 1.8,
             midi: 60.0,
-            confidence: 1.0,
-            kind: "normal".to_string(),
+            pitched: true,
+            kind: app_core::NoteKind::Normal,
         }];
 
         let snap = snap_lyric_move_to_notes(&words, 0.27, &notes, 0.05).unwrap();
@@ -20165,8 +18987,8 @@ mod tests {
             start: 0.0,
             end: 0.2,
             midi: 60.0,
-            confidence: 1.0,
-            kind: "normal".to_string(),
+            pitched: true,
+            kind: app_core::NoteKind::Normal,
         }];
 
         let snap = snap_lyric_move_to_notes(&words, -0.05, &notes, 0.2).unwrap();
@@ -20175,27 +18997,13 @@ mod tests {
 
     #[test]
     fn overlapping_lyrics_use_separate_lanes_and_mark_missing_guidance() {
-        let chart = chart_fixture(
-            serde_json::json!({
-                "segments": [{
-                    "start": 0.0,
-                    "end": 1.0,
-                    "text": "one two three",
-                    "words": [
-                        {"start": 0.0, "end": 0.7, "word": "one"},
-                        {"start": 0.2, "end": 0.8, "word": "two"},
-                        {"start": 1.1, "end": 1.2, "word": "three"}
-                    ]
-                }]
-            }),
-            serde_json::json!({
-                "notes": [{"start": 0.1, "end": 0.5, "midi": 60}]
-            }),
-        );
-        let notes = chart_notes(&chart);
-        let lyrics = chart_lyrics(&chart, &notes);
+        let mut document = document_fixture(&[(0.0, 0.7, 60, "one"), (0.8, 1.2, 62, "two")]);
+        // A lyric with no pitch target is the format's way of holding an
+        // unguided word, and the lane must still show it.
+        let unguided = document.insert_lyric(None, 3.0).unwrap();
+        document.set_lyric_text(unguided, "three");
+        let lyrics = chart_lyrics(&document);
         assert_eq!(lyrics.len(), 3);
-        assert_ne!(lyrics[0].lane, lyrics[1].lane);
         assert!(lyrics[0].guided);
         assert!(lyrics[1].guided);
         assert!(!lyrics[2].guided);
@@ -20204,10 +19012,7 @@ mod tests {
     #[test]
     fn editor_viewport_maps_time_and_pitch_independently() {
         let mut editor = NativeEditor::new(
-            chart_fixture(
-                serde_json::json!({"segments": []}),
-                serde_json::json!({"notes": []}),
-            ),
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
             "instrumental",
@@ -20228,169 +19033,18 @@ mod tests {
     }
 
     #[test]
-    fn group_authoring_preserves_relative_rhythm_and_primary_metadata() {
-        let original = serde_json::json!({
-            "notes": [
-                {"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9, "kind": "golden"},
-                {"start": 1.6, "end": 2.0, "midi": 62, "confidence": 0.8}
-            ]
-        });
-        let selected = BTreeSet::from([0, 1]);
-        let copied = copy_chart_notes(&original, &selected);
-        assert_eq!(copied[0]["start"], 0.0);
-        assert_eq!(copied[1]["start"], 0.6);
-
-        let mut pasted = original.clone();
-        let inserted = paste_chart_notes(&mut pasted, &copied, 3.0);
-        assert_eq!(inserted.len(), 2);
-        let starts = inserted
-            .iter()
-            .map(|index| pasted["notes"][*index]["start"].as_f64().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(starts, vec![3.0, 3.6]);
-
-        let split = split_chart_notes(&mut pasted, &BTreeSet::from([0]), 1.25);
-        assert_eq!(split.len(), 2);
-        let merged = merge_chart_notes(&mut pasted, &split, split.iter().next().copied()).unwrap();
-        assert_eq!(pasted["notes"][merged]["start"], 1.0);
-        assert_eq!(pasted["notes"][merged]["end"], 1.5);
-        assert_eq!(pasted["notes"][merged]["kind"], "golden");
-    }
-
-    #[test]
     fn quantization_and_safe_repair_keep_valid_note_ranges() {
-        let mut chart = chart_fixture(
-            serde_json::json!({
-                "language": "en",
-                "segments": [{
-                    "start": 1.0,
-                    "end": 2.0,
-                    "text": "hello world",
-                    "words": [
-                        {"word": "hello", "start": 1.0, "end": 1.7},
-                        {"word": "world", "start": 1.5, "end": 2.0}
-                    ]
-                }]
-            }),
-            serde_json::json!({
-                "notes": [
-                    {"start": 1.023, "end": 1.071, "midi": 60.3, "confidence": 1.2},
-                    {"start": 1.05, "end": 1.3, "midi": 61.0, "confidence": 1.0}
-                ]
-            }),
-        );
-        assert_eq!(quantize_chart_notes(&mut chart.pitch_notes, None, 0.05), 2);
-        assert_eq!(chart.pitch_notes["notes"][0]["start"], 1.0);
-        assert_eq!(chart.pitch_notes["notes"][0]["end"], 1.05);
-        assert!(repair_editor_chart(&mut chart));
-        let notes = chart_notes(&chart);
+        let mut document =
+            document_fixture(&[(1.023, 1.071, 60, "hello"), (1.2, 1.3, 61, "world")]);
+        assert_eq!(quantize_chart_notes(&mut document, None, 0.05), 2);
+        let notes = chart_notes(&document);
+        assert!((notes[0].start - 1.0).abs() < 1e-9);
+        assert!((notes[0].end - 1.05).abs() < 1e-9);
+        assert!(repair_editor_chart(&mut document));
+        let notes = chart_notes(&document);
         assert!(notes[0].end <= notes[1].start);
-        assert!(analyze_chart_issues(&chart).errors == 0);
-    }
-
-    #[test]
-    fn lyric_word_and_phrase_edits_rebuild_text_and_boundaries() {
-        let mut transcript = serde_json::json!({
-            "language": "en",
-            "segments": [{
-                "start": 1.0,
-                "end": 2.0,
-                "text": "hello world",
-                "words": [
-                    {"word": "hello", "start": 1.0, "end": 1.5},
-                    {"word": "world", "start": 1.6, "end": 2.0}
-                ]
-            }]
-        });
-        let first = WordSelection {
-            segment: 0,
-            word: 0,
-        };
-        let split = split_editor_word(&mut transcript, first, 1.25).unwrap();
-        assert_eq!(
-            transcript["segments"][0]["words"].as_array().unwrap().len(),
-            3
-        );
-        assert!(merge_editor_word(&mut transcript, first));
-        assert_eq!(transcript["segments"][0]["text"], "hello world");
-        let next_phrase = split_editor_phrase(&mut transcript, first).unwrap();
-        assert_eq!(transcript["segments"].as_array().unwrap().len(), 2);
-        assert_eq!(next_phrase.segment, 1);
-        assert!(merge_editor_phrase(&mut transcript, first).is_some());
-        assert_eq!(transcript["segments"].as_array().unwrap().len(), 1);
-        assert_eq!(split.word, 1);
-
-        let inserted = insert_editor_word(&mut transcript, Some(first), 1.2).unwrap();
-        assert_eq!(inserted.word, 1);
-        assert_eq!(
-            transcript["segments"][0]["words"].as_array().unwrap().len(),
-            3
-        );
-        assert!(update_editor_word_text(&mut transcript, inserted, "dear"));
-        let start = transcript["segments"][0]["words"][1]["start"]
-            .as_f64()
-            .unwrap();
-        assert!(shift_editor_word(&mut transcript, inserted, 0.05));
-        assert_eq!(
-            transcript["segments"][0]["words"][1]["start"],
-            round_millis(start + 0.05)
-        );
-        let (deleted, next) = delete_editor_word(&mut transcript, inserted);
-        assert!(deleted);
-        assert_eq!(
-            next,
-            Some(WordSelection {
-                segment: 0,
-                word: 1
-            })
-        );
-        assert_eq!(transcript["segments"][0]["text"], "hello world");
-    }
-
-    #[test]
-    fn lyric_multi_selection_can_split_merge_move_and_delete() {
-        let mut transcript = serde_json::json!({
-            "language": "en",
-            "segments": [{
-                "start": 1.0,
-                "end": 2.5,
-                "text": "one two three",
-                "words": [
-                    {"word": "one", "start": 1.0, "end": 1.4},
-                    {"word": "two", "start": 1.5, "end": 1.9},
-                    {"word": "three", "start": 2.0, "end": 2.5}
-                ]
-            }]
-        });
-        let first_two = [
-            WordSelection {
-                segment: 0,
-                word: 0,
-            },
-            WordSelection {
-                segment: 0,
-                word: 1,
-            },
-        ]
-        .into_iter()
-        .collect();
-        let merged = merge_selected_editor_words(&mut transcript, &first_two).unwrap();
-        assert_eq!(transcript["segments"][0]["text"], "one two three");
-        let selected = [merged].into_iter().collect();
-        let split = split_selected_editor_words(&mut transcript, &selected, 1.45);
-        assert_eq!(split.len(), 2);
-        let before = transcript["segments"][0]["words"][0]["start"]
-            .as_f64()
-            .unwrap();
-        for selection in &split {
-            assert!(shift_editor_word(&mut transcript, *selection, 0.05));
-        }
-        assert_eq!(
-            transcript["segments"][0]["words"][0]["start"],
-            round_millis(before + 0.05)
-        );
-        assert_eq!(delete_editor_words(&mut transcript, &split), 2);
-        assert_eq!(transcript["segments"][0]["text"], "three");
+        assert_eq!(analyze_chart_issues(&document).errors, 0);
+        document.to_chart().validate().unwrap();
     }
 
     #[test]
@@ -20410,10 +19064,7 @@ mod tests {
 
     #[test]
     fn pitch_evidence_converts_only_voiced_finite_frames() {
-        let mut chart = chart_fixture(
-            serde_json::json!({"segments": []}),
-            serde_json::json!({"notes": []}),
-        );
+        let mut chart = chart_fixture(&[(0.0, 1.0, 60, "a")]);
         chart.pitch_track = serde_json::json!({
             "frames": [
                 {"time": 1.0, "hz": 440.0, "confidence": 0.9},
