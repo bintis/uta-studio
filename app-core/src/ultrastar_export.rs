@@ -9,57 +9,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack};
 
 use crate::{
     audio_format::{export_extension as audio_export_extension, transcode_audio},
-    authoring::{get_audio_paths, load_pitch_guide, load_transcript},
+    authoring::get_audio_paths,
+    editor::NoteKind,
     error::UtaStudioError,
     library_db,
+    vocal_chart::load_authoring_chart,
 };
 
 const EXPORT_BPM: f64 = 300.0;
 const SECONDS_PER_BEAT: f64 = 60.0 / (EXPORT_BPM * 4.0);
-
-#[derive(Debug, Deserialize)]
-struct Transcript {
-    #[serde(default)]
-    language: String,
-    #[serde(default)]
-    segments: Vec<Segment>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Segment {
-    #[serde(default)]
-    text: String,
-    start: f64,
-    end: f64,
-    #[serde(default)]
-    words: Vec<Word>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Word {
-    word: String,
-    start: f64,
-    end: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct PitchNote {
-    start: f64,
-    end: f64,
-    midi: i32,
-    #[serde(default)]
-    kind: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PitchNotes {
-    #[serde(default)]
-    notes: Vec<PitchNote>,
-}
 
 #[derive(Debug)]
 struct NoteLine {
@@ -68,13 +30,6 @@ struct NoteLine {
     duration: i64,
     pitch: i32,
     text: String,
-}
-
-#[derive(Debug)]
-struct ExportWord {
-    text: String,
-    start: f64,
-    end: f64,
 }
 
 pub fn export_ultrastar(
@@ -111,15 +66,7 @@ pub fn export_ultrastar(
             "instrumental or source audio is not ready".into(),
         ));
     }
-    let transcript: Transcript = serde_json::from_value(load_transcript(file_hash)?)?;
-    let guide = load_pitch_guide(file_hash)?
-        .ok_or_else(|| UtaStudioError::Other("pitch guide is not ready".into()))?;
-    let notes: PitchNotes = serde_json::from_value(
-        guide
-            .get("notes")
-            .cloned()
-            .ok_or_else(|| UtaStudioError::Other("pitch guide has no notes".into()))?,
-    )?;
+    let chart = load_authoring_chart(file_hash)?;
 
     let base = output
         .file_stem()
@@ -173,18 +120,17 @@ pub fn export_ultrastar(
         }
     }
 
-    let chart = build_ultrastar_text(
+    let text = build_ultrastar_text(
         &sanitize_header(&song.title),
         &sanitize_header(&song.artist),
-        &transcript,
-        &notes.notes,
+        &chart,
         &instrumental_name,
         vocals_name.as_deref(),
         cover_name.as_deref(),
         video_name.as_deref(),
         song.duration_secs,
     );
-    crate::usdx::validate_usdx_str(&chart)?;
+    crate::usdx::validate_usdx_str(&text)?;
 
     let copies = [
         cover.zip(cover_target.as_ref()),
@@ -206,7 +152,7 @@ pub fn export_ultrastar(
             .write(true)
             .create_new(true)
             .open(output)?;
-        file.write_all(chart.as_bytes())?;
+        file.write_all(text.as_bytes())?;
         file.sync_all()?;
         Ok(())
     })();
@@ -231,8 +177,7 @@ pub fn validate_ultrastar_chart(path: impl AsRef<Path>) -> Result<(), UtaStudioE
 fn build_ultrastar_text(
     title: &str,
     artist: &str,
-    transcript: &Transcript,
-    notes: &[PitchNote],
+    chart: &VocalChartV1,
     audio_name: &str,
     vocals_name: Option<&str>,
     cover_name: Option<&str>,
@@ -242,11 +187,13 @@ fn build_ultrastar_text(
     let mut output = format!(
         "#VERSION:1.1.0\n#TITLE:{title}\n#ARTIST:{artist}\n#CREATOR:Uta Studio\n#AUDIO:{audio_name}\n#MP3:{audio_name}\n#INSTRUMENTAL:{audio_name}\n#BPM:{EXPORT_BPM:.2}\n#GAP:0\n"
     );
-    if !transcript.language.trim().is_empty() {
-        output.push_str(&format!(
-            "#LANGUAGE:{}\n",
-            sanitize_header(&transcript.language)
-        ));
+    if let Some(language) = chart
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+    {
+        output.push_str(&format!("#LANGUAGE:{}\n", sanitize_header(language)));
     }
     if let Some(name) = vocals_name {
         output.push_str(&format!("#VOCALS:{name}\n"));
@@ -264,10 +211,41 @@ fn build_ultrastar_text(
         ));
     }
 
+    // UltraStar carries a single lyric line per player. Harmony and ad-lib
+    // tracks would need a duet export, so the lead track is what ships.
+    let Some(track) = lead_track(chart) else {
+        output.push_str("E\n");
+        return output;
+    };
+    let timebase = chart.timebase.max(1);
+    let fallback_pitch = track
+        .phrases
+        .iter()
+        .flat_map(|phrase| phrase.notes.iter())
+        .find_map(|note| note.pitch.map(|pitch| i32::from(pitch.midi)))
+        .unwrap_or(60);
+
     let mut cursor = 0_i64;
-    let mut has_emitted_lyrics = false;
-    for segment in &transcript.segments {
-        let mut lines = segment_lines(segment, notes, &transcript.language, has_emitted_lyrics);
+    for phrase in &track.phrases {
+        let mut lines = Vec::new();
+        for (index, note) in phrase.notes.iter().enumerate() {
+            let start = units_to_seconds(note.start, timebase);
+            let end = units_to_seconds(note.start.saturating_add(note.duration), timebase);
+            let pitch = note
+                .pitch
+                .map(|pitch| i32::from(pitch.midi))
+                .unwrap_or(fallback_pitch);
+            lines.push(note_line(
+                ultrastar_note_kind(NoteKind::of(note)),
+                start,
+                end,
+                pitch,
+                note_text(note, index > 0),
+            ));
+        }
+        if lines.is_empty() {
+            continue;
+        }
         for line in &mut lines {
             line.start = line.start.max(cursor);
             line.duration = line.duration.max(1);
@@ -277,179 +255,67 @@ fn build_ultrastar_text(
                 line.kind, line.start, line.duration, line.pitch, line.text
             ));
         }
-        if !lines.is_empty() {
-            has_emitted_lyrics = true;
-            let separator = seconds_to_beat(segment.end).max(cursor);
-            output.push_str(&format!("- {separator}\n"));
-            cursor = separator;
-        }
-    }
-
-    if transcript.segments.is_empty() {
-        for note in notes {
-            let start = seconds_to_beat(note.start).max(cursor);
-            let end = seconds_to_beat(note.end).max(start + 1);
-            output.push_str(&format!(
-                "{} {start} {} {} ~\n",
-                ultrastar_note_kind(note.kind.as_deref()),
-                end - start,
-                note.midi - 60
-            ));
-            cursor = end;
-        }
+        let separator = phrase
+            .notes
+            .iter()
+            .map(|note| {
+                seconds_to_beat(units_to_seconds(
+                    note.start.saturating_add(note.duration),
+                    timebase,
+                ))
+            })
+            .max()
+            .unwrap_or(cursor)
+            .max(cursor);
+        output.push_str(&format!("- {separator}\n"));
+        cursor = separator;
     }
     output.push_str("E\n");
     output
 }
 
-fn segment_lines(
-    segment: &Segment,
-    notes: &[PitchNote],
-    language: &str,
-    needs_leading_space: bool,
-) -> Vec<NoteLine> {
-    if segment.words.is_empty() {
-        let pitch = nearest_pitch(notes, (segment.start + segment.end) / 2.0);
-        let text = sanitize_lyric(&segment.text);
-        return vec![note_line(
-            'F',
-            segment.start,
-            segment.end,
-            pitch,
-            lyric_token(
-                &text,
-                needs_leading_space && token_prefers_word_spacing(&text),
-            ),
-        )];
-    }
+fn lead_track(chart: &VocalChartV1) -> Option<&VocalTrack> {
+    chart.tracks.first()
+}
 
-    let compact =
-        language.starts_with("zh") || language.starts_with("ja") || language.starts_with("ko");
-    let export_words = export_words(segment, compact);
-    let mut result = Vec::new();
-    for (word_index, word) in export_words.iter().enumerate() {
-        let prefers_word_spacing = !compact || token_prefers_word_spacing(&word.text);
-        let lyric = lyric_token(
-            &word.text,
-            prefers_word_spacing && (word_index > 0 || needs_leading_space),
-        );
-        let overlaps: Vec<_> = notes
-            .iter()
-            .filter_map(|note| {
-                let start = word.start.max(note.start);
-                let end = word.end.min(note.end);
-                (end > start + 0.005).then_some((note, start, end))
-            })
-            .collect();
-        if overlaps.is_empty() {
-            result.push(note_line(
-                'F',
-                word.start,
-                word.end,
-                nearest_pitch(notes, (word.start + word.end) / 2.0),
-                lyric,
-            ));
+/// The syllable a note sings. A note that only continues the previous syllable
+/// holds it with `~`, which is UltraStar's own continuation marker.
+fn note_text(note: &VocalNote, may_lead_with_space: bool) -> String {
+    let mut text = String::new();
+    let mut spaced = false;
+    for token in &note.lyrics {
+        let LyricToken::Text(token) = token else {
             continue;
+        };
+        if text.is_empty() {
+            spaced = token.join_before == LyricJoin::Space;
+        } else if token.join_before == LyricJoin::Space {
+            text.push(' ');
         }
-        for (index, (note, start, end)) in overlaps.into_iter().enumerate() {
-            result.push(note_line(
-                ultrastar_note_kind(note.kind.as_deref()),
-                start,
-                end,
-                note.midi,
-                if index == 0 {
-                    lyric.clone()
-                } else {
-                    "~".into()
-                },
-            ));
-        }
+        text.push_str(&token.text);
     }
-    result.sort_by_key(|line| line.start);
-    result
+    let text = sanitize_lyric(&text);
+    if text.is_empty() {
+        return "~".into();
+    }
+    if spaced && may_lead_with_space {
+        format!(" {text}")
+    } else {
+        text
+    }
 }
 
-/// Analyzer word tokens can occasionally drift across segment boundaries and
-/// become values such as `youCaught`. The segment text is the cleaner display
-/// transcript, so use it when it contains readable word boundaries. Preserve
-/// the original word timings when counts match; otherwise distribute the clean
-/// tokens over the authored segment duration instead of exporting joined text.
-fn export_words(segment: &Segment, compact_language: bool) -> Vec<ExportWord> {
-    let clean_text = sanitize_lyric(&segment.text);
-    let clean_tokens = clean_text.split_whitespace().collect::<Vec<_>>();
-    let segment_text_is_worded = !clean_tokens.is_empty()
-        && (!compact_language
-            || clean_tokens.iter().any(|token| {
-                token
-                    .chars()
-                    .any(|character| character.is_ascii_alphanumeric())
-            }));
-    if !segment_text_is_worded {
-        return segment
-            .words
-            .iter()
-            .map(|word| ExportWord {
-                text: sanitize_lyric(&word.word),
-                start: word.start,
-                end: word.end,
-            })
-            .collect();
-    }
-
-    let usable_timings = clean_tokens.len() == segment.words.len()
-        && segment.words.iter().all(|word| {
-            word.start.is_finite()
-                && word.end.is_finite()
-                && word.end > word.start + 0.005
-                && word.start >= segment.start - 0.05
-                && word.end <= segment.end + 0.05
-        });
-    if usable_timings {
-        return clean_tokens
-            .into_iter()
-            .zip(&segment.words)
-            .map(|(text, word)| ExportWord {
-                text: text.to_string(),
-                start: word.start.max(segment.start),
-                end: word.end.min(segment.end).max(word.start + 0.005),
-            })
-            .collect();
-    }
-
-    let start = segment.start.max(0.0);
-    let end = segment.end.max(start + 0.01);
-    let total_weight = clean_tokens
-        .iter()
-        .map(|token| token.chars().count().max(1))
-        .sum::<usize>() as f64;
-    let mut cursor = start;
-    clean_tokens
-        .into_iter()
-        .enumerate()
-        .map(|(index, token)| {
-            let token_start = cursor;
-            let token_end = if index + 1 == clean_text.split_whitespace().count() {
-                end
-            } else {
-                cursor + (end - start) * (token.chars().count().max(1) as f64 / total_weight)
-            };
-            cursor = token_end;
-            ExportWord {
-                text: token.to_string(),
-                start: token_start,
-                end: token_end,
-            }
-        })
-        .collect()
+fn units_to_seconds(units: u64, timebase: u64) -> f64 {
+    units as f64 / timebase as f64
 }
 
-fn ultrastar_note_kind(kind: Option<&str>) -> char {
+fn ultrastar_note_kind(kind: NoteKind) -> char {
     match kind {
-        Some("golden") => '*',
-        Some("freestyle") => 'F',
-        Some("rap") => 'R',
-        Some("golden_rap") => 'G',
-        _ => ':',
+        NoteKind::Golden => '*',
+        NoteKind::Freestyle => 'F',
+        NoteKind::Rap => 'R',
+        NoteKind::GoldenRap => 'G',
+        NoteKind::Normal => ':',
     }
 }
 
@@ -469,26 +335,6 @@ fn note_line(kind: char, start: f64, end: f64, midi: i32, text: String) -> NoteL
     }
 }
 
-fn nearest_pitch(notes: &[PitchNote], time: f64) -> i32 {
-    notes
-        .iter()
-        .min_by(|left, right| {
-            distance_to_note(left, time).total_cmp(&distance_to_note(right, time))
-        })
-        .map(|note| note.midi)
-        .unwrap_or(60)
-}
-
-fn distance_to_note(note: &PitchNote, time: f64) -> f64 {
-    if time < note.start {
-        note.start - time
-    } else if time > note.end {
-        time - note.end
-    } else {
-        0.0
-    }
-}
-
 fn seconds_to_beat(seconds: f64) -> i64 {
     (seconds.max(0.0) / SECONDS_PER_BEAT).round() as i64
 }
@@ -503,21 +349,6 @@ fn sanitize_lyric(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn lyric_token(value: &str, needs_space: bool) -> String {
-    let value = sanitize_lyric(value);
-    if needs_space && !value.starts_with(' ') {
-        format!(" {value}")
-    } else {
-        value
-    }
-}
-
-fn token_prefers_word_spacing(value: &str) -> bool {
-    value
-        .chars()
-        .any(|character| character.is_ascii_alphanumeric())
 }
 
 fn safe_component(value: &str) -> String {
@@ -558,43 +389,55 @@ fn materialize_audio(source: &Path, target: &Path) -> Result<(), UtaStudioError>
 
 #[cfg(test)]
 mod tests {
-    use super::{PitchNote, Segment, Transcript, Word, build_ultrastar_text, ultrastar_note_kind};
-    use crate::usdx::validate_usdx_str;
+    use super::{build_ultrastar_text, ultrastar_note_kind};
+    use crate::{editor::NoteKind, usdx::validate_usdx_str, vocal_chart::migrate_analyzer_chart};
+    use utz::VocalChartV1;
+
+    fn chart(language: &str, phrases: &[&[(f64, f64, u8, &str, &str)]]) -> VocalChartV1 {
+        let mut segments = Vec::new();
+        let mut notes = Vec::new();
+        for phrase in phrases {
+            let words = phrase
+                .iter()
+                .map(|(start, end, _, text, _)| {
+                    serde_json::json!({"word": text, "start": start, "end": end})
+                })
+                .collect::<Vec<_>>();
+            segments.push(serde_json::json!({
+                "start": phrase.first().map(|note| note.0).unwrap_or(0.0),
+                "end": phrase.last().map(|note| note.1).unwrap_or(0.0),
+                "text": phrase.iter().map(|note| note.3.trim()).collect::<Vec<_>>().join(" "),
+                "words": words,
+            }));
+            notes.extend(phrase.iter().map(|(start, end, midi, _, kind)| {
+                serde_json::json!({
+                    "start": start,
+                    "end": end,
+                    "midi": midi,
+                    "confidence": 1.0,
+                    "kind": kind,
+                })
+            }));
+        }
+        migrate_analyzer_chart(
+            &serde_json::json!({"language": language, "segments": segments}),
+            &serde_json::json!({"notes": notes}),
+        )
+        .unwrap()
+    }
 
     #[test]
-    fn exports_timed_words_and_freestyle_fallback() {
-        let transcript = Transcript {
-            // This mirrors a real-world language misdetection: the transcript
-            // may say Japanese while its tokens are Latin-script lyrics.
-            language: "ja".into(),
-            segments: vec![Segment {
-                text: "hello world".into(),
-                start: 1.0,
-                end: 2.0,
-                words: vec![
-                    Word {
-                        word: "hello".into(),
-                        start: 1.0,
-                        end: 1.45,
-                    },
-                    Word {
-                        word: "world".into(),
-                        start: 1.5,
-                        end: 2.0,
-                    },
-                ],
-            }],
-        };
+    fn exports_each_note_with_its_authored_kind_and_syllable() {
         let text = build_ultrastar_text(
             "Title",
             "Artist",
-            &transcript,
-            &[PitchNote {
-                start: 1.0,
-                end: 1.4,
-                midi: 64,
-                kind: Some("golden".into()),
-            }],
+            &chart(
+                "en",
+                &[&[
+                    (1.0, 1.45, 64, "hello", "golden"),
+                    (1.5, 2.0, 62, " world", "normal"),
+                ]],
+            ),
             "song.mp3",
             None,
             None,
@@ -602,13 +445,14 @@ mod tests {
             3.0,
         );
         assert!(text.contains("#VERSION:1.1.0"));
+        assert!(text.contains("#LANGUAGE:en"));
         assert!(
             text.lines()
                 .any(|line| line.starts_with("* ") && line.ends_with("hello"))
         );
         assert!(
             text.lines()
-                .any(|line| line.starts_with("F ") && line.ends_with(" world"))
+                .any(|line| line.starts_with(": ") && line.ends_with(" world"))
         );
         assert!(text.ends_with("E\n"));
         assert!(validate_usdx_str(&text).is_ok());
@@ -616,101 +460,75 @@ mod tests {
 
     #[test]
     fn maps_every_supported_editor_note_kind() {
-        assert_eq!(ultrastar_note_kind(Some("normal")), ':');
-        assert_eq!(ultrastar_note_kind(Some("golden")), '*');
-        assert_eq!(ultrastar_note_kind(Some("freestyle")), 'F');
-        assert_eq!(ultrastar_note_kind(Some("rap")), 'R');
-        assert_eq!(ultrastar_note_kind(Some("golden_rap")), 'G');
-        assert_eq!(ultrastar_note_kind(None), ':');
+        assert_eq!(ultrastar_note_kind(NoteKind::Normal), ':');
+        assert_eq!(ultrastar_note_kind(NoteKind::Golden), '*');
+        assert_eq!(ultrastar_note_kind(NoteKind::Freestyle), 'F');
+        assert_eq!(ultrastar_note_kind(NoteKind::Rap), 'R');
+        assert_eq!(ultrastar_note_kind(NoteKind::GoldenRap), 'G');
     }
 
     #[test]
-    fn keeps_spaces_between_non_compact_transcript_segments() {
-        let transcript = Transcript {
-            language: "en".into(),
-            segments: vec![
-                Segment {
-                    text: "hello".into(),
-                    start: 0.0,
-                    end: 0.5,
-                    words: vec![Word {
-                        word: "hello".into(),
-                        start: 0.0,
-                        end: 0.5,
-                    }],
-                },
-                Segment {
-                    text: "world".into(),
-                    start: 0.6,
-                    end: 1.0,
-                    words: vec![Word {
-                        word: "world".into(),
-                        start: 0.6,
-                        end: 1.0,
-                    }],
-                },
-            ],
-        };
+    fn each_phrase_becomes_its_own_line() {
         let text = build_ultrastar_text(
             "Title",
             "Artist",
-            &transcript,
-            &[],
+            &chart(
+                "en",
+                &[
+                    &[(0.0, 0.5, 60, "hello", "normal")],
+                    &[(0.6, 1.0, 62, "world", "normal")],
+                ],
+            ),
             "song.mp3",
             None,
             None,
             None,
             1.0,
         );
-        assert!(text.lines().any(|line| line.ends_with(" world")));
+        // Two phrases means two separators, and a line-leading syllable never
+        // carries a space because UltraStar breaks the line for us.
+        assert_eq!(
+            text.lines().filter(|line| line.starts_with("- ")).count(),
+            2
+        );
+        // A line-leading syllable carries no space of its own: the field
+        // separator is the only space before it.
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with(": ") && line.ends_with(" world"))
+        );
+        assert!(!text.contains("  world"));
         assert!(validate_usdx_str(&text).is_ok());
     }
 
     #[test]
-    fn repairs_joined_word_tokens_from_clean_segment_text() {
-        let transcript = Transcript {
-            language: "ja".into(),
-            segments: vec![Segment {
-                text: "Caught up in circles".into(),
-                start: 1.0,
-                end: 3.0,
-                words: vec![
-                    Word {
-                        word: "Caught".into(),
-                        start: 1.0,
-                        end: 1.4,
-                    },
-                    Word {
-                        word: "up".into(),
-                        start: 1.4,
-                        end: 1.8,
-                    },
-                    Word {
-                        word: "in".into(),
-                        start: 1.8,
-                        end: 2.2,
-                    },
-                    Word {
-                        word: "circlesConfusion".into(),
-                        start: 2.2,
-                        end: 3.0,
-                    },
-                ],
-            }],
-        };
+    fn a_held_syllable_exports_as_a_continuation() {
         let text = build_ultrastar_text(
             "Title",
             "Artist",
-            &transcript,
-            &[],
+            &chart(
+                "en",
+                &[&[
+                    (0.0, 0.5, 60, "hold", "normal"),
+                    (0.5, 1.0, 62, "hold", "normal"),
+                ]],
+            ),
             "song.mp3",
             None,
             None,
             None,
-            3.0,
+            1.0,
         );
-        assert!(text.lines().any(|line| line.ends_with(" circles")));
-        assert!(!text.contains("circlesConfusion"));
+        assert!(validate_usdx_str(&text).is_ok());
+    }
+
+    #[test]
+    fn an_empty_chart_still_writes_a_valid_file() {
+        let mut empty = chart("en", &[&[(0.0, 0.5, 60, "a", "normal")]]);
+        empty.tracks.clear();
+        let text =
+            build_ultrastar_text("Title", "Artist", &empty, "song.mp3", None, None, None, 1.0);
+        assert!(text.ends_with("E\n"));
         assert!(validate_usdx_str(&text).is_ok());
     }
 }

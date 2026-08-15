@@ -39,7 +39,7 @@ pub use cache::{
 };
 pub use chart::{
     ChartAudio, ChartDocument, ChartReadiness, ChartWaveform, chart_readiness,
-    decode_chart_waveform, load_chart, save_chart, save_vocal_chart,
+    decode_chart_waveform, load_chart, save_vocal_chart,
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{

@@ -795,6 +795,7 @@ pub fn reanalyze_pitch(file_hash: &str) {
     let cache = CacheDir::new();
     let _ = std::fs::remove_file(cache.pitch_track_path(file_hash));
     let _ = std::fs::remove_file(cache.pitch_notes_path(file_hash));
+    cache.invalidate_authored_chart(file_hash);
     PITCH_ONLY.lock().unwrap().insert(file_hash.to_string());
     enqueue_one(file_hash);
 }
@@ -821,6 +822,7 @@ pub fn realign(file_hash: &str, language: Option<String>) {
     materialize_lyrics_from_transcript(&cache, file_hash);
     let _ = std::fs::remove_file(cache.transcript_path(file_hash));
     cache.delete_transcript_variants(file_hash);
+    cache.invalidate_authored_chart(file_hash);
     update_song_analyzed(
         file_hash,
         false,
@@ -852,6 +854,7 @@ fn reanalyze(file_hash: &str, full: bool) {
     } else {
         let _ = std::fs::remove_file(cache.transcript_path(file_hash));
         cache.delete_transcript_variants(file_hash);
+        cache.invalidate_authored_chart(file_hash);
         let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
     }
     update_song_analyzed(file_hash, false, None, None, None, None);

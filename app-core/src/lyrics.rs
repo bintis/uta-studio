@@ -175,6 +175,7 @@ pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<()
 
     let _ = std::fs::remove_file(cache.transcript_path(file_hash));
     cache.delete_transcript_variants(file_hash);
+    cache.invalidate_authored_chart(file_hash);
 
     update_song_analyzed(file_hash, false, previous_language, None, None, None);
     enqueue_one(file_hash);
@@ -227,6 +228,7 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
 
     let cache = CacheDir::new();
     cache.delete_transcript_variants(file_hash);
+    cache.invalidate_authored_chart(file_hash);
     let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let language = song.language.clone();
@@ -275,6 +277,7 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     // Timing changed: drop any tempo-shifted transcript variants and the plain
     // lyrics sidecar, and reset the song back to its base key/tempo.
     cache.delete_transcript_variants(file_hash);
+    cache.invalidate_authored_chart(file_hash);
     let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let value = build_lrc_transcript(
