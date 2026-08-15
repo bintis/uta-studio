@@ -49,15 +49,15 @@ pub(crate) fn spawn_editor_inspector(
                     theme.muted_foreground,
                 );
                 for (label, action) in [
-                    ("Cycle note type", UiAction::CycleEditorNoteKind),
-                    ("Split selection", UiAction::SplitEditorNote),
-                    ("Merge selection", UiAction::MergeEditorNotes),
-                    ("Quantize selection", UiAction::QuantizeEditorNotes),
-                    ("Duplicate selection", UiAction::DuplicateEditorNotes),
-                    ("Copy selection", UiAction::CopyEditorNote),
-                    ("Delete selection", UiAction::DeleteEditorNote),
+                    ("Cycle note type", EditorAction::CycleNoteKind),
+                    ("Split selection", EditorAction::SplitSelection),
+                    ("Merge selection", EditorAction::MergeSelection),
+                    ("Quantize selection", EditorAction::QuantizeNotes),
+                    ("Duplicate selection", EditorAction::DuplicateNotes),
+                    ("Copy selection", EditorAction::CopyNotes),
+                    ("Delete selection", EditorAction::DeleteSelection),
                 ] {
-                    spawn_action_button(inspector, font.clone(), theme, label, action);
+                    spawn_editor_action_button(inspector, font.clone(), theme, label, action);
                 }
             } else if let Some(note) = editor
                 .selected_note
@@ -80,55 +80,55 @@ pub(crate) fn spawn_editor_inspector(
                     10.0,
                     theme.muted_foreground,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Cycle note type",
-                    UiAction::CycleEditorNoteKind,
+                    EditorAction::CycleNoteKind,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Split at playhead",
-                    UiAction::SplitEditorNote,
+                    EditorAction::SplitSelection,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Quantize note",
-                    UiAction::QuantizeEditorNotes,
+                    EditorAction::QuantizeNotes,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Duplicate note",
-                    UiAction::DuplicateEditorNotes,
+                    EditorAction::DuplicateNotes,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Copy note",
-                    UiAction::CopyEditorNote,
+                    EditorAction::CopyNotes,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Delete note",
-                    UiAction::DeleteEditorNote,
+                    EditorAction::DeleteSelection,
                 );
                 if !editor.clipboard_notes.is_empty() {
-                    spawn_action_button(
+                    spawn_editor_action_button(
                         inspector,
                         font.clone(),
                         theme,
                         "Paste at playhead",
-                        UiAction::PasteEditorNote,
+                        EditorAction::PasteNotes,
                     );
                 }
             } else if editor.selected_word_indices().len() > 1 {
@@ -148,11 +148,11 @@ pub(crate) fn spawn_editor_inspector(
                     theme.muted_foreground,
                 );
                 for (label, action) in [
-                    ("Move selection −10 ms", UiAction::ShiftEditorWord(-1)),
-                    ("Move selection +10 ms", UiAction::ShiftEditorWord(1)),
-                    ("Split selected words", UiAction::SplitEditorWord),
-                    ("Merge selected words", UiAction::MergeEditorWord),
-                    ("Delete selected words", UiAction::DeleteEditorWord),
+                    ("Move selection −10 ms", UiAction::Editor(EditorAction::ShiftLyricEarlier)),
+                    ("Move selection +10 ms", UiAction::Editor(EditorAction::ShiftLyricLater)),
+                    ("Split selected words", UiAction::Editor(EditorAction::SplitLyrics)),
+                    ("Merge selected words", UiAction::Editor(EditorAction::MergeLyrics)),
+                    ("Delete selected words", UiAction::Editor(EditorAction::DeleteLyrics)),
                 ] {
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
@@ -205,18 +205,18 @@ pub(crate) fn spawn_editor_inspector(
                     theme.muted_foreground,
                 );
                 for (label, action) in [
-                    ("Add word at playhead", UiAction::AddEditorWord),
-                    ("Move word −10 ms", UiAction::ShiftEditorWord(-1)),
-                    ("Move word +10 ms", UiAction::ShiftEditorWord(1)),
-                    ("Start −10 ms", UiAction::AdjustEditorWordStart(-1)),
-                    ("Start +10 ms", UiAction::AdjustEditorWordStart(1)),
-                    ("End −10 ms", UiAction::AdjustEditorWordEnd(-1)),
-                    ("End +10 ms", UiAction::AdjustEditorWordEnd(1)),
-                    ("Split word", UiAction::SplitEditorWord),
-                    ("Merge next word", UiAction::MergeEditorWord),
-                    ("New phrase here", UiAction::SplitEditorPhrase),
-                    ("Join next phrase", UiAction::MergeEditorPhrase),
-                    ("Delete word", UiAction::DeleteEditorWord),
+                    ("Add word at playhead", UiAction::Editor(EditorAction::AddLyric)),
+                    ("Move word −10 ms", UiAction::Editor(EditorAction::ShiftLyricEarlier)),
+                    ("Move word +10 ms", UiAction::Editor(EditorAction::ShiftLyricLater)),
+                    ("Start −10 ms", UiAction::Editor(EditorAction::LyricStartEarlier)),
+                    ("Start +10 ms", UiAction::Editor(EditorAction::LyricStartLater)),
+                    ("End −10 ms", UiAction::Editor(EditorAction::LyricEndEarlier)),
+                    ("End +10 ms", UiAction::Editor(EditorAction::LyricEndLater)),
+                    ("Split word", UiAction::Editor(EditorAction::SplitLyrics)),
+                    ("Merge next word", UiAction::Editor(EditorAction::MergeLyrics)),
+                    ("New phrase here", UiAction::Editor(EditorAction::SplitPhrase)),
+                    ("Join next phrase", UiAction::Editor(EditorAction::MergePhrase)),
+                    ("Delete word", UiAction::Editor(EditorAction::DeleteLyrics)),
                 ] {
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
@@ -228,12 +228,12 @@ pub(crate) fn spawn_editor_inspector(
                     10.0,
                     theme.muted_foreground,
                 );
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Add lyric at playhead",
-                    UiAction::AddEditorWord,
+                    EditorAction::AddLyric,
                 );
             }
 
@@ -307,12 +307,12 @@ pub(crate) fn spawn_editor_inspector(
                 );
             }
             if report.auto_fixable() {
-                spawn_action_button(
+                spawn_editor_action_button(
                     inspector,
                     font.clone(),
                     theme,
                     "Apply safe repairs",
-                    UiAction::RepairEditorChart,
+                    EditorAction::RepairChart,
                 );
             }
             spawn_text(
@@ -329,19 +329,19 @@ pub(crate) fn spawn_editor_inspector(
                 9.0,
                 theme.muted_foreground,
             );
-            spawn_action_button(
+            spawn_editor_action_button(
                 inspector,
                 font.clone(),
                 theme,
                 "Shift all −10 ms",
-                UiAction::ShiftWholeChart(-1),
+                EditorAction::ShiftChartEarlier,
             );
-            spawn_action_button(
+            spawn_editor_action_button(
                 inspector,
                 font.clone(),
                 theme,
                 "Shift all +10 ms",
-                UiAction::ShiftWholeChart(1),
+                EditorAction::ShiftChartLater,
             );
 
             let (undoable, redoable) = editor.history();
@@ -390,13 +390,13 @@ pub(crate) fn spawn_editor_inspector(
                     );
                 }
             }
-            spawn_action_button(
+            spawn_editor_action_button(
                 inspector,
                 font.clone(),
                 theme,
                 "Undo",
-                UiAction::EditorUndo,
+                EditorAction::Undo,
             );
-            spawn_action_button(inspector, font, theme, "Redo", UiAction::EditorRedo);
+            spawn_action_button(inspector, font, theme, "Redo", UiAction::Editor(EditorAction::Redo));
         });
 }

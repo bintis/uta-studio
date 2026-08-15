@@ -473,6 +473,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Persist the edited vocal chart"
     ),
     capability!(
+        "editor",
+        "editor_actions",
+        "read",
+        true,
+        "List the editor command registry with its key chords"
+    ),
+    capability!(
         "authoring",
         "load_transcript",
         "read",
