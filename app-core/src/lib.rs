@@ -5,6 +5,7 @@ mod authoring;
 mod cache;
 mod chart;
 mod config;
+mod editor;
 mod error;
 mod library_db;
 mod library_menu;
@@ -41,6 +42,9 @@ pub use chart::{
     decode_chart_waveform, load_chart, save_chart, save_vocal_chart,
 };
 pub use config::{AppConfig, LibrarySource};
+pub use editor::{
+    ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
+};
 pub use library_db::{init_library, library_db_path, load_song_by_hash};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};
 pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsStore};
@@ -66,6 +70,7 @@ pub use vendor::{
     step_download_pitch_model, step_download_selected_models, step_download_uv,
     step_extract_scripts, step_install_packages, step_install_python,
 };
+pub use vocal_chart::migrate_analyzer_chart;
 
 pub fn startup() -> Result<(), String> {
     // Load and repair configuration before opening SQLite: the configured

@@ -22,12 +22,12 @@ use crate::{
     audio_format::{
         export_extension as audio_export_extension, media_type as audio_media_type, transcode_audio,
     },
-    authoring::{get_audio_paths, load_pitch_guide, load_transcript},
+    authoring::get_audio_paths,
     cache::CacheDir,
     error::UtaStudioError,
     library_db,
     library_model::SongsStore,
-    vocal_chart::migrate_legacy_chart,
+    vocal_chart::load_authoring_chart,
 };
 
 struct ExportAudioStaging(PathBuf);
@@ -167,13 +167,7 @@ where
         .as_deref()
         .map(|path| staging.prepare(path, "guide-vocals"))
         .transpose()?;
-    let transcript = load_transcript(file_hash)?;
-    let guide = load_pitch_guide(file_hash)?
-        .ok_or_else(|| UtaStudioError::Other("pitch track and guide notes are not ready".into()))?;
-    let pitch_notes = guide
-        .get("notes")
-        .ok_or_else(|| UtaStudioError::Other("pitch guide has no notes".into()))?;
-    let vocal_chart = migrate_legacy_chart(&transcript, pitch_notes)?;
+    let vocal_chart = load_authoring_chart(file_hash)?;
 
     let instrumental_name = format!(
         "audio/instrumental.{}",
