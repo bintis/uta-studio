@@ -504,6 +504,21 @@ pub(crate) fn spawn_editor_dock(
                         UiAction::Editor(EditorAction::StopAudition),
                     );
                 }
+                spawn_text_button(
+                    dock,
+                    font.clone(),
+                    theme,
+                    if editor.tap_mode {
+                        match editor.tap.remaining() {
+                            0 => "Tapping".to_string(),
+                            remaining => format!("Tapping · {remaining} left"),
+                        }
+                    } else {
+                        "Tap".to_string()
+                    },
+                    9.0,
+                    UiAction::Editor(EditorAction::ToggleTapMode),
+                );
             } else {
                 spawn_icon(
                     dock,

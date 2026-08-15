@@ -78,6 +78,8 @@ editor_actions! {
     SelectNextNote => "select_next_note",
     SelectPreviousNote => "select_previous_note",
     AddNote => "add_note",
+    ToggleTapMode => "toggle_tap_mode",
+    TapNote => "tap_note",
     DeleteSelection => "delete_selection",
     SplitSelection => "split_selection",
     MergeSelection => "merge_selection",
@@ -203,6 +205,7 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
             run_view_action(action, ctx)
         }
         SelectAll | SelectNextNote | SelectPreviousNote => run_selection_action(action, ctx),
+        ToggleTapMode | TapNote => run_tap_action(action, ctx),
         AddNote | DeleteSelection | SplitSelection | MergeSelection | QuantizeNotes
         | DuplicateNotes | CopyNotes | CutNotes | PasteNotes | CycleNoteKind | NudgeEarlier
         | NudgeLater | ShortenSelection | LengthenSelection | RaisePitch | LowerPitch
@@ -875,6 +878,120 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
     }
 }
 
+// -- tap to time ----------------------------------------------------------
+
+fn run_tap_action(action: EditorAction, ctx: &mut EditorActionContext) {
+    let Some(editor) = ctx.session.editor.as_mut() else {
+        return;
+    };
+    match action {
+        EditorAction::ToggleTapMode => {
+            editor.tap_mode = !editor.tap_mode;
+            if editor.tap_mode {
+                // Entering with a selection means "re-perform these"; entering
+                // with none means "lay down new ones".
+                editor.tap.retiming = editor.selected_note_indices().into_iter().collect();
+                editor.tap.retimed = 0;
+                editor.tap.holding = None;
+                let queued = editor.tap.remaining();
+                ctx.session.notice = Some(if queued > 0 {
+                    format!(
+                        "Tap-to-time on. Hold {} while playing to re-time {queued} selected note(s).",
+                        tap_key_hint()
+                    )
+                } else {
+                    format!(
+                        "Tap-to-time on. Hold {} while playing to lay down notes.",
+                        tap_key_hint()
+                    )
+                });
+            } else {
+                finish_tap(editor);
+                editor.tap = TapSession::default();
+                ctx.session.notice = Some("Tap-to-time off.".to_string());
+            }
+        }
+        EditorAction::TapNote => {
+            if !editor.tap_mode {
+                return;
+            }
+            // A tap that arrives while one is still held closes it first, so a
+            // stuck key never swallows the next syllable.
+            finish_tap(editor);
+            let at = editor.visible_position.max(0.0);
+            match editor.tap.next_retarget() {
+                Some(index) => {
+                    let Some(note) = chart_notes(&editor.document).get(index).cloned() else {
+                        editor.tap.retimed += 1;
+                        return;
+                    };
+                    editor.checkpoint(action.label());
+                    let length = (note.end - note.start).max(app_core::MIN_NOTE_SECONDS);
+                    move_chart_note(&mut editor.document, index, at, at + length, note.midi);
+                    editor.select_only_note(index);
+                    editor.tap.holding = Some((index, at));
+                    editor.dirty = true;
+                }
+                None => {
+                    // A new tap inherits the kind of the note before it, which
+                    // is what keeps a tapped rap line scoring on rhythm.
+                    let kind = editor
+                        .selected_note
+                        .and_then(|index| chart_notes(&editor.document).get(index).map(|n| n.kind));
+                    let midi = editor
+                        .selected_note
+                        .and_then(|index| chart_notes(&editor.document).get(index).map(|n| n.midi))
+                        .unwrap_or(((editor.pitch_min + editor.pitch_max) / 2.0).round());
+                    editor.checkpoint(action.label());
+                    let Some(index) = insert_chart_note(
+                        &mut editor.document,
+                        at,
+                        at + app_core::MIN_NOTE_SECONDS,
+                        midi.clamp(0.0, 127.0),
+                    ) else {
+                        editor.undo.pop();
+                        return;
+                    };
+                    if let Some(kind) = kind {
+                        editor
+                            .document
+                            .set_note_kind(&BTreeSet::from([index]), kind);
+                    }
+                    editor.select_only_note(index);
+                    editor.tap.holding = Some((index, at));
+                    editor.dirty = true;
+                }
+            }
+        }
+        _ => unreachable!("not a tap action"),
+    }
+    ctx.invalidated.0 = true;
+}
+
+/// Closes the note under the finger at the current playhead.
+pub(crate) fn finish_tap(editor: &mut NativeEditor) -> bool {
+    let Some((index, start)) = editor.tap.holding.take() else {
+        return false;
+    };
+    let end = editor
+        .visible_position
+        .max(start + app_core::MIN_NOTE_SECONDS);
+    resize_chart_note(&mut editor.document, index, start, end);
+    if editor.tap.next_retarget() == Some(index) {
+        editor.tap.retimed += 1;
+    }
+    editor.dirty = true;
+    true
+}
+
+/// How the tap key reads in a hint, taken from the registry rather than
+/// spelled out a second time.
+fn tap_key_hint() -> String {
+    EditorAction::TapNote
+        .shortcut()
+        .unwrap_or_else(|| "the tap key".to_string())
+}
+
 /// The arrow keys mean "move what is selected"; with nothing selected they move
 /// the playhead instead, which is what a plain arrow press should do.
 fn run_nudge_action(action: EditorAction, ctx: &mut EditorActionContext) {
@@ -1225,6 +1342,7 @@ fn chord_key_name(key: KeyCode) -> Option<&'static str> {
         KeyCode::KeyM => "KeyM",
         KeyCode::KeyQ => "KeyQ",
         KeyCode::KeyS => "KeyS",
+        KeyCode::KeyT => "KeyT",
         KeyCode::KeyV => "KeyV",
         KeyCode::KeyX => "KeyX",
         KeyCode::KeyY => "KeyY",
@@ -1242,6 +1360,15 @@ fn chord_key_name(key: KeyCode) -> Option<&'static str> {
     })
 }
 
+/// The Bevy key a registry chord names, for the handlers that need to watch a
+/// specific key rather than react to a chord.
+pub(crate) fn chord_key_code(name: &str) -> Option<KeyCode> {
+    CHORD_KEYS
+        .iter()
+        .copied()
+        .find(|key| chord_key_name(*key) == Some(name))
+}
+
 /// Every key the registry can bind. Iterating this instead of the whole
 /// `KeyCode` space keeps the lookup to one pass over pressed keys.
 const CHORD_KEYS: &[KeyCode] = &[
@@ -1251,6 +1378,7 @@ const CHORD_KEYS: &[KeyCode] = &[
     KeyCode::KeyM,
     KeyCode::KeyQ,
     KeyCode::KeyS,
+    KeyCode::KeyT,
     KeyCode::KeyV,
     KeyCode::KeyX,
     KeyCode::KeyY,

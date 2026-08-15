@@ -301,6 +301,20 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     // -- notes ------------------------------------------------------------
     action!("add_note", "Add note", Notes, Mutation, []),
     action!(
+        "toggle_tap_mode",
+        "Tap to time",
+        Notes,
+        Read,
+        [KeyChord::ctrl("KeyT")]
+    ),
+    action!(
+        "tap_note",
+        "Tap note",
+        Notes,
+        Mutation,
+        [KeyChord::plain("KeyT")]
+    ),
+    action!(
         "delete_selection",
         "Delete selection",
         Notes,

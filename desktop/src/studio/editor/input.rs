@@ -2,6 +2,40 @@
 
 use crate::studio::*;
 
+/// Ends a held tap when the key comes back up, and rescues one that was left
+/// held when playback stopped or focus moved into a text field.
+pub(crate) fn handle_tap_release(
+    keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    editable: Query<(), With<EditableText>>,
+    mut session: ResMut<StudioSession>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    let typing = focus.get().is_some_and(|entity| editable.contains(entity));
+    let tap_key = chord_key_code(
+        app_core::editor_action("tap_note")
+            .and_then(|action| action.shortcuts.first())
+            .map(|chord| chord.key)
+            .unwrap_or_default(),
+    );
+    let released = tap_key.is_some_and(|key| keys.just_released(key));
+    let Some(editor) = session.editor.as_mut() else {
+        return;
+    };
+    if editor.tap.holding.is_none() {
+        return;
+    }
+    if released || typing || !editor.audio_status.playing {
+        if finish_tap(editor) {
+            let remaining = editor.tap.remaining();
+            session.notice = (remaining > 0)
+                .then(|| format!("{remaining} note(s) left to re-time."))
+                .or_else(|| Some("Tapped the last queued note.".to_string()));
+            invalidated.0 = true;
+        }
+    }
+}
+
 pub(crate) fn sync_editor_word_input(
     inputs: Query<(&EditableText, &EditorWordInput), Changed<EditableText>>,
     mut session: ResMut<StudioSession>,
