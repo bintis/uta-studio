@@ -431,6 +431,13 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     action!("add_lyric", "Add lyric word", Lyrics, Mutation, []),
     action!("delete_lyrics", "Delete lyric words", Lyrics, Mutation, []),
     action!("split_lyrics", "Split lyric words", Lyrics, Mutation, []),
+    action!(
+        "syllabize_lyrics",
+        "Split into syllables",
+        Lyrics,
+        Mutation,
+        [KeyChord::shift("KeyS")]
+    ),
     action!("merge_lyrics", "Merge lyric words", Lyrics, Mutation, []),
     action!(
         "shift_lyric_earlier",
@@ -548,7 +555,8 @@ mod tests {
             editor_action_for_chord("KeyZ", true, true).map(|action| action.command),
             Some("redo")
         );
-        assert!(editor_action_for_chord("KeyS", false, true).is_none());
+        // A chord the table does not bind runs nothing at all.
+        assert!(editor_action_for_chord("KeyQ", true, false).is_none());
     }
 
     #[test]
