@@ -462,6 +462,7 @@ pub fn run() {
         .add_systems(Update, poll_editor_load_job)
         .add_systems(Update, poll_lyrics_search_job)
         .add_systems(Update, sync_numeric_settings)
+        .add_systems(Update, handle_tap_release)
         .add_systems(Update, sync_editor_word_input)
         .add_systems(Update, sync_editor_singer_input)
         .add_systems(Update, finish_inline_lyric_edit)
@@ -3381,6 +3382,89 @@ mod tests {
         assert_eq!(editor.redo(), Some("Delete notes"));
         assert_eq!(editor.document.note_count(), 1);
         assert_eq!(editor.redo(), None);
+    }
+
+    /// Runs one tap: hold at `down`, release at `up`.
+    fn tap(editor: &mut NativeEditor, down: f64, up: f64) {
+        editor.visible_position = down;
+        let at = editor.visible_position.max(0.0);
+        match editor.tap.next_retarget() {
+            Some(index) => {
+                let note = chart_notes(&editor.document)[index].clone();
+                let length = (note.end - note.start).max(app_core::MIN_NOTE_SECONDS);
+                move_chart_note(&mut editor.document, index, at, at + length, note.midi);
+                editor.tap.holding = Some((index, at));
+            }
+            None => {
+                let index = insert_chart_note(
+                    &mut editor.document,
+                    at,
+                    at + app_core::MIN_NOTE_SECONDS,
+                    60.0,
+                )
+                .unwrap();
+                editor.select_only_note(index);
+                editor.tap.holding = Some((index, at));
+            }
+        }
+        editor.visible_position = up;
+        finish_tap(editor);
+    }
+
+    #[test]
+    fn taps_retime_the_queued_notes_in_order_then_stop() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a"), (2.0, 3.0, 62, "b")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.tap_mode = true;
+        editor.tap.retiming = vec![0, 1];
+
+        tap(&mut editor, 5.0, 5.4);
+        assert_eq!(editor.tap.remaining(), 1);
+        tap(&mut editor, 6.0, 6.5);
+        assert_eq!(editor.tap.remaining(), 0);
+
+        let notes = chart_notes(&editor.document);
+        assert!((notes[0].start - 5.0).abs() < 1e-9);
+        assert!((notes[0].end - 5.4).abs() < 1e-9);
+        assert!((notes[1].start - 6.0).abs() < 1e-9);
+        // Re-timing keeps the pitch that was authored.
+        assert!((notes[1].midi - 62.0).abs() < 1e-9);
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn taps_with_nothing_queued_lay_down_new_notes() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.tap_mode = true;
+        tap(&mut editor, 2.0, 2.3);
+        tap(&mut editor, 3.0, 3.2);
+        let notes = chart_notes(&editor.document);
+        assert_eq!(notes.len(), 3);
+        assert!((notes[1].end - notes[1].start - 0.3).abs() < 1e-3);
+        assert!((notes[2].start - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_tap_shorter_than_the_minimum_still_makes_a_valid_note() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.tap_mode = true;
+        tap(&mut editor, 4.0, 4.0);
+        let note = chart_notes(&editor.document)[1].clone();
+        assert!(note.end - note.start >= app_core::MIN_NOTE_SECONDS - 1e-9);
     }
 
     #[test]

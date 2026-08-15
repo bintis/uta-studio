@@ -67,6 +67,33 @@ impl AuditionMode {
     }
 }
 
+/// Tap-to-time state.
+///
+/// Tapping along with playback is how a rap or spoken line gets its timing:
+/// hold the tap key for as long as the syllable lasts. With notes selected the
+/// taps re-time those notes in order instead of adding new ones, so an
+/// existing line can be re-performed rather than rebuilt.
+#[derive(Default)]
+pub(crate) struct TapSession {
+    /// Notes queued for re-timing, in time order.
+    pub(crate) retiming: Vec<usize>,
+    /// How far through `retiming` the taps have got.
+    pub(crate) retimed: usize,
+    /// The note under the finger, and the position it started at.
+    pub(crate) holding: Option<(usize, f64)>,
+}
+
+impl TapSession {
+    /// The note the next tap re-times, if any are still queued.
+    pub(crate) fn next_retarget(&self) -> Option<usize> {
+        self.retiming.get(self.retimed).copied()
+    }
+
+    pub(crate) fn remaining(&self) -> usize {
+        self.retiming.len().saturating_sub(self.retimed)
+    }
+}
+
 pub(crate) struct NativeEditor {
     pub(crate) chart: app_core::ChartDocument,
     /// The authoritative UTZ 0.2 chart under edit. Every note and lyric change
@@ -90,6 +117,9 @@ pub(crate) struct NativeEditor {
     pub(crate) word_edit_focus: Option<WordSelection>,
     pub(crate) snap_seconds: f64,
     pub(crate) audition_mode: AuditionMode,
+    /// Whether the tap key times notes instead of doing nothing.
+    pub(crate) tap_mode: bool,
+    pub(crate) tap: TapSession,
     /// When a ranged audition should stop, in seconds. `None` while the
     /// transport is under plain manual control.
     pub(crate) audition_until: Option<f64>,
@@ -158,6 +188,8 @@ impl NativeEditor {
             word_edit_focus: None,
             snap_seconds: 0.05,
             audition_mode: AuditionMode::default(),
+            tap_mode: false,
+            tap: TapSession::default(),
             audition_until: None,
             dirty: false,
             manual_scroll_until: Instant::now(),
