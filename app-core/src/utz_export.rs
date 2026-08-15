@@ -14,8 +14,8 @@ use std::{
 use serde::Serialize;
 use ts_rs::TS;
 use utz::{
-    AssetRef, AssetSource, AudioAssets, ChartAssets, Provenance, SongMetadata, UtzManifest,
-    UtzPackage, VisualAssets,
+    AssetRef, AssetSource, AudioAssets, ManifestV02, Provenance, SongMetadata, UtzPackage,
+    VOCAL_CHART_MEDIA_TYPE, VisualAssets,
 };
 
 use crate::{
@@ -27,6 +27,7 @@ use crate::{
     error::UtaStudioError,
     library_db,
     library_model::SongsStore,
+    vocal_chart::migrate_legacy_chart,
 };
 
 struct ExportAudioStaging(PathBuf);
@@ -169,12 +170,10 @@ where
     let transcript = load_transcript(file_hash)?;
     let guide = load_pitch_guide(file_hash)?
         .ok_or_else(|| UtaStudioError::Other("pitch track and guide notes are not ready".into()))?;
-    let pitch_track = guide
-        .get("track")
-        .ok_or_else(|| UtaStudioError::Other("pitch guide has no track".into()))?;
     let pitch_notes = guide
         .get("notes")
         .ok_or_else(|| UtaStudioError::Other("pitch guide has no notes".into()))?;
+    let vocal_chart = migrate_legacy_chart(&transcript, pitch_notes)?;
 
     let instrumental_name = format!(
         "audio/instrumental.{}",
@@ -189,16 +188,8 @@ where
             AssetSource::File(instrumental_path.clone()),
         ),
         (
-            "charts/transcript.json".into(),
-            AssetSource::Bytes(serde_json::to_vec(&transcript)?),
-        ),
-        (
-            "charts/pitch-track.json".into(),
-            AssetSource::Bytes(serde_json::to_vec(pitch_track)?),
-        ),
-        (
-            "charts/pitch-notes.json".into(),
-            AssetSource::Bytes(serde_json::to_vec(pitch_notes)?),
+            "charts/vocal.json".into(),
+            AssetSource::Bytes(serde_json::to_vec(&vocal_chart)?),
         ),
     ]);
     if let (Some(name), Some(path)) = (&guide_name, &guide_path) {
@@ -212,7 +203,7 @@ where
         .or_else(|| song.is_video.then_some(song.path.clone()))
         .filter(|path| path.is_file());
 
-    let mut manifest = UtzManifest::new(
+    let mut manifest = ManifestV02::new(
         format!("uta:{file_hash}"),
         SongMetadata {
             title: song.title,
@@ -235,11 +226,7 @@ where
             original: None,
             audio_offset_seconds: 0.0,
         },
-        ChartAssets {
-            transcript: AssetRef::pending("charts/transcript.json", "application/json"),
-            pitch_track: AssetRef::pending("charts/pitch-track.json", "application/json"),
-            pitch_notes: AssetRef::pending("charts/pitch-notes.json", "application/json"),
-        },
+        AssetRef::pending("charts/vocal.json", VOCAL_CHART_MEDIA_TYPE),
     );
     manifest.provenance = Provenance {
         generator: Some(format!("uta-studio/{}", env!("CARGO_PKG_VERSION"))),
@@ -342,13 +329,11 @@ fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
     if !Path::new(&audio.instrumental).is_file() {
         missing.push("instrumental".into());
     }
-    if !cache.transcript_path(file_hash).is_file() {
+    if !cache.vocal_chart_path(file_hash).is_file() && !cache.transcript_path(file_hash).is_file() {
         missing.push("transcript".into());
     }
-    if !cache.pitch_track_path(file_hash).is_file() {
-        missing.push("pitch_track".into());
-    }
-    if !cache.pitch_notes_path(file_hash).is_file() {
+    if !cache.vocal_chart_path(file_hash).is_file() && !cache.pitch_notes_path(file_hash).is_file()
+    {
         missing.push("pitch_notes".into());
     }
     missing

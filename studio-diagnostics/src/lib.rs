@@ -151,9 +151,28 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
     let package = utz::UtzPackage::from_bytes(&encoded_utz)
         .map_err(|error| format!("UTZ validation failed: {error}"))?;
     let manifest = package.manifest();
+    let manifest = manifest.as_v0_2().ok_or_else(|| {
+        format!(
+            "Unexpected UTZ format version: {}",
+            manifest.format_version()
+        )
+    })?;
     if manifest.format != utz::FORMAT_ID {
         return Err(format!("Unexpected UTZ format: {}", manifest.format));
     }
+    let vocal_chart = package
+        .vocal_chart()
+        .map_err(|error| format!("UTZ vocal chart is unreadable: {error}"))?
+        .ok_or_else(|| "UTZ package has no vocal chart".to_string())?;
+    vocal_chart
+        .validate()
+        .map_err(|error| format!("UTZ vocal chart is invalid: {error}"))?;
+    let charted_notes: usize = vocal_chart
+        .tracks
+        .iter()
+        .flat_map(|track| track.phrases.iter())
+        .map(|phrase| phrase.notes.len())
+        .sum();
     let audio_assets = [
         Some(&manifest.audio.instrumental),
         manifest.audio.guide_vocals.as_ref(),
@@ -198,7 +217,8 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
         return Err("An exported bundle has no decodable audio asset".to_string());
     }
     Ok(format!(
-        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), hashes valid); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)"
+        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), hashes valid, {} vocal track(s)/{charted_notes} note(s) validated); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)",
+        vocal_chart.tracks.len()
     ))
 }
 

@@ -18,6 +18,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
   "bevy_camera",
   "bevy_color",
   "bevy_core_pipeline",
+  "bevy_gilrs",
   "bevy_image",
   "bevy_input_focus",
   "bevy_log",

@@ -56,7 +56,9 @@
 
             buildInputs = gstPlugins ++ (with pkgs; [
               ffmpeg-full
+              libglvnd
               libxkbcommon
+              udev
               wayland
               wayland-protocols
               vulkan-loader
@@ -89,8 +91,9 @@
                 --set UTA_STUDIO_UV_PATH ${pkgs.uv}/bin/uv \
                 --set UTA_STUDIO_PYTHON_PATH ${pkgs.python311}/bin/python3.11 \
                 --set WINIT_UNIX_BACKEND wayland \
+                --set __EGL_VENDOR_LIBRARY_DIRS /run/opengl-driver/share/glvnd/egl_vendor.d \
                 --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${gstPluginPath}" \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libxkbcommon pkgs.vulkan-loader ])}" \
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}" \
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
               runHook postInstall
             '';
@@ -128,8 +131,9 @@
               export UTA_STUDIO_UV_PATH="${pkgs.uv}/bin/uv"
               export UTA_STUDIO_PYTHON_PATH="${pkgs.python311}/bin/python3.11"
               export WINIT_UNIX_BACKEND=wayland
+              export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libxkbcommon pkgs.vulkan-loader ])}:/run/opengl-driver/lib:''${LD_LIBRARY_PATH:-}"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}:/run/opengl-driver/lib:''${LD_LIBRARY_PATH:-}"
             '';
           };
         });

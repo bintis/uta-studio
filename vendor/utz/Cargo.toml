@@ -1,10 +1,10 @@
 [package]
 name = "utz"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["bintis"]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/uta-project/utz"
+repository = "https://github.com/bintis/utz"
 description = "Reader, writer, model, and validator for Uta .utz song packages"
 
 [dependencies]

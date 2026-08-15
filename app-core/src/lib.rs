@@ -19,13 +19,13 @@ mod usdx;
 mod utz_export;
 mod vendor;
 mod vendor_scripts;
+mod vocal_chart;
 
 pub use analyzer::{
     AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunHistory, AnalysisStageRoute, AnalysisTask,
     QueuedStatus, clear_analysis_history, delete_cache, enqueue_all, enqueue_one,
-    load_analysis_history, load_analysis_tasks, realign,
-    reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
-    shutdown_server,
+    load_analysis_history, load_analysis_tasks, realign, reanalyze_force_transcribe,
+    reanalyze_full, reanalyze_pitch, reanalyze_transcript, shutdown_server,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use authoring::{
@@ -38,7 +38,7 @@ pub use cache::{
 };
 pub use chart::{
     ChartAudio, ChartDocument, ChartReadiness, ChartWaveform, chart_readiness,
-    decode_chart_waveform, load_chart, save_chart,
+    decode_chart_waveform, load_chart, save_chart, save_vocal_chart,
 };
 pub use config::{AppConfig, LibrarySource};
 pub use library_db::{init_library, library_db_path, load_song_by_hash};
@@ -54,6 +54,7 @@ pub use source::{
     FolderSource, LibraryFolderEntry, MediaSource, active_source, list_library_folder,
 };
 pub use ultrastar_export::{export_ultrastar, validate_ultrastar_chart};
+pub use utz::VocalChartV1;
 pub use utz_export::{
     ExportProgress, ExportableSong, export_utz, export_utz_with_progress, list_exportable_songs,
 };
