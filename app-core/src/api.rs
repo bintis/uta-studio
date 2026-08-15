@@ -245,7 +245,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "realign",
         "mutation",
         false,
-        "Realign timed lyrics"
+        "Realign known lyrics with the selected local backend"
     ),
     capability!(
         "analysis",
@@ -477,7 +477,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "trigger_setup",
         "external",
         false,
-        "Install the shared runtime or one explicitly selected model family"
+        "Install the shared runtime or one explicitly confirmed model family"
     ),
     capability!(
         "diagnostics",

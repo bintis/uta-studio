@@ -47,10 +47,11 @@ def main():
     parser.add_argument("--engine", default="whisper", choices=["whisper", "parakeet"],
                         help="Transcription engine: whisper (default) or parakeet (NeMo on CUDA, ONNX elsewhere)")
     parser.add_argument("--align-backend", dest="align_backend", default="whisperx",
-                        choices=["whisperx", "ctc", "qwen"],
+                        choices=["whisperx", "ctc", "qwen", "mms_karaoke"],
                         help="Forced-alignment backend: whisperx (default, Python Viterbi), "
                              "ctc (torchaudio forced_align C++/CUDA kernel), or qwen "
-                             "(Qwen3-ForcedAligner)")
+                             "(Qwen3-ForcedAligner), or mms_karaoke "
+                             "(Japanese karaoke-tuned MMS CTC)")
     parser.add_argument("--vocal-threshold", dest="vocal_threshold", type=float, default=None,
                         help="RMS threshold (fraction of peak, 0-1) for start/end vocal "
                              "detection. Lower keeps more edge audio; default 0.15")

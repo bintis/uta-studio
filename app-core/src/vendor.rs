@@ -50,9 +50,9 @@ pub enum ComputeBackend {
 }
 
 /// A concrete, user-visible model family that can be prepared independently.
-/// The selected variant (for example the Whisper size or separator backend)
-/// is always read from `AppConfig` when the job starts, so a stale UI cannot
-/// accidentally download a model that is no longer selected.
+/// Configurable families read their selected variant from `AppConfig` when the
+/// job starts. Explicit optional families use their own variant so their model
+/// row can remain available without silently changing the active analysis setup.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +62,7 @@ pub enum ModelDownloadTarget {
     Parakeet,
     Separator,
     Alignment,
+    MmsKaraokeAlignment,
     Pitch,
     OpenVinoWhisper,
 }
@@ -381,7 +382,7 @@ fn model_checkpoint_with_prefix_exists(directory: &Path, prefix: &str) -> bool {
     })
 }
 
-fn alignment_model_status(align_backend: &str) -> Option<(String, String, bool)> {
+fn qwen_alignment_model_status(align_backend: &str) -> Option<(String, String, bool)> {
     (align_backend == "qwen").then(|| {
         (
             "Qwen forced aligner".to_string(),
@@ -392,6 +393,20 @@ fn alignment_model_status(align_backend: &str) -> Option<(String, String, bool)>
             ),
         )
     })
+}
+
+fn mms_karaoke_alignment_model_ready() -> bool {
+    huggingface_snapshot_has(
+        "NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn",
+        &[
+            "config.json",
+            "added_tokens.json",
+            "model.safetensors",
+            "processor_config.json",
+            "tokenizer_config.json",
+            "vocab.json",
+        ],
+    )
 }
 
 pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
@@ -451,7 +466,9 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         available,
     });
 
-    if let Some((label, description, available)) = alignment_model_status(config.align_backend()) {
+    if let Some((label, description, available)) =
+        qwen_alignment_model_status(config.align_backend())
+    {
         models.push(ModelInstallStatus {
             target: ModelDownloadTarget::Alignment,
             label,
@@ -459,6 +476,18 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
             available,
         });
     }
+
+    models.push(ModelInstallStatus {
+        target: ModelDownloadTarget::MmsKaraokeAlignment,
+        label: "MMS Karaoke Japanese aligner".to_string(),
+        description: if config.align_backend() == "mms_karaoke" {
+            "Selected 1.26 GB Japanese karaoke alignment model (AGPL-3.0).".to_string()
+        } else {
+            "Optional 1.26 GB Japanese karaoke alignment model (AGPL-3.0); select MMS Karaoke in Analysis to use it."
+                .to_string()
+        },
+        available: mms_karaoke_alignment_model_ready(),
+    });
 
     models.push(ModelInstallStatus {
         target: ModelDownloadTarget::Pitch,
@@ -470,10 +499,22 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
 }
 
 fn selected_models_status() -> (bool, Vec<String>, Vec<String>) {
+    let config = crate::config::AppConfig::load();
     let models = model_install_statuses();
-    let selected = models.iter().map(|model| model.label.clone()).collect();
+    let selected = models
+        .iter()
+        .filter(|model| {
+            model.target != ModelDownloadTarget::MmsKaraokeAlignment
+                || config.align_backend() == "mms_karaoke"
+        })
+        .map(|model| model.label.clone())
+        .collect();
     let missing: Vec<_> = models
         .iter()
+        .filter(|model| {
+            model.target != ModelDownloadTarget::MmsKaraokeAlignment
+                || config.align_backend() == "mms_karaoke"
+        })
         .filter(|model| !model.available)
         .map(|model| format!("{} model", model.label))
         .collect();
@@ -1929,14 +1970,15 @@ fn model_target_label(target: ModelDownloadTarget) -> &'static str {
         ModelDownloadTarget::Parakeet => "Parakeet v3",
         ModelDownloadTarget::Separator => "the selected separator model",
         ModelDownloadTarget::Alignment => "the selected alignment model",
+        ModelDownloadTarget::MmsKaraokeAlignment => "MMS Karaoke Japanese alignment",
         ModelDownloadTarget::Pitch => "RMVPE pitch detection",
         ModelDownloadTarget::OpenVinoWhisper => "OpenVINO Whisper",
     }
 }
 
-/// Prepare exactly one model family selected in Settings. The common runtime
-/// is established by `run_vendor_setup` before this function is reached; this
-/// function never downloads unrelated model families.
+/// Prepare exactly one model family named by the confirmed UI action. The
+/// common runtime is established by `run_vendor_setup` before this function is
+/// reached; this function never downloads unrelated model families.
 pub fn step_download_model(
     target: ModelDownloadTarget,
     mut on_output: impl FnMut(String),
@@ -1958,7 +2000,9 @@ pub fn step_download_model(
     if target == ModelDownloadTarget::Parakeet && config.asr_engine() != "parakeet" {
         return Err("Select Parakeet in Settings before downloading its model".to_string());
     }
-    if target == ModelDownloadTarget::Alignment && config.align_backend() != "qwen" {
+    if target == ModelDownloadTarget::Alignment
+        && !matches!(config.align_backend(), "qwen" | "mms_karaoke")
+    {
         return Err(
             "The selected alignment backend does not require a standalone model".to_string(),
         );
@@ -1968,6 +2012,11 @@ pub fn step_download_model(
     let script = analyzer_dir().join("model_setup.py");
     let models = models_dir();
     let mut command = silent_command(&py);
+    let align_backend = if target == ModelDownloadTarget::MmsKaraokeAlignment {
+        "mms_karaoke"
+    } else {
+        config.align_backend()
+    };
     command
         .env("HF_HOME", models.join("huggingface"))
         .env("TORCH_HOME", models.join("torch"))
@@ -1984,7 +2033,7 @@ pub fn step_download_model(
         .arg("--separator")
         .arg(config.separator())
         .arg("--align-backend")
-        .arg(config.align_backend())
+        .arg(align_backend)
         .arg("--target")
         .arg(match target {
             ModelDownloadTarget::Whisper => "whisper",
@@ -1992,6 +2041,7 @@ pub fn step_download_model(
             ModelDownloadTarget::Parakeet => "parakeet",
             ModelDownloadTarget::Separator => "separator",
             ModelDownloadTarget::Alignment => "alignment",
+            ModelDownloadTarget::MmsKaraokeAlignment => "alignment",
             ModelDownloadTarget::Pitch | ModelDownloadTarget::OpenVinoWhisper => unreachable!(),
         });
     let output = run_model_command(&mut command, &mut on_output).map_err(|error| {
@@ -2049,7 +2099,10 @@ pub fn step_download_selected_models(mut on_output: impl FnMut(String)) -> Resul
 /// No-op when setup hasn't completed yet — initial extraction is handled by
 /// `step_extract_scripts` during the setup flow.
 pub fn refresh_analyzer_scripts_if_ready() -> Result<(), String> {
-    if !is_ready() {
+    let managed_environment_ready = std::fs::read_to_string(ready_marker())
+        .is_ok_and(|value| ready_marker_is_compatible(&value))
+        && python_path().is_file();
+    if !managed_environment_ready {
         return Ok(());
     }
 

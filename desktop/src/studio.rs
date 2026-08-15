@@ -1,7 +1,11 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -30,6 +34,14 @@ const SIDEBAR_WIDTH: f32 = 265.0;
 const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
 const EDITOR_PITCH_TOP_PERCENT: f32 = 20.0;
 const EDITOR_PITCH_HEIGHT_PERCENT: f32 = 76.0;
+const UI_FONT_SCALE_MIN_PERCENT: u32 = 80;
+const UI_FONT_SCALE_MAX_PERCENT: u32 = 140;
+const UI_FONT_BASE_SIZE_PX: u32 = 12;
+const UI_FONT_SIZE_MIN_PX: u32 = 10;
+const UI_FONT_SIZE_MAX_PX: u32 = 18;
+const UI_FONT_SIZE_STEP_PX: u32 = 1;
+
+static GLOBAL_UI_FONT_SCALE_BITS: AtomicU32 = AtomicU32::new(f32::to_bits(1.0));
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
@@ -43,7 +55,6 @@ enum UiIcon {
     List = 6,
     Folder = 7,
     Settings = 8,
-    Sun = 9,
     Monitor = 10,
     Database = 11,
     Box = 12,
@@ -104,6 +115,17 @@ enum SettingsTab {
     Analysis,
 }
 
+impl SettingsTab {
+    fn index(self) -> usize {
+        match self {
+            Self::General => 0,
+            Self::Storage => 1,
+            Self::Models => 2,
+            Self::Analysis => 3,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsSelectKind {
     ComputeBackend,
@@ -112,6 +134,12 @@ enum SettingsSelectKind {
     WhisperModel,
     AlignBackend,
     PitchModel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnalysisAdvancedSection {
+    Transcription,
+    Pitch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,10 +245,13 @@ struct StudioSession {
     pending_cache_clear: Option<CacheClearScope>,
     pending_leave: Option<PendingLeave>,
     open_settings_select: Option<SettingsSelectKind>,
+    open_analysis_advanced: Option<AnalysisAdvancedSection>,
+    settings_scroll_offsets: [f32; 4],
     open_library_select: Option<LibrarySelectKind>,
     export_all_open: bool,
     open_editor_select: Option<EditorDockSelectKind>,
     analysis_tasks: Vec<app_core::AnalysisTask>,
+    request_cache_stats_refresh: bool,
     search_open: bool,
     activity_open: bool,
     about_open: bool,
@@ -261,10 +292,13 @@ impl StudioSession {
             pending_cache_clear: None,
             pending_leave: None,
             open_settings_select: None,
+            open_analysis_advanced: None,
+            settings_scroll_offsets: [0.0; 4],
             open_library_select: None,
             export_all_open: false,
             open_editor_select: None,
             analysis_tasks: app_core::load_analysis_tasks(),
+            request_cache_stats_refresh: false,
             search_open: false,
             activity_open: false,
             about_open: false,
@@ -767,6 +801,13 @@ struct NativeLyricsSearchJob {
     receiver: Option<Mutex<mpsc::Receiver<Vec<app_core::LrclibCandidate>>>>,
 }
 
+#[derive(Resource, Default)]
+struct CacheStatsJob {
+    receiver: Option<Mutex<mpsc::Receiver<app_core::CacheStats>>>,
+    current: Option<app_core::CacheStats>,
+    error: Option<String>,
+}
+
 struct AuthoringEvent {
     result: Result<app_core::ShiftResult, String>,
     kind: &'static str,
@@ -950,6 +991,7 @@ enum UiAction {
     RefreshRuntimeStatus,
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
+    ToggleAnalysisAdvanced(AnalysisAdvancedSection),
     RequestSetup(Option<app_core::ModelDownloadTarget>),
     CancelSetup,
     ConfirmSetup,
@@ -968,6 +1010,7 @@ enum UiAction {
     ConfirmRemoveFolder,
     AdjustBeamSize(i8),
     AdjustBatchSize(i8),
+    AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     AdjustVocalThreshold(i8),
     RestoreAnalysisDefaults,
@@ -1058,6 +1101,7 @@ pub fn run() {
     let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let theme = StudioTheme::new(session.config.dark_mode.unwrap_or(false));
+    set_ui_font_scale(session.config.font_scale());
     let window = studio_window(&session.config, theme.dark);
 
     App::new()
@@ -1088,6 +1132,7 @@ pub fn run() {
         .insert_resource(NativeSetup::default())
         .insert_resource(NativeDiagnostics::default())
         .insert_resource(NativeAuthoringJob::default())
+        .insert_resource(CacheStatsJob::default())
         .add_plugins(
             DefaultPlugins
                 .set(LogPlugin {
@@ -1113,46 +1158,37 @@ pub fn run() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                handle_actions,
-                handle_window_close_requests,
-                handle_fullscreen_shortcut,
-                refresh_library_while_scanning,
-                refresh_analysis_activity,
-                poll_native_setup,
-                poll_native_diagnostics,
-                poll_authoring_job,
-                poll_export_job,
-                poll_editor_load_job,
-                poll_lyrics_search_job,
-                sync_numeric_settings,
-                sync_editor_word_input,
-                finish_inline_lyric_edit,
-                handle_library_search_keyboard,
-                rebuild_ui,
-                update_button_visuals,
-            )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            (
-                handle_editor_keyboard,
-                handle_editor_wheel,
-                handle_editor_pointer_capture.before(handle_actions),
-                handle_folder_scroll,
-                handle_library_scroll,
-                handle_song_detail_scroll,
-                handle_settings_scroll,
-                sync_editor_audio,
-                sync_library_audio,
-                update_editor_geometry,
-                update_editor_playhead,
-                update_library_player_ui,
-            ),
-        )
+        .add_systems(Update, handle_actions)
+        .add_systems(Update, handle_cache_stats_request)
+        .add_systems(Update, handle_window_close_requests)
+        .add_systems(Update, handle_fullscreen_shortcut)
+        .add_systems(Update, refresh_library_while_scanning)
+        .add_systems(Update, refresh_analysis_activity)
+        .add_systems(Update, poll_native_setup)
+        .add_systems(Update, poll_native_diagnostics)
+        .add_systems(Update, poll_cache_stats)
+        .add_systems(Update, poll_authoring_job)
+        .add_systems(Update, poll_export_job)
+        .add_systems(Update, poll_editor_load_job)
+        .add_systems(Update, poll_lyrics_search_job)
+        .add_systems(Update, sync_numeric_settings)
+        .add_systems(Update, sync_editor_word_input)
+        .add_systems(Update, finish_inline_lyric_edit)
+        .add_systems(Update, handle_library_search_keyboard)
+        .add_systems(Update, rebuild_ui)
+        .add_systems(Update, update_button_visuals)
+        .add_systems(Update, handle_editor_keyboard)
+        .add_systems(Update, handle_editor_wheel)
+        .add_systems(Update, handle_editor_pointer_capture)
+        .add_systems(Update, handle_folder_scroll)
+        .add_systems(Update, handle_library_scroll)
+        .add_systems(Update, handle_song_detail_scroll)
+        .add_systems(Update, handle_settings_scroll)
+        .add_systems(Update, sync_editor_audio)
+        .add_systems(Update, sync_library_audio)
+        .add_systems(Update, update_editor_geometry)
+        .add_systems(Update, update_editor_playhead)
+        .add_systems(Update, update_library_player_ui)
         .run();
 }
 
@@ -1210,6 +1246,7 @@ fn setup(
     mut local_images: ResMut<LocalImages>,
     session: Res<StudioSession>,
     native_setup: Res<NativeSetup>,
+    cache_stats: Res<CacheStatsJob>,
     theme: Res<StudioTheme>,
 ) {
     commands.spawn(Camera2d);
@@ -1220,6 +1257,7 @@ fn setup(
         &mut local_images,
         &session,
         &native_setup,
+        &cache_stats,
         &theme,
     );
 }
@@ -1233,6 +1271,7 @@ fn rebuild_ui(
     mut local_images: ResMut<LocalImages>,
     session: Res<StudioSession>,
     native_setup: Res<NativeSetup>,
+    cache_stats: Res<CacheStatsJob>,
     theme: Res<StudioTheme>,
     mut invalidated: ResMut<UiInvalidated>,
     roots: Query<Entity, With<StudioUiRoot>>,
@@ -1250,6 +1289,7 @@ fn rebuild_ui(
         &mut local_images,
         &session,
         &native_setup,
+        &cache_stats,
         &theme,
     );
     invalidated.0 = false;
@@ -1262,6 +1302,7 @@ fn render_ui(
     local_images: &mut LocalImages,
     session: &StudioSession,
     native_setup: &NativeSetup,
+    cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
 ) {
     let font = asset_server.load(FONT_PATH);
@@ -1304,6 +1345,7 @@ fn render_ui(
                         local_images,
                         session,
                         native_setup,
+                        cache_stats,
                         icons.clone(),
                         theme,
                     );
@@ -1366,12 +1408,12 @@ fn spawn_leave_confirmation(
             children![
                 (
                     Text::new(title),
-                    TextFont::from(font.clone()).with_font_size(17.0),
+                    ui_text_font(font.clone(), 17.0),
                     TextColor(theme.foreground),
                 ),
                 (
                     Text::new(description),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::default(),
                 ),
@@ -1393,7 +1435,7 @@ fn spawn_leave_confirmation(
                             BackgroundColor(Color::NONE),
                             children![(
                                 Text::new("Stay"),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.muted_foreground),
                             )],
                         ),
@@ -1408,7 +1450,7 @@ fn spawn_leave_confirmation(
                             BackgroundColor(theme.destructive.with_alpha(0.18)),
                             children![(
                                 Text::new(action),
-                                TextFont::from(font).with_font_size(10.0),
+                                ui_text_font(font, 10.0),
                                 TextColor(theme.destructive),
                             )],
                         )
@@ -1648,16 +1690,6 @@ fn spawn_sidebar(
                         theme,
                         UiIcon::Settings,
                         UiAction::Settings,
-                        session.route == StudioRoute::Settings,
-                        false,
-                        30.0,
-                    );
-                    spawn_icon_button(
-                        header,
-                        icons.clone(),
-                        theme,
-                        UiIcon::Sun,
-                        UiAction::ToggleTheme,
                         false,
                         false,
                         30.0,
@@ -1770,12 +1802,22 @@ fn spawn_sidebar(
             spawn_sidebar_nav_item(
                 sidebar,
                 font.clone(),
-                icons,
+                icons.clone(),
                 theme,
                 UiIcon::Folder,
                 "Folders",
                 UiAction::Folders,
                 session.route == StudioRoute::Folders,
+            );
+            spawn_sidebar_nav_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                UiIcon::Settings,
+                "Settings",
+                UiAction::Settings,
+                session.route == StudioRoute::Settings,
             );
             sidebar.spawn(Node {
                 min_height: px(14),
@@ -1840,7 +1882,7 @@ fn spawn_sidebar_filter_item(
             .with_children(|label_node| {
                 label_node.spawn((
                     Text::new(label),
-                    TextFont::from(font.clone()).with_font_size(12.0),
+                    ui_text_font(font.clone(), 12.0),
                     TextColor(if active {
                         theme.sidebar_foreground.with_alpha(0.68)
                     } else {
@@ -1882,7 +1924,7 @@ fn spawn_section_label(
         },
         children![(
             Text::new(label),
-            TextFont::from(font).with_font_size(9.0),
+            ui_text_font(font, 9.0),
             TextColor(theme.sidebar_foreground.with_alpha(0.42)),
         )],
     ));
@@ -1999,6 +2041,7 @@ fn spawn_workspace(
     local_images: &mut LocalImages,
     session: &StudioSession,
     native_setup: &NativeSetup,
+    cache_stats: &CacheStatsJob,
     icons: Handle<Image>,
     theme: &StudioTheme,
 ) {
@@ -2056,6 +2099,7 @@ fn spawn_workspace(
                     icons.clone(),
                     session,
                     native_setup,
+                    cache_stats,
                     theme,
                 ),
                 StudioRoute::Editor => {}
@@ -2184,7 +2228,7 @@ fn spawn_top_bar(
                                     border_radius: BorderRadius::all(px(5)),
                                     ..default()
                                 },
-                                TextFont::from(font.clone()).with_font_size(12.0),
+                                ui_text_font(font.clone(), 12.0),
                                 TextColor(theme.foreground),
                                 TextLayout::no_wrap(),
                                 TextCursorStyle {
@@ -2338,7 +2382,7 @@ fn spawn_library_player(
                         .with_children(|identity| {
                             identity.spawn((
                                 Text::new(song.title.clone()),
-                                TextFont::from(font.clone()).with_font_size(11.0),
+                                ui_text_font(font.clone(), 11.0),
                                 TextColor(theme.foreground),
                                 TextLayout::no_wrap(),
                             ));
@@ -2348,7 +2392,7 @@ fn spawn_library_player(
                                 } else {
                                     song.artist.clone()
                                 }),
-                                TextFont::from(font.clone()).with_font_size(9.0),
+                                ui_text_font(font.clone(), 9.0),
                                 TextColor(theme.muted_foreground),
                                 TextLayout::no_wrap(),
                             ));
@@ -2496,7 +2540,7 @@ fn spawn_library_player(
                             timeline.spawn((
                                 LibraryPlayerClockText,
                                 Text::new(format_editor_clock(position, duration)),
-                                TextFont::from(font.clone()).with_font_size(8.0),
+                                ui_text_font(font.clone(), 8.0),
                                 TextColor(theme.muted_foreground),
                                 TextLayout::no_wrap(),
                             ));
@@ -2744,13 +2788,13 @@ fn spawn_library_play_queue(
                         .with_children(|identity| {
                             identity.spawn((
                                 Text::new(title),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.foreground),
                                 TextLayout::no_wrap(),
                             ));
                             identity.spawn((
                                 Text::new(artist),
-                                TextFont::from(font.clone()).with_font_size(8.0),
+                                ui_text_font(font.clone(), 8.0),
                                 TextColor(theme.muted_foreground),
                                 TextLayout::no_wrap(),
                             ));
@@ -3106,7 +3150,8 @@ fn spawn_about_dialog(
                 "Lyrics data · LRCLIB",
                 "Stem separation · UVR / Demucs",
                 "Speech recognition · WhisperX / OpenAI Whisper / NVIDIA Parakeet",
-                "Forced alignment · WhisperX / torchaudio / Qwen3-ForcedAligner",
+                "Forced alignment · WhisperX / torchaudio / Qwen3-ForcedAligner / FA-Kara (MIT)",
+                "Optional Japanese model · NextFire MMS Karaoke (AGPL-3.0)",
                 "CJK romanization · fugashi / pypinyin / hangul-romanize / ToJyutping",
             ] {
                 spawn_wrapped_text(
@@ -3460,7 +3505,7 @@ fn spawn_editor(
                         BackgroundColor(theme.muted.with_alpha(0.5)),
                         children![(
                             Text::new(notice),
-                            TextFont::from(font).with_font_size(9.0),
+                            ui_text_font(font, 9.0),
                             TextColor(theme.muted_foreground),
                             TextLayout::default(),
                         )],
@@ -3526,7 +3571,7 @@ fn spawn_editor_dock(
                         editor.visible_position,
                         editor.audio_status.duration_secs,
                     )),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.foreground),
                     TextLayout::no_wrap(),
                 ));
@@ -3907,7 +3952,7 @@ fn spawn_editor_timeline(
                         ..default()
                     },
                     Text::new("AUDIO"),
-                    TextFont::from(font.clone()).with_font_size(7.0),
+                    ui_text_font(font.clone(), 7.0),
                     TextColor(theme.muted_foreground.with_alpha(0.65)),
                 ));
                 let pitch_span = (editor.pitch_max - editor.pitch_min).max(1.0);
@@ -3948,7 +3993,7 @@ fn spawn_editor_timeline(
                             if midi.rem_euclid(12) == 0 {
                                 key.spawn((
                                     Text::new(midi_note_name(f64::from(midi))),
-                                    TextFont::from(font.clone()).with_font_size(7.0),
+                                    ui_text_font(font.clone(), 7.0),
                                     TextColor(theme.muted_foreground.with_alpha(0.82)),
                                     TextLayout::no_wrap(),
                                 ));
@@ -4054,7 +4099,7 @@ fn spawn_editor_timeline(
                                 ..default()
                             },
                             Text::new(format!("{time:.1}s")),
-                            TextFont::from(font.clone()).with_font_size(8.0),
+                            ui_text_font(font.clone(), 8.0),
                             TextColor(theme.muted_foreground),
                             Pickable::IGNORE,
                         ));
@@ -4168,7 +4213,7 @@ fn spawn_editor_timeline(
                             if width >= 2.6 {
                                 note_node.spawn((
                                     Text::new(midi_note_name(note.midi)),
-                                    TextFont::from(font.clone()).with_font_size(8.0),
+                                    ui_text_font(font.clone(), 8.0),
                                     TextColor(if selected {
                                         theme.background
                                     } else if active {
@@ -4314,7 +4359,7 @@ fn spawn_editor_lyrics(
                 BorderColor::all(theme.border.with_alpha(0.45)),
                 children![(
                     Text::new("LYRICS"),
-                    TextFont::from(font.clone()).with_font_size(8.0),
+                    ui_text_font(font.clone(), 8.0),
                     TextColor(theme.muted_foreground),
                 )],
             ));
@@ -4427,7 +4472,7 @@ fn spawn_editor_lyrics(
                                     overflow: Overflow::clip(),
                                     ..default()
                                 },
-                                TextFont::from(font.clone()).with_font_size(9.0),
+                                ui_text_font(font.clone(), 9.0),
                                 TextColor(theme.foreground),
                                 TextCursorStyle {
                                     color: theme.editor_selection,
@@ -4441,7 +4486,7 @@ fn spawn_editor_lyrics(
                         } else {
                             lyric_node.spawn((
                                 Text::new(lyric.text.clone()),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(if selected || active || lyric.guided {
                                     theme.foreground
                                 } else {
@@ -4658,7 +4703,7 @@ fn spawn_editor_inspector(
                         border_radius: BorderRadius::all(px(5)),
                         ..default()
                     },
-                    TextFont::from(font.clone()).with_font_size(11.0),
+                    ui_text_font(font.clone(), 11.0),
                     TextColor(theme.foreground),
                     TextCursorStyle {
                         color: theme.primary,
@@ -5702,6 +5747,8 @@ fn spawn_lyrics_editor(
                         font.clone(),
                         if editor.mode == LyricsInputMode::TimedLrc {
                             "Paste line-level or enhanced LRC. Existing analyzed songs keep their stems; new songs can author over the original mix or explicitly queue separation."
+                        } else if app_core::AppConfig::load().align_backend() == "mms_karaoke" {
+                            "Enter one lyric phrase per line. MMS Karaoke accepts optional pronunciation overrides such as {漢字|かな} or [display|romaji]. Saving queues alignment and never modifies the source song."
                         } else {
                             "Enter one lyric phrase per line. Saving queues alignment and never modifies the source song."
                         },
@@ -5890,7 +5937,7 @@ fn spawn_lyrics_editor(
                             border_radius: BorderRadius::all(px(5)),
                             ..default()
                         },
-                        TextFont::from(font.clone()).with_font_size(11.0),
+                        ui_text_font(font.clone(), 11.0),
                         TextColor(theme.foreground),
                         TextLayout {
                             linebreak: bevy::text::LineBreak::WordOrCharacter,
@@ -5982,14 +6029,14 @@ fn spawn_cache_delete_confirmation(
             children![
                 (
                     Text::new("Delete generated song data?"),
-                    TextFont::from(font.clone()).with_font_size(17.0),
+                    ui_text_font(font.clone(), 17.0),
                     TextColor(theme.foreground),
                 ),
                 (
                     Text::new(format!(
                         "Generated stems, transcripts, pitch data, and derived variants for “{title}” will be removed. The source song remains untouched."
                     )),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::default(),
                 ),
@@ -6011,7 +6058,7 @@ fn spawn_cache_delete_confirmation(
                             BackgroundColor(Color::NONE),
                             children![(
                                 Text::new("Cancel"),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.muted_foreground),
                             )],
                         ),
@@ -6026,7 +6073,7 @@ fn spawn_cache_delete_confirmation(
                             BackgroundColor(theme.destructive.with_alpha(0.18)),
                             children![(
                                 Text::new("Delete generated data"),
-                                TextFont::from(font).with_font_size(10.0),
+                                ui_text_font(font, 10.0),
                                 TextColor(theme.destructive),
                             )],
                         )
@@ -6106,7 +6153,7 @@ fn spawn_language_editor(
                             border_radius: BorderRadius::all(px(5)),
                             ..default()
                         },
-                        TextFont::from(font.clone()).with_font_size(12.0),
+                        ui_text_font(font.clone(), 12.0),
                         TextColor(theme.foreground),
                         TextLayout::no_wrap(),
                         TextCursorStyle {
@@ -6583,13 +6630,13 @@ fn spawn_folders(
                                     children![
                                         (
                                             Text::new(folder_name(&root)),
-                                            TextFont::from(font.clone()).with_font_size(11.0),
+                                            ui_text_font(font.clone(), 11.0),
                                             TextColor(theme.foreground),
                                             TextLayout::no_wrap(),
                                         ),
                                         (
                                             Text::new(root.to_string_lossy().into_owned()),
-                                            TextFont::from(font.clone()).with_font_size(8.0),
+                                            ui_text_font(font.clone(), 8.0),
                                             TextColor(theme.muted_foreground.with_alpha(0.64)),
                                             TextLayout::no_wrap(),
                                         )
@@ -6685,7 +6732,7 @@ fn spawn_folders(
                                         .with_children(|path_copy| {
                                             path_copy.spawn((
                                                 Text::new(path.to_string_lossy().into_owned()),
-                                                TextFont::from(font.clone()).with_font_size(8.0),
+                                                ui_text_font(font.clone(), 8.0),
                                                 TextColor(
                                                     theme.muted_foreground.with_alpha(0.64),
                                                 ),
@@ -6896,7 +6943,7 @@ fn spawn_folders(
                     ZIndex(60),
                     children![(
                         Text::new(notice),
-                        TextFont::from(font).with_font_size(9.0),
+                        ui_text_font(font, 9.0),
                         TextColor(theme.muted_foreground),
                     )],
                 ));
@@ -7117,7 +7164,7 @@ fn spawn_remove_folder_confirmation(
             children![
                 (
                     Text::new("Stop watching this folder?"),
-                    TextFont::from(font.clone()).with_font_size(16.0),
+                    ui_text_font(font.clone(), 16.0),
                     TextColor(theme.foreground),
                 ),
                 (
@@ -7125,7 +7172,7 @@ fn spawn_remove_folder_confirmation(
                         "{}\n\nUta Studio will update its library index but will not move or delete any source media.",
                         path.display()
                     )),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::default(),
                 ),
@@ -7148,7 +7195,7 @@ fn spawn_remove_folder_confirmation(
                             BackgroundColor(Color::NONE),
                             children![(
                                 Text::new("Cancel"),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.muted_foreground),
                             )],
                         ),
@@ -7163,7 +7210,7 @@ fn spawn_remove_folder_confirmation(
                             BackgroundColor(theme.destructive.with_alpha(0.18)),
                             children![(
                                 Text::new("Stop watching"),
-                                TextFont::from(font).with_font_size(10.0),
+                                ui_text_font(font, 10.0),
                                 TextColor(theme.destructive),
                             )],
                         )
@@ -7207,6 +7254,7 @@ fn spawn_settings(
     icons: Handle<Image>,
     session: &StudioSession,
     native_setup: &NativeSetup,
+    cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
 ) {
     parent
@@ -7270,7 +7318,10 @@ fn spawn_settings(
             settings
                 .spawn((
                     SettingsContent,
-                    ScrollPosition::default(),
+                    ScrollPosition(Vec2::new(
+                        0.0,
+                        session.settings_scroll_offsets[session.settings_tab.index()],
+                    )),
                     Node {
                         min_width: px(0),
                         min_height: px(0),
@@ -7283,42 +7334,59 @@ fn spawn_settings(
                     BackgroundColor(theme.card.with_alpha(0.54)),
                 ))
                 .with_children(|content| {
-                    match session.settings_tab {
-                        SettingsTab::General => {
-                            spawn_general_settings(content, font.clone(), session, theme)
-                        }
-                        SettingsTab::Storage => {
-                            spawn_storage_settings(content, font.clone(), session, theme)
-                        }
-                        SettingsTab::Models => spawn_model_settings(
-                            content,
-                            font.clone(),
-                            icons.clone(),
-                            session,
-                            native_setup,
-                            theme,
-                        ),
-                        SettingsTab::Analysis => spawn_analysis_settings(
-                            content,
-                            font.clone(),
-                            icons.clone(),
-                            session,
-                            theme,
-                        ),
-                    }
-                    if let Some(notice) = session.notice.as_deref() {
-                        content.spawn(Node {
-                            height: px(14),
+                    // A scrollable flex column otherwise shrinks its direct
+                    // children to the viewport height before measuring overflow.
+                    // Keep one intrinsic-height page so setting rows retain their
+                    // intended height and the content scrolls instead of stacking.
+                    content
+                        .spawn(Node {
+                            width: percent(100),
+                            flex_shrink: 0.0,
+                            flex_direction: FlexDirection::Column,
                             ..default()
+                        })
+                        .with_children(|page| {
+                            match session.settings_tab {
+                                SettingsTab::General => {
+                                    spawn_general_settings(page, font.clone(), session, theme)
+                                }
+                                SettingsTab::Storage => spawn_storage_settings(
+                                    page,
+                                    font.clone(),
+                                    session,
+                                    &cache_stats,
+                                    theme,
+                                ),
+                                SettingsTab::Models => spawn_model_settings(
+                                    page,
+                                    font.clone(),
+                                    icons.clone(),
+                                    session,
+                                    native_setup,
+                                    theme,
+                                ),
+                                SettingsTab::Analysis => spawn_analysis_settings(
+                                    page,
+                                    font.clone(),
+                                    icons.clone(),
+                                    session,
+                                    theme,
+                                ),
+                            }
+                            if let Some(notice) = session.notice.as_deref() {
+                                page.spawn(Node {
+                                    height: px(14),
+                                    ..default()
+                                });
+                                spawn_wrapped_text(
+                                    page,
+                                    font.clone(),
+                                    notice,
+                                    10.0,
+                                    theme.muted_foreground,
+                                );
+                            }
                         });
-                        spawn_wrapped_text(
-                            content,
-                            font.clone(),
-                            notice,
-                            10.0,
-                            theme.muted_foreground,
-                        );
-                    }
                 });
             if let Some(request) = session.pending_setup {
                 spawn_setup_confirmation(settings, font.clone(), theme, request);
@@ -7428,6 +7496,15 @@ fn spawn_general_settings(
         parent,
         font.clone(),
         theme,
+        "Dark mode",
+        "Enable a dark palette across the application.",
+        session.config.dark_mode.unwrap_or(false),
+        UiAction::ToggleTheme,
+    );
+    spawn_switch_setting_row(
+        parent,
+        font.clone(),
+        theme,
         "Fullscreen workspace",
         if session.config.fullscreen.unwrap_or(false) {
             "The editor fills this display."
@@ -7453,38 +7530,214 @@ fn spawn_general_settings(
         "Verify local APIs, native audio, and real UTZ/UltraStar exports in a unique temporary folder that is always removed.",
         Some(("Run checks", UiAction::RunDiagnostics)),
     );
+    spawn_shift_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Font size",
+        "Set the base UI font size. The interface is scaled using this size (10px–18px), which maps to 80%–140%.",
+        format!(
+            "{}px",
+            ui_font_size_percent_to_points(session.config.font_scale_percent())
+        ),
+        UiAction::AdjustUiFontScale(-1),
+        UiAction::AdjustUiFontScale(1),
+    );
     if let Some(report) = session.diagnostic_report.as_ref() {
-        spawn_wrapped_text(
-            parent,
-            font.clone(),
-            format!(
-                "{} · {} passed · {} failed · {} skipped · {} APIs",
-                if report.ok {
-                    "PASSED"
-                } else {
-                    "NEEDS ATTENTION"
-                },
-                report.passed,
-                report.failed,
-                report.skipped,
-                report.capabilities,
-            ),
-            10.0,
-            if report.ok {
-                theme.primary
-            } else {
-                theme.destructive
+        spawn_diagnostics_report(parent, font.clone(), theme, report);
+    }
+}
+
+fn spawn_diagnostics_report(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    report: &uta_studio_diagnostics::DiagnosticReport,
+) {
+    let status_text = if report.ok {
+        "Passed"
+    } else {
+        "Needs attention"
+    };
+    let status_color = if report.ok {
+        theme.primary
+    } else {
+        theme.destructive
+    };
+
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(132),
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(14)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12),
+                border: UiRect::bottom(px(1)),
+                ..default()
             },
-        );
-        for check in &report.checks {
-            spawn_wrapped_text(
-                parent,
+            BackgroundColor(theme.card.with_alpha(0.42)),
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    column_gap: px(10),
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|summary| {
+                    spawn_text(
+                        summary,
+                        font.clone(),
+                        "Diagnostic results",
+                        10.0,
+                        theme.muted_foreground,
+                    );
+                    summary.spawn((
+                        Node {
+                            padding: UiRect::axes(px(9), px(3)),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(status_color.with_alpha(0.16)),
+                        BorderColor::all(status_color.with_alpha(0.45)),
+                        children![(
+                            Text::new(status_text),
+                            ui_text_font(font.clone(), 8.0),
+                            TextColor(status_color),
+                        )],
+                    ));
+                });
+            spawn_text(
+                panel,
                 font.clone(),
-                format!("{} · {} · {}", check.status, check.id, check.detail),
-                9.0,
-                theme.muted_foreground,
+                format!(
+                    "{} passed · {} failed · {} skipped · {} APIs",
+                    report.passed, report.failed, report.skipped, report.capabilities
+                ),
+                10.0,
+                theme.foreground,
             );
-        }
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(8),
+                    ..default()
+                })
+                .with_children(|checks| {
+                    for check in &report.checks {
+                        spawn_diagnostic_check_row(checks, font.clone(), theme, check);
+                    }
+                });
+        });
+}
+
+fn spawn_diagnostic_check_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    check: &uta_studio_diagnostics::DiagnosticCheck,
+) {
+    let status_color = diagnostic_status_color(check.status, theme);
+    let status_label = diagnostic_status_label(check.status);
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(7),
+            padding: UiRect::bottom(px(10)),
+            border: UiRect::bottom(px(1)),
+            margin: UiRect::bottom(px(4)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(Node {
+                width: percent(100),
+                align_items: AlignItems::FlexStart,
+                justify_content: JustifyContent::SpaceBetween,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: px(10),
+                ..default()
+            })
+            .with_children(|heading| {
+                heading
+                    .spawn(Node {
+                        min_width: px(0),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(2),
+                        ..default()
+                    })
+                    .with_children(|labels| {
+                        labels
+                            .spawn(Node {
+                                align_items: AlignItems::Center,
+                                column_gap: px(8),
+                                ..default()
+                            })
+                            .with_children(|id_line| {
+                                spawn_text(id_line, font.clone(), check.id, 9.0, theme.foreground);
+                                id_line.spawn((
+                                    Node {
+                                        padding: UiRect::axes(px(6), px(2)),
+                                        border_radius: BorderRadius::all(px(999.0)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.muted.with_alpha(0.16)),
+                                    BorderColor::all(theme.border.with_alpha(0.45)),
+                                    children![(
+                                        Text::new(status_label),
+                                        ui_text_font(font.clone(), 8.0),
+                                        TextColor(status_color),
+                                    )],
+                                ));
+                            });
+                        spawn_text(
+                            labels,
+                            font.clone(),
+                            format!("{}ms", check.elapsed_ms),
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                    });
+                spawn_text(heading, font.clone(), check.status, 8.0, status_color);
+            });
+            row.spawn(Node {
+                width: percent(100),
+                min_width: px(0),
+                ..default()
+            })
+            .with_children(|details| {
+                spawn_wrapped_text(
+                    details,
+                    font.clone(),
+                    format!("{} • {}", status_label, check.detail),
+                    8.8,
+                    theme.muted_foreground,
+                );
+            });
+        });
+}
+
+fn diagnostic_status_color<'a>(status: &str, theme: &'a StudioTheme) -> Color {
+    match status {
+        "passed" => theme.primary,
+        "failed" => theme.destructive,
+        _ => theme.muted_foreground,
+    }
+}
+
+fn diagnostic_status_label(status: &str) -> &'static str {
+    match status {
+        "passed" => "OK",
+        "failed" => "FAIL",
+        _ => "SKIP",
     }
 }
 
@@ -7492,6 +7745,7 @@ fn spawn_storage_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     session: &StudioSession,
+    cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
 ) {
     spawn_settings_header(
@@ -7525,31 +7779,280 @@ fn spawn_storage_settings(
             ),
         ],
     );
-    let stats = app_core::CacheStats::calculate();
-    let total = stats.songs_bytes + stats.models_bytes + stats.other_bytes;
-    spawn_setting_row_with_actions(
-        parent,
-        font,
-        theme,
-        "Generated storage",
-        format!(
-            "Stems, editable charts, playback previews, AI models, and temporary authoring files.\n\nCurrent cache use {} · Songs {} · Models {} · Other {}",
-            format_bytes(total),
-            format_bytes(stats.songs_bytes),
-            format_bytes(stats.models_bytes),
-            format_bytes(stats.other_bytes),
-        ),
-        vec![
-            (
-                "Clear generated cache".to_string(),
-                UiAction::RequestClearCache(CacheClearScope::Generated),
+    spawn_storage_usage_row(parent, font.clone(), theme, cache_stats);
+}
+
+fn spawn_storage_usage_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    cache_stats: &CacheStatsJob,
+) {
+    let (status, status_color, status_summary) =
+        match (cache_stats.current.as_ref(), cache_stats.receiver.is_some()) {
+            (Some(stats), false) => {
+                let total = stats.songs_bytes + stats.models_bytes + stats.other_bytes;
+                (
+                    "Current",
+                    theme.foreground,
+                    format!("Latest scan: {}", format_bytes(total)),
+                )
+            }
+            (Some(stats), true) => {
+                let total = stats.songs_bytes + stats.models_bytes + stats.other_bytes;
+                (
+                    "Recalculating",
+                    theme.primary,
+                    format!(
+                        "Recalculating in background. Latest scan: {}",
+                        format_bytes(total)
+                    ),
+                )
+            }
+            (None, true) => (
+                "Calculating",
+                theme.primary,
+                "Calculating generated storage usage. This may scan configured cache folders."
+                    .to_string(),
             ),
-            (
-                "Clear models".to_string(),
-                UiAction::RequestClearCache(CacheClearScope::Models),
+            (None, false) => (
+                "Not calculated",
+                theme.muted_foreground,
+                "Open Storage again or clear one cache entry to start a scan.".to_string(),
             ),
-        ],
-    );
+        };
+    let mut status_description = status_summary;
+    if let Some(error) = cache_stats.error.as_deref() {
+        status_description = format!("Cache stats failed to calculate: {error}");
+    }
+    let status_text_color = if cache_stats.error.is_some() {
+        theme.destructive
+    } else {
+        theme.muted_foreground
+    };
+
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(224),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(px(20), px(16)),
+                row_gap: px(12),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::FlexStart,
+                    column_gap: px(32),
+                    ..default()
+                })
+                .with_children(|header| {
+                    header
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(10),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                "Generated storage",
+                                12.0,
+                                theme.foreground,
+                            );
+                            copy.spawn(Node {
+                                align_items: AlignItems::Center,
+                                column_gap: px(8),
+                                flex_wrap: FlexWrap::Wrap,
+                                ..default()
+                            })
+                            .with_children(|status_row| {
+                                spawn_text(
+                                    status_row,
+                                    font.clone(),
+                                    "Usage",
+                                    9.0,
+                                    theme.muted_foreground,
+                                );
+                                status_row.spawn((
+                                    Node {
+                                        padding: UiRect::axes(px(8), px(3)),
+                                        border_radius: BorderRadius::MAX,
+                                        ..default()
+                                    },
+                                    BackgroundColor(status_color.with_alpha(0.16)),
+                                    BorderColor::all(status_color.with_alpha(0.45)),
+                                    children![(
+                                        Text::new(status),
+                                        ui_text_font(font.clone(), 9.0),
+                                        TextColor(status_color),
+                                    )],
+                                ));
+                            });
+                            spawn_wrapped_text(
+                                copy,
+                                font.clone(),
+                                "Cached stems, charts, previews, models, and temporary authoring files.",
+                                10.0,
+                                theme.muted_foreground,
+                            );
+                            spawn_wrapped_text(
+                                copy,
+                                font.clone(),
+                                status_description,
+                                10.0,
+                                status_text_color,
+                            );
+                        });
+                    spawn_setting_actions(
+                        header,
+                        font.clone(),
+                        theme,
+                        vec![
+                            (
+                                "Clear generated cache".to_string(),
+                                UiAction::RequestClearCache(CacheClearScope::Generated),
+                            ),
+                            (
+                                "Clear models".to_string(),
+                                UiAction::RequestClearCache(CacheClearScope::Models),
+                            ),
+                        ],
+                    );
+                });
+
+            if let Some(stats) = cache_stats.current.as_ref() {
+                let total = stats.songs_bytes + stats.models_bytes + stats.other_bytes;
+                panel
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(12),
+                            padding: UiRect::all(px(12)),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(7)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.24)),
+                        BorderColor::all(theme.border.with_alpha(0.42)),
+                    ))
+                    .with_children(|bars| {
+                        spawn_text(
+                            bars,
+                            font.clone(),
+                            "Storage breakdown",
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                        spawn_storage_usage_category(
+                            bars,
+                            font.clone(),
+                            theme,
+                            "Songs",
+                            stats.songs_bytes,
+                            cache_category_share(stats.songs_bytes, total),
+                            theme.primary,
+                        );
+                        spawn_storage_usage_category(
+                            bars,
+                            font.clone(),
+                            theme,
+                            "Models",
+                            stats.models_bytes,
+                            cache_category_share(stats.models_bytes, total),
+                            theme.editor_selection,
+                        );
+                        spawn_storage_usage_category(
+                            bars,
+                            font.clone(),
+                            theme,
+                            "Other",
+                            stats.other_bytes,
+                            cache_category_share(stats.other_bytes, total),
+                            theme.waveform,
+                        );
+                    });
+            }
+        });
+}
+
+fn cache_category_share(part: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        (part as f64 / total as f64) as f32
+    }
+}
+
+fn spawn_storage_usage_category(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+    bytes: u64,
+    share: f32,
+    color: Color,
+) {
+    let share = (share * 100.0).clamp(0.0, 100.0);
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(6),
+            ..default()
+        })
+        .with_children(|entry| {
+            entry
+                .spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                })
+                .with_children(|row| {
+                    spawn_text(row, font.clone(), label, 8.0, theme.muted_foreground);
+                    spawn_text(
+                        row,
+                        font.clone(),
+                        format!("{} · {:.0}%", format_bytes(bytes), share),
+                        9.0,
+                        theme.foreground,
+                    );
+                });
+            entry
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(7),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(theme.muted.with_alpha(0.36)),
+                    BorderColor::all(theme.border.with_alpha(0.45)),
+                ))
+                .with_children(|track| {
+                    track.spawn((
+                        Node {
+                            width: percent(share),
+                            height: px(7),
+                            border_radius: BorderRadius::all(px(999.0)),
+                            ..default()
+                        },
+                        BackgroundColor(color),
+                    ));
+                });
+        });
 }
 
 fn spawn_watched_folders_setting(
@@ -7564,58 +8067,89 @@ fn spawn_watched_folders_setting(
             Node {
                 width: percent(100),
                 min_height: px(104),
+                flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_direction: FlexDirection::Column,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
             BorderColor::all(theme.border.with_alpha(0.42)),
         ))
-        .with_children(|row| {
-            row.spawn(Node {
-                min_width: px(0),
-                flex_grow: 1.0,
-                flex_direction: FlexDirection::Column,
-                row_gap: px(5),
-                ..default()
-            })
-            .with_children(|copy| {
-                spawn_text(
-                    copy,
-                    font.clone(),
-                    "Watched folders",
-                    12.0,
-                    theme.foreground,
-                );
-                spawn_wrapped_text(
-                    copy,
-                    font.clone(),
-                    "Add as many music locations as you need. Folder changes are merged into one library.",
-                    10.0,
-                    theme.muted_foreground,
-                );
-                copy.spawn(Node {
-                    height: px(5),
+        .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::FlexStart,
+                    column_gap: px(32),
                     ..default()
-                });
-                if paths.is_empty() {
-                    spawn_wrapped_text(
-                        copy,
+                })
+                .with_children(|header| {
+                    header
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(5),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                "Watched folders",
+                                12.0,
+                                theme.foreground,
+                            );
+                            spawn_wrapped_text(
+                                copy,
+                                font.clone(),
+                                "Add as many music locations as you need. Folder changes are merged into one library.",
+                                10.0,
+                                theme.muted_foreground,
+                            );
+                        });
+                    spawn_setting_actions(
+                        header,
                         font.clone(),
-                        "No local folders connected.",
-                        9.0,
-                        theme.muted_foreground,
+                        theme,
+                        vec![
+                            ("Add folder…".to_string(), UiAction::ChooseFolder),
+                            ("Rescan all".to_string(), UiAction::RescanLibrary),
+                        ],
                     );
-                } else {
-                    for path in &paths {
-                        copy.spawn((
+                });
+
+            if paths.is_empty() {
+                panel
+                    .spawn(Node {
+                        width: percent(100),
+                        min_height: px(34),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::horizontal(px(9)),
+                        border_radius: BorderRadius::all(px(4)),
+                        ..default()
+                    })
+                    .with_children(|empty| {
+                        spawn_wrapped_text(
+                            empty,
+                            font.clone(),
+                            "No local folders connected.",
+                            9.0,
+                            theme.muted_foreground,
+                        );
+                    });
+            } else {
+                for path in &paths {
+                    panel
+                        .spawn((
                             Node {
                                 width: percent(100),
-                                min_height: px(30),
+                                min_height: px(38),
                                 align_items: AlignItems::Center,
-                                padding: UiRect::axes(px(9), px(6)),
-                                column_gap: px(8),
+                                padding: UiRect::vertical(px(2)),
+                                column_gap: px(32),
                                 border_radius: BorderRadius::all(px(4)),
                                 ..default()
                             },
@@ -7626,37 +8160,37 @@ fn spawn_watched_folders_setting(
                                 .spawn(Node {
                                     min_width: px(0),
                                     flex_grow: 1.0,
+                                    padding: UiRect::horizontal(px(9)),
                                     overflow: Overflow::clip(),
                                     ..default()
                                 })
                                 .with_children(|path_copy| {
                                     path_copy.spawn((
                                         Text::new(path.to_string_lossy().into_owned()),
-                                        TextFont::from(font.clone()).with_font_size(9.0),
+                                        ui_text_font(font.clone(), 9.0),
                                         TextColor(theme.muted_foreground),
                                         TextLayout::no_wrap(),
                                     ));
                                 });
-                            spawn_compact_action_button(
-                                path_row,
-                                font.clone(),
-                                theme,
-                                "Remove",
-                                UiAction::RequestRemoveFolder(path.clone()),
-                            );
+                            path_row
+                                .spawn(Node {
+                                    width: px(SETTINGS_CONTROL_WIDTH),
+                                    flex_shrink: 0.0,
+                                    justify_content: JustifyContent::FlexEnd,
+                                    ..default()
+                                })
+                                .with_children(|actions| {
+                                    spawn_compact_action_button(
+                                        actions,
+                                        font.clone(),
+                                        theme,
+                                        "Remove",
+                                        UiAction::RequestRemoveFolder(path.clone()),
+                                    );
+                                });
                         });
-                    }
                 }
-            });
-            spawn_setting_actions(
-                row,
-                font,
-                theme,
-                vec![
-                    ("Add folder…".to_string(), UiAction::ChooseFolder),
-                    ("Rescan all".to_string(), UiAction::RescanLibrary),
-                ],
-            );
+            }
         });
 }
 
@@ -7686,6 +8220,118 @@ fn spawn_settings_section(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
+fn spawn_settings_stage_header(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    eyebrow: impl Into<String>,
+    title: impl Into<String>,
+    description: impl Into<String>,
+    current: impl Into<String>,
+    status: Option<(String, bool)>,
+    action: Option<(String, UiAction)>,
+) {
+    let eyebrow = eyebrow.into();
+    let title = title.into();
+    let description = description.into();
+    let current = current.into();
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(92),
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(16)),
+                margin: UiRect::top(px(16)),
+                column_gap: px(32),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.28)),
+            BorderColor::all(theme.border.with_alpha(0.58)),
+        ))
+        .with_children(|header| {
+            header
+                .spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4),
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_text(copy, font.clone(), eyebrow, 8.0, theme.primary);
+                    spawn_text(copy, font.clone(), title, 14.0, theme.foreground);
+                    spawn_wrapped_text(
+                        copy,
+                        font.clone(),
+                        description,
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                });
+            header
+                .spawn(Node {
+                    width: px(SETTINGS_CONTROL_WIDTH),
+                    flex_shrink: 0.0,
+                    align_items: AlignItems::FlexEnd,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(8),
+                    ..default()
+                })
+                .with_children(|summary| {
+                    spawn_text(summary, font.clone(), current, 10.0, theme.foreground);
+                    if let Some((label, available)) = status {
+                        spawn_settings_badge(
+                            summary,
+                            font.clone(),
+                            label,
+                            if available {
+                                theme.primary
+                            } else {
+                                theme.destructive
+                            },
+                        );
+                    }
+                    if let Some((label, action)) = action {
+                        spawn_compact_action_button(summary, font, theme, label, action);
+                    }
+                });
+        });
+}
+
+fn spawn_settings_badge(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    label: impl Into<String>,
+    color: Color,
+) {
+    parent.spawn((
+        Node {
+            padding: UiRect::axes(px(8), px(3)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(color.with_alpha(0.12)),
+        BorderColor::all(color.with_alpha(0.38)),
+        children![(Text::new(label), ui_text_font(font, 8.0), TextColor(color),)],
+    ));
+}
+
+fn model_available(
+    status: &app_core::AnalysisRuntimeStatus,
+    target: app_core::ModelDownloadTarget,
+) -> Option<bool> {
+    status
+        .models
+        .iter()
+        .find(|model| model.target == target)
+        .map(|model| model.available)
+}
+
 fn spawn_model_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -7706,31 +8352,7 @@ fn spawn_model_settings(
         spawn_setup_progress_panel(parent, font.clone(), icons.clone(), native_setup, theme);
     }
     let status = app_core::analysis_runtime_status();
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        if status.ready {
-            "Ready to analyze"
-        } else {
-            "Setup required"
-        },
-        format!(
-            "{}\n\nffmpeg · {}   uv · {}   Python · {}\nAnalyzer · {}   Pitch · {}   Models · {}",
-            if status.ready {
-                "The selected runtime and every required model are available locally.".to_string()
-            } else {
-                format!("Missing: {}", status.missing.join(" · "))
-            },
-            availability(status.ffmpeg_available),
-            availability(status.uv_available),
-            availability(status.system_python_available),
-            availability(status.analyzer_available),
-            availability(status.pitch_model_available),
-            availability(status.selected_models_available),
-        ),
-        Some(("Check again", UiAction::RefreshRuntimeStatus)),
-    );
+    spawn_model_runtime_status_row(parent, font.clone(), theme, &status);
     spawn_select_setting_row(
         parent,
         font.clone(),
@@ -7760,26 +8382,625 @@ fn spawn_model_settings(
         parent,
         font.clone(),
         theme,
-        "SELECTED MODEL FILES",
-        "Each button downloads only that selected model. A missing shared runtime is prepared first, after your confirmation.",
+        "MODEL FILES BY ANALYSIS STAGE",
+        "This page only manages local files. Choose which engine is active in Analysis; every download still requires confirmation.",
     );
-    for model in status.models {
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            model.label,
-            model.description,
-            Some((
-                if model.available {
-                    "Reinstall…".to_string()
-                } else {
-                    "Download…".to_string()
-                },
-                UiAction::RequestSetup(Some(model.target)),
-            )),
-        );
+    spawn_model_stage(
+        parent,
+        font.clone(),
+        theme,
+        session,
+        &status.models,
+        "01 · VOCAL SEPARATION",
+        "Vocal separation",
+        "Creates vocal and instrumental stems before recognition.",
+        separator_label(session.config.separator()),
+        &[app_core::ModelDownloadTarget::Separator],
+    );
+    spawn_model_stage(
+        parent,
+        font.clone(),
+        theme,
+        session,
+        &status.models,
+        "02 · LYRICS TRANSCRIPTION",
+        "Lyrics transcription",
+        "Recognizes lyrics. Compatibility and language-detection models are identified separately from the selected engine.",
+        transcription_summary(&session.config),
+        &[
+            app_core::ModelDownloadTarget::OpenVinoWhisper,
+            app_core::ModelDownloadTarget::Parakeet,
+            app_core::ModelDownloadTarget::WhisperLanguageDetection,
+            app_core::ModelDownloadTarget::Whisper,
+        ],
+    );
+    spawn_model_stage(
+        parent,
+        font.clone(),
+        theme,
+        session,
+        &status.models,
+        "03 · WORD TIMING",
+        "Word timing & alignment",
+        "Refines recognized or supplied lyrics into editable word timings.",
+        align_backend_label(session.config.align_backend()),
+        &[
+            app_core::ModelDownloadTarget::Alignment,
+            app_core::ModelDownloadTarget::MmsKaraokeAlignment,
+        ],
+    );
+    spawn_model_stage(
+        parent,
+        font,
+        theme,
+        session,
+        &status.models,
+        "04 · MELODY",
+        "Melody & pitch",
+        "Detects the sung fundamental frequency and creates note pitches.",
+        pitch_model_label(session.config.pitch_model()),
+        &[app_core::ModelDownloadTarget::Pitch],
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_model_stage(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSession,
+    models: &[app_core::ModelInstallStatus],
+    eyebrow: &'static str,
+    title: &'static str,
+    description: &'static str,
+    current: impl Into<String>,
+    targets: &[app_core::ModelDownloadTarget],
+) {
+    if !models.iter().any(|model| targets.contains(&model.target)) {
+        return;
     }
+    spawn_settings_stage_header(
+        parent,
+        font.clone(),
+        theme,
+        eyebrow,
+        title,
+        description,
+        current,
+        None,
+        Some((
+            "Configure in Analysis…".to_string(),
+            UiAction::SettingsTab(SettingsTab::Analysis),
+        )),
+    );
+    for model in models
+        .iter()
+        .filter(|model| targets.contains(&model.target))
+    {
+        spawn_model_install_row(parent, font.clone(), theme, session, model, title);
+    }
+}
+
+fn model_install_role(config: &AppConfig, target: app_core::ModelDownloadTarget) -> &'static str {
+    use app_core::ModelDownloadTarget;
+    match target {
+        ModelDownloadTarget::Whisper
+            if config.asr_engine() == "parakeet"
+                || config.compute_backend.as_deref() == Some("intel") =>
+        {
+            "Fallback"
+        }
+        ModelDownloadTarget::WhisperLanguageDetection => "Support",
+        ModelDownloadTarget::MmsKaraokeAlignment if config.align_backend() != "mms_karaoke" => {
+            "Optional"
+        }
+        _ => "Selected",
+    }
+}
+
+fn spawn_model_install_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSession,
+    model: &app_core::ModelInstallStatus,
+    stage: &'static str,
+) {
+    let role = model_install_role(&session.config, model.target);
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(86),
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(px(20), px(15)),
+                column_gap: px(32),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                ..default()
+            })
+            .with_children(|copy| {
+                copy.spawn(Node {
+                    align_items: AlignItems::Center,
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(5),
+                    column_gap: px(7),
+                    ..default()
+                })
+                .with_children(|title| {
+                    spawn_text(
+                        title,
+                        font.clone(),
+                        model.label.clone(),
+                        12.0,
+                        theme.foreground,
+                    );
+                    spawn_settings_badge(
+                        title,
+                        font.clone(),
+                        role,
+                        if role == "Optional" {
+                            theme.muted_foreground
+                        } else {
+                            theme.primary
+                        },
+                    );
+                    spawn_settings_badge(
+                        title,
+                        font.clone(),
+                        if model.available {
+                            "Installed"
+                        } else {
+                            "Missing"
+                        },
+                        if model.available {
+                            theme.primary
+                        } else {
+                            theme.destructive
+                        },
+                    );
+                });
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    format!("{} Used by Analysis > {stage}.", model.description),
+                    9.0,
+                    theme.muted_foreground,
+                );
+            });
+            row.spawn(Node {
+                width: px(SETTINGS_CONTROL_WIDTH),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            })
+            .with_children(|actions| {
+                spawn_compact_action_button(
+                    actions,
+                    font,
+                    theme,
+                    if model.available {
+                        "Reinstall…"
+                    } else {
+                        "Download…"
+                    },
+                    UiAction::RequestSetup(Some(model.target)),
+                );
+            });
+        });
+}
+
+fn spawn_model_runtime_status_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    status: &app_core::AnalysisRuntimeStatus,
+) {
+    let (headline, status_color, status_hint) = if status.ready {
+        (
+            "Ready to analyze",
+            theme.primary,
+            "The selected runtime and every required model are available locally.",
+        )
+    } else {
+        (
+            "Setup required",
+            theme.destructive,
+            "Some required components are missing. Open setup to install or repair.",
+        )
+    };
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(168),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(16)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(10),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|status_row| {
+                    status_row
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(6),
+                            ..default()
+                        })
+                        .with_children(|status_copy| {
+                            status_copy
+                                .spawn(Node {
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(8),
+                                    ..default()
+                                })
+                                .with_children(|headline_row| {
+                                    spawn_text(
+                                        headline_row,
+                                        font.clone(),
+                                        "Runtime status",
+                                        9.0,
+                                        theme.muted_foreground,
+                                    );
+                                    spawn_text(
+                                        headline_row,
+                                        font.clone(),
+                                        headline,
+                                        12.0,
+                                        theme.foreground,
+                                    );
+                                    headline_row.spawn((
+                                        Node {
+                                            padding: UiRect::axes(px(8), px(3)),
+                                            border_radius: BorderRadius::MAX,
+                                            ..default()
+                                        },
+                                        BackgroundColor(status_color.with_alpha(0.16)),
+                                        BorderColor::all(status_color.with_alpha(0.45)),
+                                        children![(
+                                            Text::new(if status.ready { "OK" } else { "MISSING" }),
+                                            ui_text_font(font.clone(), 8.0),
+                                            TextColor(status_color),
+                                        )],
+                                    ));
+                                });
+                            spawn_wrapped_text(
+                                status_copy,
+                                font.clone(),
+                                status_hint.to_string(),
+                                9.0,
+                                theme.muted_foreground,
+                            );
+                            if !status.ready && !status.missing.is_empty() {
+                                spawn_wrapped_text(
+                                    status_copy,
+                                    font.clone(),
+                                    format!("Missing components: {}", status.missing.join(" · ")),
+                                    8.5,
+                                    theme.destructive,
+                                );
+                            }
+                        });
+                    spawn_setting_actions(
+                        status_row,
+                        font.clone(),
+                        theme,
+                        vec![("Check again".to_string(), UiAction::RefreshRuntimeStatus)],
+                    );
+                });
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    max_width: px(760),
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(8),
+                    column_gap: px(8),
+                    ..default()
+                })
+                .with_children(|stack| {
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "ffmpeg",
+                        status.ffmpeg_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "uv",
+                        status.uv_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Python",
+                        status.system_python_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Analyzer",
+                        status.analyzer_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Pitch model",
+                        status.pitch_model_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Selected models",
+                        status.selected_models_available,
+                    );
+                });
+        });
+}
+
+fn spawn_runtime_component_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+    available: bool,
+) {
+    let color = if available {
+        theme.primary
+    } else {
+        theme.destructive
+    };
+    let badge_label = if available {
+        availability(true)
+    } else {
+        availability(false)
+    };
+    let badge_background = if available {
+        theme.primary.with_alpha(0.16)
+    } else {
+        theme.destructive.with_alpha(0.16)
+    };
+    let badge_border = if available {
+        theme.primary.with_alpha(0.45)
+    } else {
+        theme.destructive.with_alpha(0.45)
+    };
+
+    parent
+        .spawn((
+            Node {
+                min_width: px(180),
+                min_height: px(32),
+                flex_basis: px(220),
+                flex_grow: 1.0,
+                max_width: px(250),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(px(9), px(5)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.28)),
+            BorderColor::all(theme.border.with_alpha(0.5)),
+        ))
+        .with_children(|row| {
+            spawn_text(row, font.clone(), label, 9.0, theme.foreground);
+            row.spawn((
+                Node {
+                    padding: UiRect::axes(px(8), px(3)),
+                    border_radius: BorderRadius::all(px(999.0)),
+                    ..default()
+                },
+                BackgroundColor(badge_background),
+                BorderColor::all(badge_border),
+                children![(
+                    Text::new(badge_label),
+                    ui_text_font(font.clone(), 8.0),
+                    TextColor(color),
+                )],
+            ));
+        });
+}
+
+fn transcription_summary(config: &AppConfig) -> String {
+    if config.asr_engine() == "parakeet" {
+        "Parakeet v3".to_string()
+    } else if config.compute_backend.as_deref() == Some("intel") {
+        "OpenVINO Whisper large-v3-turbo".to_string()
+    } else {
+        format!(
+            "Whisper {}",
+            settings_select_label(SettingsSelectKind::WhisperModel, config.whisper_model(),)
+        )
+    }
+}
+
+fn transcription_model_target(config: &AppConfig) -> app_core::ModelDownloadTarget {
+    if config.asr_engine() == "parakeet" {
+        app_core::ModelDownloadTarget::Parakeet
+    } else if config.compute_backend.as_deref() == Some("intel") {
+        app_core::ModelDownloadTarget::OpenVinoWhisper
+    } else {
+        app_core::ModelDownloadTarget::Whisper
+    }
+}
+
+fn alignment_model_target(config: &AppConfig) -> Option<app_core::ModelDownloadTarget> {
+    match config.align_backend() {
+        "qwen" => Some(app_core::ModelDownloadTarget::Alignment),
+        "mms_karaoke" => Some(app_core::ModelDownloadTarget::MmsKaraokeAlignment),
+        _ => None,
+    }
+}
+
+fn analysis_stage_status(
+    status: &app_core::AnalysisRuntimeStatus,
+    target: Option<app_core::ModelDownloadTarget>,
+) -> (String, bool) {
+    match target.and_then(|target| model_available(status, target)) {
+        Some(true) => ("Installed".to_string(), true),
+        Some(false) => ("Model missing".to_string(), false),
+        None if status.analyzer_available => ("Runtime managed".to_string(), true),
+        None => ("Runtime missing".to_string(), false),
+    }
+}
+
+fn spawn_analysis_pipeline(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSession,
+    status: &app_core::AnalysisRuntimeStatus,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(16)),
+                row_gap: px(10),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.3)),
+            BorderColor::all(theme.border.with_alpha(0.58)),
+        ))
+        .with_children(|panel| {
+            spawn_text(
+                panel,
+                font.clone(),
+                "CURRENT ANALYSIS PIPELINE",
+                8.0,
+                theme.primary,
+            );
+            spawn_wrapped_text(
+                panel,
+                font.clone(),
+                "The same four stages and names are used on Models & runtime.",
+                9.0,
+                theme.muted_foreground,
+            );
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(8),
+                    column_gap: px(8),
+                    ..default()
+                })
+                .with_children(|pipeline| {
+                    spawn_analysis_pipeline_stage(
+                        pipeline,
+                        font.clone(),
+                        theme,
+                        "01 · Vocals",
+                        separator_label(session.config.separator()),
+                        analysis_stage_status(
+                            status,
+                            Some(app_core::ModelDownloadTarget::Separator),
+                        ),
+                    );
+                    spawn_analysis_pipeline_stage(
+                        pipeline,
+                        font.clone(),
+                        theme,
+                        "02 · Lyrics",
+                        transcription_summary(&session.config),
+                        analysis_stage_status(
+                            status,
+                            Some(transcription_model_target(&session.config)),
+                        ),
+                    );
+                    spawn_analysis_pipeline_stage(
+                        pipeline,
+                        font.clone(),
+                        theme,
+                        "03 · Timing",
+                        align_backend_label(session.config.align_backend()),
+                        analysis_stage_status(status, alignment_model_target(&session.config)),
+                    );
+                    spawn_analysis_pipeline_stage(
+                        pipeline,
+                        font.clone(),
+                        theme,
+                        "04 · Pitch",
+                        pitch_model_label(session.config.pitch_model()),
+                        analysis_stage_status(status, Some(app_core::ModelDownloadTarget::Pitch)),
+                    );
+                });
+        });
+}
+
+fn spawn_analysis_pipeline_stage(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    stage: &'static str,
+    selected: impl Into<String>,
+    status: (String, bool),
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(190),
+                min_height: px(70),
+                flex_basis: px(220),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(11)),
+                row_gap: px(5),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.48)),
+            BorderColor::all(theme.border.with_alpha(0.46)),
+        ))
+        .with_children(|card| {
+            spawn_text(card, font.clone(), stage, 8.0, theme.muted_foreground);
+            spawn_text(card, font.clone(), selected, 10.0, theme.foreground);
+            spawn_settings_badge(
+                card,
+                font,
+                status.0,
+                if status.1 {
+                    theme.primary
+                } else {
+                    theme.destructive
+                },
+            );
+        });
 }
 
 fn spawn_analysis_settings(
@@ -7795,115 +9016,247 @@ fn spawn_analysis_settings(
         theme,
         "GENERATION",
         "Analysis",
-        "Controls for newly generated stems, lyric alignment, and pitch analysis. Existing charts change only after re-analysis.",
+        "Configure each stage of newly generated stems, lyrics, timing, and pitch. Existing charts change only after re-analysis.",
+    );
+    let status = app_core::analysis_runtime_status();
+    spawn_analysis_pipeline(parent, font.clone(), theme, session, &status);
+
+    spawn_settings_stage_header(
+        parent,
+        font.clone(),
+        theme,
+        "01 · VOCAL SEPARATION",
+        "Vocal separation",
+        "Creates a clean vocal source before lyrics and pitch are analyzed.",
+        separator_label(session.config.separator()),
+        Some(analysis_stage_status(
+            &status,
+            Some(app_core::ModelDownloadTarget::Separator),
+        )),
+        Some((
+            "Manage models…".to_string(),
+            UiAction::SettingsTab(SettingsTab::Models),
+        )),
     );
     spawn_select_setting_row(
         parent,
         font.clone(),
         icons.clone(),
         theme,
-        "Vocal separator",
-        "How vocals are separated from the instrumental.",
+        "Separation engine",
+        "Choose the model family that creates vocal and instrumental stems.",
         SettingsSelectKind::Separator,
         session,
     );
+
     let parakeet = session.config.asr_engine() == "parakeet";
+    let intel_whisper = !parakeet && session.config.compute_backend.as_deref() == Some("intel");
+    spawn_settings_stage_header(
+        parent,
+        font.clone(),
+        theme,
+        "02 · LYRICS TRANSCRIPTION",
+        "Lyrics transcription",
+        "Recognizes sung words. Fallback settings appear separately when the primary engine needs them.",
+        transcription_summary(&session.config),
+        Some(analysis_stage_status(
+            &status,
+            Some(transcription_model_target(&session.config)),
+        )),
+        Some((
+            "Manage models…".to_string(),
+            UiAction::SettingsTab(SettingsTab::Models),
+        )),
+    );
     spawn_select_setting_row(
         parent,
         font.clone(),
         icons.clone(),
         theme,
-        "Transcription family",
-        "Chooses how new lyrics are recognized.",
+        "Primary transcription engine",
+        "Whisper is broadly compatible; Parakeet is faster for its supported languages.",
         SettingsSelectKind::AsrEngine,
         session,
     );
-    spawn_settings_section(
-        parent,
-        font.clone(),
-        theme,
-        if parakeet {
-            "PARAKEET V3 AND COMPATIBILITY FALLBACK"
-        } else {
-            "WHISPER ANALYSIS"
-        },
-        if parakeet {
-            "Parakeet handles supported languages directly. Whisper remains the compatibility fallback for unsupported languages or empty results."
-        } else {
-            "These parameters shape newly generated transcription and word timing."
-        },
-    );
+    if parakeet || intel_whisper {
+        spawn_settings_section(
+            parent,
+            font.clone(),
+            theme,
+            "COMPATIBILITY FALLBACK",
+            if parakeet {
+                "Whisper is used only for unsupported languages or when Parakeet returns no usable words."
+            } else {
+                "Standard Whisper is retained for cases the Intel OpenVINO path cannot process."
+            },
+        );
+    }
     spawn_select_setting_row(
         parent,
         font.clone(),
         icons.clone(),
         theme,
-        if parakeet {
+        if parakeet || intel_whisper {
             "Whisper fallback model"
         } else {
             "Whisper model"
         },
-        if parakeet {
-            "Used only when Parakeet cannot handle the language or returns no words."
+        if parakeet || intel_whisper {
+            "This does not replace the primary engine; it is loaded only when compatibility fallback is needed."
         } else {
             "Turbo is the balanced default; larger models trade speed for detail."
         },
         SettingsSelectKind::WhisperModel,
         session,
     );
-    spawn_number_setting_row(
+    let transcription_advanced =
+        session.open_analysis_advanced == Some(AnalysisAdvancedSection::Transcription);
+    spawn_setting_row(
         parent,
         font.clone(),
         theme,
-        if parakeet {
-            "Whisper fallback precision"
-        } else {
-            "Recognition precision"
-        },
-        "Whisper search breadth. Values are clamped between 1 and 16.",
-        session.config.beam_size(),
-        NumericSetting::BeamSize,
-        UiAction::AdjustBeamSize(-1),
-        UiAction::AdjustBeamSize(1),
+        "Advanced transcription tuning",
+        "Memory and search controls for this transcription stage.",
+        Some((
+            if transcription_advanced {
+                "Hide advanced"
+            } else {
+                "Show advanced"
+            },
+            UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Transcription),
+        )),
     );
-    spawn_number_setting_row(
+    if transcription_advanced {
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            if parakeet || intel_whisper {
+                "Whisper fallback precision"
+            } else {
+                "Recognition precision"
+            },
+            "Whisper search breadth. Values are clamped between 1 and 16.",
+            session.config.beam_size(),
+            NumericSetting::BeamSize,
+            UiAction::AdjustBeamSize(-1),
+            UiAction::AdjustBeamSize(1),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            if parakeet {
+                "Parakeet batch size"
+            } else {
+                "Whisper batch size"
+            },
+            "Lower this if this transcription engine runs out of GPU or system memory.",
+            session.config.batch_size(),
+            NumericSetting::BatchSize,
+            UiAction::AdjustBatchSize(-1),
+            UiAction::AdjustBatchSize(1),
+        );
+    }
+
+    spawn_settings_stage_header(
         parent,
         font.clone(),
         theme,
-        if parakeet {
-            "Parakeet batch size"
-        } else {
-            "Whisper batch size"
-        },
-        "Lower this if analysis runs out of GPU or system memory.",
-        session.config.batch_size(),
-        NumericSetting::BatchSize,
-        UiAction::AdjustBatchSize(-1),
-        UiAction::AdjustBatchSize(1),
+        "03 · WORD TIMING",
+        "Word timing & alignment",
+        "Refines recognized or supplied lyrics into editable word timings.",
+        align_backend_label(session.config.align_backend()),
+        Some(analysis_stage_status(
+            &status,
+            alignment_model_target(&session.config),
+        )),
+        Some((
+            "Manage models…".to_string(),
+            UiAction::SettingsTab(SettingsTab::Models),
+        )),
     );
     spawn_select_setting_row(
         parent,
         font.clone(),
         icons.clone(),
         theme,
-        if parakeet {
-            "Whisper fallback alignment"
+        "Alignment engine",
+        if session.config.align_backend() == "mms_karaoke" {
+            "MMS Karaoke targets known Japanese lyrics. Automatic transcription retains its compatible timing path."
+        } else if parakeet {
+            "Used for compatibility fallback and supplied lyrics; Parakeet's direct timestamps can skip this stage."
         } else {
-            "Word alignment"
+            "Choose how recognized or supplied lyrics are refined into word timings."
         },
-        "Refines Whisper output into editable word timings. Parakeet's direct output skips this step.",
         SettingsSelectKind::AlignBackend,
         session,
+    );
+
+    spawn_settings_stage_header(
+        parent,
+        font.clone(),
+        theme,
+        "04 · MELODY",
+        "Melody & pitch",
+        "Detects sung pitch after vocal separation and creates editable notes.",
+        pitch_model_label(session.config.pitch_model()),
+        Some(analysis_stage_status(
+            &status,
+            Some(app_core::ModelDownloadTarget::Pitch),
+        )),
+        Some((
+            "Manage models…".to_string(),
+            UiAction::SettingsTab(SettingsTab::Models),
+        )),
     );
     spawn_select_setting_row(
         parent,
         font.clone(),
         icons,
         theme,
-        "Frequency analysis model",
-        "Detects the sung fundamental frequency.",
+        "Pitch detection model",
+        "Detects the sung fundamental frequency used to create note pitches.",
         SettingsSelectKind::PitchModel,
         session,
+    );
+    let pitch_advanced = session.open_analysis_advanced == Some(AnalysisAdvancedSection::Pitch);
+    spawn_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Advanced pitch tuning",
+        "Controls how strongly detected vocals are filtered before notes are created.",
+        Some((
+            if pitch_advanced {
+                "Hide advanced"
+            } else {
+                "Show advanced"
+            },
+            UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Pitch),
+        )),
+    );
+    if pitch_advanced {
+        let threshold = (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32;
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Vocal detection sensitivity",
+            "Lower for soft singing; raise to remove more silence. Range: 0–60%.",
+            threshold,
+            NumericSetting::VocalThreshold,
+            UiAction::AdjustVocalThreshold(-1),
+            UiAction::AdjustVocalThreshold(1),
+        );
+    }
+
+    spawn_settings_section(
+        parent,
+        font.clone(),
+        theme,
+        "AUTOMATION",
+        "Controls when the four-stage pipeline starts; these are not model settings.",
     );
     spawn_switch_setting_row(
         parent,
@@ -7918,24 +9271,12 @@ fn spawn_analysis_settings(
         session.config.auto_analyze(),
         UiAction::ToggleAutoAnalyze,
     );
-    let threshold = (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32;
-    spawn_number_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Vocal detection sensitivity",
-        "Lower for soft singing; raise to remove more silence. Range: 0–60%.",
-        threshold,
-        NumericSetting::VocalThreshold,
-        UiAction::AdjustVocalThreshold(-1),
-        UiAction::AdjustVocalThreshold(1),
-    );
     spawn_setting_row(
         parent,
         font,
         theme,
         "Analysis defaults",
-        "Restore every generation control to the recommended starting values.",
+        "Restore every stage and its advanced controls to the recommended starting values.",
         Some(("Restore defaults", UiAction::RestoreAnalysisDefaults)),
     );
 }
@@ -8020,7 +9361,7 @@ fn spawn_number_setting_row(
                                 justify_content: JustifyContent::Center,
                                 ..default()
                             },
-                            TextFont::from(font.clone()).with_font_size(11.0),
+                            ui_text_font(font.clone(), 11.0),
                             TextColor(theme.foreground),
                             TextLayout::justify(Justify::Center),
                             TextCursorStyle {
@@ -8353,7 +9694,28 @@ fn spawn_setup_confirmation(
     theme: &StudioTheme,
     request: SetupRequest,
 ) {
-    let (title, description) = if request.target.is_some() {
+    let mms_karaoke_selected = app_core::AppConfig::load().align_backend() == "mms_karaoke";
+    let mms_karaoke_download = matches!(
+        request.target,
+        Some(app_core::ModelDownloadTarget::MmsKaraokeAlignment)
+    ) || (mms_karaoke_selected
+        && matches!(
+            request.target,
+            None | Some(app_core::ModelDownloadTarget::Alignment)
+        ));
+    let (title, description) = if mms_karaoke_download {
+        if request.target.is_some() {
+            (
+                "Download MMS Karaoke model?",
+                "Uta Studio will download the optional 1.26 GB Japanese alignment model from NextFire. The model is currently published under AGPL-3.0; confirming means you choose to install and use that separately licensed artifact.",
+            )
+        } else {
+            (
+                "Set up runtime and MMS Karaoke?",
+                "Uta Studio will prepare the analysis runtime and download the selected optional 1.26 GB Japanese alignment model. The NextFire model is currently published under AGPL-3.0; confirming means you choose to install and use that separately licensed artifact.",
+            )
+        }
+    } else if request.target.is_some() {
         (
             "Download selected model?",
             "Uta Studio will use the configured host tools and download only the selected artifact after you confirm.",
@@ -8392,14 +9754,14 @@ fn spawn_setup_confirmation(
             children![
                 (
                     Text::new(title),
-                    TextFont::from(font.clone()).with_font_size(17.0),
+                    ui_text_font(font.clone(), 17.0),
                     TextColor(theme.foreground),
                 ),
                 (
                     Text::new(format!(
                         "{description}\n\nDownloads never start merely because Settings was opened. You can cancel now without changing any runtime or model data."
                     )),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::default(),
                 ),
@@ -8422,7 +9784,7 @@ fn spawn_setup_confirmation(
                             BackgroundColor(Color::NONE),
                             children![(
                                 Text::new("Cancel"),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.muted_foreground),
                             )],
                         ),
@@ -8441,7 +9803,7 @@ fn spawn_setup_confirmation(
                                 } else {
                                     "Set up"
                                 }),
-                                TextFont::from(font).with_font_size(10.0),
+                                ui_text_font(font, 10.0),
                                 TextColor(theme.primary_foreground),
                             )],
                         )
@@ -8496,12 +9858,12 @@ fn spawn_global_cache_confirmation(
             children![
                 (
                     Text::new(title),
-                    TextFont::from(font.clone()).with_font_size(17.0),
+                    ui_text_font(font.clone(), 17.0),
                     TextColor(theme.foreground),
                 ),
                 (
                     Text::new(description),
-                    TextFont::from(font.clone()).with_font_size(10.0),
+                    ui_text_font(font.clone(), 10.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::default(),
                 ),
@@ -8523,7 +9885,7 @@ fn spawn_global_cache_confirmation(
                             BackgroundColor(Color::NONE),
                             children![(
                                 Text::new("Cancel"),
-                                TextFont::from(font.clone()).with_font_size(10.0),
+                                ui_text_font(font.clone(), 10.0),
                                 TextColor(theme.muted_foreground),
                             )],
                         ),
@@ -8538,7 +9900,7 @@ fn spawn_global_cache_confirmation(
                             BackgroundColor(theme.destructive.with_alpha(0.18)),
                             children![(
                                 Text::new("Clear now"),
-                                TextFont::from(font).with_font_size(10.0),
+                                ui_text_font(font, 10.0),
                                 TextColor(theme.destructive),
                             )],
                         )
@@ -8577,6 +9939,7 @@ fn align_backend_label(value: &str) -> &'static str {
     match value {
         "ctc" => "CTC Forced Alignment",
         "qwen" => "Qwen Forced Alignment",
+        "mms_karaoke" => "MMS Karaoke (Japanese)",
         _ => "WhisperX",
     }
 }
@@ -8650,6 +10013,7 @@ fn settings_select_options(
             ("whisperx", "WhisperX"),
             ("ctc", "CTC Forced Alignment"),
             ("qwen", "Qwen Forced Alignment"),
+            ("mms_karaoke", "MMS Karaoke (Japanese)"),
         ],
         SettingsSelectKind::PitchModel => &[("rmvpe", "RMVPE")],
     }
@@ -8983,7 +10347,7 @@ fn spawn_compact_action_button(
         BorderColor::all(theme.border.with_alpha(0.66)),
         children![(
             Text::new(label),
-            TextFont::from(font).with_font_size(9.0),
+            ui_text_font(font, 9.0),
             TextColor(theme.foreground),
             TextLayout::no_wrap(),
         )],
@@ -9022,7 +10386,7 @@ fn spawn_source_file_row(
                 spawn_text(copy, font.clone(), "Source file", 12.0, theme.foreground);
                 copy.spawn((
                     Text::new(path.to_string_lossy().into_owned()),
-                    TextFont::from(font.clone()).with_font_size(9.0),
+                    ui_text_font(font.clone(), 9.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::no_wrap(),
                 ));
@@ -9070,7 +10434,7 @@ fn spawn_action_button(
         BorderColor::all(theme.border.with_alpha(0.66)),
         children![(
             Text::new(label),
-            TextFont::from(font).with_font_size(10.0),
+            ui_text_font(font, 10.0),
             TextColor(theme.foreground),
             TextLayout::no_wrap(),
         )],
@@ -9086,7 +10450,7 @@ fn spawn_wrapped_text(
 ) {
     parent.spawn((
         Text::new(text),
-        TextFont::from(font).with_font_size(size),
+        ui_text_font(font, size),
         TextColor(color),
         TextLayout::default(),
     ));
@@ -9163,7 +10527,7 @@ fn spawn_empty_library(
                         BackgroundColor(theme.primary.with_alpha(0.12)),
                         children![(
                             Text::new("♫"),
-                            TextFont::from(font.clone()).with_font_size(24.0),
+                            ui_text_font(font.clone(), 24.0),
                             TextColor(theme.primary),
                         )],
                     ));
@@ -9184,7 +10548,7 @@ fn spawn_empty_library(
                             Text::new(
                                 "Pick a local folder. Uta Studio will scan it, generate stems and charts with AI, then let you correct every word and note before exporting.",
                             ),
-                            TextFont::from(font.clone()).with_font_size(13.0),
+                            ui_text_font(font.clone(), 13.0),
                             TextColor(theme.muted_foreground),
                             TextLayout::justify(Justify::Center),
                         )],
@@ -9208,7 +10572,7 @@ fn spawn_empty_library(
                             } else {
                                 "□  Choose song folder"
                             }),
-                            TextFont::from(font).with_font_size(13.0),
+                            ui_text_font(font, 13.0),
                             TextColor(theme.primary_foreground),
                         )],
                     ));
@@ -9647,7 +11011,7 @@ fn spawn_library_collection(
                         .with_children(|copy| {
                             copy.spawn((
                                 Text::new(item.label.clone()),
-                                TextFont::from(font.clone()).with_font_size(12.0),
+                                ui_text_font(font.clone(), 12.0),
                                 TextColor(theme.foreground),
                                 TextLayout::no_wrap(),
                             ));
@@ -9782,6 +11146,24 @@ fn spawn_library(
                                 flex_grow: 1.0,
                                 ..default()
                             });
+                            if session.library_view == LibraryView::All
+                                && session.library_facet.is_none()
+                            {
+                                spawn_toolbar_button(
+                                    tools,
+                                    font.clone(),
+                                    icons.clone(),
+                                    theme,
+                                    UiIcon::Repeat,
+                                    if session.scanning {
+                                        "Scanning…"
+                                    } else {
+                                        "Rescan library"
+                                    },
+                                    UiAction::RescanLibrary,
+                                    false,
+                                );
+                            }
                             spawn_library_filter_select(
                                 tools,
                                 font.clone(),
@@ -10152,13 +11534,13 @@ fn spawn_library_song_row(
             .with_children(|metadata| {
                 metadata.spawn((
                     Text::new(song.title.clone()),
-                    TextFont::from(font.clone()).with_font_size(11.0),
+                    ui_text_font(font.clone(), 11.0),
                     TextColor(theme.foreground),
                     TextLayout::no_wrap(),
                 ));
                 metadata.spawn((
                     Text::new(song.language.as_deref().unwrap_or("Language unknown")),
-                    TextFont::from(font.clone()).with_font_size(9.0),
+                    ui_text_font(font.clone(), 9.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::no_wrap(),
                 ));
@@ -10307,7 +11689,7 @@ fn spawn_library_song_card(
                 .with_children(|line| {
                     line.spawn((
                         Text::new(text),
-                        TextFont::from(font.clone()).with_font_size(size),
+                        ui_text_font(font.clone(), size),
                         TextColor(color),
                         TextLayout::no_wrap(),
                     ));
@@ -10403,6 +11785,38 @@ fn spawn_song_header(parent: &mut ChildSpawnerCommands, font: Handle<Font>, them
         });
 }
 
+fn ui_font_scale() -> f32 {
+    f32::from_bits(GLOBAL_UI_FONT_SCALE_BITS.load(Ordering::SeqCst))
+}
+
+fn ui_font_size_percent_to_points(scale_percent: u32) -> u32 {
+    let size = (scale_percent as f32) * (UI_FONT_BASE_SIZE_PX as f32) / 100.0;
+    size.round()
+        .clamp(UI_FONT_SIZE_MIN_PX as f32, UI_FONT_SIZE_MAX_PX as f32) as u32
+}
+
+fn ui_font_points_to_scale_percent(size_px: u32) -> u32 {
+    let clamped = size_px.clamp(UI_FONT_SIZE_MIN_PX, UI_FONT_SIZE_MAX_PX);
+    let percent = (clamped as f32) * 100.0 / (UI_FONT_BASE_SIZE_PX as f32);
+    percent.round().clamp(
+        UI_FONT_SCALE_MIN_PERCENT as f32,
+        UI_FONT_SCALE_MAX_PERCENT as f32,
+    ) as u32
+}
+
+fn set_ui_font_scale(scale: f32) {
+    let scale = scale.clamp(0.25, 2.0);
+    GLOBAL_UI_FONT_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+}
+
+fn ui_font_size(size: f32) -> f32 {
+    size * ui_font_scale()
+}
+
+fn ui_text_font(font: Handle<Font>, size: f32) -> TextFont {
+    TextFont::from(font).with_font_size(ui_font_size(size))
+}
+
 fn spawn_text_button(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -10427,7 +11841,7 @@ fn spawn_text_button(
         BackgroundColor(Color::NONE),
         children![(
             Text::new(label),
-            TextFont::from(font).with_font_size(size),
+            ui_text_font(font, size),
             TextColor(theme.sidebar_foreground),
         )],
     ));
@@ -10442,7 +11856,7 @@ fn spawn_text(
 ) {
     parent.spawn((
         Text::new(text),
-        TextFont::from(font).with_font_size(size),
+        ui_text_font(font, size),
         TextColor(color),
         TextLayout::no_wrap(),
     ));
@@ -10696,6 +12110,7 @@ fn handle_actions(
                 } else {
                     session.route = StudioRoute::Settings;
                     session.settings_tab = SettingsTab::Storage;
+                    session.request_cache_stats_refresh = true;
                     session.notice =
                         Some("Choose a default export folder before using Export all.".to_string());
                 }
@@ -10757,6 +12172,9 @@ fn handle_actions(
                 session.route = StudioRoute::Settings;
                 session.notice = None;
                 session.open_settings_select = None;
+                if session.settings_tab == SettingsTab::Storage {
+                    session.request_cache_stats_refresh = true;
+                }
                 invalidated.0 = true;
             }
             UiAction::SettingsTab(tab) => {
@@ -10764,6 +12182,8 @@ fn handle_actions(
                 session.settings_tab = *tab;
                 session.notice = None;
                 session.open_settings_select = None;
+                session.request_cache_stats_refresh =
+                    matches!(session.settings_tab, SettingsTab::Storage);
                 invalidated.0 = true;
             }
             UiAction::ToggleFullscreen => {
@@ -10858,6 +12278,16 @@ fn handle_actions(
                 });
                 invalidated.0 = true;
             }
+            UiAction::ToggleAnalysisAdvanced(section) => {
+                session.open_analysis_advanced = if session.open_analysis_advanced == Some(*section)
+                {
+                    None
+                } else {
+                    Some(*section)
+                };
+                session.open_settings_select = None;
+                invalidated.0 = true;
+            }
             UiAction::RequestSetup(target) => {
                 if setup.receiver.is_some() {
                     session.notice = Some("A runtime setup job is already running.".to_string());
@@ -10881,6 +12311,8 @@ fn handle_actions(
             UiAction::RescanLibrary => {
                 if session.config.library_paths().is_empty() {
                     session.notice = Some("Add a watched folder before scanning.".to_string());
+                } else if session.scanning {
+                    session.notice = Some("A library scan is already running.".to_string());
                 } else {
                     session.scanning = true;
                     session.notice = Some("Library scan started.".to_string());
@@ -11029,6 +12461,21 @@ fn handle_actions(
                 }
                 invalidated.0 = true;
             }
+            UiAction::AdjustUiFontScale(delta) => {
+                let current = ui_font_size_percent_to_points(session.config.font_scale_percent());
+                let next = (i64::from(current)
+                    + i64::from(*delta) * i64::from(UI_FONT_SIZE_STEP_PX))
+                .clamp(
+                    i64::from(UI_FONT_SIZE_MIN_PX),
+                    i64::from(UI_FONT_SIZE_MAX_PX),
+                );
+                let next_percent = ui_font_points_to_scale_percent(next as u32);
+                session.config.font_scale_percent = Some(next_percent);
+                set_ui_font_scale(next_percent as f32 / 100.0);
+                session.notice = save_config_error(&session.config)
+                    .or_else(|| Some(format!("Font size: {}px", next)));
+                invalidated.0 = true;
+            }
             UiAction::ToggleAutoAnalyze => {
                 session.config.auto_analyze = Some(!session.config.auto_analyze());
                 if let Some(error) = save_config_error(&session.config) {
@@ -11075,6 +12522,7 @@ fn handle_actions(
                         CacheClearScope::Generated => {
                             app_core::CacheDir::new().clear_all();
                             session.refresh_library();
+                            session.request_cache_stats_refresh = true;
                             session.notice = Some(
                                 "Generated cache cleared. Source media was not changed."
                                     .to_string(),
@@ -11082,6 +12530,7 @@ fn handle_actions(
                         }
                         CacheClearScope::Models => {
                             app_core::clear_models();
+                            session.request_cache_stats_refresh = true;
                             session.notice = Some(
                                 "Downloaded models cleared. Runtime setup now reports the missing artifacts."
                                     .to_string(),
@@ -12407,6 +13856,62 @@ fn toggle_fullscreen(window: &mut Window, config: &mut AppConfig) -> Option<Stri
     };
     config.fullscreen = Some(fullscreen);
     save_config_error(config)
+}
+
+fn start_cache_stats_job(cache_stats: &mut CacheStatsJob) {
+    if cache_stats.receiver.is_some() {
+        return;
+    }
+    cache_stats.error = None;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(app_core::CacheStats::calculate());
+    });
+    cache_stats.receiver = Some(Mutex::new(receiver));
+}
+
+fn handle_cache_stats_request(
+    mut cache_stats: ResMut<CacheStatsJob>,
+    mut session: ResMut<StudioSession>,
+) {
+    if !session.request_cache_stats_refresh {
+        return;
+    }
+    session.request_cache_stats_refresh = false;
+    if cache_stats.current.is_none() && cache_stats.receiver.is_none() {
+        start_cache_stats_job(&mut cache_stats);
+    }
+}
+
+fn poll_cache_stats(
+    mut cache_stats: ResMut<CacheStatsJob>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    let result = cache_stats
+        .receiver
+        .as_ref()
+        .and_then(|receiver| match receiver.lock() {
+            Ok(receiver) => match receiver.try_recv() {
+                Ok(stats) => Some(Ok(stats)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Cache stats worker exited unexpectedly.".to_string()))
+                }
+            },
+            Err(_) => Some(Err("Cache stats status channel was poisoned.".to_string())),
+        });
+    let Some(result) = result else {
+        return;
+    };
+    cache_stats.receiver = None;
+    match result {
+        Ok(stats) => {
+            cache_stats.current = Some(stats);
+            cache_stats.error = None;
+        }
+        Err(error) => cache_stats.error = Some(error),
+    }
+    invalidated.0 = true;
 }
 
 fn start_native_setup(config: &AppConfig, request: SetupRequest, setup: &mut NativeSetup) {
@@ -15421,7 +16926,7 @@ fn handle_folder_scroll(
 
 fn handle_settings_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    mut session: ResMut<StudioSession>,
     mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SettingsContent>>,
 ) {
     if session.route != StudioRoute::Settings {
@@ -15445,6 +16950,8 @@ fn handle_settings_scroll(
     let size = computed.size() * computed.inverse_scale_factor();
     let content = computed.content_size() * computed.inverse_scale_factor();
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+    let tab_index = session.settings_tab.index();
+    session.settings_scroll_offsets[tab_index] = position.y;
 }
 
 fn handle_library_scroll(

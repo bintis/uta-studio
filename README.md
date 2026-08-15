@@ -66,6 +66,15 @@ cargo run -p uta-studio-export -- list
 cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 ```
 
+## Acknowledgements
+
+Special thanks to [moriwx](https://github.com/moriwx), creator of
+[FA-Kara](https://github.com/moriwx/FA-Kara). Its Japanese karaoke alignment
+workflow, pronunciation mapping, silence-aware timing, and use of the
+karaoke-tuned MMS forced-alignment model directly informed Uta Studio's
+optional MMS Karaoke backend. FA-Kara is Copyright (c) 2025 moriwx and is
+available under the MIT License.
+
 The editor interaction model was informed by open-source karaoke chart tools,
 especially [USKMaker](https://github.com/walterfr/UltraStarKaraokeMaker), with
 [Yass](https://github.com/SarutaSan72/Yass) and
@@ -75,6 +84,18 @@ GPL-3.0-or-later. Their interaction patterns and algorithms were studied, while
 Uta Studio's native Rust implementation was written for this codebase. Uta
 Studio keeps seconds and MIDI as its internal source model; target-specific beat
 quantization happens only during export.
+
+The backend uses the
+[NextFire karaoke-tuned MMS model](https://huggingface.co/NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn),
+a separately installed AGPL-3.0 artifact. Uta Studio does not bundle the
+weights and downloads them only after explicit confirmation in **Settings >
+Models & runtime**.
+
+To use it, choose **MMS Karaoke (Japanese)** under **Settings > Analysis > Word
+timing & alignment**, then install the model under **Models & runtime > Word
+timing & alignment**. Plain Japanese lyric lines are converted to acoustic
+pronunciations automatically; ambiguous readings can be overridden with
+`{表示|かな}` or `[表示|romaji]`.
 
 The interface uses a cover-first, information-dense music-library layout
 informed by Roon's public product UI: persistent navigation, a command area,

@@ -71,8 +71,53 @@ def align_lyrics(
 
     progress(80, f"Final alignment from {vocal_start:.1f}s...")
 
+    requested_backend = get_align_backend()
+    if requested_backend == "mms_karaoke":
+        import mms_karaoke
+
+        try:
+            mms_segments = mms_karaoke.align_lyrics(
+                clean_lines,
+                audio,
+                language,
+                vocal_start,
+                vocal_end,
+                a_device,
+                pre_align_cleanup,
+            )
+        except mms_karaoke.MmsKaraokeUnsupportedError as e:
+            print(
+                f"[uta-studio:LOG] MMS Karaoke unsupported ({e}); "
+                "falling back to WhisperX alignment",
+                flush=True,
+            )
+            progress(81, f"MMS Karaoke unavailable: {e}; using WhisperX")
+        except Exception as e:
+            print(
+                f"[uta-studio:LOG] MMS Karaoke failed ({e}); "
+                "falling back to WhisperX alignment",
+                flush=True,
+            )
+            progress(81, "MMS Karaoke failed; using WhisperX fallback")
+        else:
+            if mms_segments:
+                progress(90, f"MMS Karaoke alignment complete: {len(mms_segments)} segments")
+                return {
+                    "language": language,
+                    "segments": mms_segments,
+                    "source": "lyrics",
+                    "alignment_backend_requested": requested_backend,
+                    "alignment_backend_used": "mms_karaoke",
+                }
+            print(
+                "[uta-studio:LOG] MMS Karaoke produced no lyric lines; "
+                "falling back to WhisperX alignment",
+                flush=True,
+            )
+            progress(81, "MMS Karaoke returned no timings; using WhisperX fallback")
+
     import qwen_align
-    if get_align_backend() == "qwen" and qwen_align.is_supported(language):
+    if requested_backend == "qwen" and qwen_align.is_supported(language):
         qwen_segments = _align_lyrics_qwen(
             clean_lines, audio, language, vocal_start, vocal_end, pre_align_cleanup,
         )

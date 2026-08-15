@@ -14,6 +14,9 @@ Native desktop refactor and authoring-workflow restoration.
 - Added a Roon-inspired library transport with queue, previous/next, shuffle,
   repeat, seeking, volume, and unchanged-source playback.
 - Added collision-safe batch export for every authoring-ready chart.
+- Added an optional Japanese MMS Karaoke forced-alignment backend with
+  FA-Kara-style pronunciation mapping, silence-aware timing and explicit model
+  installation/licensing confirmation.
 - Added a GitHub Actions release workflow that publishes a self-contained
   x86_64 Linux binary, DEB and RPM packages, plus a Windows x86_64 ZIP.
 - The Windows build provides the native Bevy authoring UI, but editor audio

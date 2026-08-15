@@ -48,6 +48,8 @@ pub struct AppConfig {
     pub pitch_model: Option<String>,
     pub vocal_detection_threshold_pct: Option<f64>,
     pub auto_analyze: Option<bool>,
+    #[serde(default)]
+    pub font_scale_percent: Option<u32>,
     pub song_list_view: Option<String>,
     pub language_overrides: Option<HashMap<String, String>>,
 }
@@ -75,6 +77,7 @@ impl Default for AppConfig {
             pitch_model: None,
             vocal_detection_threshold_pct: None,
             auto_analyze: None,
+            font_scale_percent: Some(100),
             song_list_view: None,
             language_overrides: None,
         }
@@ -104,6 +107,12 @@ impl AppConfig {
         }
         if !matches!(self.pitch_model.as_deref(), None | Some("rmvpe")) {
             self.pitch_model = Some("rmvpe".to_string());
+        }
+        if !matches!(
+            self.align_backend.as_deref(),
+            None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
+        ) {
+            self.align_backend = Some("whisperx".to_string());
         }
         self
     }
@@ -203,9 +212,16 @@ impl AppConfig {
                 );
                 let had_invalid_pitch_model =
                     !matches!(cfg.pitch_model.as_deref(), None | Some("rmvpe"));
+                let had_invalid_align_backend = !matches!(
+                    cfg.align_backend.as_deref(),
+                    None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
+                );
                 (
                     cfg.with_defaults(),
-                    !had_data_path || had_invalid_separator || had_invalid_pitch_model,
+                    !had_data_path
+                        || had_invalid_separator
+                        || had_invalid_pitch_model
+                        || had_invalid_align_backend,
                 )
             }
             None => (Self::default().with_defaults(), true),
@@ -269,6 +285,14 @@ impl AppConfig {
 
     pub fn auto_analyze(&self) -> bool {
         self.auto_analyze.unwrap_or(false)
+    }
+
+    pub fn font_scale_percent(&self) -> u32 {
+        self.font_scale_percent.unwrap_or(100).clamp(80, 140)
+    }
+
+    pub fn font_scale(&self) -> f32 {
+        self.font_scale_percent() as f32 / 100.0
     }
 
     pub fn language_override(&self, file_hash: &str) -> Option<&str> {
@@ -341,6 +365,23 @@ mod tests {
                 .library_source
                 .is_none()
         );
+    }
+
+    #[test]
+    fn mms_karaoke_is_a_valid_alignment_backend() {
+        let config = AppConfig {
+            align_backend: Some("mms_karaoke".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(config.align_backend(), "mms_karaoke");
+
+        let repaired = AppConfig {
+            align_backend: Some("not-a-backend".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(repaired.align_backend(), "whisperx");
     }
 
     #[test]

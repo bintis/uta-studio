@@ -55,6 +55,12 @@ class ModelSetupRoutingTests(unittest.TestCase):
             ["Qwen/Qwen3-ForcedAligner-0.6B-hf"],
         )
 
+    def test_mms_karaoke_alignment_target_is_independent(self) -> None:
+        self.assertEqual(
+            self.run_target("alignment", alignment="mms_karaoke"),
+            ["NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn"],
+        )
+
     def test_complete_parakeet_plan_includes_primary_and_both_fallback_models(self) -> None:
         self.assertEqual(
             self.run_target("all", engine="parakeet"),

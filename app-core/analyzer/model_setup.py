@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+MMS_KARAOKE_MODEL = "NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn"
 
 
 def whisper_repository(model: str) -> str:
@@ -90,6 +91,8 @@ def download_selected_models(
 
     if target in ("all", "alignment") and align_backend == "qwen":
         download_huggingface("Qwen/Qwen3-ForcedAligner-0.6B-hf")
+    elif target in ("all", "alignment") and align_backend == "mms_karaoke":
+        download_huggingface(MMS_KARAOKE_MODEL)
 
 
 def main() -> None:

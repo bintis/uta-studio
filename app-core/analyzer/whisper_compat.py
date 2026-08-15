@@ -46,9 +46,16 @@ def set_align_backend(name):
       falls outside its support (unsupported language, over-length audio, or any
       failure) the callers fall through to the wav2vec2 path, where ``_run_align``
       treats any non-``"ctc"`` backend as ``whisperx``.
+    - ``"mms_karaoke"``: Japanese karaoke-tuned MMS/Wav2Vec2 CTC alignment.
+      Handled directly by ``align.align_lyrics`` when known lyrics are present;
+      unsupported requests fall through to the WhisperX path.
     """
     global _align_backend
-    _align_backend = name if name in ("whisperx", "ctc", "qwen") else "whisperx"
+    _align_backend = (
+        name
+        if name in ("whisperx", "ctc", "qwen", "mms_karaoke")
+        else "whisperx"
+    )
 
 
 def get_align_backend() -> str:

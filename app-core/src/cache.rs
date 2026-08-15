@@ -287,7 +287,7 @@ pub fn format_tempo(tempo: f64) -> String {
     format!("{:.1}", normalize_tempo(tempo))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, TS)]
 #[ts(export)]
 pub struct CacheStats {
     pub songs_bytes: u64,
@@ -297,25 +297,28 @@ pub struct CacheStats {
 
 impl CacheStats {
     pub fn calculate() -> Self {
-        let base = uta_studio_dir();
+        std::panic::catch_unwind(|| {
+            let base = uta_studio_dir();
 
-        let songs_bytes = dir_size(&songs_cache_dir());
-        let models_bytes = dir_size(&models_dir());
-        let other_bytes = dir_size(&vendor_dir())
-            + dir_size(&base.join("videos"))
-            + dir_size(&base.join("sounds"))
-            + default_uta_studio_dir()
-                .join("uta-studio.log")
-                .metadata()
-                .map(|m| m.len())
-                .unwrap_or(0)
-            + config_path().metadata().map(|m| m.len()).unwrap_or(0);
+            let songs_bytes = dir_size(&songs_cache_dir());
+            let models_bytes = dir_size(&models_dir());
+            let other_bytes = dir_size(&vendor_dir())
+                + dir_size(&base.join("videos"))
+                + dir_size(&base.join("sounds"))
+                + default_uta_studio_dir()
+                    .join("uta-studio.log")
+                    .metadata()
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+                + config_path().metadata().map(|m| m.len()).unwrap_or(0);
 
-        Self {
-            songs_bytes,
-            models_bytes,
-            other_bytes,
-        }
+            Self {
+                songs_bytes,
+                models_bytes,
+                other_bytes,
+            }
+        })
+        .unwrap_or_default()
     }
 }
 
@@ -333,7 +336,9 @@ pub fn default_uta_studio_dir() -> PathBuf {
     }
 
     dirs::home_dir()
-        .expect("could not find home directory")
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
+        })
         .join(".uta-studio")
 }
 
