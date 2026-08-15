@@ -163,6 +163,69 @@ pub fn migrate_analyzer_chart(
     Ok(chart)
 }
 
+/// Converts the analyzer's frame-level f0 track into the format's fixed-hop
+/// pitch evidence.
+///
+/// Evidence is an editor aid and a visualization source, never scoring data:
+/// the chart's authored note targets stay authoritative, and nothing here is
+/// ever written back into a note.
+pub fn migrate_pitch_evidence(track: &Value) -> Option<utz::PitchEvidenceV1> {
+    let frames = track.get("frames")?.as_array()?;
+    let first = frames.first()?;
+    let start_seconds = number(first, "time")?;
+    let hop_seconds = number(track, "hop_seconds")
+        .filter(|hop| *hop > 0.0)
+        .or_else(|| {
+            // Fall back to the spacing of the first two frames when the
+            // analyzer did not record its hop.
+            let second = number(frames.get(1)?, "time")?;
+            Some(second - start_seconds).filter(|hop| *hop > 0.0)
+        })?;
+    let hop = seconds_to_units(hop_seconds).max(1);
+    let start = seconds_to_units(start_seconds);
+
+    // Place each frame on the fixed grid rather than assuming the analyzer
+    // emitted an unbroken run, so a gap reads as unvoiced instead of shifting
+    // everything after it.
+    let mut frequency_hz: Vec<Option<f64>> = Vec::with_capacity(frames.len());
+    let mut confidence: Vec<f64> = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let Some(time) = number(frame, "time") else {
+            continue;
+        };
+        let slot = (((seconds_to_units(time).saturating_sub(start)) as f64) / hop as f64).round();
+        if !slot.is_finite() || slot < 0.0 {
+            continue;
+        }
+        let slot = slot as usize;
+        if slot >= frequency_hz.len() {
+            frequency_hz.resize(slot + 1, None);
+            confidence.resize(slot + 1, 0.0);
+        }
+        frequency_hz[slot] = number(frame, "hz").filter(|hz| *hz > 0.0);
+        confidence[slot] = number(frame, "confidence").unwrap_or(0.0).clamp(0.0, 1.0);
+    }
+    if frequency_hz.is_empty() {
+        return None;
+    }
+
+    let evidence = utz::PitchEvidenceV1 {
+        format: utz::PITCH_EVIDENCE_FORMAT.to_string(),
+        format_version: "1.0.0".to_string(),
+        timebase: DEFAULT_TIMEBASE,
+        start,
+        hop,
+        frequency_hz,
+        confidence,
+        model: track
+            .get("model")
+            .and_then(Value::as_object)
+            .cloned()
+            .filter(|model| !model.is_empty()),
+    };
+    evidence.validate().ok().map(|()| evidence)
+}
+
 fn analyzer_words(segments: &[Value]) -> Vec<AnalyzerWord> {
     let mut result = Vec::new();
     for (segment_index, segment) in segments.iter().enumerate() {
@@ -335,8 +398,8 @@ fn units_to_seconds_with_timebase(value: u64, timebase: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::migrate_analyzer_chart;
-    use utz::{LyricToken, ScoringMode};
+    use super::{migrate_analyzer_chart, migrate_pitch_evidence};
+    use utz::{DEFAULT_TIMEBASE, LyricToken, ScoringMode};
 
     #[test]
     fn migrates_note_owned_lyrics_and_unpitched_words() {
@@ -422,5 +485,58 @@ mod tests {
         assert_eq!(continuation_of, &head.id);
         // The reference must resolve inside the same track.
         chart.validate().unwrap();
+    }
+
+    #[test]
+    fn pitch_evidence_carries_the_analyzer_grid_and_marks_unvoiced_frames() {
+        let track = serde_json::json!({
+            "hop_seconds": 0.01,
+            "model": {"id": "crepe", "version": "1"},
+            "frames": [
+                {"time": 0.0, "hz": 220.0, "confidence": 0.9},
+                {"time": 0.01, "hz": null, "confidence": 0.1},
+                {"time": 0.02, "hz": 440.0, "confidence": 0.8},
+            ],
+        });
+        let evidence = migrate_pitch_evidence(&track).expect("evidence");
+        evidence.validate().expect("valid evidence");
+        assert_eq!(evidence.start, 0);
+        assert_eq!(evidence.hop, DEFAULT_TIMEBASE / 100);
+        assert_eq!(evidence.frequency_hz, [Some(220.0), None, Some(440.0)]);
+        assert_eq!(evidence.confidence, [0.9, 0.1, 0.8]);
+        assert_eq!(
+            evidence
+                .model
+                .as_ref()
+                .and_then(|model| model.get("id"))
+                .and_then(serde_json::Value::as_str),
+            Some("crepe")
+        );
+    }
+
+    #[test]
+    fn a_gap_in_the_analyzer_frames_reads_as_unvoiced_rather_than_shifting_time() {
+        let track = serde_json::json!({
+            "hop_seconds": 0.01,
+            "frames": [
+                {"time": 1.0, "hz": 220.0, "confidence": 0.9},
+                {"time": 1.03, "hz": 330.0, "confidence": 0.7},
+            ],
+        });
+        let evidence = migrate_pitch_evidence(&track).expect("evidence");
+        evidence.validate().expect("valid evidence");
+        // The evidence starts where the frames do, and the missing two hops
+        // stay in place as unvoiced.
+        assert_eq!(evidence.start, DEFAULT_TIMEBASE);
+        assert_eq!(
+            evidence.frequency_hz,
+            [Some(220.0), None, None, Some(330.0)]
+        );
+    }
+
+    #[test]
+    fn a_track_with_no_frames_produces_no_evidence_asset() {
+        assert!(migrate_pitch_evidence(&serde_json::json!({"frames": []})).is_none());
+        assert!(migrate_pitch_evidence(&serde_json::json!({})).is_none());
     }
 }
