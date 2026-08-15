@@ -457,6 +457,53 @@ pub(crate) fn spawn_editor_dock(
                     &audio_options,
                     open_select == Some(EditorDockSelectKind::AudioSource),
                 );
+                spawn_editor_select(
+                    dock,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    EditorDockSelectKind::AuditionMode,
+                    UiIcon::Sparkles,
+                    match editor.audition_mode {
+                        AuditionMode::Pitch => "Pitch only",
+                        AuditionMode::Mixed => "Audio + pitch",
+                        AuditionMode::Audio => "Audio only",
+                    },
+                    editor.audition_mode.label(),
+                    &[
+                        ("audio", "Audio only"),
+                        ("pitch", "Pitch only"),
+                        ("mixed", "Audio + pitch"),
+                    ],
+                    open_select == Some(EditorDockSelectKind::AuditionMode),
+                );
+                // Ranged audition: hear the selection, or the run-up and
+                // run-out around it, without losing the transport position.
+                for (label, action) in [
+                    ("Play range", EditorAction::AuditionSelection),
+                    ("In", EditorAction::AuditionBeforeSelection),
+                    ("Out", EditorAction::AuditionAfterSelection),
+                    ("Screen", EditorAction::AuditionVisible),
+                ] {
+                    spawn_text_button(
+                        dock,
+                        font.clone(),
+                        theme,
+                        label,
+                        9.0,
+                        UiAction::Editor(action),
+                    );
+                }
+                if editor.audition_until.is_some() {
+                    spawn_text_button(
+                        dock,
+                        font.clone(),
+                        theme,
+                        "Stop",
+                        9.0,
+                        UiAction::Editor(EditorAction::StopAudition),
+                    );
+                }
             } else {
                 spawn_icon(
                     dock,

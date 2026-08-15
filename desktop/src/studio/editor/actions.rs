@@ -58,6 +58,12 @@ editor_actions! {
     MoveSelectionToNextTrack => "move_selection_to_next_track",
     TogglePlayback => "toggle_playback",
     SeekStart => "seek_start",
+    AuditionSelection => "audition_selection",
+    AuditionVisible => "audition_visible",
+    AuditionBeforeSelection => "audition_before_selection",
+    AuditionAfterSelection => "audition_after_selection",
+    StopAudition => "stop_audition",
+    CycleAuditionMode => "cycle_audition_mode",
     ToggleLyrics => "toggle_lyrics",
     ToggleTracks => "toggle_tracks",
     ToggleInspector => "toggle_inspector",
@@ -140,6 +146,9 @@ pub(crate) fn spawn_editor_action_button(
 /// transport it may seek, and the redraw flag.
 pub(crate) struct EditorActionContext<'a> {
     pub(crate) audio: &'a uta_studio_audio::EditorAudioPlayer,
+    /// The independent tone stream used by pitch audition. It never touches
+    /// the song audio.
+    pub(crate) tones: &'a uta_studio_audio::PitchAudition,
     pub(crate) session: &'a mut StudioSession,
     pub(crate) invalidated: &'a mut UiInvalidated,
 }
@@ -181,7 +190,14 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         | ToggleTrackScoring
         | SelectNextTrack
         | MoveSelectionToNextTrack => run_track_action(action, ctx),
-        TogglePlayback | SeekStart => run_transport_action(action, ctx),
+        TogglePlayback
+        | SeekStart
+        | AuditionSelection
+        | AuditionVisible
+        | AuditionBeforeSelection
+        | AuditionAfterSelection
+        | StopAudition
+        | CycleAuditionMode => run_transport_action(action, ctx),
         ToggleLyrics | ToggleTracks | ToggleInspector | CloseInspector | ZoomInTime
         | ZoomOutTime | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => {
             run_view_action(action, ctx)
@@ -374,19 +390,153 @@ fn move_selection_to_track(action: EditorAction, target: usize, ctx: &mut Editor
 // -- transport ------------------------------------------------------------
 
 fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
+    use EditorAction::*;
     match action {
-        EditorAction::TogglePlayback => {
+        TogglePlayback => {
+            // Plain transport leaves ranged audition behind.
+            stop_audition(ctx);
             ctx.session.notice =
                 toggle_editor_playback(ctx.audio, ctx.session.editor.as_mut()).err();
             ctx.invalidated.0 = true;
         }
-        EditorAction::SeekStart => {
+        SeekStart => {
             if ctx.session.editor.is_some() {
+                stop_audition(ctx);
                 ctx.seek(0.0);
                 ctx.invalidated.0 = true;
             }
         }
+        StopAudition => {
+            stop_audition(ctx);
+            let _ = ctx.audio.pause();
+            ctx.invalidated.0 = true;
+        }
+        CycleAuditionMode => {
+            let Some(editor) = ctx.session.editor.as_mut() else {
+                return;
+            };
+            editor.audition_mode = editor.audition_mode.cycle();
+            let mode = editor.audition_mode;
+            ctx.session.notice = Some(format!("Auditioning {} .", mode.label()));
+            ctx.invalidated.0 = true;
+        }
+        AuditionSelection | AuditionVisible | AuditionBeforeSelection | AuditionAfterSelection => {
+            run_range_audition(action, ctx)
+        }
         _ => unreachable!("not a transport action"),
+    }
+}
+
+/// How much room a lead-in or lead-out audition gives around the selection.
+const AUDITION_APPROACH_SECONDS: f64 = 2.5;
+
+/// The stretch of timeline an audition action covers.
+pub(crate) fn audition_range(action: EditorAction, editor: &NativeEditor) -> Option<(f64, f64)> {
+    use EditorAction::*;
+    if action == AuditionVisible {
+        return Some((editor.viewport_start, editor.viewport_end()));
+    }
+    let selected = editor.selected_note_indices();
+    let notes = chart_notes(&editor.document);
+    let span = selected.iter().filter_map(|index| notes.get(*index)).fold(
+        None::<(f64, f64)>,
+        |span, note| {
+            Some(match span {
+                Some((start, end)) => (start.min(note.start), end.max(note.end)),
+                None => (note.start, note.end),
+            })
+        },
+    )?;
+    Some(match action {
+        AuditionSelection => span,
+        // Checking a transition means hearing the run-up, then stopping where
+        // the selection begins, and the reverse on the way out.
+        AuditionBeforeSelection => ((span.0 - AUDITION_APPROACH_SECONDS).max(0.0), span.0),
+        _ => (span.1, span.1 + AUDITION_APPROACH_SECONDS),
+    })
+}
+
+fn run_range_audition(action: EditorAction, ctx: &mut EditorActionContext) {
+    let Some(editor) = ctx.session.editor.as_ref() else {
+        return;
+    };
+    let Some((start, end)) = audition_range(action, editor) else {
+        ctx.session.notice = Some("Select notes to audition them.".to_string());
+        ctx.invalidated.0 = true;
+        return;
+    };
+    if end <= start {
+        ctx.session.notice = Some("That range is empty.".to_string());
+        ctx.invalidated.0 = true;
+        return;
+    }
+    let mode = editor.audition_mode;
+    let tones = mode
+        .plays_tones()
+        .then(|| pitch_tones(&editor.document, start, end))
+        .unwrap_or_default();
+    let mut notice = None;
+
+    ctx.tones.stop();
+    if mode.plays_tones()
+        && let Err(error) = ctx.tones.start(&tones, end - start, 0.9)
+    {
+        notice = Some(format!("Pitch audition is unavailable: {error}"));
+    }
+    if mode.plays_song() {
+        ctx.seek(start);
+        if let Err(error) = ctx.audio.play() {
+            notice = Some(error);
+        }
+    } else {
+        // Pitch-only audition keeps the recording silent but still moves the
+        // playhead so the timeline follows what is sounding.
+        let _ = ctx.audio.pause();
+        ctx.seek(start);
+    }
+    if let Some(editor) = ctx.session.editor.as_mut() {
+        editor.audition_until = Some(end);
+        editor.hold_manual_scroll();
+    }
+    ctx.session.notice = notice.or_else(|| {
+        Some(format!(
+            "Auditioning {} from {} to {} ({} mode).",
+            if action == EditorAction::AuditionVisible {
+                "the visible range"
+            } else {
+                "the selection"
+            },
+            format_duration(start),
+            format_duration(end),
+            mode.label()
+        ))
+    });
+    ctx.invalidated.0 = true;
+}
+
+/// Note targets in a range, positioned relative to its start.
+pub(crate) fn pitch_tones(
+    document: &app_core::EditorDocument,
+    start: f64,
+    end: f64,
+) -> Vec<uta_studio_audio::PitchTone> {
+    document
+        .notes()
+        .into_iter()
+        // A note with no pitch target has nothing to sound.
+        .filter(|note| note.pitched && note.end > start && note.start < end)
+        .map(|note| uta_studio_audio::PitchTone {
+            start_secs: note.start.max(start) - start,
+            duration_secs: note.end.min(end) - note.start.max(start),
+            midi: note.midi,
+        })
+        .collect()
+}
+
+pub(crate) fn stop_audition(ctx: &mut EditorActionContext) {
+    ctx.tones.stop();
+    if let Some(editor) = ctx.session.editor.as_mut() {
+        editor.audition_until = None;
     }
 }
 
@@ -987,6 +1137,10 @@ pub(crate) fn handle_editor_ui_action(
                 EditorDockSelectKind::AudioSource => {
                     ctx.session.notice = select_editor_audio_source(ctx.audio, editor, value).err();
                 }
+                EditorDockSelectKind::AuditionMode => {
+                    editor.audition_mode = AuditionMode::from_label(value);
+                    ctx.session.notice = None;
+                }
                 EditorDockSelectKind::SnapGrid => {
                     const GRIDS: [f64; 6] = [0.0, 0.01, 0.025, 0.05, 0.1, 0.25];
                     match value.parse::<f64>() {
@@ -1118,6 +1272,7 @@ pub(crate) fn handle_editor_keyboard(
     editable: Query<(), With<EditableText>>,
     focusable: Query<(), With<UiAction>>,
     audio: Res<NativeAudio>,
+    tones: Res<NativePitchAudition>,
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
@@ -1159,6 +1314,7 @@ pub(crate) fn handle_editor_keyboard(
         action,
         &mut EditorActionContext {
             audio: &audio.0,
+            tones: &tones.0,
             session: &mut session,
             invalidated: &mut invalidated,
         },

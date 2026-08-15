@@ -17,6 +17,54 @@ pub(crate) const EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS: f64 = 0.12;
 pub(crate) enum EditorDockSelectKind {
     AudioSource,
     SnapGrid,
+    AuditionMode,
+}
+
+/// What an audition plays back. The synthesized pitch is a second stream; the
+/// song audio is never altered to produce it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AuditionMode {
+    /// The song as recorded.
+    #[default]
+    Audio,
+    /// Only the note targets, as tones.
+    Pitch,
+    /// Both at once, for checking the chart against the recording.
+    Mixed,
+}
+
+impl AuditionMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Audio => "audio",
+            Self::Pitch => "pitch",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    pub(crate) fn from_label(value: &str) -> Self {
+        match value {
+            "pitch" => Self::Pitch,
+            "mixed" => Self::Mixed,
+            _ => Self::Audio,
+        }
+    }
+
+    pub(crate) fn cycle(self) -> Self {
+        match self {
+            Self::Audio => Self::Pitch,
+            Self::Pitch => Self::Mixed,
+            Self::Mixed => Self::Audio,
+        }
+    }
+
+    pub(crate) fn plays_song(self) -> bool {
+        matches!(self, Self::Audio | Self::Mixed)
+    }
+
+    pub(crate) fn plays_tones(self) -> bool {
+        matches!(self, Self::Pitch | Self::Mixed)
+    }
 }
 
 pub(crate) struct NativeEditor {
@@ -41,6 +89,10 @@ pub(crate) struct NativeEditor {
     pub(crate) selected_words: BTreeSet<WordSelection>,
     pub(crate) word_edit_focus: Option<WordSelection>,
     pub(crate) snap_seconds: f64,
+    pub(crate) audition_mode: AuditionMode,
+    /// When a ranged audition should stop, in seconds. `None` while the
+    /// transport is under plain manual control.
+    pub(crate) audition_until: Option<f64>,
     pub(crate) dirty: bool,
     pub(crate) manual_scroll_until: Instant,
     pub(crate) undo: Vec<ChartSnapshot>,
@@ -105,6 +157,8 @@ impl NativeEditor {
             selected_words: BTreeSet::new(),
             word_edit_focus: None,
             snap_seconds: 0.05,
+            audition_mode: AuditionMode::default(),
+            audition_until: None,
             dirty: false,
             manual_scroll_until: Instant::now(),
             undo: Vec::new(),
