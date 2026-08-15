@@ -9,13 +9,16 @@ fn main() {
         std::env::set_var("__GL_THREADED_OPTIMIZATIONS", "0");
         std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
 
-        // COSMIC can terminate this client's Vulkan Wayland connection while
-        // the surface is being updated. GLES still renders through native
-        // Wayland and avoids that Vulkan presentation path. Preserve an
-        // explicit user/backend override for diagnostics and future drivers.
-        let is_cosmic = std::env::var("XDG_CURRENT_DESKTOP")
-            .is_ok_and(|desktop| desktop.to_ascii_lowercase().contains("cosmic"));
-        if is_cosmic && std::env::var_os("WGPU_BACKEND").is_none() {
+        // COSMIC can terminate some Vulkan Wayland surfaces under sustained UI
+        // interaction, so GLES remains the compatibility default there. Mesa
+        // Intel's Wayland GLES surface can instead report no present modes;
+        // those devices use the verified Vulkan path. Preserve every explicit
+        // user/backend override for diagnostics and future drivers.
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        let has_explicit_backend = std::env::var_os("WGPU_BACKEND").is_some();
+        if automatic_wgpu_backend(&desktop, has_explicit_backend, has_intel_drm_adapter())
+            == Some("gl")
+        {
             std::env::set_var("WGPU_BACKEND", "gl");
         }
     }
@@ -46,4 +49,44 @@ fn main() {
 
     studio::run();
     app_core::shutdown_server();
+}
+
+#[cfg(target_os = "linux")]
+fn automatic_wgpu_backend(
+    desktop: &str,
+    has_explicit_backend: bool,
+    has_intel_adapter: bool,
+) -> Option<&'static str> {
+    (desktop.to_ascii_lowercase().contains("cosmic") && !has_explicit_backend && !has_intel_adapter)
+        .then_some("gl")
+}
+
+#[cfg(target_os = "linux")]
+fn has_intel_drm_adapter() -> bool {
+    std::fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("device/vendor")).ok())
+        .any(|vendor| vendor.trim().eq_ignore_ascii_case("0x8086"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cosmic_intel_uses_the_verified_vulkan_default() {
+        assert_eq!(automatic_wgpu_backend("COSMIC", false, true), None);
+    }
+
+    #[test]
+    fn cosmic_non_intel_keeps_the_existing_gles_compatibility_path() {
+        assert_eq!(automatic_wgpu_backend("COSMIC", false, false), Some("gl"));
+    }
+
+    #[test]
+    fn explicit_renderer_selection_always_wins() {
+        assert_eq!(automatic_wgpu_backend("COSMIC", true, false), None);
+    }
 }

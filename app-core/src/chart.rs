@@ -12,6 +12,7 @@ use std::{
 
 use serde::Serialize;
 use ts_rs::TS;
+use utz::VocalChartV1;
 
 use crate::{
     audio_format::{browser_can_decode, export_extension, transcode_audio},
@@ -19,6 +20,7 @@ use crate::{
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
     library_db,
+    vocal_chart::{legacy_projections, migrate_legacy_chart},
 };
 
 fn playable_audio(
@@ -138,6 +140,9 @@ pub fn decode_chart_waveform(path: &Path) -> Result<ChartWaveform, UtaStudioErro
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartDocument {
     pub file_hash: String,
+    /// Authoritative UTZ 0.2 authoring document. The legacy JSON fields below
+    /// are temporary editor projections while the native UI is migrated.
+    pub vocal_chart: VocalChartV1,
     pub transcript: serde_json::Value,
     pub pitch_track: serde_json::Value,
     pub pitch_notes: serde_json::Value,
@@ -209,6 +214,21 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
     validate_transcript(&transcript)?;
     validate_pitch_notes(&pitch_notes)?;
 
+    let vocal_chart = if cache.vocal_chart_path(file_hash).is_file() {
+        let chart: VocalChartV1 =
+            serde_json::from_str(&std::fs::read_to_string(cache.vocal_chart_path(file_hash))?)?;
+        chart
+            .validate()
+            .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+        let projections = legacy_projections(&chart);
+        transcript = projections.0;
+        pitch_notes = projections.1;
+        chart
+    } else {
+        repaired_issues.push("Prepared the legacy chart for UTZ 0.2 note-owned lyrics".into());
+        migrate_legacy_chart(&transcript, &pitch_notes)?
+    };
+
     let audio = get_audio_paths(file_hash);
     if !Path::new(&audio.instrumental).is_file() {
         return Err(UtaStudioError::Other(
@@ -218,6 +238,7 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
 
     Ok(ChartDocument {
         file_hash: file_hash.to_owned(),
+        vocal_chart,
         transcript,
         pitch_track,
         pitch_notes,
@@ -416,8 +437,30 @@ pub fn save_chart(
 
     validate_transcript(&transcript)?;
     validate_pitch_notes(&pitch_notes)?;
+    let vocal_chart = migrate_legacy_chart(&transcript, &pitch_notes)?;
+    save_vocal_chart(file_hash, vocal_chart)
+}
+
+pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<(), UtaStudioError> {
+    let song = library_db::load_song_by_hash(file_hash)
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?
+        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
+    if song.key_offset != 0 || normalize_tempo(song.tempo) != 1.0 {
+        return Err(UtaStudioError::Other(
+            "Reset key and tempo before saving the source chart".into(),
+        ));
+    }
+    vocal_chart
+        .validate()
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?;
 
     let cache = CacheDir::new();
+    let vocal_json = serde_json::to_value(&vocal_chart)?;
+    atomic_write_json(&cache.vocal_chart_path(file_hash), &vocal_json)?;
+
+    // Keep analyzer-era projections synchronized for compatibility with the
+    // current analysis and UltraStar paths. They are derived, never authority.
+    let (transcript, pitch_notes) = legacy_projections(&vocal_chart);
     atomic_write_json(&cache.transcript_path(file_hash), &transcript)?;
     atomic_write_json(&cache.pitch_notes_path(file_hash), &pitch_notes)?;
     cache.delete_transcript_variants(file_hash);

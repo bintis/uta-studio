@@ -34,6 +34,12 @@ impl CacheDir {
         self.path.join(format!("{hash}_transcript.json"))
     }
 
+    /// Authoritative UTZ 0.2 authoring document. Transcript and analyzer note
+    /// files remain migration/evidence inputs, not parallel chart truth.
+    pub fn vocal_chart_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_vocal_chart.json"))
+    }
+
     pub fn variant_transcript_path(&self, hash: &str, tempo: f64) -> PathBuf {
         self.path
             .join(format!("{hash}_transcript_{}.json", format_tempo(tempo)))
@@ -176,6 +182,7 @@ impl CacheDir {
                 .map(move |extension| self.path.join(format!("{hash}_{stem}.{extension}")))
         });
         for path in [
+            self.vocal_chart_path(hash),
             self.transcript_path(hash),
             self.lyrics_path(hash),
             self.pitch_track_path(hash),
@@ -336,9 +343,7 @@ pub fn default_uta_studio_dir() -> PathBuf {
     }
 
     dirs::home_dir()
-        .unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
-        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()))
         .join(".uta-studio")
 }
 

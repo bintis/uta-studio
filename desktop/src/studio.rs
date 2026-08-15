@@ -17,7 +17,10 @@ use bevy::{
     asset::RenderAssetUsages,
     color::Mix,
     image::{CompressedImageFormats, ImageSampler, ImageType},
-    input_focus::{AutoFocus, InputFocus, tab_navigation::TabIndex},
+    input_focus::{
+        AutoFocus, FocusCause, InputFocus, InputFocusVisible,
+        tab_navigation::{NavAction, TabGroup, TabIndex, TabNavigation, TabNavigationPlugin},
+    },
     log::{DEFAULT_FILTER, LogPlugin},
     prelude::*,
     text::{EditableText, TextCursorStyle},
@@ -32,8 +35,11 @@ const ICON_ATLAS_PATH: &str = "desktop/assets/icons/ui-icons.png";
 const ICON_CELL: f32 = 24.0;
 const SIDEBAR_WIDTH: f32 = 265.0;
 const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
+const EDITOR_TRACK_GUTTER_WIDTH: f32 = 40.0;
 const EDITOR_PITCH_TOP_PERCENT: f32 = 20.0;
 const EDITOR_PITCH_HEIGHT_PERCENT: f32 = 76.0;
+const EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX: f32 = 9.0;
+const EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS: f64 = 0.12;
 const UI_FONT_SCALE_MIN_PERCENT: u32 = 80;
 const UI_FONT_SCALE_MAX_PERCENT: u32 = 140;
 const UI_FONT_BASE_SIZE_PX: u32 = 12;
@@ -249,6 +255,8 @@ struct StudioSession {
     open_settings_select: Option<SettingsSelectKind>,
     open_analysis_advanced: Option<AnalysisAdvancedSection>,
     settings_scroll_offsets: [f32; 4],
+    library_scroll_offset: f32,
+    analysis_graph_scroll_offset: f32,
     open_library_select: Option<LibrarySelectKind>,
     export_all_open: bool,
     open_editor_select: Option<EditorDockSelectKind>,
@@ -300,6 +308,8 @@ impl StudioSession {
             open_settings_select: None,
             open_analysis_advanced: None,
             settings_scroll_offsets: [0.0; 4],
+            library_scroll_offset: 0.0,
+            analysis_graph_scroll_offset: 0.0,
             open_library_select: None,
             export_all_open: false,
             open_editor_select: None,
@@ -442,7 +452,12 @@ const ANALYSIS_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
 ];
 
 fn canonical_analysis_language(language: &str) -> String {
-    match language.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+    match language
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .as_str()
+    {
         "jp" | "jpn" => "ja".into(),
         "eng" => "en".into(),
         "kor" => "ko".into(),
@@ -795,11 +810,23 @@ struct NativeLibraryAudio(Arc<uta_studio_audio::EditorAudioPlayer>);
 #[derive(Resource, Default)]
 struct LocalImages {
     covers: HashMap<PathBuf, Handle<Image>>,
-    ambient_covers: HashMap<PathBuf, Handle<Image>>,
 }
 
 #[derive(Resource, Default)]
 struct UiInvalidated(bool);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationDirection {
+    Previous,
+    Next,
+}
+
+#[derive(Resource, Default)]
+struct NavigationInputState {
+    held_direction: Option<NavigationDirection>,
+    repeat_at: Option<Instant>,
+    activated: Option<Entity>,
+}
 
 /// The authored background of a button before transient hover/press feedback.
 ///
@@ -894,6 +921,12 @@ struct EditorTimelineSurface;
 struct EditorLyricsSurface;
 
 #[derive(Component)]
+struct EditorAlignmentGuide;
+
+#[derive(Component)]
+struct AnalysisGraphViewport;
+
+#[derive(Component)]
 struct EditorNoteNode(usize);
 
 #[derive(Clone, Copy)]
@@ -962,6 +995,7 @@ struct InlineEditorWordInput;
 #[derive(Resource, Default)]
 struct EditorPointerCapture {
     drag: Option<EditorDrag>,
+    alignment_guide: Option<f64>,
     last_surface_click: Option<(Instant, Vec2)>,
     last_lyric_click: Option<(Instant, WordSelection)>,
 }
@@ -1024,6 +1058,40 @@ struct EditorWordOriginal {
     selection: WordSelection,
     start: f64,
     end: f64,
+}
+
+#[derive(Clone, Copy)]
+struct AnalysisGraphBox {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl AnalysisGraphBox {
+    const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn left_port(self) -> Vec2 {
+        Vec2::new(self.x, self.y + self.height / 2.0)
+    }
+
+    fn right_port(self) -> Vec2 {
+        Vec2::new(self.x + self.width, self.y + self.height / 2.0)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AnalysisGraphStageState {
+    Waiting,
+    Running(usize),
+    Complete,
 }
 
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
@@ -1191,6 +1259,7 @@ pub fn run() {
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
         .insert_resource(UiInvalidated::default())
+        .insert_resource(NavigationInputState::default())
         .insert_resource(LibraryRefreshTimer(Timer::from_seconds(
             1.0,
             TimerMode::Repeating,
@@ -1235,8 +1304,17 @@ pub fn run() {
                     ..default()
                 }),
         )
+        .add_plugins(TabNavigationPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, handle_actions)
+        .add_systems(
+            Update,
+            (
+                register_navigation_targets,
+                handle_accessible_navigation,
+                handle_actions,
+            )
+                .chain(),
+        )
         .add_systems(Update, handle_cache_stats_request)
         .add_systems(Update, handle_window_close_requests)
         .add_systems(Update, handle_fullscreen_shortcut)
@@ -1253,12 +1331,19 @@ pub fn run() {
         .add_systems(Update, sync_editor_word_input)
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
-        .add_systems(Update, rebuild_ui)
-        .add_systems(Update, update_button_visuals)
+        .add_systems(Update, rebuild_ui.after(handle_actions))
+        .add_systems(Update, update_button_visuals.after(rebuild_ui))
+        .add_systems(
+            Update,
+            update_navigation_focus_visuals
+                .after(register_navigation_targets)
+                .after(rebuild_ui),
+        )
         .add_systems(Update, handle_editor_keyboard)
         .add_systems(Update, handle_editor_wheel)
         .add_systems(Update, handle_editor_pointer_capture)
         .add_systems(Update, handle_folder_scroll)
+        .add_systems(Update, handle_analysis_graph_scroll)
         .add_systems(Update, handle_library_scroll)
         .add_systems(Update, handle_song_detail_scroll)
         .add_systems(Update, handle_settings_scroll)
@@ -1388,6 +1473,7 @@ fn render_ui(
     commands
         .spawn((
             StudioUiRoot,
+            TabGroup::new(0),
             Node {
                 width: percent(100),
                 height: percent(100),
@@ -3221,8 +3307,18 @@ fn spawn_analysis_session_overview(
         });
     let history = session
         .selected_analysis_history
-        .and_then(|id| session.analysis_history.iter().find(|history| history.id == id))
-        .or_else(|| active_task.is_none().then(|| session.analysis_history.first()).flatten());
+        .and_then(|id| {
+            session
+                .analysis_history
+                .iter()
+                .find(|history| history.id == id)
+        })
+        .or_else(|| {
+            active_task
+                .is_none()
+                .then(|| session.analysis_history.first())
+                .flatten()
+        });
     let history_task = history.map(|history| app_core::AnalysisTask {
         file_hash: history.file_hash.clone(),
         title: history.title.clone(),
@@ -3278,7 +3374,13 @@ fn spawn_analysis_session_overview(
                     .unwrap_or(0)
             })
         })
-        .unwrap_or_else(|| if selected_stage_index < stage_index { 100 } else { 0 });
+        .unwrap_or_else(|| {
+            if selected_stage_index < stage_index {
+                100
+            } else {
+                0
+            }
+        });
     let selected_trace_missing = selected_route.is_none() && selected_progress >= 100;
     let selected_pending_copy = if selected_trace_missing {
         "Not recorded in this analysis session"
@@ -3344,8 +3446,12 @@ fn spawn_analysis_session_overview(
             })
         })
         .unwrap_or(selected_pending_copy);
-    let selected_device_fallback = selected_route
-        .and_then(|route| route.fallback_from.as_deref().zip(route.fallback_reason.as_deref()));
+    let selected_device_fallback = selected_route.and_then(|route| {
+        route
+            .fallback_from
+            .as_deref()
+            .zip(route.fallback_reason.as_deref())
+    });
     let selected_backend_fallback = selected_route.and_then(|route| {
         route
             .backend_fallback_from
@@ -3448,99 +3554,94 @@ fn spawn_analysis_session_overview(
                         theme.muted_foreground,
                     );
                     spawn_text(current, font.clone(), operation, 18.0, theme.foreground);
-                    spawn_wrapped_text(
-                        current,
-                        font.clone(),
-                        detail,
-                        10.0,
-                        theme.muted_foreground,
-                    );
+                    spawn_wrapped_text(current, font.clone(), detail, 10.0, theme.muted_foreground);
                     if let Some(live) = task.live.as_ref() {
                         if let Some(fallback_from) = live.fallback_from.as_deref() {
-                            current.spawn(Node {
-                                width: percent(100),
-                                align_items: AlignItems::Center,
-                                column_gap: px(10),
-                                margin: UiRect::top(px(8)),
-                                ..default()
-                            })
-                            .with_children(|route| {
-                                spawn_text(
-                                    route,
-                                    font.clone(),
-                                    "EXECUTION FALLBACK",
-                                    8.0,
-                                    theme.editor_warning,
-                                );
-                                route
-                                    .spawn((
-                                        Node {
-                                            min_width: px(58),
-                                            padding: UiRect::axes(px(10), px(6)),
-                                            justify_content: JustifyContent::Center,
-                                            border: UiRect::all(px(1)),
-                                            border_radius: BorderRadius::all(px(4)),
-                                            ..default()
-                                        },
-                                        BackgroundColor(theme.editor_warning.with_alpha(0.08)),
-                                        BorderColor::all(theme.editor_warning.with_alpha(0.48)),
-                                    ))
-                                    .with_children(|source| {
-                                        spawn_text(
-                                            source,
-                                            font.clone(),
-                                            fallback_from.to_ascii_uppercase(),
-                                            9.0,
-                                            theme.editor_warning,
-                                        );
-                                    });
-                                route.spawn((
-                                    Node {
-                                        width: px(34),
-                                        height: px(2),
-                                        ..default()
-                                    },
-                                    BackgroundColor(theme.editor_warning.with_alpha(0.68)),
-                                ));
-                                spawn_text(
-                                    route,
-                                    font.clone(),
-                                    ">",
-                                    10.0,
-                                    theme.editor_warning,
-                                );
-                                route
-                                    .spawn((
-                                        Node {
-                                            min_width: px(58),
-                                            padding: UiRect::axes(px(10), px(6)),
-                                            justify_content: JustifyContent::Center,
-                                            border: UiRect::all(px(1)),
-                                            border_radius: BorderRadius::all(px(4)),
-                                            ..default()
-                                        },
-                                        BackgroundColor(theme.pitch_contour.with_alpha(0.09)),
-                                        BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
-                                    ))
-                                    .with_children(|destination| {
-                                        spawn_text(
-                                            destination,
-                                            font.clone(),
-                                            live.device.to_ascii_uppercase(),
-                                            9.0,
-                                            theme.pitch_contour,
-                                        );
-                                    });
-                                if let Some(reason) = live.fallback_reason.as_deref() {
-                                    spawn_wrapped_text(
+                            current
+                                .spawn(Node {
+                                    width: percent(100),
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(10),
+                                    margin: UiRect::top(px(8)),
+                                    ..default()
+                                })
+                                .with_children(|route| {
+                                    spawn_text(
                                         route,
                                         font.clone(),
-                                        reason,
+                                        "EXECUTION FALLBACK",
                                         8.0,
-                                        theme.muted_foreground,
+                                        theme.editor_warning,
                                     );
-                                }
-                            });
+                                    route
+                                        .spawn((
+                                            Node {
+                                                min_width: px(58),
+                                                padding: UiRect::axes(px(10), px(6)),
+                                                justify_content: JustifyContent::Center,
+                                                border: UiRect::all(px(1)),
+                                                border_radius: BorderRadius::all(px(4)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(theme.editor_warning.with_alpha(0.08)),
+                                            BorderColor::all(theme.editor_warning.with_alpha(0.48)),
+                                        ))
+                                        .with_children(|source| {
+                                            spawn_text(
+                                                source,
+                                                font.clone(),
+                                                fallback_from.to_ascii_uppercase(),
+                                                9.0,
+                                                theme.editor_warning,
+                                            );
+                                        });
+                                    route.spawn((
+                                        Node {
+                                            width: px(34),
+                                            height: px(2),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.editor_warning.with_alpha(0.68)),
+                                    ));
+                                    spawn_text(
+                                        route,
+                                        font.clone(),
+                                        ">",
+                                        10.0,
+                                        theme.editor_warning,
+                                    );
+                                    route
+                                        .spawn((
+                                            Node {
+                                                min_width: px(58),
+                                                padding: UiRect::axes(px(10), px(6)),
+                                                justify_content: JustifyContent::Center,
+                                                border: UiRect::all(px(1)),
+                                                border_radius: BorderRadius::all(px(4)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(theme.pitch_contour.with_alpha(0.09)),
+                                            BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
+                                        ))
+                                        .with_children(|destination| {
+                                            spawn_text(
+                                                destination,
+                                                font.clone(),
+                                                live.device.to_ascii_uppercase(),
+                                                9.0,
+                                                theme.pitch_contour,
+                                            );
+                                        });
+                                    if let Some(reason) = live.fallback_reason.as_deref() {
+                                        spawn_wrapped_text(
+                                            route,
+                                            font.clone(),
+                                            reason,
+                                            8.0,
+                                            theme.muted_foreground,
+                                        );
+                                    }
+                                });
                         }
                     }
                 });
@@ -3568,15 +3669,6 @@ fn spawn_analysis_session_overview(
                     ));
                 });
 
-            let stages = [
-                ("preparing", "Prepare"),
-                ("separation", "Separate"),
-                ("pitch", "Pitch"),
-                ("audio_preprocessing", "Preprocess"),
-                ("transcription", "Transcribe"),
-                ("alignment", "Align"),
-                ("finalizing", "Finalize"),
-            ];
             let active_stage_progress = task
                 .live
                 .as_ref()
@@ -3585,280 +3677,329 @@ fn spawn_analysis_session_overview(
             session_card
                 .spawn(Node {
                     width: percent(100),
-                    align_items: AlignItems::FlexStart,
-                    overflow: Overflow::clip(),
+                    align_items: AlignItems::Center,
+                    column_gap: px(10),
                     ..default()
                 })
-                .with_children(|track| {
-                    for (index, (stage_id, label)) in stages.into_iter().enumerate() {
-                        if index > 0 {
-                            track.spawn((
-                                Node {
-                                    min_width: px(12),
-                                    height: px(2),
-                                    flex_grow: 0.16,
-                                    margin: UiRect::top(px(25)),
-                                    ..default()
-                                },
-                                BackgroundColor(if index <= stage_index {
-                                    theme.pitch_contour.with_alpha(0.72)
-                                } else {
-                                    theme.border.with_alpha(0.55)
-                                }),
-                            ));
-                        }
-                        let completed = index < stage_index;
-                        let active = index == stage_index;
-                        let step_progress = if completed {
-                            100
-                        } else if active {
-                            active_stage_progress
-                        } else {
-                            0
-                        };
-                        let stage_route = task.live.as_ref().and_then(|live| {
-                            live.stage_routes.iter().rev().find(|route| {
-                                analysis_stage_matches(&route.stage, stage_id)
-                            })
-                        });
-                        let selected = selected_stage == stage_id;
-                        track
-                            .spawn((
-                                Button,
-                                UiAction::SelectAnalysisStage(stage_id.to_string()),
-                                Node {
-                                    min_width: px(108),
-                                    flex_grow: 1.0,
-                                    flex_direction: FlexDirection::Column,
-                                    padding: UiRect::all(px(11)),
-                                    row_gap: px(9),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: BorderRadius::all(px(6)),
-                                    ..default()
-                                },
-                                BackgroundColor(if selected {
-                                    theme.primary.with_alpha(0.18)
-                                } else if active {
-                                    theme.primary.with_alpha(0.12)
-                                } else {
-                                    theme.background.with_alpha(0.24)
-                                }),
-                                BorderColor::all(if selected {
-                                    theme.primary.with_alpha(0.88)
-                                } else if active {
-                                    theme.primary.with_alpha(0.62)
-                                } else if completed {
-                                    theme.pitch_contour.with_alpha(0.42)
-                                } else {
-                                    theme.border.with_alpha(0.42)
-                                }),
-                            ))
-                            .with_children(|step| {
-                                step.spawn(Node {
-                                    width: percent(100),
-                                    align_items: AlignItems::Center,
-                                    column_gap: px(7),
-                                    ..default()
-                                })
-                                .with_children(|heading| {
-                                    heading.spawn((
-                                        Node {
-                                            width: px(22),
-                                            height: px(22),
-                                            flex_shrink: 0.0,
-                                            align_items: AlignItems::Center,
-                                            justify_content: JustifyContent::Center,
-                                            border_radius: BorderRadius::MAX,
-                                            ..default()
-                                        },
-                                        BackgroundColor(if active {
-                                            theme.primary
-                                        } else if completed {
-                                            theme.pitch_contour
-                                        } else {
-                                            theme.muted
-                                        }),
-                                    ))
-                                    .with_children(|badge| {
-                                        spawn_text(
-                                            badge,
-                                            font.clone(),
-                                            format!("{:02}", index + 1),
-                                            7.0,
-                                            if active || completed {
-                                                theme.background
-                                            } else {
-                                                theme.muted_foreground
-                                            },
-                                        );
-                                    });
-                                    heading
-                                        .spawn(Node {
-                                            min_width: px(0),
-                                            flex_grow: 1.0,
-                                            flex_direction: FlexDirection::Column,
-                                            ..default()
-                                        })
-                                        .with_children(|copy| {
-                                            spawn_text(
-                                                copy,
-                                                font.clone(),
-                                                label,
-                                                9.0,
-                                                if active || completed {
-                                                    theme.foreground
-                                                } else {
-                                                    theme.muted_foreground
-                                                },
-                                            );
-                                            spawn_text(
-                                                copy,
-                                                font.clone(),
-                                                if active {
-                                                    "RUNNING".to_string()
-                                                } else if completed {
-                                                    "COMPLETE".to_string()
-                                                } else {
-                                                    "WAITING".to_string()
-                                                },
-                                                7.0,
-                                                if active {
-                                                    theme.primary
-                                                } else if completed {
-                                                    theme.pitch_contour
-                                                } else {
-                                                    theme.muted_foreground
-                                                },
-                                            );
-                                        });
-                                });
-                                step.spawn(Node {
-                                    width: percent(100),
-                                    align_items: AlignItems::Center,
-                                    column_gap: px(8),
-                                    ..default()
-                                })
-                                .with_children(|meter| {
-                                    meter
-                                        .spawn((
-                                            Node {
-                                                min_width: px(0),
-                                                height: px(3),
-                                                flex_grow: 1.0,
-                                                overflow: Overflow::clip(),
-                                                border_radius: BorderRadius::MAX,
-                                                ..default()
-                                            },
-                                            BackgroundColor(theme.muted.with_alpha(0.72)),
-                                        ))
-                                        .with_children(|rail| {
-                                            rail.spawn((
-                                                Node {
-                                                    width: percent(step_progress as f32),
-                                                    height: percent(100),
-                                                    border_radius: BorderRadius::MAX,
-                                                    ..default()
-                                                },
-                                                BackgroundColor(if completed {
-                                                    theme.pitch_contour
-                                                } else {
-                                                    theme.primary
-                                                }),
-                                            ));
-                                        });
-                                    spawn_text(
-                                        meter,
-                                        font.clone(),
-                                        format!("{step_progress}%"),
-                                        8.0,
-                                        if active || completed {
-                                            theme.foreground
-                                        } else {
-                                            theme.muted_foreground
-                                        },
-                                    );
-                                });
-                                let route_copy = stage_route
-                                    .map(|route| {
-                                        route
-                                            .fallback_from
-                                            .as_ref()
-                                            .map(|from| {
-                                                format!(
-                                                    "{} > {}",
-                                                    from.to_ascii_uppercase(),
-                                                    route.actual_device.to_ascii_uppercase()
-                                                )
-                                            })
-                                            .unwrap_or_else(|| {
-                                                route.actual_device.to_ascii_uppercase()
-                                            })
-                                    })
-                                    .unwrap_or_else(|| {
-                                        if completed {
-                                            "TELEMETRY NOT RECORDED".to_string()
-                                        } else {
-                                            "NOT STARTED".to_string()
-                                        }
-                                    });
-                                spawn_text(
-                                    step,
-                                    font.clone(),
-                                    route_copy,
-                                    7.0,
-                                    if stage_route
-                                        .is_some_and(|route| route.fallback_from.is_some())
-                                    {
-                                        theme.editor_warning
-                                    } else if stage_route.is_some() {
-                                        theme.pitch_contour
-                                    } else {
-                                        theme.muted_foreground
-                                    },
-                                );
-                                let backend_copy = stage_route
-                                    .map(|route| {
-                                        route
-                                            .backend_fallback_from
-                                            .as_ref()
-                                            .map(|from| {
-                                                format!(
-                                                    "{} > {}",
-                                                    from.to_ascii_uppercase(),
-                                                    route.implementation.to_ascii_uppercase()
-                                                )
-                                            })
-                                            .unwrap_or_else(|| {
-                                                if route.model.trim().is_empty() {
-                                                    route.implementation.clone()
-                                                } else {
-                                                    format!("{} · {}", route.implementation, route.model)
-                                                }
-                                            })
-                                    })
-                                    .unwrap_or_else(|| {
-                                        if completed {
-                                            "LEGACY SESSION · NO MODEL TRACE".to_string()
-                                        } else {
-                                            "MODEL PENDING".to_string()
-                                        }
-                                    });
-                                spawn_wrapped_text(
-                                    step,
-                                    font.clone(),
-                                    backend_copy,
-                                    7.0,
-                                    if stage_route.is_some_and(|route| {
-                                        route.backend_fallback_from.is_some()
-                                    }) {
-                                        theme.editor_warning
-                                    } else {
-                                        theme.muted_foreground
-                                    },
-                                );
-                            });
-                    }
+                .with_children(|heading| {
+                    spawn_text(
+                        heading,
+                        font.clone(),
+                        "DATA DEPENDENCY GRAPH",
+                        8.0,
+                        theme.primary,
+                    );
+                    spawn_text(
+                        heading,
+                        font.clone(),
+                        "Stages consume the connected artifacts · Drag canvas or Shift + wheel to pan",
+                        8.0,
+                        theme.muted_foreground,
+                    );
                 });
+
+            let prepare = AnalysisGraphBox::new(30.0, 210.0, 150.0, 92.0);
+            let separate = AnalysisGraphBox::new(220.0, 210.0, 150.0, 92.0);
+            let vocal = AnalysisGraphBox::new(410.0, 219.0, 150.0, 74.0);
+            let instrumental = AnalysisGraphBox::new(410.0, 350.0, 150.0, 74.0);
+            let pitch = AnalysisGraphBox::new(620.0, 35.0, 150.0, 92.0);
+            let note_guide = AnalysisGraphBox::new(810.0, 44.0, 150.0, 74.0);
+            let preprocess = AnalysisGraphBox::new(620.0, 210.0, 150.0, 92.0);
+            let transcribe = AnalysisGraphBox::new(810.0, 210.0, 150.0, 92.0);
+            let align = AnalysisGraphBox::new(1000.0, 210.0, 150.0, 92.0);
+            let timed_lyrics = AnalysisGraphBox::new(1190.0, 219.0, 150.0, 74.0);
+            let finalize = AnalysisGraphBox::new(1380.0, 210.0, 150.0, 92.0);
+            let chart = AnalysisGraphBox::new(1570.0, 219.0, 150.0, 74.0);
+            let utz = AnalysisGraphBox::new(1760.0, 105.0, 130.0, 74.0);
+            let ultrastar = AnalysisGraphBox::new(1760.0, 330.0, 130.0, 74.0);
+
+            let stage_complete = |index: usize| {
+                index < stage_index
+                    || (index == stage_index && active_stage_progress >= 100)
+                    || progress >= 100
+            };
+            let prepare_ready = stage_complete(0);
+            let stems_ready = stage_complete(1);
+            let pitch_ready = stage_complete(2);
+            let preprocess_ready = stage_complete(3);
+            let transcript_ready = stage_complete(4);
+            let lyrics_ready = stage_complete(5);
+            let chart_ready = stage_complete(6);
+
+            session_card
+                .spawn((
+                    AnalysisGraphViewport,
+                    ScrollPosition(Vec2::new(session.analysis_graph_scroll_offset, 0.0)),
+                    Node {
+                        width: percent(100),
+                        height: px(445),
+                        overflow: Overflow::scroll_x(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(8)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.background.with_alpha(0.34)),
+                    BorderColor::all(theme.border.with_alpha(0.5)),
+                ))
+                .with_children(|viewport| {
+                    viewport
+                        .spawn(Node {
+                            position_type: PositionType::Relative,
+                            width: px(1930),
+                            height: px(430),
+                            flex_shrink: 0.0,
+                            ..default()
+                        })
+                        .with_children(|graph| {
+                            spawn_analysis_graph_lane(
+                                graph,
+                                font.clone(),
+                                theme,
+                                590.0,
+                                16.0,
+                                780.0,
+                                132.0,
+                                "MELODY · PITCH CONTOUR AND NOTE GUIDE",
+                            );
+                            spawn_analysis_graph_lane(
+                                graph,
+                                font.clone(),
+                                theme,
+                                390.0,
+                                184.0,
+                                980.0,
+                                142.0,
+                                "LYRICS · VOCAL PREPROCESSING AND TIMING",
+                            );
+                            spawn_analysis_graph_lane(
+                                graph,
+                                font.clone(),
+                                theme,
+                                390.0,
+                                334.0,
+                                980.0,
+                                90.0,
+                                "ACCOMPANIMENT · LOSSLESS INSTRUMENTAL STEM",
+                            );
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[prepare.right_port(), separate.left_port()],
+                                prepare_ready,
+                            );
+                            for target in [vocal, instrumental] {
+                                let from = separate.right_port();
+                                let to = target.left_port();
+                                spawn_analysis_graph_path(
+                                    graph,
+                                    theme,
+                                    &[from, Vec2::new(390.0, from.y), Vec2::new(390.0, to.y), to],
+                                    stems_ready,
+                                );
+                            }
+                            for target in [pitch, preprocess] {
+                                let from = vocal.right_port();
+                                let to = target.left_port();
+                                spawn_analysis_graph_path(
+                                    graph,
+                                    theme,
+                                    &[from, Vec2::new(590.0, from.y), Vec2::new(590.0, to.y), to],
+                                    stems_ready,
+                                );
+                            }
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[pitch.right_port(), note_guide.left_port()],
+                                pitch_ready,
+                            );
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[preprocess.right_port(), transcribe.left_port()],
+                                preprocess_ready,
+                            );
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[transcribe.right_port(), align.left_port()],
+                                transcript_ready,
+                            );
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[align.right_port(), timed_lyrics.left_port()],
+                                lyrics_ready,
+                            );
+                            let final_port = finalize.left_port();
+                            let note_port = note_guide.right_port();
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[
+                                    note_port,
+                                    Vec2::new(1160.0, note_port.y),
+                                    Vec2::new(1160.0, final_port.y),
+                                    final_port,
+                                ],
+                                pitch_ready,
+                            );
+                            let lyric_port = timed_lyrics.right_port();
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[
+                                    lyric_port,
+                                    Vec2::new(1360.0, lyric_port.y),
+                                    Vec2::new(1360.0, final_port.y),
+                                    final_port,
+                                ],
+                                lyrics_ready,
+                            );
+                            let instrumental_port = instrumental.right_port();
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[
+                                    instrumental_port,
+                                    Vec2::new(1350.0, instrumental_port.y),
+                                    Vec2::new(1350.0, final_port.y),
+                                    final_port,
+                                ],
+                                stems_ready,
+                            );
+                            spawn_analysis_graph_path(
+                                graph,
+                                theme,
+                                &[finalize.right_port(), chart.left_port()],
+                                chart_ready,
+                            );
+                            for target in [utz, ultrastar] {
+                                let from = chart.right_port();
+                                let to = target.left_port();
+                                spawn_analysis_graph_path(
+                                    graph,
+                                    theme,
+                                    &[from, Vec2::new(1740.0, from.y), Vec2::new(1740.0, to.y), to],
+                                    chart_ready,
+                                );
+                            }
+
+                            for (index, stage_id, label, bounds) in [
+                                (0, "preparing", "Prepare", prepare),
+                                (1, "separation", "Separate", separate),
+                                (2, "pitch", "Pitch", pitch),
+                                (3, "audio_preprocessing", "Preprocess", preprocess),
+                                (4, "transcription", "Transcribe", transcribe),
+                                (5, "alignment", "Align", align),
+                                (6, "finalizing", "Finalize", finalize),
+                            ] {
+                                let state = if stage_complete(index) {
+                                    AnalysisGraphStageState::Complete
+                                } else if index == stage_index {
+                                    AnalysisGraphStageState::Running(active_stage_progress)
+                                } else {
+                                    AnalysisGraphStageState::Waiting
+                                };
+                                let (route, warning) = analysis_graph_route_summary(
+                                    task,
+                                    stage_id,
+                                    stage_complete(index),
+                                );
+                                spawn_analysis_stage_node(
+                                    graph,
+                                    font.clone(),
+                                    theme,
+                                    bounds,
+                                    index,
+                                    stage_id,
+                                    label,
+                                    state,
+                                    selected_stage == stage_id,
+                                    &route,
+                                    warning,
+                                );
+                            }
+                            for (bounds, title, detail, ready) in [
+                                (vocal, "Vocal stem", "vocals.flac · lossless", stems_ready),
+                                (
+                                    instrumental,
+                                    "Instrumental stem",
+                                    "instrumental.flac · lossless",
+                                    stems_ready,
+                                ),
+                                (
+                                    note_guide,
+                                    "Note guide",
+                                    "Pitch contour + notes",
+                                    pitch_ready,
+                                ),
+                                (
+                                    timed_lyrics,
+                                    "Timed lyrics",
+                                    "Aligned lyric timing",
+                                    lyrics_ready,
+                                ),
+                                (
+                                    chart,
+                                    "Editable chart",
+                                    "Authoring-ready assets",
+                                    chart_ready,
+                                ),
+                            ] {
+                                spawn_analysis_artifact_node(
+                                    graph,
+                                    font.clone(),
+                                    theme,
+                                    bounds,
+                                    "ARTIFACT",
+                                    title,
+                                    detail,
+                                    ready,
+                                    false,
+                                );
+                            }
+                            for (bounds, title, detail) in [
+                                (utz, "UTZ package", "Explicit export target"),
+                                (ultrastar, "UltraStar chart", "Explicit export target"),
+                            ] {
+                                spawn_analysis_artifact_node(
+                                    graph,
+                                    font.clone(),
+                                    theme,
+                                    bounds,
+                                    "OUTPUT",
+                                    title,
+                                    detail,
+                                    chart_ready,
+                                    true,
+                                );
+                            }
+                        });
+                })
+                .observe(
+                    |mut drag: On<Pointer<Drag>>,
+                     ui_scale: Res<UiScale>,
+                     mut session: ResMut<StudioSession>,
+                     mut viewports: Query<
+                        (&ComputedNode, &mut ScrollPosition),
+                        With<AnalysisGraphViewport>,
+                    >| {
+                        if drag.button != PointerButton::Primary {
+                            return;
+                        }
+                        drag.propagate(false);
+                        let Ok((computed, mut position)) = viewports.single_mut() else {
+                            return;
+                        };
+                        let size = computed.size() * computed.inverse_scale_factor();
+                        let content = computed.content_size() * computed.inverse_scale_factor();
+                        let delta = drag.delta / ui_scale.0;
+                        position.x = (position.x - delta.x)
+                            .clamp(0.0, (content.x - size.x).max(0.0));
+                        session.analysis_graph_scroll_offset = position.x;
+                    },
+                );
 
             session_card
                 .spawn((
@@ -3888,7 +4029,11 @@ fn spawn_analysis_session_overview(
                             spawn_text(
                                 header,
                                 font.clone(),
-                                format!("STEP {:02} · {}", selected_stage_index + 1, selected_label.to_ascii_uppercase()),
+                                format!(
+                                    "STEP {:02} · {}",
+                                    selected_stage_index + 1,
+                                    selected_label.to_ascii_uppercase()
+                                ),
                                 9.0,
                                 theme.primary,
                             );
@@ -3948,6 +4093,7 @@ fn spawn_analysis_session_overview(
                                             flex_direction: FlexDirection::Column,
                                             padding: UiRect::all(px(10)),
                                             row_gap: px(3),
+                                            overflow: Overflow::clip(),
                                             border: UiRect::all(px(1)),
                                             border_radius: BorderRadius::all(px(4)),
                                             ..default()
@@ -3963,7 +4109,7 @@ fn spawn_analysis_session_overview(
                                             7.0,
                                             theme.muted_foreground,
                                         );
-                                        spawn_wrapped_text(
+                                        spawn_bounded_wrapped_text(
                                             fact,
                                             font.clone(),
                                             value,
@@ -3985,7 +4131,11 @@ fn spawn_analysis_session_overview(
                         spawn_wrapped_text(
                             inspector,
                             font.clone(),
-                            format!("{label} · {} > {} · {reason}", from.to_ascii_uppercase(), to.to_ascii_uppercase()),
+                            format!(
+                                "{label} · {} > {} · {reason}",
+                                from.to_ascii_uppercase(),
+                                to.to_ascii_uppercase()
+                            ),
                             9.0,
                             theme.editor_warning,
                         );
@@ -4035,6 +4185,7 @@ fn spawn_analysis_session_overview(
                                         flex_direction: FlexDirection::Column,
                                         padding: UiRect::all(px(12)),
                                         row_gap: px(3),
+                                        overflow: Overflow::clip(),
                                         border: UiRect::all(px(1)),
                                         border_radius: BorderRadius::all(px(4)),
                                         ..default()
@@ -4050,7 +4201,7 @@ fn spawn_analysis_session_overview(
                                         8.0,
                                         theme.muted_foreground,
                                     );
-                                    spawn_wrapped_text(
+                                    spawn_bounded_wrapped_text(
                                         item,
                                         font.clone(),
                                         value,
@@ -4061,6 +4212,405 @@ fn spawn_analysis_session_overview(
                         }
                     });
             }
+        });
+}
+
+fn analysis_graph_route_summary(
+    task: &app_core::AnalysisTask,
+    stage_id: &str,
+    completed: bool,
+) -> (String, bool) {
+    let route = task.live.as_ref().and_then(|live| {
+        live.stage_routes
+            .iter()
+            .rev()
+            .find(|route| analysis_stage_matches(&route.stage, stage_id))
+    });
+    let Some(route) = route else {
+        return (
+            if completed {
+                "Complete · no runtime trace".to_string()
+            } else {
+                "Awaiting connected inputs".to_string()
+            },
+            false,
+        );
+    };
+    let warning = route.fallback_from.is_some() || route.backend_fallback_from.is_some();
+    let implementation = route
+        .backend_fallback_from
+        .as_ref()
+        .map(|from| {
+            format!(
+                "{} > {}",
+                from.to_ascii_uppercase(),
+                route.implementation.to_ascii_uppercase()
+            )
+        })
+        .unwrap_or_else(|| route.implementation.clone());
+    let model = (!route.model.trim().is_empty())
+        .then(|| route.model.as_str())
+        .unwrap_or("default");
+    (format!("{implementation} · {model}"), warning)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_analysis_stage_node(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    bounds: AnalysisGraphBox,
+    index: usize,
+    stage_id: &str,
+    label: &str,
+    state: AnalysisGraphStageState,
+    selected: bool,
+    route: &str,
+    warning: bool,
+) {
+    let (status, progress, status_color) = match state {
+        AnalysisGraphStageState::Waiting => ("WAITING", 0, theme.muted_foreground),
+        AnalysisGraphStageState::Running(progress) => ("RUNNING", progress, theme.primary),
+        AnalysisGraphStageState::Complete => ("COMPLETE", 100, theme.pitch_contour),
+    };
+    let running = matches!(state, AnalysisGraphStageState::Running(_));
+    let complete = matches!(state, AnalysisGraphStageState::Complete);
+    parent
+        .spawn((
+            Button,
+            UiAction::SelectAnalysisStage(stage_id.to_string()),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bounds.x),
+                top: px(bounds.y),
+                width: px(bounds.width),
+                height: px(bounds.height),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(10)),
+                row_gap: px(7),
+                overflow: Overflow::clip(),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(7)),
+                ..default()
+            },
+            BackgroundColor(if running {
+                theme.primary.with_alpha(0.16)
+            } else if selected {
+                theme.card.with_alpha(0.9)
+            } else {
+                theme.card.with_alpha(0.68)
+            }),
+            BorderColor::all(if selected {
+                theme.primary.with_alpha(0.92)
+            } else if running {
+                theme.primary.with_alpha(0.62)
+            } else if complete {
+                theme.pitch_contour.with_alpha(0.42)
+            } else {
+                theme.border.with_alpha(0.68)
+            }),
+            ZIndex(2),
+        ))
+        .with_children(|node| {
+            spawn_analysis_graph_ports(node, theme, complete || running);
+            if selected {
+                node.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0),
+                        top: px(9),
+                        bottom: px(9),
+                        width: px(2),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(theme.primary),
+                    Pickable::IGNORE,
+                ));
+            }
+            node.spawn(Node {
+                width: percent(100),
+                align_items: AlignItems::Center,
+                column_gap: px(7),
+                ..default()
+            })
+            .with_children(|heading| {
+                heading
+                    .spawn((
+                        Node {
+                            width: px(22),
+                            height: px(22),
+                            flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(if running {
+                            theme.primary
+                        } else if complete {
+                            theme.pitch_contour
+                        } else {
+                            theme.muted
+                        }),
+                    ))
+                    .with_children(|badge| {
+                        spawn_text(
+                            badge,
+                            font.clone(),
+                            format!("{:02}", index + 1),
+                            7.0,
+                            if running || complete {
+                                theme.background
+                            } else {
+                                theme.muted_foreground
+                            },
+                        );
+                    });
+                heading
+                    .spawn(Node {
+                        min_width: px(0),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Column,
+                        ..default()
+                    })
+                    .with_children(|copy| {
+                        spawn_text(copy, font.clone(), label, 9.0, theme.foreground);
+                        spawn_text(copy, font.clone(), status, 7.0, status_color);
+                    });
+            });
+            node.spawn(Node {
+                width: percent(100),
+                align_items: AlignItems::Center,
+                column_gap: px(7),
+                ..default()
+            })
+            .with_children(|meter| {
+                meter
+                    .spawn((
+                        Node {
+                            min_width: px(0),
+                            height: px(3),
+                            flex_grow: 1.0,
+                            overflow: Overflow::clip(),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(theme.muted.with_alpha(0.72)),
+                    ))
+                    .with_children(|rail| {
+                        rail.spawn((
+                            Node {
+                                width: percent(progress as f32),
+                                height: percent(100),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(if complete {
+                                theme.pitch_contour
+                            } else {
+                                theme.primary
+                            }),
+                        ));
+                    });
+                spawn_text(
+                    meter,
+                    font.clone(),
+                    format!("{progress}%"),
+                    7.0,
+                    status_color,
+                );
+            });
+            spawn_bounded_wrapped_text(
+                node,
+                font,
+                route,
+                7.0,
+                if warning {
+                    theme.editor_warning
+                } else {
+                    theme.muted_foreground
+                },
+            );
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_analysis_artifact_node(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    bounds: AnalysisGraphBox,
+    eyebrow: &str,
+    title: &str,
+    detail: &str,
+    ready: bool,
+    output: bool,
+) {
+    let accent = if output {
+        theme.primary
+    } else {
+        theme.pitch_contour
+    };
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bounds.x),
+                top: px(bounds.y),
+                width: px(bounds.width),
+                height: px(bounds.height),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::axes(px(12), px(8)),
+                row_gap: px(2),
+                overflow: Overflow::clip(),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(if output { 8 } else { 18 })),
+                ..default()
+            },
+            BackgroundColor(if ready {
+                accent.with_alpha(0.1)
+            } else {
+                theme.background.with_alpha(0.72)
+            }),
+            BorderColor::all(if ready {
+                accent.with_alpha(0.62)
+            } else {
+                theme.border.with_alpha(0.62)
+            }),
+            ZIndex(2),
+        ))
+        .with_children(|node| {
+            spawn_analysis_graph_ports(node, theme, ready);
+            spawn_text(
+                node,
+                font.clone(),
+                format!(
+                    "{eyebrow} · {}",
+                    if ready {
+                        if output { "AVAILABLE" } else { "READY" }
+                    } else {
+                        "PENDING"
+                    }
+                ),
+                6.5,
+                if ready {
+                    accent
+                } else {
+                    theme.muted_foreground
+                },
+            );
+            spawn_text(node, font.clone(), title, 9.0, theme.foreground);
+            spawn_bounded_wrapped_text(node, font, detail, 7.0, theme.muted_foreground);
+        });
+}
+
+fn spawn_analysis_graph_ports(parent: &mut ChildSpawnerCommands, theme: &StudioTheme, ready: bool) {
+    for (left, right) in [(Some(px(-5)), None), (None, Some(px(-5)))] {
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: left.unwrap_or_default(),
+                right: right.unwrap_or_default(),
+                top: percent(50),
+                width: px(10),
+                height: px(10),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            UiTransform::from_xy(px(0), px(-5)),
+            BackgroundColor(if ready {
+                theme.pitch_contour
+            } else {
+                theme.muted
+            }),
+            BorderColor::all(theme.background.with_alpha(0.9)),
+            Pickable::IGNORE,
+        ));
+    }
+}
+
+fn spawn_analysis_graph_path(
+    parent: &mut ChildSpawnerCommands,
+    theme: &StudioTheme,
+    points: &[Vec2],
+    ready: bool,
+) {
+    let color = if ready {
+        theme.pitch_contour.with_alpha(0.68)
+    } else {
+        theme.border.with_alpha(0.64)
+    };
+    for pair in points.windows(2) {
+        let from = pair[0];
+        let to = pair[1];
+        let horizontal = (from.y - to.y).abs() <= 0.5;
+        let left = from.x.min(to.x);
+        let top = from.y.min(to.y);
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(left),
+                top: px(top),
+                width: px(if horizontal {
+                    (to.x - from.x).abs().max(2.0)
+                } else {
+                    2.0
+                }),
+                height: px(if horizontal {
+                    2.0
+                } else {
+                    (to.y - from.y).abs().max(2.0)
+                }),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(color),
+            ZIndex(0),
+            Pickable::IGNORE,
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_analysis_graph_lane(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    label: &str,
+) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(x),
+                top: px(y),
+                width: px(width),
+                height: px(height),
+                padding: UiRect::axes(px(12), px(8)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(10)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.14)),
+            BorderColor::all(theme.border.with_alpha(0.22)),
+            ZIndex(0),
+            Pickable::IGNORE,
+        ))
+        .with_children(|lane| {
+            spawn_text(
+                lane,
+                font,
+                label,
+                6.5,
+                theme.muted_foreground.with_alpha(0.62),
+            );
         });
 }
 
@@ -5132,7 +5682,7 @@ fn spawn_editor_timeline(
             row.spawn((
                 Node {
                     position_type: PositionType::Relative,
-                    width: px(58),
+                    width: px(EDITOR_TRACK_GUTTER_WIDTH),
                     height: percent(100),
                     flex_shrink: 0.0,
                     border: UiRect::right(px(1)),
@@ -5169,11 +5719,11 @@ fn spawn_editor_timeline(
                                 position_type: PositionType::Absolute,
                                 right: px(0),
                                 top: percent(top),
-                                width: if black_key { px(38) } else { percent(100) },
+                                width: if black_key { percent(68) } else { percent(100) },
                                 height: percent((bottom - top).max(0.1)),
                                 align_items: AlignItems::Center,
                                 justify_content: JustifyContent::FlexEnd,
-                                padding: UiRect::right(px(5)),
+                                padding: UiRect::right(px(3)),
                                 border: UiRect::bottom(px(1)),
                                 ..default()
                             },
@@ -5192,7 +5742,7 @@ fn spawn_editor_timeline(
                             if midi.rem_euclid(12) == 0 {
                                 key.spawn((
                                     Text::new(midi_note_name(f64::from(midi))),
-                                    ui_text_font(font.clone(), 7.0),
+                                    ui_text_font(font.clone(), 6.5),
                                     TextColor(theme.muted_foreground.with_alpha(0.82)),
                                     TextLayout::no_wrap(),
                                 ));
@@ -5499,6 +6049,7 @@ fn spawn_editor_timeline(
                         });
                 }
                 let playhead = time_percent(editor.visible_position, editor);
+                spawn_editor_alignment_guide(canvas, theme, 42);
                 canvas.spawn((
                     EditorPlayhead,
                     Node {
@@ -5547,7 +6098,7 @@ fn spawn_editor_lyrics(
         .with_children(|row| {
             row.spawn((
                 Node {
-                    width: px(58),
+                    width: px(EDITOR_TRACK_GUTTER_WIDTH),
                     height: percent(100),
                     flex_shrink: 0.0,
                     align_items: AlignItems::Center,
@@ -5719,7 +6270,46 @@ fn spawn_editor_lyrics(
                         }
                     });
                 }
+                spawn_editor_alignment_guide(lane, theme, 8);
             });
+        });
+}
+
+fn spawn_editor_alignment_guide(
+    parent: &mut ChildSpawnerCommands,
+    theme: &StudioTheme,
+    dash_count: usize,
+) {
+    parent
+        .spawn((
+            EditorAlignmentGuide,
+            Node {
+                position_type: PositionType::Absolute,
+                left: percent(0),
+                top: px(0),
+                bottom: px(0),
+                width: px(2),
+                display: Display::None,
+                ..default()
+            },
+            ZIndex(5),
+            Pickable::IGNORE,
+        ))
+        .with_children(|guide| {
+            for index in 0..dash_count {
+                guide.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0),
+                        top: percent(index as f32 / dash_count as f32 * 100.0),
+                        width: px(1.5),
+                        height: px(4),
+                        ..default()
+                    },
+                    BackgroundColor(theme.editor_selection.with_alpha(0.92)),
+                    Pickable::IGNORE,
+                ));
+            }
         });
 }
 
@@ -6380,7 +6970,6 @@ fn spawn_song_detail(
     };
 
     let cover = album_art_handle(&song, asset_server, images, local_images);
-    let ambient_cover = ambient_album_art_handle(&song, asset_server, images, local_images);
     parent
         .spawn((
             SongDetailContent,
@@ -6399,96 +6988,57 @@ fn spawn_song_detail(
                 .spawn((
                     Node {
                         width: percent(100),
-                        min_height: px(310),
-                        flex_direction: FlexDirection::Column,
-                        justify_content: JustifyContent::FlexEnd,
-                        padding: UiRect::axes(px(40), px(30)),
+                        min_height: px(120),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(24),
+                        row_gap: px(10),
+                        padding: UiRect::axes(px(32), px(14)),
                         border: UiRect::bottom(px(1)),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.72)),
+                    BackgroundColor(theme.background),
                     BorderColor::all(theme.border.with_alpha(0.45)),
                 ))
-                .with_children(|hero| {
-                    hero.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(0),
-                            right: px(0),
-                            top: px(0),
-                            bottom: px(0),
-                            overflow: Overflow::clip(),
-                            ..default()
-                        },
-                        ImageNode::new(ambient_cover)
-                            .with_color(Color::srgba(1.0, 1.0, 1.0, 0.68))
-                            .with_mode(bevy::ui::widget::NodeImageMode::Stretch),
-                    ));
-                    hero.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(0),
-                            right: px(0),
-                            top: px(0),
-                            bottom: px(0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.012, 0.014, 0.022, 0.54)),
-                    ));
-                    hero.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(0),
-                            right: px(0),
-                            bottom: px(0),
-                            height: percent(52),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.006, 0.008, 0.014, 0.34)),
-                    ));
-                    hero.spawn((
-                        Node {
-                            align_items: AlignItems::FlexEnd,
-                            column_gap: px(22),
-                            ..default()
-                        },
-                        ZIndex(1),
-                    ))
+                .with_children(|header| {
+                    header
+                    .spawn(Node {
+                        min_width: px(320),
+                        flex_grow: 1.0,
+                        align_items: AlignItems::Center,
+                        column_gap: px(18),
+                        ..default()
+                    })
                     .with_children(|identity| {
                         identity.spawn((
                             Node {
-                                width: px(150),
-                                height: px(150),
+                                width: px(92),
+                                height: px(92),
                                 flex_shrink: 0.0,
                                 overflow: Overflow::clip(),
                                 border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(4)),
+                                border_radius: BorderRadius::all(px(6)),
                                 ..default()
                             },
                             ImageNode::new(cover),
-                            BorderColor::all(theme.border.with_alpha(0.75)),
+                            BorderColor::all(theme.border.with_alpha(0.9)),
                         ));
                         identity
                             .spawn(Node {
                                 min_width: px(0),
                                 flex_grow: 1.0,
                                 flex_direction: FlexDirection::Column,
+                                justify_content: JustifyContent::Center,
                                 ..default()
                             })
                             .with_children(|copy| {
-                                spawn_text(
-                                    copy,
-                                    font.clone(),
-                                    "PRODUCTION MASTER",
-                                    9.0,
-                                    Color::srgb(0.72, 0.68, 1.0),
-                                );
                                 spawn_wrapped_text(
                                     copy,
                                     font.clone(),
                                     song.title.clone(),
-                                    34.0,
-                                    Color::srgb(0.97, 0.97, 0.99),
+                                    28.0,
+                                    theme.foreground,
                                 );
                                 spawn_text(
                                     copy,
@@ -6502,11 +7052,60 @@ fn spawn_song_detail(
                                             format!(" · {}", song.album)
                                         }
                                     ),
-                                    13.0,
-                                    Color::srgba(0.96, 0.96, 0.98, 0.76),
+                                    12.0,
+                                    theme.muted_foreground,
                                 );
+                                copy.spawn(Node {
+                                    align_items: AlignItems::Center,
+                                    flex_wrap: FlexWrap::Wrap,
+                                    column_gap: px(14),
+                                    row_gap: px(3),
+                                    margin: UiRect::top(px(5)),
+                                    ..default()
+                                })
+                                .with_children(|metadata| {
+                                    spawn_text(metadata, font.clone(), format_duration(song.duration_secs), 9.0, theme.muted_foreground);
+                                    spawn_text(metadata, font.clone(), song.language.as_deref().unwrap_or("Language unknown"), 9.0, theme.muted_foreground);
+                                    if let Some(key) = song.override_key.as_ref().or(song.key.as_ref()) {
+                                        spawn_text(metadata, font.clone(), format!("Key {key}"), 9.0, theme.muted_foreground);
+                                    }
+                                    spawn_text(metadata, font.clone(), format!("{:.1}× tempo", song.tempo), 9.0, theme.muted_foreground);
+                                });
                             });
                     });
+                    header
+                        .spawn(Node {
+                            min_width: px(0),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::FlexEnd,
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: px(8),
+                            row_gap: px(6),
+                            ..default()
+                        })
+                        .with_children(|actions| {
+                            let current = session.library_playback.file_hash.as_deref()
+                                == Some(song.file_hash.as_str())
+                                && session.library_playback.status.loaded;
+                            spawn_compact_action_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                if current && session.library_playback.status.playing {
+                                    "Pause"
+                                } else if current {
+                                    "Resume"
+                                } else {
+                                    "Play original"
+                                },
+                                if current {
+                                    UiAction::ToggleLibraryPlayback
+                                } else {
+                                    UiAction::PlayLibrarySong(song.file_hash.clone())
+                                },
+                            );
+                            spawn_song_primary_actions(actions, font.clone(), &song, session, theme);
+                        });
                 });
 
             detail
@@ -6515,109 +7114,11 @@ fn spawn_song_detail(
                     min_height: px(0),
                     flex_grow: 1.0,
                     flex_direction: FlexDirection::Column,
-                    padding: UiRect::axes(px(40), px(22)),
+                    padding: UiRect::axes(px(32), px(14)),
                     row_gap: px(16),
                     ..default()
                 })
                 .with_children(|body| {
-                    body.spawn((
-                        Node {
-                            width: percent(100),
-                            min_height: px(54),
-                            align_items: AlignItems::Center,
-                            flex_wrap: FlexWrap::Wrap,
-                            column_gap: px(18),
-                            row_gap: px(8),
-                            padding: UiRect::bottom(px(16)),
-                            border: UiRect::bottom(px(1)),
-                            ..default()
-                        },
-                        BorderColor::all(theme.border.with_alpha(0.55)),
-                    ))
-                    .with_children(|summary| {
-                        summary
-                            .spawn(Node {
-                                min_width: px(220),
-                                flex_grow: 1.0,
-                                align_items: AlignItems::Center,
-                                flex_wrap: FlexWrap::Wrap,
-                                column_gap: px(18),
-                                row_gap: px(5),
-                                ..default()
-                            })
-                            .with_children(|metadata| {
-                                spawn_text(
-                                    metadata,
-                                    font.clone(),
-                                    format_duration(song.duration_secs),
-                                    10.0,
-                                    theme.muted_foreground,
-                                );
-                                spawn_text(
-                                    metadata,
-                                    font.clone(),
-                                    song.language.as_deref().unwrap_or("Language unknown"),
-                                    10.0,
-                                    theme.muted_foreground,
-                                );
-                                if let Some(key) = song.override_key.as_ref().or(song.key.as_ref()) {
-                                    spawn_text(
-                                        metadata,
-                                        font.clone(),
-                                        format!("Key {key}"),
-                                        10.0,
-                                        theme.muted_foreground,
-                                    );
-                                }
-                                spawn_text(
-                                    metadata,
-                                    font.clone(),
-                                    format!("{:.1}× tempo", song.tempo),
-                                    10.0,
-                                    theme.muted_foreground,
-                                );
-                            });
-                        summary
-                            .spawn(Node {
-                                min_width: px(0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::FlexEnd,
-                                flex_wrap: FlexWrap::Wrap,
-                                column_gap: px(8),
-                                row_gap: px(6),
-                                ..default()
-                            })
-                            .with_children(|actions| {
-                                let current = session.library_playback.file_hash.as_deref()
-                                    == Some(song.file_hash.as_str())
-                                    && session.library_playback.status.loaded;
-                                spawn_compact_action_button(
-                                    actions,
-                                    font.clone(),
-                                    theme,
-                                    if current && session.library_playback.status.playing {
-                                        "Pause"
-                                    } else if current {
-                                        "Resume"
-                                    } else {
-                                        "Play original"
-                                    },
-                                    if current {
-                                        UiAction::ToggleLibraryPlayback
-                                    } else {
-                                        UiAction::PlayLibrarySong(song.file_hash.clone())
-                                    },
-                                );
-                                spawn_song_primary_actions(
-                                    actions,
-                                    font.clone(),
-                                    &song,
-                                    session,
-                                    theme,
-                                );
-                            });
-                    });
-
                     body.spawn(Node {
                         width: percent(100),
                         flex_direction: FlexDirection::Row,
@@ -7736,65 +8237,6 @@ fn album_art_handle(
     handle
 }
 
-fn ambient_album_art_handle(
-    song: &Song,
-    asset_server: &AssetServer,
-    images: &mut Assets<Image>,
-    local_images: &mut LocalImages,
-) -> Handle<Image> {
-    let Some(path) = song.album_art_path.as_ref() else {
-        return asset_server.load(LOGO_PATH);
-    };
-    if let Some(handle) = local_images.ambient_covers.get(path) {
-        return handle.clone();
-    }
-    let Ok(bytes) = std::fs::read(path) else {
-        return asset_server.load(LOGO_PATH);
-    };
-    let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "png"
-    } else {
-        "jpg"
-    };
-    let Ok(decoded) = Image::from_buffer(
-        &bytes,
-        ImageType::Extension(extension),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::default(),
-        RenderAssetUsages::default(),
-    ) else {
-        return asset_server.load(LOGO_PATH);
-    };
-    let Ok(dynamic) = decoded.try_into_dynamic() else {
-        return asset_server.load(LOGO_PATH);
-    };
-    // Prepare a wide ambient crop before the UI stretches it across the hero.
-    // Stretching a square blurred cover into a banner creates visible horizontal
-    // bands; a centered 5:1 crop keeps the colour field natural and restrained.
-    let softened = dynamic.thumbnail(1200, 1200).fast_blur(12.0);
-    let source_width = softened.width();
-    let source_height = softened.height();
-    let (crop_width, crop_height) = if source_width >= source_height.saturating_mul(5) {
-        (source_height.saturating_mul(5), source_height)
-    } else {
-        (source_width, (source_width / 5).max(1))
-    };
-    let cropped = softened.crop_imm(
-        (source_width - crop_width) / 2,
-        (source_height - crop_height) / 2,
-        crop_width,
-        crop_height,
-    );
-    let mut ambient = Image::from_dynamic(cropped, true, RenderAssetUsages::default());
-    ambient.sampler = ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor::linear());
-    let handle = images.add(ambient);
-    local_images
-        .ambient_covers
-        .insert(path.clone(), handle.clone());
-    handle
-}
-
 fn spawn_folders(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -8342,7 +8784,7 @@ fn spawn_folder_entry(
             });
         })
         .observe(
-            move |mut event: On<Pointer<Press>>,
+            move |mut event: On<Pointer<Click>>,
                   mut session: ResMut<StudioSession>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
@@ -11479,15 +11921,9 @@ fn separator_preset(config: &AppConfig) -> &'static str {
         {
             "quality"
         }
-        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 25 => {
-            "balanced"
-        }
-        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 15 => {
-            "memory"
-        }
-        "demucs" if config.demucs_shifts() == 2 && config.demucs_overlap_pct() == 50 => {
-            "quality"
-        }
+        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 25 => "balanced",
+        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 15 => "memory",
+        "demucs" if config.demucs_shifts() == 2 && config.demucs_overlap_pct() == 50 => "quality",
         "openvino_demucs" => "balanced",
         _ => "custom",
     }
@@ -11967,6 +12403,29 @@ fn spawn_wrapped_text(
         ui_text_font(font, size),
         TextColor(color),
         TextLayout::default(),
+    ));
+}
+
+fn spawn_bounded_wrapped_text(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    text: impl Into<String>,
+    size: f32,
+    color: Color,
+) {
+    parent.spawn((
+        Node {
+            width: percent(100),
+            min_width: px(0),
+            ..default()
+        },
+        Text::new(text),
+        ui_text_font(font, size),
+        TextColor(color),
+        TextLayout {
+            linebreak: bevy::text::LineBreak::WordOrCharacter,
+            ..default()
+        },
     ));
 }
 
@@ -12748,7 +13207,7 @@ fn spawn_library(
             library
                 .spawn((
                     LibrarySongList,
-                    ScrollPosition::default(),
+                    ScrollPosition(Vec2::new(0.0, session.library_scroll_offset)),
                     Node {
                         min_height: px(0),
                         flex_grow: 1.0,
@@ -13147,11 +13606,11 @@ fn spawn_library_song_row(
             });
         })
         .observe(
-            move |mut event: On<Pointer<Press>>,
+            move |mut event: On<Pointer<Click>>,
                   mut session: ResMut<StudioSession>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                open_song_from_pointer(&event, &context_song, &mut session, &mut invalidated);
+                open_song_from_click(&event, &context_song, &mut session, &mut invalidated);
             },
         );
 }
@@ -13219,17 +13678,17 @@ fn spawn_library_song_card(
             }
         })
         .observe(
-            move |mut event: On<Pointer<Press>>,
+            move |mut event: On<Pointer<Click>>,
                   mut session: ResMut<StudioSession>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                open_song_from_pointer(&event, &context_song, &mut session, &mut invalidated);
+                open_song_from_click(&event, &context_song, &mut session, &mut invalidated);
             },
         );
 }
 
-fn open_song_from_pointer(
-    event: &Pointer<Press>,
+fn open_song_from_click(
+    event: &Pointer<Click>,
     song: &Song,
     session: &mut StudioSession,
     invalidated: &mut UiInvalidated,
@@ -13422,6 +13881,227 @@ fn handle_window_close_requests(
     }
 }
 
+const NAVIGATION_INITIAL_REPEAT: Duration = Duration::from_millis(400);
+const NAVIGATION_REPEAT_RATE: Duration = Duration::from_millis(80);
+const NAVIGATION_STICK_DEADZONE: f32 = 0.5;
+
+fn register_navigation_targets(
+    mut commands: Commands,
+    targets: Query<(Entity, &UiAction), (Added<UiAction>, With<Button>)>,
+) {
+    for (entity, action) in &targets {
+        if !action_is_navigation_target(action) {
+            continue;
+        }
+        commands
+            .entity(entity)
+            .try_insert((TabIndex(0), Outline::new(px(1), px(1), Color::NONE)));
+    }
+}
+
+fn action_is_navigation_target(action: &UiAction) -> bool {
+    !matches!(
+        action,
+        UiAction::CloseActivity | UiAction::DismissFolderContext | UiAction::DismissSongContext
+    )
+}
+
+fn navigation_repeat(
+    state: &mut NavigationInputState,
+    direction: Option<NavigationDirection>,
+    now: Instant,
+) -> Option<NavigationDirection> {
+    let Some(direction) = direction else {
+        state.held_direction = None;
+        state.repeat_at = None;
+        return None;
+    };
+    if state.held_direction != Some(direction) {
+        state.held_direction = Some(direction);
+        state.repeat_at = Some(now + NAVIGATION_INITIAL_REPEAT);
+        return Some(direction);
+    }
+    if state.repeat_at.is_some_and(|repeat_at| now >= repeat_at) {
+        state.repeat_at = Some(now + NAVIGATION_REPEAT_RATE);
+        return Some(direction);
+    }
+    None
+}
+
+fn navigation_back_action(session: &StudioSession) -> Option<UiAction> {
+    if session.pending_leave.is_some() {
+        return Some(UiAction::CancelLeave);
+    }
+    if session.pending_setup.is_some() {
+        return Some(UiAction::CancelSetup);
+    }
+    if session.pending_cache_clear.is_some() {
+        return Some(UiAction::CancelClearCache);
+    }
+    if session.pending_cache_delete.is_some() {
+        return Some(UiAction::CancelDeleteSongCache);
+    }
+    if session.pending_analysis_history_clear {
+        return Some(UiAction::CancelClearAnalysisHistory);
+    }
+    if session.lyrics_editor.is_some() {
+        return Some(UiAction::CloseLyricsEditor);
+    }
+    if session.language_editor.is_some() {
+        return Some(UiAction::CloseLanguageEditor);
+    }
+    if session.about_open {
+        return Some(UiAction::CloseAbout);
+    }
+    if session.activity_open {
+        return Some(UiAction::CloseActivity);
+    }
+    if session.search_open {
+        return Some(UiAction::ToggleGlobalSearch);
+    }
+    if session.song_context.is_some() {
+        return Some(UiAction::DismissSongContext);
+    }
+    if session.folder_browser.context_menu.is_some() {
+        return Some(UiAction::DismissFolderContext);
+    }
+    if let Some(kind) = session.open_settings_select {
+        return Some(UiAction::OpenSettingsSelect(kind));
+    }
+    if let Some(kind) = session.open_library_select {
+        return Some(UiAction::OpenLibrarySelect(kind));
+    }
+    if session.export_all_open {
+        return Some(UiAction::ToggleExportAllMenu);
+    }
+    if let Some(kind) = session.open_editor_select {
+        return Some(UiAction::OpenEditorSelect(kind));
+    }
+    if session.library_playback.queue_open {
+        return Some(UiAction::ToggleLibraryQueue);
+    }
+    if session
+        .editor
+        .as_ref()
+        .is_some_and(|editor| editor.inspector_open)
+    {
+        return Some(UiAction::ToggleInspector);
+    }
+    (session.route != StudioRoute::Library).then_some(UiAction::Back)
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn handle_accessible_navigation(
+    keys: Res<ButtonInput<KeyCode>>,
+    gamepads: Query<&Gamepad>,
+    navigation: TabNavigation,
+    mut state: ResMut<NavigationInputState>,
+    mut focus: ResMut<InputFocus>,
+    mut focus_visible: ResMut<InputFocusVisible>,
+    session: Res<StudioSession>,
+    editable: Query<(), With<EditableText>>,
+    mut targets: Query<(Entity, &UiAction, &mut Interaction), With<Button>>,
+) {
+    if let Some(entity) = state.activated.take()
+        && let Ok((_, _, mut interaction)) = targets.get_mut(entity)
+        && *interaction == Interaction::Pressed
+    {
+        *interaction = Interaction::None;
+    }
+
+    let focused = focus.get();
+    let editing = focused.is_some_and(|entity| editable.contains(entity));
+    let focused_action = focused.is_some_and(|entity| targets.contains(entity));
+
+    let gamepad_back = gamepads.iter().any(|gamepad| {
+        gamepad.just_pressed(GamepadButton::East) || gamepad.just_pressed(GamepadButton::Start)
+    });
+    if gamepad_back
+        && let Some(back_action) = navigation_back_action(&session)
+        && let Some((entity, _, mut interaction)) = targets
+            .iter_mut()
+            .find(|(_, action, _)| **action == back_action)
+    {
+        *interaction = Interaction::Pressed;
+        state.activated = Some(entity);
+        return;
+    }
+
+    let keyboard_direction = if !editing && (session.route != StudioRoute::Editor || focused_action)
+    {
+        if keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::ArrowLeft) {
+            Some(NavigationDirection::Previous)
+        } else if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::ArrowRight) {
+            Some(NavigationDirection::Next)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let gamepad_direction = gamepads.iter().find_map(|gamepad| {
+        let dpad = gamepad.dpad();
+        let stick = gamepad.left_stick();
+        let direction = if dpad.length_squared() > 0.0 {
+            dpad
+        } else {
+            stick
+        };
+        if direction.length_squared() < NAVIGATION_STICK_DEADZONE.powi(2) {
+            None
+        } else if direction.y.abs() >= direction.x.abs() {
+            Some(if direction.y > 0.0 {
+                NavigationDirection::Previous
+            } else {
+                NavigationDirection::Next
+            })
+        } else {
+            Some(if direction.x < 0.0 {
+                NavigationDirection::Previous
+            } else {
+                NavigationDirection::Next
+            })
+        }
+    });
+    if let Some(direction) = navigation_repeat(
+        &mut state,
+        keyboard_direction.or(gamepad_direction),
+        Instant::now(),
+    ) {
+        let action = match direction {
+            NavigationDirection::Previous => NavAction::Previous,
+            NavigationDirection::Next => NavAction::Next,
+        };
+        let next =
+            navigation.navigate(&focus, action).or_else(|error| {
+                match error {
+            bevy::input_focus::tab_navigation::TabNavigationError::NoTabGroupForCurrentFocus {
+                new_focus,
+                ..
+            } => Ok(new_focus),
+            other => Err(other),
+        }
+            });
+        if let Ok(next) = next {
+            focus.set(next, FocusCause::Navigated);
+            focus_visible.0 = true;
+        }
+    }
+
+    let gamepad_confirm = gamepads
+        .iter()
+        .any(|gamepad| gamepad.just_pressed(GamepadButton::South));
+    let keyboard_confirm = keys.just_pressed(KeyCode::Enter)
+        || (session.route != StudioRoute::Editor && keys.just_pressed(KeyCode::Space));
+    if (gamepad_confirm || keyboard_confirm)
+        && let Some(entity) = focus.get()
+        && let Ok((_, _, mut interaction)) = targets.get_mut(entity)
+    {
+        *interaction = Interaction::Pressed;
+        state.activated = Some(entity);
+    }
+}
+
 // Keeping these as separate Bevy system parameters preserves change detection.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_actions(
@@ -13501,7 +14181,8 @@ fn handle_actions(
                         session.notice = Some("Analysis history deleted.".into());
                     }
                     Err(error) => {
-                        session.notice = Some(format!("Could not delete analysis history: {error}"));
+                        session.notice =
+                            Some(format!("Could not delete analysis history: {error}"));
                     }
                 }
                 invalidated.0 = true;
@@ -13581,6 +14262,7 @@ fn handle_actions(
                 }
             }
             UiAction::SetLibraryView(view) => {
+                let view_changed = session.library_view != *view;
                 session.library_view = *view;
                 session.library_status = None;
                 session.library_search = None;
@@ -13591,6 +14273,10 @@ fn handle_actions(
                 session.about_open = false;
                 session.search_open = false;
                 session.notice = None;
+                if view_changed {
+                    session.library_scroll_offset = 0.0;
+                    session.analysis_graph_scroll_offset = 0.0;
+                }
                 session.refresh_library();
                 invalidated.0 = true;
             }
@@ -14032,8 +14718,8 @@ fn handle_actions(
             }
             UiAction::AdjustSeparatorOverlap(delta) => {
                 session.config.separator_overlap = Some(
-                    (i64::from(session.config.separator_overlap()) + i64::from(*delta))
-                        .clamp(2, 32) as u32,
+                    (i64::from(session.config.separator_overlap()) + i64::from(*delta)).clamp(2, 32)
+                        as u32,
                 );
                 session.notice = save_config_error(&session.config);
                 invalidated.0 = true;
@@ -14056,8 +14742,8 @@ fn handle_actions(
             }
             UiAction::AdjustDemucsShifts(delta) => {
                 session.config.demucs_shifts = Some(
-                    (i64::from(session.config.demucs_shifts()) + i64::from(*delta))
-                        .clamp(1, 8) as u32,
+                    (i64::from(session.config.demucs_shifts()) + i64::from(*delta)).clamp(1, 8)
+                        as u32,
                 );
                 session.notice = save_config_error(&session.config);
                 invalidated.0 = true;
@@ -15296,9 +15982,27 @@ fn update_button_visuals(
         if !has_recorded_background {
             commands
                 .entity(entity)
-                .insert(RestingButtonBackground(resting));
+                .try_insert(RestingButtonBackground(resting));
         }
         background.0 = button_background(action, *interaction, resting, &theme);
+    }
+}
+
+fn update_navigation_focus_visuals(
+    focus: Res<InputFocus>,
+    focus_visible: Res<InputFocusVisible>,
+    theme: Res<StudioTheme>,
+    mut buttons: Query<(Entity, &mut Outline), With<UiAction>>,
+) {
+    if !focus.is_changed() && !focus_visible.is_changed() && !theme.is_changed() {
+        return;
+    }
+    for (entity, mut outline) in &mut buttons {
+        outline.color = if focus_visible.0 && focus.get() == Some(entity) {
+            theme.primary.with_alpha(0.58)
+        } else {
+            Color::NONE
+        };
     }
 }
 
@@ -15360,9 +16064,7 @@ fn sync_numeric_settings(
             NumericSetting::SeparatorSegmentSize => session.config.separator_segment_size(),
             NumericSetting::SeparatorOverlap => session.config.separator_overlap(),
             NumericSetting::SeparatorBatchSize => session.config.separator_batch_size(),
-            NumericSetting::SeparatorNormalization => {
-                session.config.separator_normalization_pct()
-            }
+            NumericSetting::SeparatorNormalization => session.config.separator_normalization_pct(),
             NumericSetting::DemucsShifts => session.config.demucs_shifts(),
             NumericSetting::DemucsOverlap => session.config.demucs_overlap_pct(),
         };
@@ -16307,6 +17009,7 @@ fn handle_editor_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     focus: Res<InputFocus>,
     editable: Query<(), With<EditableText>>,
+    actions: Query<(), With<UiAction>>,
     audio: Res<NativeAudio>,
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
@@ -16315,6 +17018,16 @@ fn handle_editor_keyboard(
         return;
     }
     if focus.get().is_some_and(|entity| editable.contains(entity)) {
+        return;
+    }
+    if focus.get().is_some_and(|entity| actions.contains(entity))
+        && (keys.just_pressed(KeyCode::Tab)
+            || keys.just_pressed(KeyCode::Enter)
+            || keys.just_pressed(KeyCode::ArrowLeft)
+            || keys.just_pressed(KeyCode::ArrowRight)
+            || keys.just_pressed(KeyCode::ArrowUp)
+            || keys.just_pressed(KeyCode::ArrowDown))
+    {
         return;
     }
     let control = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
@@ -16755,6 +17468,7 @@ fn handle_editor_pointer_capture(
     let focus_lost = focus_events.read().any(|event| !event.focused);
     if session.route != StudioRoute::Editor || focus_lost || !mouse.pressed(MouseButton::Left) {
         let finished = capture.drag.take();
+        capture.alignment_guide = None;
         let had_finished = finished.is_some();
         if mouse.just_released(MouseButton::Left)
             && let Some(EditorDrag::Pan { pointer_start, .. }) = finished
@@ -17049,6 +17763,7 @@ fn handle_editor_pointer_capture(
             | EditorDrag::Pan { pointer_start, .. }
             | EditorDrag::Marquee { pointer_start, .. } => pointer_start,
         };
+    capture.alignment_guide = None;
 
     match drag {
         EditorDrag::Note {
@@ -17123,7 +17838,25 @@ fn handle_editor_pointer_capture(
                 .map(|word| word.start)
                 .reduce(f64::min)
                 .unwrap_or(0.0);
-            let time_delta = raw_time_delta.max(-earliest);
+            let proposed_delta = raw_time_delta.max(-earliest);
+            let snap_tolerance = (f64::from(EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX / size.x)
+                * viewport_duration)
+                .min(EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS);
+            let snap = (!keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]))
+                .then(|| {
+                    snap_lyric_move_to_notes(
+                        &originals,
+                        proposed_delta,
+                        &chart_notes(&editor.chart),
+                        snap_tolerance,
+                    )
+                })
+                .flatten();
+            let time_delta = snap
+                .map(|snap| snap.delta)
+                .unwrap_or(proposed_delta)
+                .max(-earliest);
+            capture.alignment_guide = snap.map(|snap| snap.target);
             let moved = originals
                 .iter()
                 .filter(|word| {
@@ -17151,16 +17884,30 @@ fn handle_editor_pointer_capture(
             ..
         } => {
             let time_delta = f64::from(delta.x / size.x) * viewport_duration;
-            let (start, end) = match edge {
-                NoteEdge::Start => (
-                    (original_start + time_delta).clamp(0.0, original_end - 0.01),
-                    original_end,
-                ),
-                NoteEdge::End => (
-                    original_start,
-                    (original_end + time_delta).max(original_start + 0.01),
-                ),
+            let snap_tolerance = (f64::from(EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX / size.x)
+                * viewport_duration)
+                .min(EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS);
+            let note_boundaries = chart_notes(&editor.chart);
+            let allow_snap = !keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+            let (start, end, guide) = match edge {
+                NoteEdge::Start => {
+                    let proposed = (original_start + time_delta).clamp(0.0, original_end - 0.01);
+                    let snapped = allow_snap
+                        .then(|| nearest_note_boundary(proposed, &note_boundaries, snap_tolerance))
+                        .flatten()
+                        .filter(|target| *target <= original_end - 0.01);
+                    (snapped.unwrap_or(proposed), original_end, snapped)
+                }
+                NoteEdge::End => {
+                    let proposed = (original_end + time_delta).max(original_start + 0.01);
+                    let snapped = allow_snap
+                        .then(|| nearest_note_boundary(proposed, &note_boundaries, snap_tolerance))
+                        .flatten()
+                        .filter(|target| *target >= original_start + 0.01);
+                    (original_start, snapped.unwrap_or(proposed), snapped)
+                }
             };
+            capture.alignment_guide = guide;
             if set_editor_word_timing(&mut editor.chart.transcript, selection, start, end) {
                 editor.dirty = true;
             } else {
@@ -17225,6 +17972,59 @@ fn handle_editor_pointer_capture(
 fn surface_pitch_fraction(surface_fraction: f32) -> f32 {
     ((surface_fraction * 100.0 - EDITOR_PITCH_TOP_PERCENT) / EDITOR_PITCH_HEIGHT_PERCENT)
         .clamp(0.0, 1.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EditorTimeSnap {
+    delta: f64,
+    target: f64,
+}
+
+fn snap_lyric_move_to_notes(
+    originals: &[EditorWordOriginal],
+    proposed_delta: f64,
+    notes: &[ChartNoteView],
+    tolerance: f64,
+) -> Option<EditorTimeSnap> {
+    let earliest = originals.iter().map(|word| word.start).reduce(f64::min)?;
+    let mut closest: Option<(f64, EditorTimeSnap)> = None;
+    for moving_edge in originals.iter().flat_map(|word| [word.start, word.end]) {
+        let proposed_edge = moving_edge + proposed_delta;
+        let Some(target) = nearest_note_boundary(proposed_edge, notes, tolerance) else {
+            continue;
+        };
+        let correction = target - proposed_edge;
+        let snapped_delta = proposed_delta + correction;
+        if snapped_delta < -earliest {
+            continue;
+        }
+        let distance = correction.abs();
+        if closest
+            .as_ref()
+            .is_none_or(|(closest_distance, _)| distance < *closest_distance)
+        {
+            closest = Some((
+                distance,
+                EditorTimeSnap {
+                    delta: snapped_delta,
+                    target,
+                },
+            ));
+        }
+    }
+    closest.map(|(_, snap)| snap)
+}
+
+fn nearest_note_boundary(time: f64, notes: &[ChartNoteView], tolerance: f64) -> Option<f64> {
+    notes
+        .iter()
+        .flat_map(|note| [note.start, note.end])
+        .filter_map(|boundary| {
+            let distance = (boundary - time).abs();
+            (distance <= tolerance).then_some((distance, boundary))
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .map(|(_, boundary)| boundary)
 }
 
 fn move_chart_note(
@@ -18509,8 +19309,17 @@ fn shift_all_chart_timings(chart: &mut app_core::ChartDocument, seconds: f64) {
 
 fn update_editor_geometry(
     session: Res<StudioSession>,
+    capture: Res<EditorPointerCapture>,
     mut note_nodes: Query<(&EditorNoteNode, &mut Node)>,
     mut lyric_nodes: Query<(&EditorLyricNode, &mut Node), Without<EditorNoteNode>>,
+    mut alignment_guides: Query<
+        &mut Node,
+        (
+            With<EditorAlignmentGuide>,
+            Without<EditorNoteNode>,
+            Without<EditorLyricNode>,
+        ),
+    >,
 ) {
     let Some(editor) = session.editor.as_ref() else {
         return;
@@ -18546,6 +19355,17 @@ fn update_editor_geometry(
         node.display = Display::Flex;
         node.left = percent(left);
         node.width = percent((right - left).max(1.8));
+    }
+    for mut node in &mut alignment_guides {
+        if let Some(time) = capture.alignment_guide
+            && time >= editor.viewport_start
+            && time <= editor.viewport_end()
+        {
+            node.display = Display::Flex;
+            node.left = percent(time_percent(time, editor));
+        } else {
+            node.display = Display::None;
+        }
     }
 }
 
@@ -18609,12 +19429,92 @@ fn handle_settings_scroll(
     session.settings_scroll_offsets[tab_index] = position.y;
 }
 
-fn handle_library_scroll(
+fn handle_analysis_graph_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
-    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<LibrarySongList>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut session: ResMut<StudioSession>,
+    mut viewports: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        With<AnalysisGraphViewport>,
+    >,
 ) {
     if session.route != StudioRoute::Library {
+        wheel.clear();
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        wheel.clear();
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        wheel.clear();
+        return;
+    };
+    let Ok((computed, transform, mut position)) = viewports.single_mut() else {
+        wheel.clear();
+        return;
+    };
+    if !ui_node_contains_pointer(computed, transform, pointer) {
+        wheel.clear();
+        return;
+    }
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let delta = wheel
+        .read()
+        .map(|event| {
+            let scale = match event.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => 34.0,
+                bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+            };
+            if event.x.abs() > f32::EPSILON {
+                -event.x * scale
+            } else if shift {
+                -event.y * scale
+            } else {
+                0.0
+            }
+        })
+        .sum::<f32>();
+    if delta.abs() <= f32::EPSILON {
+        return;
+    }
+    let size = computed.size() * computed.inverse_scale_factor();
+    let content = computed.content_size() * computed.inverse_scale_factor();
+    position.x = (position.x + delta).clamp(0.0, (content.x - size.x).max(0.0));
+    session.analysis_graph_scroll_offset = position.x;
+}
+
+fn ui_node_contains_pointer(
+    computed: &ComputedNode,
+    transform: &UiGlobalTransform,
+    pointer: Vec2,
+) -> bool {
+    let size = computed.size() * computed.inverse_scale_factor();
+    let local = transform.affine().inverse().transform_point2(pointer);
+    local.x.abs() <= size.x / 2.0 && local.y.abs() <= size.y / 2.0
+}
+
+fn handle_library_scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut session: ResMut<StudioSession>,
+    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<LibrarySongList>>,
+    graphs: Query<(&ComputedNode, &UiGlobalTransform), With<AnalysisGraphViewport>>,
+) {
+    if session.route != StudioRoute::Library {
+        wheel.clear();
+        return;
+    }
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if shift
+        && let Ok(window) = windows.single()
+        && let Some(pointer) = window.cursor_position()
+        && graphs
+            .iter()
+            .any(|(computed, transform)| ui_node_contains_pointer(computed, transform, pointer))
+    {
         wheel.clear();
         return;
     }
@@ -18635,6 +19535,7 @@ fn handle_library_scroll(
     let size = computed.size() * computed.inverse_scale_factor();
     let content = computed.content_size() * computed.inverse_scale_factor();
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+    session.library_scroll_offset = position.y;
 }
 
 fn handle_song_detail_scroll(
@@ -19079,6 +19980,50 @@ mod tests {
     }
 
     #[test]
+    fn navigation_repeat_matches_the_restored_controller_cadence() {
+        let started = Instant::now();
+        let mut state = NavigationInputState::default();
+        assert_eq!(
+            navigation_repeat(&mut state, Some(NavigationDirection::Next), started),
+            Some(NavigationDirection::Next)
+        );
+        assert_eq!(
+            navigation_repeat(
+                &mut state,
+                Some(NavigationDirection::Next),
+                started + NAVIGATION_INITIAL_REPEAT - Duration::from_millis(1),
+            ),
+            None
+        );
+        assert_eq!(
+            navigation_repeat(
+                &mut state,
+                Some(NavigationDirection::Next),
+                started + NAVIGATION_INITIAL_REPEAT,
+            ),
+            Some(NavigationDirection::Next)
+        );
+        assert_eq!(
+            navigation_repeat(
+                &mut state,
+                Some(NavigationDirection::Previous),
+                started + NAVIGATION_INITIAL_REPEAT,
+            ),
+            Some(NavigationDirection::Previous)
+        );
+        assert_eq!(navigation_repeat(&mut state, None, started), None);
+        assert_eq!(state.held_direction, None);
+        assert_eq!(state.repeat_at, None);
+    }
+
+    #[test]
+    fn navigation_skips_invisible_dismiss_backdrops() {
+        assert!(!action_is_navigation_target(&UiAction::CloseActivity));
+        assert!(!action_is_navigation_target(&UiAction::DismissSongContext));
+        assert!(action_is_navigation_target(&UiAction::OpenAbout));
+    }
+
+    #[test]
     fn button_feedback_preserves_authored_surfaces_and_activity_backdrop() {
         let theme = StudioTheme::new(false);
         let resting = theme.card.with_alpha(0.46);
@@ -19178,6 +20123,54 @@ mod tests {
         assert_eq!(pitch_notes["notes"][0]["kind"], "golden");
         assert_eq!(pitch_notes["notes"][1]["start"], 2.0);
         assert!(!move_chart_note(&mut pitch_notes, 9, 0.0, 1.0, 60.0));
+    }
+
+    #[test]
+    fn lyric_drag_snaps_its_closest_edge_to_a_note_boundary() {
+        let words = vec![EditorWordOriginal {
+            selection: WordSelection {
+                segment: 0,
+                word: 0,
+            },
+            start: 1.0,
+            end: 1.4,
+        }];
+        let notes = vec![ChartNoteView {
+            index: 0,
+            start: 1.3,
+            end: 1.8,
+            midi: 60.0,
+            confidence: 1.0,
+            kind: "normal".to_string(),
+        }];
+
+        let snap = snap_lyric_move_to_notes(&words, 0.27, &notes, 0.05).unwrap();
+        assert!((snap.delta - 0.3).abs() < f64::EPSILON);
+        assert!((snap.target - 1.3).abs() < f64::EPSILON);
+        assert!(snap_lyric_move_to_notes(&words, 0.2, &notes, 0.05).is_none());
+    }
+
+    #[test]
+    fn lyric_note_snap_never_moves_a_group_before_zero() {
+        let words = vec![EditorWordOriginal {
+            selection: WordSelection {
+                segment: 0,
+                word: 0,
+            },
+            start: 0.1,
+            end: 0.4,
+        }];
+        let notes = vec![ChartNoteView {
+            index: 0,
+            start: 0.0,
+            end: 0.2,
+            midi: 60.0,
+            confidence: 1.0,
+            kind: "normal".to_string(),
+        }];
+
+        let snap = snap_lyric_move_to_notes(&words, -0.05, &notes, 0.2).unwrap();
+        assert!(snap.delta >= -0.1);
     }
 
     #[test]
