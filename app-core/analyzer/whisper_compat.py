@@ -17,7 +17,7 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 
-def _default_progress_sink(pct: int, msg: str):
+def _default_progress_sink(pct: int, msg: str, metadata=None):
     print(f"[uta-studio:PROGRESS:{pct}] {msg}", flush=True)
 
 
@@ -29,8 +29,8 @@ def set_progress_sink(fn):
     _progress_sink = fn or _default_progress_sink
 
 
-def progress(pct: int, msg: str):
-    _progress_sink(pct, msg)
+def progress(pct: int, msg: str, **metadata):
+    _progress_sink(pct, msg, metadata)
 
 
 _align_backend = "whisperx"
@@ -144,6 +144,14 @@ def _run_align(raw_segments, audio, language, device, model_name=None):
                     f"falling back to whisperx.align",
                     flush=True,
                 )
+                progress(
+                    81,
+                    "CTC alignment failed; continuing with WhisperX...",
+                    implementation="WhisperX",
+                    model=model_name or "WhisperX alignment model",
+                    backend_fallback_from="torchaudio CTC",
+                    backend_fallback_reason=str(e),
+                )
 
         return whisperx.align(raw_segments, align_model, metadata, audio, device)
 
@@ -178,4 +186,12 @@ def align_with_fallback(raw_segments, audio, language, device, pre_align_cleanup
             log_vram("oom:align_attempt2")
 
     print("[uta-studio:LOG] Alignment OOM, falling back to CPU", flush=True)
+    progress(
+        81,
+        "Alignment accelerator exhausted memory; continuing on CPU...",
+        requested_device=device,
+        actual_device="cpu",
+        fallback_from=device,
+        fallback_reason="The alignment model exhausted accelerator memory after retry",
+    )
     return _run_align(raw_segments, audio, language, "cpu", model_name=model_name)

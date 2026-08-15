@@ -205,6 +205,15 @@ def qwen_align_with_cpu_fallback(raw_segments, audio, language: str, pre_align_c
     device = detect_device()
     # transformers' Qwen ASR path is not reliably XPU-capable yet.
     if device == "xpu":
+        from whisper_compat import progress
+        progress(
+            80,
+            "Qwen alignment is not XPU-capable; continuing on CPU...",
+            requested_device="xpu",
+            actual_device="cpu",
+            fallback_from="xpu",
+            fallback_reason="Qwen3 ForcedAligner does not provide a reliable XPU backend",
+        )
         device = "cpu"
     try:
         return qwen_align(raw_segments, audio, language, device)
@@ -216,6 +225,15 @@ def qwen_align_with_cpu_fallback(raw_segments, audio, language: str, pre_align_c
         print(
             f"[uta-studio:LOG] Qwen alignment OOM on {device}, retrying on CPU",
             flush=True,
+        )
+        from whisper_compat import progress
+        progress(
+            81,
+            "Qwen alignment exhausted accelerator memory; retrying on CPU...",
+            requested_device=device,
+            actual_device="cpu",
+            fallback_from=device,
+            fallback_reason="Qwen3 ForcedAligner exhausted accelerator memory",
         )
         if pre_align_cleanup:
             try:

@@ -192,6 +192,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Load named analysis tasks"
     ),
     capability!(
+        "analysis",
+        "load_analysis_history",
+        "read",
+        true,
+        "Load completed and failed analysis sessions"
+    ),
+    capability!(
+        "analysis",
+        "clear_analysis_history",
+        "destructive",
+        false,
+        "Delete saved analysis session history without touching songs or generated assets"
+    ),
+    capability!(
         "library",
         "load_library_menu_items",
         "read",

@@ -130,6 +130,7 @@ impl SettingsTab {
 enum SettingsSelectKind {
     ComputeBackend,
     Separator,
+    SeparatorPreset,
     AsrEngine,
     WhisperModel,
     AlignBackend,
@@ -138,6 +139,7 @@ enum SettingsSelectKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AnalysisAdvancedSection {
+    Separation,
     Transcription,
     Pitch,
 }
@@ -251,6 +253,10 @@ struct StudioSession {
     export_all_open: bool,
     open_editor_select: Option<EditorDockSelectKind>,
     analysis_tasks: Vec<app_core::AnalysisTask>,
+    analysis_history: Vec<app_core::AnalysisRunHistory>,
+    selected_analysis_history: Option<i64>,
+    selected_analysis_stage: Option<String>,
+    pending_analysis_history_clear: bool,
     request_cache_stats_refresh: bool,
     search_open: bool,
     activity_open: bool,
@@ -298,6 +304,10 @@ impl StudioSession {
             export_all_open: false,
             open_editor_select: None,
             analysis_tasks: app_core::load_analysis_tasks(),
+            analysis_history: app_core::load_analysis_history(100),
+            selected_analysis_history: None,
+            selected_analysis_stage: None,
+            pending_analysis_history_clear: false,
             request_cache_stats_refresh: false,
             search_open: false,
             activity_open: false,
@@ -404,6 +414,55 @@ struct NativeLanguageEditor {
     file_hash: String,
     initial_language: String,
     force_transcribe: bool,
+    picker_open: bool,
+}
+
+const ANALYSIS_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
+    ("auto", "Automatic detection"),
+    ("ja", "Japanese"),
+    ("en", "English"),
+    ("zh", "Chinese"),
+    ("ko", "Korean"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("id", "Indonesian"),
+    ("vi", "Vietnamese"),
+    ("th", "Thai"),
+    ("tr", "Turkish"),
+    ("pl", "Polish"),
+    ("uk", "Ukrainian"),
+    ("nl", "Dutch"),
+    ("sv", "Swedish"),
+    ("ar", "Arabic"),
+    ("hi", "Hindi"),
+];
+
+fn canonical_analysis_language(language: &str) -> String {
+    match language.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "jp" | "jpn" => "ja".into(),
+        "eng" => "en".into(),
+        "kor" => "ko".into(),
+        "chi" | "zho" | "cn" | "zh-cn" | "zh-tw" => "zh".into(),
+        language
+            if ANALYSIS_LANGUAGE_OPTIONS
+                .iter()
+                .any(|(code, _)| *code == language) =>
+        {
+            language.to_string()
+        }
+        _ => "auto".into(),
+    }
+}
+
+fn analysis_language_label(language: &str) -> &'static str {
+    ANALYSIS_LANGUAGE_OPTIONS
+        .iter()
+        .find_map(|(code, label)| (*code == language).then_some(*label))
+        .unwrap_or("Automatic detection")
 }
 
 #[derive(Default)]
@@ -868,6 +927,12 @@ struct SettingsContent;
 
 #[derive(Component, Clone, Copy)]
 enum NumericSetting {
+    SeparatorSegmentSize,
+    SeparatorOverlap,
+    SeparatorBatchSize,
+    SeparatorNormalization,
+    DemucsShifts,
+    DemucsOverlap,
     BeamSize,
     BatchSize,
     VocalThreshold,
@@ -982,6 +1047,11 @@ enum UiAction {
     Settings,
     ToggleActivity,
     CloseActivity,
+    SelectAnalysisHistory(Option<i64>),
+    SelectAnalysisStage(String),
+    RequestClearAnalysisHistory,
+    CancelClearAnalysisHistory,
+    ConfirmClearAnalysisHistory,
     OpenAbout,
     CloseAbout,
     SettingsTab(SettingsTab),
@@ -1010,6 +1080,12 @@ enum UiAction {
     ConfirmRemoveFolder,
     AdjustBeamSize(i8),
     AdjustBatchSize(i8),
+    AdjustSeparatorSegmentSize(i32),
+    AdjustSeparatorOverlap(i32),
+    AdjustSeparatorBatchSize(i32),
+    AdjustSeparatorNormalization(i32),
+    AdjustDemucsShifts(i32),
+    AdjustDemucsOverlap(i32),
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     AdjustVocalThreshold(i8),
@@ -1038,6 +1114,8 @@ enum UiAction {
     OpenLanguageEditor(String),
     CloseLanguageEditor,
     ToggleLanguageReprocess,
+    ToggleLanguagePicker,
+    SelectAnalysisLanguage(String),
     SaveLanguageEditor,
     RealignSong(String),
     ReanalyzeTranscript(String),
@@ -2974,6 +3052,22 @@ fn spawn_activity_center(
                                     },
                                 );
                             });
+                            if let Some(live) = task.live.as_ref() {
+                                spawn_text(
+                                    card,
+                                    font.clone(),
+                                    format!("{} · {}%", live.operation, live.stage_progress),
+                                    9.0,
+                                    theme.primary,
+                                );
+                                spawn_wrapped_text(
+                                    card,
+                                    font.clone(),
+                                    format!("{} · {}", live.implementation, live.detail),
+                                    8.0,
+                                    theme.muted_foreground,
+                                );
+                            }
                             if let Some(progress) = progress {
                                 card.spawn((
                                     Node {
@@ -3035,6 +3129,1111 @@ fn analysis_status_copy(status: &app_core::QueuedStatus) -> (String, Option<usiz
             true,
         ),
     }
+}
+
+fn analysis_stage_index(stage: &str) -> usize {
+    match stage {
+        "preparing" | "key_detection" => 0,
+        "separation" => 1,
+        "pitch" => 2,
+        "audio_preprocessing" => 3,
+        "transcription" => 4,
+        "alignment" => 5,
+        "finalizing" | "complete" => 6,
+        _ => 0,
+    }
+}
+
+fn analysis_stage_matches(route_stage: &str, selected_stage: &str) -> bool {
+    route_stage == selected_stage
+        || (selected_stage == "preparing" && route_stage == "key_detection")
+        || (selected_stage == "finalizing" && route_stage == "complete")
+}
+
+fn analysis_stage_details(stage: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+    match stage {
+        "preparing" => (
+            "Prepare",
+            "Validates the source, resolves analysis settings, and detects musical context before model execution.",
+            "Authorized source media and analysis profile",
+            "Validated audio, runtime plan, tempo and key context",
+        ),
+        "separation" => (
+            "Separate",
+            "Extracts a vocal-focused stem while preserving the original source unchanged.",
+            "Validated source audio",
+            "Lossless vocal and instrumental analysis stems",
+        ),
+        "pitch" => (
+            "Pitch",
+            "Tracks the sung fundamental frequency and converts the contour into editable note guidance.",
+            "Separated vocal stem",
+            "Pitch contour and note candidates",
+        ),
+        "audio_preprocessing" => (
+            "Preprocess",
+            "Normalizes the analysis signal and prepares model-specific audio windows without rewriting source media.",
+            "Vocal analysis stem",
+            "Model-ready audio windows and vocal regions",
+        ),
+        "transcription" => (
+            "Transcribe",
+            "Recognizes lyric text and produces the timing evidence supported by the selected speech model.",
+            "Preprocessed vocal regions and language preference",
+            "Recognized lyric tokens and provisional timestamps",
+        ),
+        "alignment" => (
+            "Align",
+            "Refines recognized or supplied lyrics against the audio into editor-ready character and word timing.",
+            "Lyrics, provisional timestamps, and vocal audio",
+            "Character and word-level aligned lyrics",
+        ),
+        "finalizing" => (
+            "Finalize",
+            "Validates and commits generated analysis assets before the song becomes available for authoring.",
+            "Aligned lyrics, pitch data, metadata, and stems",
+            "Cached chart analysis and library metadata",
+        ),
+        _ => (
+            "Analysis step",
+            "Executes one stage of the configured analysis pipeline.",
+            "Previous stage output",
+            "Next stage input",
+        ),
+    }
+}
+
+fn spawn_analysis_session_overview(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSession,
+    theme: &StudioTheme,
+) {
+    let active_task = session
+        .analysis_tasks
+        .iter()
+        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+        .or_else(|| {
+            session
+                .analysis_tasks
+                .iter()
+                .find(|task| matches!(task.status, app_core::QueuedStatus::Queued))
+        });
+    let history = session
+        .selected_analysis_history
+        .and_then(|id| session.analysis_history.iter().find(|history| history.id == id))
+        .or_else(|| active_task.is_none().then(|| session.analysis_history.first()).flatten());
+    let history_task = history.map(|history| app_core::AnalysisTask {
+        file_hash: history.file_hash.clone(),
+        title: history.title.clone(),
+        artist: history.artist.clone(),
+        status: app_core::QueuedStatus::Analyzing(if history.status == "completed" {
+            100
+        } else {
+            0
+        }),
+        live: Some(history.snapshot.clone()),
+    });
+    let Some(task) = history_task.as_ref().or(active_task) else {
+        return;
+    };
+    let viewing_history = history_task.is_some();
+
+    let progress = match &task.status {
+        app_core::QueuedStatus::Analyzing(progress) => (*progress).clamp(0, 100),
+        _ => 0,
+    };
+    let stage = task
+        .live
+        .as_ref()
+        .map(|live| live.stage.as_str())
+        .unwrap_or("preparing");
+    let stage_index = analysis_stage_index(stage);
+    let operation = task
+        .live
+        .as_ref()
+        .map(|live| live.operation.as_str())
+        .unwrap_or("Waiting for the analysis runtime");
+    let detail = task
+        .live
+        .as_ref()
+        .map(|live| live.detail.as_str())
+        .unwrap_or("The task is queued and will start when the current analysis completes.");
+    let selected_stage = session.selected_analysis_stage.as_deref().unwrap_or(stage);
+    let selected_stage_index = analysis_stage_index(selected_stage);
+    let selected_route = task.live.as_ref().and_then(|live| {
+        live.stage_routes
+            .iter()
+            .rev()
+            .find(|route| analysis_stage_matches(&route.stage, selected_stage))
+    });
+    let selected_is_current = analysis_stage_matches(stage, selected_stage);
+    let selected_progress = selected_route
+        .map(|route| route.stage_progress.clamp(0, 100))
+        .or_else(|| {
+            selected_is_current.then(|| {
+                task.live
+                    .as_ref()
+                    .map(|live| live.stage_progress.clamp(0, 100))
+                    .unwrap_or(0)
+            })
+        })
+        .unwrap_or_else(|| if selected_stage_index < stage_index { 100 } else { 0 });
+    let selected_trace_missing = selected_route.is_none() && selected_progress >= 100;
+    let selected_pending_copy = if selected_trace_missing {
+        "Not recorded in this analysis session"
+    } else {
+        "Pending"
+    };
+    let (selected_label, selected_purpose, selected_input, selected_output) =
+        analysis_stage_details(selected_stage);
+    let selected_status = if selected_progress >= 100 {
+        "COMPLETE"
+    } else if selected_is_current {
+        "RUNNING"
+    } else if selected_stage_index < stage_index {
+        "COMPLETE"
+    } else {
+        "WAITING"
+    };
+    let selected_operation = selected_route
+        .map(|route| route.operation.as_str())
+        .or_else(|| selected_is_current.then_some(operation))
+        .unwrap_or("This step has not started yet.");
+    let selected_implementation = selected_route
+        .map(|route| route.implementation.as_str())
+        .or_else(|| {
+            selected_is_current.then(|| {
+                task.live
+                    .as_ref()
+                    .map(|live| live.implementation.as_str())
+                    .unwrap_or("Pending")
+            })
+        })
+        .unwrap_or(selected_pending_copy);
+    let selected_model = selected_route
+        .map(|route| route.model.as_str())
+        .or_else(|| {
+            selected_is_current.then(|| {
+                task.live
+                    .as_ref()
+                    .map(|live| live.model.as_str())
+                    .unwrap_or("Pending")
+            })
+        })
+        .unwrap_or(selected_pending_copy);
+    let selected_requested_device = selected_route
+        .map(|route| route.requested_device.as_str())
+        .or_else(|| {
+            selected_is_current.then(|| {
+                task.live
+                    .as_ref()
+                    .map(|live| live.requested_device.as_str())
+                    .unwrap_or("Pending")
+            })
+        })
+        .unwrap_or(selected_pending_copy);
+    let selected_actual_device = selected_route
+        .map(|route| route.actual_device.as_str())
+        .or_else(|| {
+            selected_is_current.then(|| {
+                task.live
+                    .as_ref()
+                    .map(|live| live.device.as_str())
+                    .unwrap_or("Pending")
+            })
+        })
+        .unwrap_or(selected_pending_copy);
+    let selected_device_fallback = selected_route
+        .and_then(|route| route.fallback_from.as_deref().zip(route.fallback_reason.as_deref()));
+    let selected_backend_fallback = selected_route.and_then(|route| {
+        route
+            .backend_fallback_from
+            .as_deref()
+            .zip(route.backend_fallback_reason.as_deref())
+    });
+    let history_error = history.and_then(|history| history.error_message.as_deref());
+
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(px(30), px(26)),
+                row_gap: px(16),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.38)),
+            BorderColor::all(theme.border.with_alpha(0.58)),
+        ))
+        .with_children(|session_card| {
+            session_card
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::FlexStart,
+                    column_gap: px(20),
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(10),
+                    ..default()
+                })
+                .with_children(|header| {
+                    header
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(2),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                if viewing_history {
+                                    "ANALYSIS SESSION HISTORY"
+                                } else {
+                                    "LIVE ANALYSIS SESSION"
+                                },
+                                9.0,
+                                theme.primary,
+                            );
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                task.title.clone(),
+                                25.0,
+                                theme.foreground,
+                            );
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                task.artist.clone(),
+                                11.0,
+                                theme.muted_foreground,
+                            );
+                        });
+                    if viewing_history && active_task.is_some() {
+                        spawn_text_button(
+                            header,
+                            font.clone(),
+                            theme,
+                            "View live",
+                            9.0,
+                            UiAction::SelectAnalysisHistory(None),
+                        );
+                    }
+                    spawn_text(
+                        header,
+                        font.clone(),
+                        format!("{progress:02}%"),
+                        30.0,
+                        theme.foreground,
+                    );
+                });
+
+            session_card
+                .spawn(Node {
+                    width: percent(100),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4),
+                    ..default()
+                })
+                .with_children(|current| {
+                    spawn_text(
+                        current,
+                        font.clone(),
+                        "CURRENT OPERATION",
+                        8.0,
+                        theme.muted_foreground,
+                    );
+                    spawn_text(current, font.clone(), operation, 18.0, theme.foreground);
+                    spawn_wrapped_text(
+                        current,
+                        font.clone(),
+                        detail,
+                        10.0,
+                        theme.muted_foreground,
+                    );
+                    if let Some(live) = task.live.as_ref() {
+                        if let Some(fallback_from) = live.fallback_from.as_deref() {
+                            current.spawn(Node {
+                                width: percent(100),
+                                align_items: AlignItems::Center,
+                                column_gap: px(10),
+                                margin: UiRect::top(px(8)),
+                                ..default()
+                            })
+                            .with_children(|route| {
+                                spawn_text(
+                                    route,
+                                    font.clone(),
+                                    "EXECUTION FALLBACK",
+                                    8.0,
+                                    theme.editor_warning,
+                                );
+                                route
+                                    .spawn((
+                                        Node {
+                                            min_width: px(58),
+                                            padding: UiRect::axes(px(10), px(6)),
+                                            justify_content: JustifyContent::Center,
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(4)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.editor_warning.with_alpha(0.08)),
+                                        BorderColor::all(theme.editor_warning.with_alpha(0.48)),
+                                    ))
+                                    .with_children(|source| {
+                                        spawn_text(
+                                            source,
+                                            font.clone(),
+                                            fallback_from.to_ascii_uppercase(),
+                                            9.0,
+                                            theme.editor_warning,
+                                        );
+                                    });
+                                route.spawn((
+                                    Node {
+                                        width: px(34),
+                                        height: px(2),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.editor_warning.with_alpha(0.68)),
+                                ));
+                                spawn_text(
+                                    route,
+                                    font.clone(),
+                                    ">",
+                                    10.0,
+                                    theme.editor_warning,
+                                );
+                                route
+                                    .spawn((
+                                        Node {
+                                            min_width: px(58),
+                                            padding: UiRect::axes(px(10), px(6)),
+                                            justify_content: JustifyContent::Center,
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(4)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.pitch_contour.with_alpha(0.09)),
+                                        BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
+                                    ))
+                                    .with_children(|destination| {
+                                        spawn_text(
+                                            destination,
+                                            font.clone(),
+                                            live.device.to_ascii_uppercase(),
+                                            9.0,
+                                            theme.pitch_contour,
+                                        );
+                                    });
+                                if let Some(reason) = live.fallback_reason.as_deref() {
+                                    spawn_wrapped_text(
+                                        route,
+                                        font.clone(),
+                                        reason,
+                                        8.0,
+                                        theme.muted_foreground,
+                                    );
+                                }
+                            });
+                        }
+                    }
+                });
+
+            session_card
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(5),
+                        overflow: Overflow::clip(),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(theme.muted.with_alpha(0.72)),
+                ))
+                .with_children(|rail| {
+                    rail.spawn((
+                        Node {
+                            width: percent(progress as f32),
+                            height: percent(100),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(theme.primary),
+                    ));
+                });
+
+            let stages = [
+                ("preparing", "Prepare"),
+                ("separation", "Separate"),
+                ("pitch", "Pitch"),
+                ("audio_preprocessing", "Preprocess"),
+                ("transcription", "Transcribe"),
+                ("alignment", "Align"),
+                ("finalizing", "Finalize"),
+            ];
+            let active_stage_progress = task
+                .live
+                .as_ref()
+                .map(|live| live.stage_progress.clamp(0, 100))
+                .unwrap_or(0);
+            session_card
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::FlexStart,
+                    overflow: Overflow::clip(),
+                    ..default()
+                })
+                .with_children(|track| {
+                    for (index, (stage_id, label)) in stages.into_iter().enumerate() {
+                        if index > 0 {
+                            track.spawn((
+                                Node {
+                                    min_width: px(12),
+                                    height: px(2),
+                                    flex_grow: 0.16,
+                                    margin: UiRect::top(px(25)),
+                                    ..default()
+                                },
+                                BackgroundColor(if index <= stage_index {
+                                    theme.pitch_contour.with_alpha(0.72)
+                                } else {
+                                    theme.border.with_alpha(0.55)
+                                }),
+                            ));
+                        }
+                        let completed = index < stage_index;
+                        let active = index == stage_index;
+                        let step_progress = if completed {
+                            100
+                        } else if active {
+                            active_stage_progress
+                        } else {
+                            0
+                        };
+                        let stage_route = task.live.as_ref().and_then(|live| {
+                            live.stage_routes.iter().rev().find(|route| {
+                                analysis_stage_matches(&route.stage, stage_id)
+                            })
+                        });
+                        let selected = selected_stage == stage_id;
+                        track
+                            .spawn((
+                                Button,
+                                UiAction::SelectAnalysisStage(stage_id.to_string()),
+                                Node {
+                                    min_width: px(108),
+                                    flex_grow: 1.0,
+                                    flex_direction: FlexDirection::Column,
+                                    padding: UiRect::all(px(11)),
+                                    row_gap: px(9),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(6)),
+                                    ..default()
+                                },
+                                BackgroundColor(if selected {
+                                    theme.primary.with_alpha(0.18)
+                                } else if active {
+                                    theme.primary.with_alpha(0.12)
+                                } else {
+                                    theme.background.with_alpha(0.24)
+                                }),
+                                BorderColor::all(if selected {
+                                    theme.primary.with_alpha(0.88)
+                                } else if active {
+                                    theme.primary.with_alpha(0.62)
+                                } else if completed {
+                                    theme.pitch_contour.with_alpha(0.42)
+                                } else {
+                                    theme.border.with_alpha(0.42)
+                                }),
+                            ))
+                            .with_children(|step| {
+                                step.spawn(Node {
+                                    width: percent(100),
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(7),
+                                    ..default()
+                                })
+                                .with_children(|heading| {
+                                    heading.spawn((
+                                        Node {
+                                            width: px(22),
+                                            height: px(22),
+                                            flex_shrink: 0.0,
+                                            align_items: AlignItems::Center,
+                                            justify_content: JustifyContent::Center,
+                                            border_radius: BorderRadius::MAX,
+                                            ..default()
+                                        },
+                                        BackgroundColor(if active {
+                                            theme.primary
+                                        } else if completed {
+                                            theme.pitch_contour
+                                        } else {
+                                            theme.muted
+                                        }),
+                                    ))
+                                    .with_children(|badge| {
+                                        spawn_text(
+                                            badge,
+                                            font.clone(),
+                                            format!("{:02}", index + 1),
+                                            7.0,
+                                            if active || completed {
+                                                theme.background
+                                            } else {
+                                                theme.muted_foreground
+                                            },
+                                        );
+                                    });
+                                    heading
+                                        .spawn(Node {
+                                            min_width: px(0),
+                                            flex_grow: 1.0,
+                                            flex_direction: FlexDirection::Column,
+                                            ..default()
+                                        })
+                                        .with_children(|copy| {
+                                            spawn_text(
+                                                copy,
+                                                font.clone(),
+                                                label,
+                                                9.0,
+                                                if active || completed {
+                                                    theme.foreground
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            );
+                                            spawn_text(
+                                                copy,
+                                                font.clone(),
+                                                if active {
+                                                    "RUNNING".to_string()
+                                                } else if completed {
+                                                    "COMPLETE".to_string()
+                                                } else {
+                                                    "WAITING".to_string()
+                                                },
+                                                7.0,
+                                                if active {
+                                                    theme.primary
+                                                } else if completed {
+                                                    theme.pitch_contour
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            );
+                                        });
+                                });
+                                step.spawn(Node {
+                                    width: percent(100),
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(8),
+                                    ..default()
+                                })
+                                .with_children(|meter| {
+                                    meter
+                                        .spawn((
+                                            Node {
+                                                min_width: px(0),
+                                                height: px(3),
+                                                flex_grow: 1.0,
+                                                overflow: Overflow::clip(),
+                                                border_radius: BorderRadius::MAX,
+                                                ..default()
+                                            },
+                                            BackgroundColor(theme.muted.with_alpha(0.72)),
+                                        ))
+                                        .with_children(|rail| {
+                                            rail.spawn((
+                                                Node {
+                                                    width: percent(step_progress as f32),
+                                                    height: percent(100),
+                                                    border_radius: BorderRadius::MAX,
+                                                    ..default()
+                                                },
+                                                BackgroundColor(if completed {
+                                                    theme.pitch_contour
+                                                } else {
+                                                    theme.primary
+                                                }),
+                                            ));
+                                        });
+                                    spawn_text(
+                                        meter,
+                                        font.clone(),
+                                        format!("{step_progress}%"),
+                                        8.0,
+                                        if active || completed {
+                                            theme.foreground
+                                        } else {
+                                            theme.muted_foreground
+                                        },
+                                    );
+                                });
+                                let route_copy = stage_route
+                                    .map(|route| {
+                                        route
+                                            .fallback_from
+                                            .as_ref()
+                                            .map(|from| {
+                                                format!(
+                                                    "{} > {}",
+                                                    from.to_ascii_uppercase(),
+                                                    route.actual_device.to_ascii_uppercase()
+                                                )
+                                            })
+                                            .unwrap_or_else(|| {
+                                                route.actual_device.to_ascii_uppercase()
+                                            })
+                                    })
+                                    .unwrap_or_else(|| {
+                                        if completed {
+                                            "TELEMETRY NOT RECORDED".to_string()
+                                        } else {
+                                            "NOT STARTED".to_string()
+                                        }
+                                    });
+                                spawn_text(
+                                    step,
+                                    font.clone(),
+                                    route_copy,
+                                    7.0,
+                                    if stage_route
+                                        .is_some_and(|route| route.fallback_from.is_some())
+                                    {
+                                        theme.editor_warning
+                                    } else if stage_route.is_some() {
+                                        theme.pitch_contour
+                                    } else {
+                                        theme.muted_foreground
+                                    },
+                                );
+                                let backend_copy = stage_route
+                                    .map(|route| {
+                                        route
+                                            .backend_fallback_from
+                                            .as_ref()
+                                            .map(|from| {
+                                                format!(
+                                                    "{} > {}",
+                                                    from.to_ascii_uppercase(),
+                                                    route.implementation.to_ascii_uppercase()
+                                                )
+                                            })
+                                            .unwrap_or_else(|| {
+                                                if route.model.trim().is_empty() {
+                                                    route.implementation.clone()
+                                                } else {
+                                                    format!("{} · {}", route.implementation, route.model)
+                                                }
+                                            })
+                                    })
+                                    .unwrap_or_else(|| {
+                                        if completed {
+                                            "LEGACY SESSION · NO MODEL TRACE".to_string()
+                                        } else {
+                                            "MODEL PENDING".to_string()
+                                        }
+                                    });
+                                spawn_wrapped_text(
+                                    step,
+                                    font.clone(),
+                                    backend_copy,
+                                    7.0,
+                                    if stage_route.is_some_and(|route| {
+                                        route.backend_fallback_from.is_some()
+                                    }) {
+                                        theme.editor_warning
+                                    } else {
+                                        theme.muted_foreground
+                                    },
+                                );
+                            });
+                    }
+                });
+
+            session_card
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(px(16)),
+                        row_gap: px(12),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(7)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.background.with_alpha(0.34)),
+                    BorderColor::all(theme.primary.with_alpha(0.38)),
+                ))
+                .with_children(|inspector| {
+                    inspector
+                        .spawn(Node {
+                            width: percent(100),
+                            align_items: AlignItems::Center,
+                            column_gap: px(10),
+                            flex_wrap: FlexWrap::Wrap,
+                            row_gap: px(5),
+                            ..default()
+                        })
+                        .with_children(|header| {
+                            spawn_text(
+                                header,
+                                font.clone(),
+                                format!("STEP {:02} · {}", selected_stage_index + 1, selected_label.to_ascii_uppercase()),
+                                9.0,
+                                theme.primary,
+                            );
+                            header.spawn(Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            });
+                            spawn_text(
+                                header,
+                                font.clone(),
+                                format!("{selected_status} · {selected_progress}%"),
+                                9.0,
+                                if selected_status == "WAITING" {
+                                    theme.muted_foreground
+                                } else {
+                                    theme.pitch_contour
+                                },
+                            );
+                        });
+                    spawn_wrapped_text(
+                        inspector,
+                        font.clone(),
+                        selected_purpose,
+                        10.0,
+                        theme.muted_foreground,
+                    );
+                    spawn_wrapped_text(
+                        inspector,
+                        font.clone(),
+                        selected_operation,
+                        13.0,
+                        theme.foreground,
+                    );
+                    inspector
+                        .spawn(Node {
+                            width: percent(100),
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: px(9),
+                            row_gap: px(9),
+                            ..default()
+                        })
+                        .with_children(|facts| {
+                            for (label, value) in [
+                                ("IMPLEMENTATION", selected_implementation),
+                                ("MODEL / ALGORITHM", selected_model),
+                                ("REQUESTED DEVICE", selected_requested_device),
+                                ("ACTUAL DEVICE", selected_actual_device),
+                                ("INPUT", selected_input),
+                                ("OUTPUT", selected_output),
+                            ] {
+                                facts
+                                    .spawn((
+                                        Node {
+                                            min_width: px(205),
+                                            flex_basis: px(240),
+                                            flex_grow: 1.0,
+                                            flex_direction: FlexDirection::Column,
+                                            padding: UiRect::all(px(10)),
+                                            row_gap: px(3),
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(4)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.card.with_alpha(0.34)),
+                                        BorderColor::all(theme.border.with_alpha(0.4)),
+                                    ))
+                                    .with_children(|fact| {
+                                        spawn_text(
+                                            fact,
+                                            font.clone(),
+                                            label,
+                                            7.0,
+                                            theme.muted_foreground,
+                                        );
+                                        spawn_wrapped_text(
+                                            fact,
+                                            font.clone(),
+                                            value,
+                                            9.0,
+                                            theme.foreground,
+                                        );
+                                    });
+                            }
+                        });
+                    for (label, from, to, reason) in selected_device_fallback
+                        .map(|(from, reason)| {
+                            ("COMPUTE FALLBACK", from, selected_actual_device, reason)
+                        })
+                        .into_iter()
+                        .chain(selected_backend_fallback.map(|(from, reason)| {
+                            ("MODEL FALLBACK", from, selected_implementation, reason)
+                        }))
+                    {
+                        spawn_wrapped_text(
+                            inspector,
+                            font.clone(),
+                            format!("{label} · {} > {} · {reason}", from.to_ascii_uppercase(), to.to_ascii_uppercase()),
+                            9.0,
+                            theme.editor_warning,
+                        );
+                    }
+                    if let Some(error) = history_error {
+                        spawn_wrapped_text(
+                            inspector,
+                            font.clone(),
+                            format!("SESSION ERROR · {error}"),
+                            9.0,
+                            theme.destructive,
+                        );
+                    }
+                });
+
+            if let Some(live) = task.live.as_ref() {
+                session_card
+                    .spawn(Node {
+                        width: percent(100),
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(10),
+                        row_gap: px(10),
+                        ..default()
+                    })
+                    .with_children(|details| {
+                        let device_route = live
+                            .fallback_from
+                            .as_ref()
+                            .map(|from| {
+                                format!(
+                                    "{} > {}",
+                                    from.to_ascii_uppercase(),
+                                    live.device.to_ascii_uppercase()
+                                )
+                            })
+                            .unwrap_or_else(|| live.device.to_ascii_uppercase());
+                        for (label, value) in [
+                            ("IMPLEMENTATION", live.implementation.clone()),
+                            ("MODEL / ALGORITHM", live.model.clone()),
+                            ("ACTUAL COMPUTE ROUTE", device_route),
+                        ] {
+                            details
+                                .spawn((
+                                    Node {
+                                        min_width: px(230),
+                                        flex_grow: 1.0,
+                                        flex_direction: FlexDirection::Column,
+                                        padding: UiRect::all(px(12)),
+                                        row_gap: px(3),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(4)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.background.with_alpha(0.26)),
+                                    BorderColor::all(theme.border.with_alpha(0.45)),
+                                ))
+                                .with_children(|item| {
+                                    spawn_text(
+                                        item,
+                                        font.clone(),
+                                        label,
+                                        8.0,
+                                        theme.muted_foreground,
+                                    );
+                                    spawn_wrapped_text(
+                                        item,
+                                        font.clone(),
+                                        value,
+                                        10.0,
+                                        theme.foreground,
+                                    );
+                                });
+                        }
+                    });
+            }
+        });
+}
+
+fn spawn_analysis_history_list(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSession,
+    theme: &StudioTheme,
+) {
+    if session.analysis_history.is_empty() {
+        return;
+    }
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::axes(px(30), px(18)),
+            row_gap: px(8),
+            border: UiRect::bottom(px(1)),
+            ..default()
+        })
+        .with_children(|history_list| {
+            history_list
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::Center,
+                    column_gap: px(10),
+                    ..default()
+                })
+                .with_children(|header| {
+                    spawn_text(
+                        header,
+                        font.clone(),
+                        format!("ANALYSIS HISTORY · {}", session.analysis_history.len()),
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                    header.spawn(Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    });
+                    if !session.pending_analysis_history_clear {
+                        spawn_text_button(
+                            header,
+                            font.clone(),
+                            theme,
+                            "Clear history…",
+                            8.0,
+                            UiAction::RequestClearAnalysisHistory,
+                        );
+                    }
+                });
+            if session.pending_analysis_history_clear {
+                history_list
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            align_items: AlignItems::Center,
+                            flex_wrap: FlexWrap::Wrap,
+                            padding: UiRect::all(px(11)),
+                            column_gap: px(9),
+                            row_gap: px(7),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(5)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.destructive.with_alpha(0.06)),
+                        BorderColor::all(theme.destructive.with_alpha(0.46)),
+                    ))
+                    .with_children(|confirmation| {
+                        spawn_wrapped_text(
+                            confirmation,
+                            font.clone(),
+                            "Delete every saved analysis session? Songs, charts, models, generated assets, and the active queue are not affected.",
+                            9.0,
+                            theme.muted_foreground,
+                        );
+                        confirmation.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        });
+                        spawn_text_button(
+                            confirmation,
+                            font.clone(),
+                            theme,
+                            "Cancel",
+                            8.0,
+                            UiAction::CancelClearAnalysisHistory,
+                        );
+                        spawn_text_button(
+                            confirmation,
+                            font.clone(),
+                            theme,
+                            "Delete history",
+                            8.0,
+                            UiAction::ConfirmClearAnalysisHistory,
+                        );
+                    });
+            }
+            for history in session.analysis_history.iter().take(20) {
+                let selected = session.selected_analysis_history == Some(history.id);
+                let duration_seconds =
+                    ((history.finished_at_ms - history.started_at_ms).max(0) / 1000) as u64;
+                history_list
+                    .spawn((
+                        Button,
+                        UiAction::SelectAnalysisHistory(Some(history.id)),
+                        Node {
+                            width: percent(100),
+                            min_height: px(48),
+                            align_items: AlignItems::Center,
+                            padding: UiRect::axes(px(13), px(9)),
+                            column_gap: px(12),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(5)),
+                            ..default()
+                        },
+                        BackgroundColor(if selected {
+                            theme.primary.with_alpha(0.10)
+                        } else {
+                            theme.background.with_alpha(0.24)
+                        }),
+                        BorderColor::all(if selected {
+                            theme.primary.with_alpha(0.58)
+                        } else {
+                            theme.border.with_alpha(0.42)
+                        }),
+                    ))
+                    .with_children(|row| {
+                        row.spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(2),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                history.title.clone(),
+                                10.0,
+                                theme.foreground,
+                            );
+                            spawn_text(
+                                copy,
+                                font.clone(),
+                                history.artist.clone(),
+                                8.0,
+                                theme.muted_foreground,
+                            );
+                        });
+                        spawn_text(
+                            row,
+                            font.clone(),
+                            format!("{}:{:02}", duration_seconds / 60, duration_seconds % 60),
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                        spawn_text(
+                            row,
+                            font.clone(),
+                            history.status.to_ascii_uppercase(),
+                            8.0,
+                            if history.status == "completed" {
+                                theme.pitch_contour
+                            } else {
+                                theme.destructive
+                            },
+                        );
+                    });
+            }
+        });
 }
 
 fn spawn_about_dialog(
@@ -5214,15 +6413,15 @@ fn spawn_song_detail(
                     hero.spawn((
                         Node {
                             position_type: PositionType::Absolute,
-                            left: px(-26),
-                            right: px(-26),
-                            top: px(-26),
-                            bottom: px(-26),
+                            left: px(0),
+                            right: px(0),
+                            top: px(0),
+                            bottom: px(0),
                             overflow: Overflow::clip(),
                             ..default()
                         },
                         ImageNode::new(ambient_cover)
-                            .with_color(Color::srgba(1.0, 1.0, 1.0, 0.84))
+                            .with_color(Color::srgba(1.0, 1.0, 1.0, 0.68))
                             .with_mode(bevy::ui::widget::NodeImageMode::Stretch),
                     ));
                     hero.spawn((
@@ -5234,7 +6433,7 @@ fn spawn_song_detail(
                             bottom: px(0),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.012, 0.014, 0.022, 0.46)),
+                        BackgroundColor(Color::srgba(0.012, 0.014, 0.022, 0.54)),
                     ));
                     hero.spawn((
                         Node {
@@ -5242,10 +6441,10 @@ fn spawn_song_detail(
                             left: px(0),
                             right: px(0),
                             bottom: px(0),
-                            height: percent(48),
+                            height: percent(52),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.006, 0.008, 0.014, 0.28)),
+                        BackgroundColor(Color::srgba(0.006, 0.008, 0.014, 0.34)),
                     ));
                     hero.spawn((
                         Node {
@@ -6133,39 +7332,129 @@ fn spawn_language_editor(
                     spawn_wrapped_text(
                         dialog,
                         font.clone(),
-                        "Enter a language code such as en, ja, zh, de, or fr. The chosen action runs only after saving.",
+                        "Choose a supported language or let the analyzer detect it. The chosen action runs only after saving.",
                         10.0,
                         theme.muted_foreground,
                     );
-                    dialog.spawn((
-                        LanguageEditorInput,
-                        EditableText {
-                            visible_width: Some(18.0),
-                            max_characters: Some(24),
-                            ..EditableText::new(&editor.initial_language)
-                        },
-                        Node {
-                            width: percent(100),
-                            height: px(40),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::horizontal(px(10)),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(5)),
-                            ..default()
-                        },
-                        ui_text_font(font.clone(), 12.0),
-                        TextColor(theme.foreground),
-                        TextLayout::no_wrap(),
-                        TextCursorStyle {
-                            color: theme.primary,
-                            selected_text_color: Some(theme.primary_foreground),
-                            ..default()
-                        },
-                        BackgroundColor(theme.background.with_alpha(0.65)),
-                        BorderColor::all(theme.border.with_alpha(0.72)),
-                        TabIndex(0),
-                        AutoFocus,
-                    ));
+                    dialog
+                        .spawn((
+                            Button,
+                            UiAction::ToggleLanguagePicker,
+                            Node {
+                                width: percent(100),
+                                height: px(40),
+                                align_items: AlignItems::Center,
+                                padding: UiRect::horizontal(px(11)),
+                                column_gap: px(8),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(5)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.background.with_alpha(0.65)),
+                            BorderColor::all(if editor.picker_open {
+                                theme.primary.with_alpha(0.64)
+                            } else {
+                                theme.border.with_alpha(0.72)
+                            }),
+                        ))
+                        .with_children(|selector| {
+                            spawn_text(
+                                selector,
+                                font.clone(),
+                                analysis_language_label(&editor.initial_language),
+                                11.0,
+                                theme.foreground,
+                            );
+                            selector.spawn(Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            });
+                            spawn_text(
+                                selector,
+                                font.clone(),
+                                editor.initial_language.to_ascii_uppercase(),
+                                8.0,
+                                theme.muted_foreground,
+                            );
+                            spawn_text(
+                                selector,
+                                font.clone(),
+                                if editor.picker_open { "^" } else { "v" },
+                                9.0,
+                                theme.primary,
+                            );
+                        });
+                    if editor.picker_open {
+                        dialog
+                            .spawn((
+                                ScrollPosition::default(),
+                                Node {
+                                    width: percent(100),
+                                    max_height: px(238),
+                                    flex_direction: FlexDirection::Column,
+                                    padding: UiRect::all(px(5)),
+                                    row_gap: px(2),
+                                    overflow: Overflow::scroll_y(),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(5)),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.background.with_alpha(0.82)),
+                                BorderColor::all(theme.border.with_alpha(0.72)),
+                            ))
+                            .with_children(|options| {
+                                for (code, label) in ANALYSIS_LANGUAGE_OPTIONS {
+                                    let selected = editor.initial_language == *code;
+                                    options
+                                        .spawn((
+                                            Button,
+                                            UiAction::SelectAnalysisLanguage((*code).into()),
+                                            Node {
+                                                width: percent(100),
+                                                min_height: px(30),
+                                                align_items: AlignItems::Center,
+                                                padding: UiRect::horizontal(px(9)),
+                                                column_gap: px(8),
+                                                border_radius: BorderRadius::all(px(4)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(if selected {
+                                                theme.primary.with_alpha(0.13)
+                                            } else {
+                                                Color::NONE
+                                            }),
+                                        ))
+                                        .with_children(|option| {
+                                            spawn_text(
+                                                option,
+                                                font.clone(),
+                                                *label,
+                                                9.0,
+                                                if selected {
+                                                    theme.foreground
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            );
+                                            option.spawn(Node {
+                                                flex_grow: 1.0,
+                                                ..default()
+                                            });
+                                            spawn_text(
+                                                option,
+                                                font.clone(),
+                                                code.to_ascii_uppercase(),
+                                                8.0,
+                                                if selected {
+                                                    theme.primary
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            );
+                                        });
+                                }
+                            });
+                    }
                     spawn_text_button(
                         dialog,
                         font.clone(),
@@ -6423,7 +7712,7 @@ fn album_art_handle(
     } else {
         "jpg"
     };
-    let Ok(image) = Image::from_buffer(
+    let Ok(decoded) = Image::from_buffer(
         &bytes,
         ImageType::Extension(extension),
         CompressedImageFormats::NONE,
@@ -6433,6 +7722,15 @@ fn album_art_handle(
     ) else {
         return asset_server.load(LOGO_PATH);
     };
+    let Ok(dynamic) = decoded.try_into_dynamic() else {
+        return asset_server.load(LOGO_PATH);
+    };
+    // Library artwork can be several thousand pixels wide while its largest
+    // presentation in the desktop UI is a small cover. Bounding retained
+    // textures prevents a route change from uploading another full-resolution
+    // image while the analyzer has recently held several gigabytes of models.
+    let bounded = dynamic.thumbnail(512, 512);
+    let image = Image::from_dynamic(bounded, true, RenderAssetUsages::default());
     let handle = images.add(image);
     local_images.covers.insert(path.clone(), handle.clone());
     handle
@@ -6471,10 +7769,24 @@ fn ambient_album_art_handle(
     let Ok(dynamic) = decoded.try_into_dynamic() else {
         return asset_server.load(LOGO_PATH);
     };
-    // The main-branch hero uses one enlarged, strongly blurred cover. Produce
-    // that texture once on the CPU instead of faking blur with offset copies.
-    let softened = dynamic.thumbnail(720, 720).fast_blur(22.0);
-    let mut ambient = Image::from_dynamic(softened, true, RenderAssetUsages::default());
+    // Prepare a wide ambient crop before the UI stretches it across the hero.
+    // Stretching a square blurred cover into a banner creates visible horizontal
+    // bands; a centered 5:1 crop keeps the colour field natural and restrained.
+    let softened = dynamic.thumbnail(1200, 1200).fast_blur(12.0);
+    let source_width = softened.width();
+    let source_height = softened.height();
+    let (crop_width, crop_height) = if source_width >= source_height.saturating_mul(5) {
+        (source_height.saturating_mul(5), source_height)
+    } else {
+        (source_width, (source_width / 5).max(1))
+    };
+    let cropped = softened.crop_imm(
+        (source_width - crop_width) / 2,
+        (source_height - crop_height) / 2,
+        crop_width,
+        crop_height,
+    );
+    let mut ambient = Image::from_dynamic(cropped, true, RenderAssetUsages::default());
     ambient.sampler = ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor::linear());
     let handle = images.add(ambient);
     local_images
@@ -9048,6 +10360,116 @@ fn spawn_analysis_settings(
         SettingsSelectKind::Separator,
         session,
     );
+    let separation_advanced =
+        session.open_analysis_advanced == Some(AnalysisAdvancedSection::Separation);
+    if session.config.separator() != "openvino_demucs" {
+        spawn_select_setting_row(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            "Separation profile",
+            if session.config.separator() == "karaoke" {
+                "Balanced is recommended. Memory saver uses shorter RoFormer segments; Quality increases segment context and overlap."
+            } else {
+                "Balanced is recommended. Quality adds shifts and overlap, increasing processing time substantially."
+            },
+            SettingsSelectKind::SeparatorPreset,
+            session,
+        );
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Advanced separation tuning",
+            "Model-specific memory, quality, and overlap controls. Existing stems change only after re-analysis.",
+            Some((
+                if separation_advanced {
+                    "Hide advanced"
+                } else {
+                    "Show advanced"
+                },
+                UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Separation),
+            )),
+        );
+    } else {
+        spawn_settings_section(
+            parent,
+            font.clone(),
+            theme,
+            "FIXED OPENVINO PROFILE",
+            "Segment dimensions and overlap are compiled into the installed OpenVINO Demucs graph. Select UVR Karaoke or Demucs to use adjustable separation profiles.",
+        );
+    }
+    if separation_advanced && session.config.separator() == "karaoke" {
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "RoFormer segment size",
+            "Model default is used until edited. Smaller values reduce memory; larger values may improve continuity. Range: 64–1024.",
+            session.config.separator_segment_size(),
+            NumericSetting::SeparatorSegmentSize,
+            UiAction::AdjustSeparatorSegmentSize(-32),
+            UiAction::AdjustSeparatorSegmentSize(32),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "RoFormer overlap",
+            "More overlap can reduce chunk seams at the cost of additional processing. Range: 2–32.",
+            session.config.separator_overlap(),
+            NumericSetting::SeparatorOverlap,
+            UiAction::AdjustSeparatorOverlap(-1),
+            UiAction::AdjustSeparatorOverlap(1),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "RoFormer batch size",
+            "Lower this first if separation runs out of system or accelerator memory. Range: 1–8.",
+            session.config.separator_batch_size(),
+            NumericSetting::SeparatorBatchSize,
+            UiAction::AdjustSeparatorBatchSize(-1),
+            UiAction::AdjustSeparatorBatchSize(1),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Output normalization",
+            "Peak normalization applied by the separator before stems enter the lossless cache. Range: 1–100%.",
+            session.config.separator_normalization_pct(),
+            NumericSetting::SeparatorNormalization,
+            UiAction::AdjustSeparatorNormalization(-1),
+            UiAction::AdjustSeparatorNormalization(1),
+        );
+    } else if separation_advanced && session.config.separator() == "demucs" {
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Demucs shifts",
+            "More random shifts can improve separation quality but multiply inference cost. Range: 1–8.",
+            session.config.demucs_shifts(),
+            NumericSetting::DemucsShifts,
+            UiAction::AdjustDemucsShifts(-1),
+            UiAction::AdjustDemucsShifts(1),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Demucs overlap",
+            "Overlap between inference windows. Range: 1–95%.",
+            session.config.demucs_overlap_pct(),
+            NumericSetting::DemucsOverlap,
+            UiAction::AdjustDemucsOverlap(-1),
+            UiAction::AdjustDemucsOverlap(1),
+        );
+    }
 
     let parakeet = session.config.asr_engine() == "parakeet";
     let intel_whisper = !parakeet && session.config.compute_backend.as_deref() == Some("intel");
@@ -9955,6 +11377,7 @@ fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig) -> &str {
     match kind {
         SettingsSelectKind::ComputeBackend => config.compute_backend.as_deref().unwrap_or("cpu"),
         SettingsSelectKind::Separator => config.separator(),
+        SettingsSelectKind::SeparatorPreset => separator_preset(config),
         SettingsSelectKind::AsrEngine => config.asr_engine(),
         SettingsSelectKind::WhisperModel => config.whisper_model(),
         SettingsSelectKind::AlignBackend => config.align_backend(),
@@ -9966,6 +11389,12 @@ fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'static str 
     match kind {
         SettingsSelectKind::ComputeBackend => compute_backend_label(value),
         SettingsSelectKind::Separator => separator_label(value),
+        SettingsSelectKind::SeparatorPreset => match value {
+            "memory" => "Memory saver",
+            "quality" => "Quality",
+            "custom" => "Custom",
+            _ => "Balanced",
+        },
         SettingsSelectKind::AsrEngine => asr_engine_label(value),
         SettingsSelectKind::WhisperModel => match value {
             "large-v3" => "Large v3",
@@ -9997,6 +11426,11 @@ fn settings_select_options(
             ("openvino_demucs", "OpenVINO Demucs v4"),
         ],
         SettingsSelectKind::Separator => &[("karaoke", "UVR Karaoke"), ("demucs", "Demucs")],
+        SettingsSelectKind::SeparatorPreset => &[
+            ("balanced", "Balanced · recommended"),
+            ("memory", "Memory saver · lower peak usage"),
+            ("quality", "Quality · slower, more context"),
+        ],
         SettingsSelectKind::AsrEngine => &[
             ("whisper", "Whisper"),
             ("parakeet", "Parakeet v3 (Experimental)"),
@@ -10016,6 +11450,82 @@ fn settings_select_options(
             ("mms_karaoke", "MMS Karaoke (Japanese)"),
         ],
         SettingsSelectKind::PitchModel => &[("rmvpe", "RMVPE")],
+    }
+}
+
+fn separator_preset(config: &AppConfig) -> &'static str {
+    match config.separator() {
+        "karaoke"
+            if config.separator_segment_size.is_none()
+                && config.separator_overlap() == 8
+                && config.separator_batch_size() == 1
+                && config.separator_normalization_pct() == 90 =>
+        {
+            "balanced"
+        }
+        "karaoke"
+            if config.separator_segment_size == Some(128)
+                && config.separator_overlap() == 4
+                && config.separator_batch_size() == 1
+                && config.separator_normalization_pct() == 90 =>
+        {
+            "memory"
+        }
+        "karaoke"
+            if config.separator_segment_size == Some(512)
+                && config.separator_overlap() == 16
+                && config.separator_batch_size() == 1
+                && config.separator_normalization_pct() == 95 =>
+        {
+            "quality"
+        }
+        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 25 => {
+            "balanced"
+        }
+        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 15 => {
+            "memory"
+        }
+        "demucs" if config.demucs_shifts() == 2 && config.demucs_overlap_pct() == 50 => {
+            "quality"
+        }
+        "openvino_demucs" => "balanced",
+        _ => "custom",
+    }
+}
+
+fn apply_separator_preset(config: &mut AppConfig, preset: &str) {
+    match (config.separator(), preset) {
+        ("karaoke", "balanced") => {
+            config.separator_segment_size = None;
+            config.separator_overlap = None;
+            config.separator_batch_size = None;
+            config.separator_normalization_pct = None;
+        }
+        ("karaoke", "memory") => {
+            config.separator_segment_size = Some(128);
+            config.separator_overlap = Some(4);
+            config.separator_batch_size = Some(1);
+            config.separator_normalization_pct = Some(90);
+        }
+        ("karaoke", "quality") => {
+            config.separator_segment_size = Some(512);
+            config.separator_overlap = Some(16);
+            config.separator_batch_size = Some(1);
+            config.separator_normalization_pct = Some(95);
+        }
+        ("demucs", "balanced") => {
+            config.demucs_shifts = None;
+            config.demucs_overlap_pct = None;
+        }
+        ("demucs", "memory") => {
+            config.demucs_shifts = Some(1);
+            config.demucs_overlap_pct = Some(15);
+        }
+        ("demucs", "quality") => {
+            config.demucs_shifts = Some(2);
+            config.demucs_overlap_pct = Some(50);
+        }
+        _ => {}
     }
 }
 
@@ -10044,7 +11554,11 @@ fn spawn_select_setting_row(
                 position_type: PositionType::Relative,
                 width: percent(100),
                 min_height: px(76),
-                align_items: AlignItems::Center,
+                align_items: if open {
+                    AlignItems::FlexStart
+                } else {
+                    AlignItems::Center
+                },
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -10073,8 +11587,10 @@ fn spawn_select_setting_row(
             row.spawn(Node {
                 position_type: PositionType::Relative,
                 width: px(SETTINGS_CONTROL_WIDTH),
-                height: px(36),
+                height: if open { Val::Auto } else { px(36) },
                 flex_shrink: 0.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|control| {
@@ -10090,6 +11606,7 @@ fn spawn_select_setting_row(
                             column_gap: px(8),
                             border: UiRect::all(px(1)),
                             border_radius: BorderRadius::all(px(6)),
+                            overflow: Overflow::clip(),
                             ..default()
                         },
                         BackgroundColor(theme.background.with_alpha(if open { 0.76 } else { 0.5 })),
@@ -10123,10 +11640,7 @@ fn spawn_select_setting_row(
                     control
                         .spawn((
                             Node {
-                                position_type: PositionType::Absolute,
-                                left: px(0),
-                                right: px(0),
-                                top: px(40),
+                                width: percent(100),
                                 flex_direction: FlexDirection::Column,
                                 padding: UiRect::all(px(5)),
                                 row_gap: px(2),
@@ -10148,7 +11662,7 @@ fn spawn_select_setting_row(
                                         width: percent(100),
                                         min_height: px(31),
                                         align_items: AlignItems::Center,
-                                        padding: UiRect::horizontal(px(9)),
+                                        padding: UiRect::axes(px(9), px(7)),
                                         column_gap: px(8),
                                         border_radius: BorderRadius::all(px(4)),
                                         ..default()
@@ -10160,7 +11674,7 @@ fn spawn_select_setting_row(
                                     }),
                                 ))
                                 .with_children(|option| {
-                                    spawn_text(
+                                    spawn_wrapped_text(
                                         option,
                                         font.clone(),
                                         *option_label,
@@ -11263,6 +12777,10 @@ fn spawn_library(
                 ))
                 .with_children(|list| {
                     let grid = session.config.song_list_view.as_deref() == Some("grid");
+                    if session.library_view == LibraryView::Queue {
+                        spawn_analysis_session_overview(list, font.clone(), session, theme);
+                        spawn_analysis_history_list(list, font.clone(), session, theme);
+                    }
                     if !grid {
                         spawn_song_header(list, font.clone(), theme);
                     }
@@ -11304,7 +12822,11 @@ fn spawn_library(
                             {
                                 "No active jobs. Open Activity to review failed analyses."
                             } else if session.library_view == LibraryView::Queue {
-                                "The analysis queue is empty. Choose an unanalyzed song to start."
+                                if session.analysis_history.is_empty() {
+                                    "The analysis queue is empty. Choose an unanalyzed song to start."
+                                } else {
+                                    "No analysis is running. Select a previous session above."
+                                }
                             } else if session.scanning {
                                 "Scanning your library…"
                             } else {
@@ -11907,7 +13429,6 @@ fn handle_actions(
     interactions: Query<(&Interaction, &UiAction), Changed<Interaction>>,
     keys: Res<ButtonInput<KeyCode>>,
     lyrics_inputs: Query<&EditableText, With<LyricsEditorInput>>,
-    language_inputs: Query<&EditableText, (With<LanguageEditorInput>, Without<LyricsEditorInput>)>,
     search_inputs: Query<
         &EditableText,
         (
@@ -11950,6 +13471,39 @@ fn handle_actions(
             }
             UiAction::CloseActivity => {
                 session.activity_open = false;
+                invalidated.0 = true;
+            }
+            UiAction::SelectAnalysisHistory(id) => {
+                session.selected_analysis_history = *id;
+                session.selected_analysis_stage = None;
+                session.activity_open = false;
+                invalidated.0 = true;
+            }
+            UiAction::SelectAnalysisStage(stage) => {
+                session.selected_analysis_stage = Some(stage.clone());
+                invalidated.0 = true;
+            }
+            UiAction::RequestClearAnalysisHistory => {
+                session.pending_analysis_history_clear = true;
+                invalidated.0 = true;
+            }
+            UiAction::CancelClearAnalysisHistory => {
+                session.pending_analysis_history_clear = false;
+                invalidated.0 = true;
+            }
+            UiAction::ConfirmClearAnalysisHistory => {
+                session.pending_analysis_history_clear = false;
+                match app_core::clear_analysis_history() {
+                    Ok(()) => {
+                        session.analysis_history.clear();
+                        session.selected_analysis_history = None;
+                        session.selected_analysis_stage = None;
+                        session.notice = Some("Analysis history deleted.".into());
+                    }
+                    Err(error) => {
+                        session.notice = Some(format!("Could not delete analysis history: {error}"));
+                    }
+                }
                 invalidated.0 = true;
             }
             UiAction::OpenAbout => {
@@ -12245,6 +13799,9 @@ fn handle_actions(
                     SettingsSelectKind::Separator => {
                         session.config.separator = Some(value.clone());
                     }
+                    SettingsSelectKind::SeparatorPreset => {
+                        apply_separator_preset(&mut session.config, value);
+                    }
                     SettingsSelectKind::AsrEngine => {
                         session.config.asr_engine = Some(value.clone());
                     }
@@ -12268,6 +13825,10 @@ fn handle_actions(
                     Some(match kind {
                         SettingsSelectKind::ComputeBackend => format!(
                             "Acceleration set to {}. Reconfigure the runtime to apply it.",
+                            settings_select_label(*kind, value)
+                        ),
+                        SettingsSelectKind::SeparatorPreset => format!(
+                            "{} separation profile applied. Existing stems change only after re-analysis.",
                             settings_select_label(*kind, value)
                         ),
                         _ => format!(
@@ -12461,6 +14022,54 @@ fn handle_actions(
                 }
                 invalidated.0 = true;
             }
+            UiAction::AdjustSeparatorSegmentSize(delta) => {
+                session.config.separator_segment_size = Some(
+                    (i64::from(session.config.separator_segment_size()) + i64::from(*delta))
+                        .clamp(64, 1024) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
+            UiAction::AdjustSeparatorOverlap(delta) => {
+                session.config.separator_overlap = Some(
+                    (i64::from(session.config.separator_overlap()) + i64::from(*delta))
+                        .clamp(2, 32) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
+            UiAction::AdjustSeparatorBatchSize(delta) => {
+                session.config.separator_batch_size = Some(
+                    (i64::from(session.config.separator_batch_size()) + i64::from(*delta))
+                        .clamp(1, 8) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
+            UiAction::AdjustSeparatorNormalization(delta) => {
+                session.config.separator_normalization_pct = Some(
+                    (i64::from(session.config.separator_normalization_pct()) + i64::from(*delta))
+                        .clamp(1, 100) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
+            UiAction::AdjustDemucsShifts(delta) => {
+                session.config.demucs_shifts = Some(
+                    (i64::from(session.config.demucs_shifts()) + i64::from(*delta))
+                        .clamp(1, 8) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
+            UiAction::AdjustDemucsOverlap(delta) => {
+                session.config.demucs_overlap_pct = Some(
+                    (i64::from(session.config.demucs_overlap_pct()) + i64::from(*delta))
+                        .clamp(1, 95) as u32,
+                );
+                session.notice = save_config_error(&session.config);
+                invalidated.0 = true;
+            }
             UiAction::AdjustUiFontScale(delta) => {
                 let current = ui_font_size_percent_to_points(session.config.font_scale_percent());
                 let next = (i64::from(current)
@@ -12494,6 +14103,12 @@ fn handle_actions(
             }
             UiAction::RestoreAnalysisDefaults => {
                 session.config.separator = Some("karaoke".to_string());
+                session.config.separator_segment_size = None;
+                session.config.separator_overlap = None;
+                session.config.separator_batch_size = None;
+                session.config.separator_normalization_pct = None;
+                session.config.demucs_shifts = None;
+                session.config.demucs_overlap_pct = None;
                 session.config.asr_engine = Some("whisper".to_string());
                 session.config.align_backend = Some("whisperx".to_string());
                 session.config.pitch_model = Some("rmvpe".to_string());
@@ -12788,15 +14403,16 @@ fn handle_actions(
                 }
             }
             UiAction::OpenLanguageEditor(file_hash) => {
-                let initial_language = app_core::load_song_by_hash(file_hash)
-                    .ok()
-                    .flatten()
-                    .and_then(|song| song.language)
-                    .unwrap_or_default();
+                let config = AppConfig::load();
+                let initial_language = config
+                    .language_override(file_hash)
+                    .map(canonical_analysis_language)
+                    .unwrap_or_else(|| "auto".into());
                 session.language_editor = Some(NativeLanguageEditor {
                     file_hash: file_hash.clone(),
                     initial_language,
                     force_transcribe: false,
+                    picker_open: false,
                 });
                 session.notice = None;
                 invalidated.0 = true;
@@ -12807,37 +14423,48 @@ fn handle_actions(
             }
             UiAction::ToggleLanguageReprocess => {
                 if let Some(editor) = session.language_editor.as_mut() {
-                    if let Ok(input) = language_inputs.single() {
-                        editor.initial_language = input.value().to_string();
-                    }
                     editor.force_transcribe = !editor.force_transcribe;
+                    editor.picker_open = false;
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::ToggleLanguagePicker => {
+                if let Some(editor) = session.language_editor.as_mut() {
+                    editor.picker_open = !editor.picker_open;
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::SelectAnalysisLanguage(language) => {
+                if let Some(editor) = session.language_editor.as_mut() {
+                    editor.initial_language = canonical_analysis_language(language);
+                    editor.picker_open = false;
                     invalidated.0 = true;
                 }
             }
             UiAction::SaveLanguageEditor => {
-                let language = language_inputs
-                    .single()
-                    .map(|input| input.value().to_string())
-                    .unwrap_or_default();
-                let language = language.trim().to_ascii_lowercase();
                 if let Some(editor) = session.language_editor.as_mut() {
-                    editor.initial_language = language.clone();
-                    if language.is_empty()
-                        || !language
-                            .chars()
-                            .all(|character| character.is_ascii_alphabetic() || character == '-')
-                    {
-                        session.notice = Some(
-                            "Enter a valid language code using letters and an optional hyphen."
-                                .to_string(),
-                        );
-                    } else if !app_core::analysis_runtime_status().ready {
+                    let language = editor.initial_language.clone();
+                    if !app_core::analysis_runtime_status().ready {
                         session.notice = Some(
                             "Analysis is disabled until setup is completed in Settings > Models & runtime."
                                 .to_string(),
                         );
                     } else {
-                        if editor.force_transcribe {
+                        if language == "auto" {
+                            let mut config = AppConfig::load();
+                            config.clear_language_override(&editor.file_hash);
+                            if let Err(error) = config.save() {
+                                session.notice =
+                                    Some(format!("Could not save the language setting: {error}"));
+                                invalidated.0 = true;
+                                continue;
+                            }
+                            if editor.force_transcribe {
+                                app_core::reanalyze_force_transcribe(&editor.file_hash);
+                            } else {
+                                let _ = app_core::realign(&editor.file_hash, None);
+                            }
+                        } else if editor.force_transcribe {
                             let mut config = AppConfig::load();
                             config
                                 .set_language_override(editor.file_hash.clone(), language.clone());
@@ -12849,12 +14476,15 @@ fn handle_actions(
                             }
                             app_core::reanalyze_force_transcribe(&editor.file_hash);
                         } else {
-                            app_core::realign(&editor.file_hash, Some(language.clone()));
+                            let _ = app_core::realign(&editor.file_hash, Some(language.clone()));
                         }
                         session.language_editor = None;
                         session.config = AppConfig::load();
-                        session.notice =
-                            Some(format!("Language set to {language}; reprocessing queued."));
+                        session.notice = Some(if language == "auto" {
+                            "Automatic language detection enabled; reprocessing queued.".into()
+                        } else {
+                            format!("Language set to {language}; reprocessing queued.")
+                        });
                     }
                     invalidated.0 = true;
                 }
@@ -13711,6 +15341,11 @@ fn sync_numeric_settings(
         let (minimum, maximum) = match setting {
             NumericSetting::BeamSize | NumericSetting::BatchSize => (1, 16),
             NumericSetting::VocalThreshold => (0, 60),
+            NumericSetting::SeparatorSegmentSize => (64, 1024),
+            NumericSetting::SeparatorOverlap => (2, 32),
+            NumericSetting::SeparatorBatchSize | NumericSetting::DemucsShifts => (1, 8),
+            NumericSetting::SeparatorNormalization => (1, 100),
+            NumericSetting::DemucsOverlap => (1, 95),
         };
         let clamped = parsed.clamp(minimum, maximum);
         if clamped != parsed {
@@ -13722,6 +15357,14 @@ fn sync_numeric_settings(
             NumericSetting::VocalThreshold => {
                 (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32
             }
+            NumericSetting::SeparatorSegmentSize => session.config.separator_segment_size(),
+            NumericSetting::SeparatorOverlap => session.config.separator_overlap(),
+            NumericSetting::SeparatorBatchSize => session.config.separator_batch_size(),
+            NumericSetting::SeparatorNormalization => {
+                session.config.separator_normalization_pct()
+            }
+            NumericSetting::DemucsShifts => session.config.demucs_shifts(),
+            NumericSetting::DemucsOverlap => session.config.demucs_overlap_pct(),
         };
         if clamped == current {
             continue;
@@ -13732,6 +15375,18 @@ fn sync_numeric_settings(
             NumericSetting::VocalThreshold => {
                 session.config.vocal_detection_threshold_pct = Some(f64::from(clamped) / 100.0)
             }
+            NumericSetting::SeparatorSegmentSize => {
+                session.config.separator_segment_size = Some(clamped)
+            }
+            NumericSetting::SeparatorOverlap => session.config.separator_overlap = Some(clamped),
+            NumericSetting::SeparatorBatchSize => {
+                session.config.separator_batch_size = Some(clamped)
+            }
+            NumericSetting::SeparatorNormalization => {
+                session.config.separator_normalization_pct = Some(clamped)
+            }
+            NumericSetting::DemucsShifts => session.config.demucs_shifts = Some(clamped),
+            NumericSetting::DemucsOverlap => session.config.demucs_overlap_pct = Some(clamped),
         }
         if let Some(error) = save_config_error(&session.config) {
             session.notice = Some(error);
@@ -17363,10 +19018,12 @@ fn refresh_analysis_activity(
         return;
     }
     let tasks = app_core::load_analysis_tasks();
-    if tasks == session.analysis_tasks {
+    let history = app_core::load_analysis_history(100);
+    if tasks == session.analysis_tasks && history == session.analysis_history {
         return;
     }
     session.analysis_tasks = tasks;
+    session.analysis_history = history;
     if session.route == StudioRoute::Library && session.library_view == LibraryView::Queue {
         session.refresh_library();
     }

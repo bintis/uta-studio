@@ -49,7 +49,14 @@ def _save_wav_pcm16(wav: torch.Tensor, path: str, samplerate: int) -> None:
     sf.write(path, wav.numpy().T, samplerate, subtype="PCM_16")
 
 
-def separate_stems(audio_path: str, work_dir: str, device: str) -> tuple[str, str]:
+def separate_stems(
+    audio_path: str,
+    work_dir: str,
+    device: str,
+    *,
+    shifts: int = 1,
+    overlap: float = 0.25,
+) -> tuple[str, str]:
     """Run Demucs to separate vocals and instrumental stems.
 
     Returns (vocals_path, instrumental_path).
@@ -62,7 +69,15 @@ def separate_stems(audio_path: str, work_dir: str, device: str) -> tuple[str, st
     actual_device = torch.device(device if device != "mps" else "cpu")
 
     with gpu_model("demucs") as held:
-        progress(5, "Loading Demucs model...")
+        progress(
+            5,
+            "Loading Demucs model...",
+            requested_device=device,
+            actual_device=str(actual_device),
+            fallback_from=device if str(actual_device) != device else None,
+            fallback_reason="Demucs does not use the selected accelerator on this platform"
+            if str(actual_device) != device else None,
+        )
         model = get_model("htdemucs")
         held.append(model)
         model.to(actual_device)
@@ -76,9 +91,9 @@ def separate_stems(audio_path: str, work_dir: str, device: str) -> tuple[str, st
         wav_centered = wav - ref.mean()
         wav_scaled = wav_centered / ref.abs().max().clamp(min=1e-8)
 
-        progress(15, "Separating vocals from instrumentals...")
+        progress(15, f"Separating vocals (shifts={shifts}, overlap={overlap:.2f})...")
         sources = apply_model(
-            model, wav_scaled[None], device=actual_device, shifts=1, overlap=0.25,
+            model, wav_scaled[None], device=actual_device, shifts=shifts, overlap=overlap,
         )[0]
 
         source_names = model.sources
@@ -110,7 +125,13 @@ def _resolve_separator_output(output_files: list[str], work_dir: str, stem_tag: 
     return None
 
 
-def separate_stems_uvr(audio_path: str, work_dir: str, models_dir: str) -> tuple[str, str]:
+def separate_stems_uvr(
+    audio_path: str,
+    work_dir: str,
+    models_dir: str,
+    device: str,
+    options: dict | None = None,
+) -> tuple[str, str]:
     """Separate lead vocals from everything else using the UVR karaoke model.
 
     The karaoke model isolates lead vocals, leaving backing vocals in the
@@ -120,17 +141,43 @@ def separate_stems_uvr(audio_path: str, work_dir: str, models_dir: str) -> tuple
     """
     from audio_separator.separator import Separator
 
+    options = options or {}
+    segment_size = options.get("segment_size")
+    overlap = int(options.get("overlap", 8))
+    batch_size = int(options.get("batch_size", 1))
+    normalization_threshold = float(options.get("normalization_pct", 90)) / 100.0
     with gpu_model("uvr-karaoke") as held:
-        progress(5, "Loading karaoke separation model...")
+        actual_device = "cpu" if device == "xpu" else device
+        progress(
+            5,
+            "Loading karaoke separation model...",
+            requested_device=device,
+            actual_device=actual_device,
+            fallback_from=device if actual_device != device else None,
+            fallback_reason="UVR does not provide a PyTorch XPU backend"
+            if actual_device != device else None,
+        )
         separator = Separator(
             model_file_dir=models_dir,
             output_dir=work_dir,
+            normalization_threshold=normalization_threshold,
+            mdxc_params={
+                "segment_size": segment_size or 256,
+                "override_model_segment_size": segment_size is not None,
+                "batch_size": batch_size,
+                "overlap": overlap,
+                "pitch_shift": 0,
+            },
         )
         held.append(separator)
         separator.load_model(KARAOKE_MODEL)
 
         load_path = _ensure_wav(audio_path, work_dir)
-        progress(15, "Separating vocals from instrumentals...")
+        segment_label = segment_size if segment_size is not None else "model default"
+        progress(
+            15,
+            f"Separating vocals (segment={segment_label}, overlap={overlap}, batch={batch_size})...",
+        )
         output_files = separator.separate(load_path)
 
     print(f"[uta-studio:LOG] Separator outputs: {output_files}", flush=True)

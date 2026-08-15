@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::uta_studio_dir;
 
 mod analysis_queue;
+mod analysis_history;
 mod connection;
 mod playlists;
 mod queries;
@@ -29,6 +30,9 @@ mod songs;
 pub use analysis_queue::{
     analysis_queue_clear, analysis_queue_delete, analysis_queue_load_rows,
     analysis_queue_save_rows, analysis_queue_upsert_row,
+};
+pub use analysis_history::{
+    AnalysisHistoryRow, analysis_history_clear, analysis_history_insert, analysis_history_load,
 };
 pub use playlists::{PlaylistDefinition, replace_all_playlists};
 pub use queries::{

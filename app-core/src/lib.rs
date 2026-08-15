@@ -21,9 +21,11 @@ mod vendor;
 mod vendor_scripts;
 
 pub use analyzer::{
-    AnalysisQueue, AnalysisTask, QueuedStatus, delete_cache, enqueue_all, enqueue_one,
-    load_analysis_tasks, realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch,
-    reanalyze_transcript, shutdown_server,
+    AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunHistory, AnalysisStageRoute, AnalysisTask,
+    QueuedStatus, clear_analysis_history, delete_cache, enqueue_all, enqueue_one,
+    load_analysis_history, load_analysis_tasks, realign,
+    reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
+    shutdown_server,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use authoring::{

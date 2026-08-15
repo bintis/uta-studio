@@ -84,6 +84,15 @@ def ensure_model(models_dir: str | Path):
                 "[uta-studio:LOG] OpenVINO pitch provider unavailable; falling back to CPU",
                 flush=True,
             )
+            from whisper_compat import progress
+            progress(
+                52,
+                "OpenVINO pitch provider unavailable; continuing on CPU...",
+                requested_device="xpu",
+                actual_device="cpu",
+                fallback_from="xpu",
+                fallback_reason="ONNX Runtime does not expose the OpenVINO execution provider",
+            )
             device = "cpu"
     print(f"[uta-studio:LOG] Loading RMVPE pitch model on {device}", flush=True)
     estimator = RMVPE(model_path=str(model_path), device=device)

@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -60,6 +60,22 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             analyzing_pct INTEGER,
             failed_message TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS analysis_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_hash TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+            started_at_ms INTEGER NOT NULL,
+            finished_at_ms INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_history_finished
+            ON analysis_history(finished_at_ms DESC);
+        CREATE INDEX IF NOT EXISTS idx_analysis_history_song
+            ON analysis_history(file_hash, finished_at_ms DESC);
 
         CREATE TABLE IF NOT EXISTS playlists (
             id TEXT PRIMARY KEY,

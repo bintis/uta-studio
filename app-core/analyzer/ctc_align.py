@@ -22,7 +22,30 @@ import nltk
 from nltk.data import load as nltk_load
 
 from whisperx.audio import SAMPLE_RATE
-from whisperx.utils import interpolate_nans, PUNKT_LANGUAGES
+from whisperx.utils import interpolate_nans
+
+# WhisperX 3.7 removed this internal lookup from utils. Keep the small piece
+# of sentence-tokenizer compatibility locally instead of importing a private
+# symbol that changes independently of the alignment API.
+PUNKT_LANGUAGES = {
+    "cs": "czech",
+    "da": "danish",
+    "nl": "dutch",
+    "en": "english",
+    "et": "estonian",
+    "fi": "finnish",
+    "fr": "french",
+    "de": "german",
+    "el": "greek",
+    "it": "italian",
+    "no": "norwegian",
+    "pl": "polish",
+    "pt": "portuguese",
+    "sl": "slovene",
+    "es": "spanish",
+    "sv": "swedish",
+    "tr": "turkish",
+}
 
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
 

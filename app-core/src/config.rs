@@ -40,6 +40,18 @@ pub struct AppConfig {
     pub beam_size: Option<u32>,
     pub batch_size: Option<u32>,
     pub separator: Option<String>,
+    #[serde(default)]
+    pub separator_segment_size: Option<u32>,
+    #[serde(default)]
+    pub separator_overlap: Option<u32>,
+    #[serde(default)]
+    pub separator_batch_size: Option<u32>,
+    #[serde(default)]
+    pub separator_normalization_pct: Option<u32>,
+    #[serde(default)]
+    pub demucs_shifts: Option<u32>,
+    #[serde(default)]
+    pub demucs_overlap_pct: Option<u32>,
     pub asr_engine: Option<String>,
     pub align_backend: Option<String>,
     /// Pitch/frequency-analysis model. Kept explicit even while RMVPE is the
@@ -72,6 +84,12 @@ impl Default for AppConfig {
             beam_size: None,
             batch_size: None,
             separator: None,
+            separator_segment_size: None,
+            separator_overlap: None,
+            separator_batch_size: None,
+            separator_normalization_pct: None,
+            demucs_shifts: None,
+            demucs_overlap_pct: None,
             asr_engine: None,
             align_backend: None,
             pitch_model: None,
@@ -265,6 +283,30 @@ impl AppConfig {
         self.separator.as_deref().unwrap_or("karaoke")
     }
 
+    pub fn separator_segment_size(&self) -> u32 {
+        self.separator_segment_size.unwrap_or(256).clamp(64, 1024)
+    }
+
+    pub fn separator_overlap(&self) -> u32 {
+        self.separator_overlap.unwrap_or(8).clamp(2, 32)
+    }
+
+    pub fn separator_batch_size(&self) -> u32 {
+        self.separator_batch_size.unwrap_or(1).clamp(1, 8)
+    }
+
+    pub fn separator_normalization_pct(&self) -> u32 {
+        self.separator_normalization_pct.unwrap_or(90).clamp(1, 100)
+    }
+
+    pub fn demucs_shifts(&self) -> u32 {
+        self.demucs_shifts.unwrap_or(1).clamp(1, 8)
+    }
+
+    pub fn demucs_overlap_pct(&self) -> u32 {
+        self.demucs_overlap_pct.unwrap_or(25).clamp(1, 95)
+    }
+
     pub fn asr_engine(&self) -> &str {
         self.asr_engine.as_deref().unwrap_or("whisper")
     }
@@ -306,6 +348,15 @@ impl AppConfig {
         self.language_overrides
             .get_or_insert_with(HashMap::new)
             .insert(file_hash, lang);
+    }
+
+    pub fn clear_language_override(&mut self, file_hash: &str) {
+        if let Some(overrides) = self.language_overrides.as_mut() {
+            overrides.remove(file_hash);
+            if overrides.is_empty() {
+                self.language_overrides = None;
+            }
+        }
     }
 }
 

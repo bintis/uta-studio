@@ -8,6 +8,16 @@ fn main() {
     unsafe {
         std::env::set_var("__GL_THREADED_OPTIMIZATIONS", "0");
         std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+
+        // COSMIC can terminate this client's Vulkan Wayland connection while
+        // the surface is being updated. GLES still renders through native
+        // Wayland and avoids that Vulkan presentation path. Preserve an
+        // explicit user/backend override for diagnostics and future drivers.
+        let is_cosmic = std::env::var("XDG_CURRENT_DESKTOP")
+            .is_ok_and(|desktop| desktop.to_ascii_lowercase().contains("cosmic"));
+        if is_cosmic && std::env::var_os("WGPU_BACKEND").is_none() {
+            std::env::set_var("WGPU_BACKEND", "gl");
+        }
     }
 
     if let Err(error) = app_core::startup() {

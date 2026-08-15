@@ -146,7 +146,14 @@ def _transcribe_nemo_with_fallback(
         "[uta-studio:LOG] Parakeet NeMo OOM'd twice; falling back to ONNX on CPU",
         flush=True,
     )
-    progress(60, "Transcribing with Parakeet v3 (onnx, CPU fallback)...")
+    progress(
+        60,
+        "Transcribing with Parakeet v3 (onnx, CPU fallback)...",
+        requested_device="cuda",
+        actual_device="cpu",
+        fallback_from="cuda",
+        fallback_reason="Parakeet NeMo exhausted CUDA memory after two attempts",
+    )
     hard_free_gpu("parakeet_nemo_to_onnx_fallback")
     return _transcribe_onnx(vocals_path), "onnx-cpu-fallback"
 

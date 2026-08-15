@@ -91,14 +91,28 @@ def align_lyrics(
                 "falling back to WhisperX alignment",
                 flush=True,
             )
-            progress(81, f"MMS Karaoke unavailable: {e}; using WhisperX")
+            progress(
+                81,
+                f"MMS Karaoke unavailable: {e}; using WhisperX",
+                implementation="WhisperX",
+                model=cjk.align_model_for(language) or "WhisperX alignment model",
+                backend_fallback_from="MMS Karaoke",
+                backend_fallback_reason=str(e),
+            )
         except Exception as e:
             print(
                 f"[uta-studio:LOG] MMS Karaoke failed ({e}); "
                 "falling back to WhisperX alignment",
                 flush=True,
             )
-            progress(81, "MMS Karaoke failed; using WhisperX fallback")
+            progress(
+                81,
+                "MMS Karaoke failed; using WhisperX fallback",
+                implementation="WhisperX",
+                model=cjk.align_model_for(language) or "WhisperX alignment model",
+                backend_fallback_from="MMS Karaoke",
+                backend_fallback_reason=str(e),
+            )
         else:
             if mms_segments:
                 progress(90, f"MMS Karaoke alignment complete: {len(mms_segments)} segments")
@@ -114,7 +128,14 @@ def align_lyrics(
                 "falling back to WhisperX alignment",
                 flush=True,
             )
-            progress(81, "MMS Karaoke returned no timings; using WhisperX fallback")
+            progress(
+                81,
+                "MMS Karaoke returned no timings; using WhisperX fallback",
+                implementation="WhisperX",
+                model=cjk.align_model_for(language) or "WhisperX alignment model",
+                backend_fallback_from="MMS Karaoke",
+                backend_fallback_reason="MMS Karaoke returned no usable timings",
+            )
 
     import qwen_align
     if requested_backend == "qwen" and qwen_align.is_supported(language):
@@ -130,6 +151,14 @@ def align_lyrics(
         print(
             "[uta-studio:LOG] Qwen lyrics alignment unavailable; falling back to wav2vec2 path",
             flush=True,
+        )
+        progress(
+            81,
+            "Qwen lyrics alignment unavailable; continuing with WhisperX...",
+            implementation="WhisperX",
+            model=cjk.align_model_for(language) or "WhisperX alignment model",
+            backend_fallback_from="Qwen3 ForcedAligner",
+            backend_fallback_reason="Qwen alignment returned no usable timings",
         )
 
     line_token_pairs: list[list[tuple[str, str]]] | None = None
@@ -166,7 +195,13 @@ def align_lyrics(
         print(f"[uta-studio:LOG] First segment: '{segments[0]['text'][:100]}'", flush=True)
         print(f"[uta-studio:LOG] Last segment: '{segments[-1]['text'][:100]}'", flush=True)
 
-    return {"language": language, "segments": segments, "source": "lyrics"}
+    return {
+        "language": language,
+        "segments": segments,
+        "source": "lyrics",
+        "alignment_backend_requested": requested_backend,
+        "alignment_backend_used": "whisperx",
+    }
 
 def _normalize(word: str) -> str:
     return re.sub(r"[^\w]", "", word).lower()

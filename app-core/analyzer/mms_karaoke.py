@@ -196,6 +196,58 @@ def prepare_line(line: str) -> tuple[str, list[dict]]:
     return _display_text(line), display_tokens
 
 
+def _timed_display_characters(token: dict) -> list[dict]:
+    """Project aligned pronunciation-unit spans onto display characters.
+
+    MMS aligns Latin pronunciation units, while the editor's Japanese timing
+    contract is one entry per displayed character. A morpheme can have a
+    different number of pronunciation units and glyphs, so contiguous units
+    are assigned proportionally. When there are fewer units than glyphs, the
+    acoustic span is subdivided rather than duplicating one coarse timestamp.
+    """
+    surface = str(token.get("surface", ""))
+    characters = [char for char in surface if not char.isspace()]
+    timings = token.get("timings", [])
+    units = token.get("units", [])
+    if not characters:
+        return []
+    if not timings:
+        return [{"word": surface, "_punct": True}]
+
+    entries: list[dict] = []
+    character_count = len(characters)
+    timing_count = len(timings)
+    total_start = float(timings[0][0])
+    total_end = max(total_start, float(timings[-1][1]))
+
+    for index, character in enumerate(characters):
+        if timing_count >= character_count:
+            first = index * timing_count // character_count
+            last = max(first + 1, (index + 1) * timing_count // character_count)
+            selected = timings[first:last]
+            start = float(selected[0][0])
+            end = max(start, float(selected[-1][1]))
+            score = sum(float(value[2]) for value in selected) / len(selected)
+            reading = "".join(units[first:last])
+        else:
+            start = total_start + (total_end - total_start) * index / character_count
+            end = total_start + (total_end - total_start) * (index + 1) / character_count
+            nearest = min(timing_count - 1, index * timing_count // character_count)
+            score = float(timings[nearest][2])
+            reading = units[nearest] if nearest < len(units) else ""
+
+        entry = {
+            "word": character,
+            "start": start,
+            "end": max(start, end),
+            "score": score,
+        }
+        if reading:
+            entry["reading"] = reading
+        entries.append(entry)
+    return entries
+
+
 def detect_activity_ranges(
     audio: np.ndarray,
     sample_rate: int = SAMPLE_RATE,
@@ -352,20 +404,7 @@ def _load_and_align(
     for text, tokens in prepared_lines:
         entries: list[dict] = []
         for token in tokens:
-            timings = token.get("timings", [])
-            if not timings:
-                entries.append({"word": token["surface"], "_punct": True})
-                continue
-            entry = {
-                "word": token["surface"],
-                "start": timings[0][0],
-                "end": timings[-1][1],
-                "score": sum(value[2] for value in timings) / len(timings),
-            }
-            reading = "".join(token["units"])
-            if reading:
-                entry["reading"] = reading
-            entries.append(entry)
+            entries.extend(_timed_display_characters(token))
         words = cjk.merge_punct(entries)
         words = [
             word

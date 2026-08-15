@@ -84,6 +84,7 @@ def transcribe_vocals(
                     full_audio=full_audio,
                     vocal_start=vocal_start,
                     language_override=language_override,
+                    model_name=model_name,
                 )
                 engine_used = "openvino-whisper-gpu"
             except Exception as exc:
@@ -94,6 +95,18 @@ def transcribe_vocals(
                 print(
                     f"[uta-studio:LOG] OpenVINO Whisper GPU failed ({exc}); falling back to CPU Whisper",
                     flush=True,
+                )
+                progress(
+                    60,
+                    "OpenVINO Whisper failed; continuing with CPU Whisper...",
+                    requested_device="xpu",
+                    actual_device="cpu",
+                    fallback_from="xpu",
+                    fallback_reason=f"OpenVINO Whisper GPU failed: {exc}",
+                    implementation="WhisperX",
+                    model=model_name,
+                    backend_fallback_from="OpenVINO Whisper",
+                    backend_fallback_reason=str(exc),
                 )
                 raw_segments, language = _transcribe_whisper(
                     audio=audio,
@@ -124,7 +137,8 @@ def transcribe_vocals(
             engine_used = "whisper"
 
     return _build_result_from_raw_segments(
-        raw_segments, full_audio, language, duration_secs, device, pre_align_cleanup, engine_used,
+        raw_segments, full_audio, language, duration_secs, requested_device,
+        pre_align_cleanup, engine_used,
     )
 
 
@@ -234,7 +248,14 @@ def _transcribe_whisper(
 
         print(f"[uta-studio:LOG] Model ready for lang={language}", flush=True)
 
-        progress(60, "Transcribing vocals...")
+        progress(
+            60,
+            "Transcribing vocals...",
+            implementation="WhisperX",
+            model=model_name,
+            requested_device=device,
+            actual_device=device,
+        )
         result = model.transcribe(
             audio,
             batch_size=batch_size,
@@ -252,7 +273,7 @@ def _transcribe_whisper(
 
 
 def _transcribe_openvino_whisper(
-    *, audio, full_audio, vocal_start, language_override,
+    *, audio, full_audio, vocal_start, language_override, model_name,
 ) -> tuple[list[dict], str]:
     """Prefer the official OpenVINO Whisper GPU pipeline on Intel Arc."""
     import openvino_whisper
@@ -276,7 +297,14 @@ def _transcribe_openvino_whisper(
         print(f"[uta-studio:LOG] Final detected language: '{language}'", flush=True)
         progress(59, f"Detected language: {language}")
 
-    progress(60, "Transcribing vocals on Intel GPU (OpenVINO Whisper)...")
+    progress(
+        60,
+        "Transcribing vocals on Intel GPU (OpenVINO Whisper)...",
+        implementation="OpenVINO Whisper",
+        model=model_name,
+        requested_device="xpu",
+        actual_device="xpu",
+    )
     raw_segments = openvino_whisper.transcribe(audio, language)
     for seg in raw_segments:
         seg["start"] = round(seg.get("start", 0) + vocal_start, 3)
@@ -314,6 +342,14 @@ def _transcribe_parakeet_or_fallback(
             f"[uta-studio:LOG] Language '{language}' not in Parakeet's supported set; falling back to Whisper",
             flush=True,
         )
+        progress(
+            60,
+            f"Parakeet does not support {language}; continuing with Whisper...",
+            implementation="Whisper",
+            model=model_name,
+            backend_fallback_from="Parakeet v3",
+            backend_fallback_reason=f"Language '{language}' is unsupported by Parakeet",
+        )
         hard_free_gpu("parakeet_unsupported_lang")
         raw_segments, language = _transcribe_whisper(
             audio=audio, full_audio=full_audio, vocal_start=vocal_start,
@@ -335,6 +371,14 @@ def _transcribe_parakeet_or_fallback(
         print(
             f"[uta-studio:LOG] {e}; falling back to Whisper for this song",
             flush=True,
+        )
+        progress(
+            60,
+            "Parakeet returned no words; continuing with Whisper...",
+            implementation="Whisper",
+            model=model_name,
+            backend_fallback_from="Parakeet v3",
+            backend_fallback_reason=str(e),
         )
         hard_free_gpu("parakeet_empty_output")
         raw_segments, language = _transcribe_whisper(
@@ -385,6 +429,14 @@ def _align_and_build(raw_segments: list[dict], audio, language: str, device: str
             "[uta-studio:LOG] Qwen alignment unavailable; falling back to wav2vec2 path",
             flush=True,
         )
+        progress(
+            81,
+            "Qwen alignment unavailable; continuing with WhisperX...",
+            implementation="WhisperX",
+            model=cjk.align_model_for(language) or "WhisperX alignment model",
+            backend_fallback_from="Qwen3 ForcedAligner",
+            backend_fallback_reason="Qwen alignment returned no usable timings",
+        )
 
     if is_cjk:
         cleaned: list[dict] = []
@@ -407,7 +459,18 @@ def _align_and_build(raw_segments: list[dict], audio, language: str, device: str
     total_input_words = sum(len(s.get("text", "").split()) for s in raw_segments)
     print(f"[uta-studio:LOG] Pre-alignment: {len(raw_segments)} segments, {total_input_words} words total", flush=True)
 
-    progress(80, f"Aligning word timestamps (lang={language})...")
+    progress(
+        80,
+        f"Aligning word timestamps (lang={language})...",
+        implementation="torchaudio CTC"
+        if get_align_backend() == "ctc" else "WhisperX",
+        model=cjk.align_model_for(language) or "WhisperX language alignment model",
+        requested_device=device,
+        actual_device=align_device,
+        fallback_from=device if align_device != device else None,
+        fallback_reason="The selected word aligner does not support this accelerator"
+        if align_device != device else None,
+    )
     result = align_with_fallback(
         raw_segments, audio, cjk.align_lang_code(language), align_device, pre_align_cleanup,
         model_name=cjk.align_model_for(language),

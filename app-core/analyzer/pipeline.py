@@ -83,35 +83,64 @@ def _separator_marker_path(output_dir, file_hash):
     return os.path.join(output_dir, f"{file_hash}_separator.json")
 
 
-def _cached_separator_matches(output_dir, file_hash, separator):
+def _active_separator_options(separator, options):
+    options = options or {}
+    if separator == "karaoke":
+        segment_size = options.get("segment_size")
+        return {
+            "segment_size": None if segment_size is None else max(64, min(1024, int(segment_size))),
+            "overlap": max(2, min(32, int(options.get("overlap", 8)))),
+            "batch_size": max(1, min(8, int(options.get("batch_size", 1)))),
+            "normalization_pct": max(1, min(100, int(options.get("normalization_pct", 90)))),
+        }
+    if separator == "demucs":
+        return {
+            "shifts": max(1, min(8, int(options.get("demucs_shifts", 1)))),
+            "overlap_pct": max(1, min(95, int(options.get("demucs_overlap_pct", 25)))),
+        }
+    return {}
+
+
+def _cached_separator_matches(output_dir, file_hash, separator, options):
     try:
         with open(_separator_marker_path(output_dir, file_hash), encoding="utf-8") as marker:
-            return json.load(marker).get("separator") == separator
+            data = json.load(marker)
+            return data.get("separator") == separator and data.get("options", {}) == options
     except (OSError, ValueError, AttributeError):
         return False
 
 
-def _write_separator_marker(output_dir, file_hash, separator):
+def _write_separator_marker(output_dir, file_hash, separator, options):
     path = _separator_marker_path(output_dir, file_hash)
     with open(path, "w", encoding="utf-8") as marker:
-        json.dump({"separator": separator}, marker)
+        json.dump({"separator": separator, "options": options}, marker)
 
 
-def separate_and_cache(audio_path, output_dir, file_hash, separator, device, key, tempo, free_gpu_fn=None):
+def separate_and_cache(
+    audio_path, output_dir, file_hash, separator, device, key, tempo,
+    separator_options=None, free_gpu_fn=None,
+):
     """Run stem separation or reuse cached stems. Returns the vocals path."""
+    progress(4, "Inspecting source codec and cache format...")
     key_safe = sanitize_key(key)
     tempo_safe = format_tempo(tempo)
     lossless = source_is_lossless(audio_path)
     cache_extension = "flac" if lossless else "mp3"
     final_vocals = os.path.join(output_dir, f"{file_hash}_vocals_{key_safe}_{tempo_safe}.{cache_extension}")
     final_instrumental = os.path.join(output_dir, f"{file_hash}_instrumental_{key_safe}_{tempo_safe}.{cache_extension}")
+    active_options = _active_separator_options(separator, separator_options)
 
     if (
         os.path.isfile(final_vocals)
         and os.path.isfile(final_instrumental)
-        and _cached_separator_matches(output_dir, file_hash, separator)
+        and _cached_separator_matches(output_dir, file_hash, separator, active_options)
     ):
-        progress(50, "Stems already cached, skipping separation")
+        progress(
+            50,
+            "Stems already cached, skipping separation",
+            requested_device="cache",
+            actual_device="cache",
+        )
         return final_vocals
 
     with tempfile.TemporaryDirectory(prefix="uta_studio_") as work_dir:
@@ -123,16 +152,24 @@ def separate_and_cache(audio_path, output_dir, file_hash, separator, device, key
             models_base = os.path.dirname(torch_home) if torch_home else output_dir
             uvr_models_dir = os.path.join(models_base, "audio_separator")
             os.makedirs(uvr_models_dir, exist_ok=True)
-            vp, ip = separate_stems_uvr(audio_path, work_dir, uvr_models_dir)
+            vp, ip = separate_stems_uvr(
+                audio_path, work_dir, uvr_models_dir, device, active_options,
+            )
         elif separator == "openvino_demucs":
             vp, ip = separate_stems_openvino_demucs(audio_path, work_dir, os.environ.get("OPENVINO_SEPARATOR_MODEL_DIR", output_dir))
         else:
-            vp, ip = separate_stems(audio_path, work_dir, device)
+            vp, ip = separate_stems(
+                audio_path,
+                work_dir,
+                device,
+                shifts=active_options.get("shifts", 1),
+                overlap=active_options.get("overlap_pct", 25) / 100.0,
+            )
         progress(51, "Saving stems to cache...")
         convert_to_cache_audio(vp, final_vocals, lossless=lossless)
         convert_to_cache_audio(ip, final_instrumental, lossless=lossless)
 
-    _write_separator_marker(output_dir, file_hash, separator)
+    _write_separator_marker(output_dir, file_hash, separator, active_options)
 
     if free_gpu_fn:
         free_gpu_fn()
@@ -173,7 +210,7 @@ def transcribe_or_align(
 def run_pipeline(
     audio_path, output_dir, file_hash, device, *,
     model_name="large-v3", beam_size=5, batch_size=16,
-    separator="karaoke", engine="whisper",
+    separator="karaoke", separator_options=None, engine="whisper",
     lyrics_path=None, language_override=None,
     whisper_model=None, pre_align_cleanup=None, free_gpu_fn=None,
     skip_transcription=False,
@@ -198,10 +235,12 @@ def run_pipeline(
         progress(100, "Already analyzed, skipping")
         return
 
+    progress(1, "Inspecting source audio and existing analysis cache...")
     progress(2, f"Using device: {device}")
 
     try:
         log_vram("phase:start")
+        progress(3, "Detecting musical key with chroma analysis...")
         detected_key = detect_key(audio_path)
         tempo = 1.0
 
@@ -211,6 +250,7 @@ def run_pipeline(
                 audio_path, output_dir, file_hash, separator, device,
                 key=detected_key,
                 tempo=tempo,
+                separator_options=separator_options,
                 free_gpu_fn=free_gpu_fn,
             )
             log_vram("phase:after_separation")
@@ -218,16 +258,25 @@ def run_pipeline(
         # A failed guide must not make an otherwise playable karaoke analysis
         # fail. Existing pitchy-based reference detection remains the runtime
         # fallback for songs without these cache files.
-        if vocals_path and not pitch_ready:
+        if vocals_path and pitch_ready:
+            progress(
+                54,
+                "Pitch guide already cached, skipping extraction",
+                implementation="RMVPE",
+                model="RMVPE singing pitch model",
+                requested_device="cache",
+                actual_device="cache",
+            )
+        elif vocals_path:
             try:
-                progress(62, "Extracting reference pitch...")
+                progress(52, "Extracting reference pitch...")
                 analyze_pitch(
                     vocals_path,
                     output_dir,
                     file_hash,
                     os.environ.get("PITCH_MODEL_DIR", os.path.join(output_dir, "pitch-model")),
                 )
-                progress(67, "Building singing guide...")
+                progress(54, "Building singing guide...")
             except Exception as e:
                 print(f"[uta-studio:LOG] Pitch guide unavailable: {e}", flush=True)
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -42,9 +42,84 @@ pub struct AnalysisTask {
     pub title: String,
     pub artist: String,
     pub status: QueuedStatus,
+    pub live: Option<AnalysisProgressSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AnalysisProgressSnapshot {
+    pub stage: String,
+    pub stage_progress: usize,
+    pub operation: String,
+    pub detail: String,
+    pub implementation: String,
+    pub model: String,
+    pub device: String,
+    pub requested_device: String,
+    pub fallback_from: Option<String>,
+    pub fallback_reason: Option<String>,
+    pub backend_fallback_from: Option<String>,
+    pub backend_fallback_reason: Option<String>,
+    pub stage_routes: Vec<AnalysisStageRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AnalysisStageRoute {
+    pub stage: String,
+    pub operation: String,
+    pub implementation: String,
+    pub model: String,
+    pub stage_progress: usize,
+    pub requested_device: String,
+    pub actual_device: String,
+    pub fallback_from: Option<String>,
+    pub fallback_reason: Option<String>,
+    pub backend_fallback_from: Option<String>,
+    pub backend_fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AnalysisRunHistory {
+    pub id: i64,
+    pub file_hash: String,
+    pub title: String,
+    pub artist: String,
+    pub status: String,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub error_message: Option<String>,
+    pub snapshot: AnalysisProgressSnapshot,
+}
+
+pub fn load_analysis_history(limit: usize) -> Vec<AnalysisRunHistory> {
+    library_db::analysis_history_load(limit)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| {
+            let snapshot = serde_json::from_str(&row.snapshot_json).ok()?;
+            Some(AnalysisRunHistory {
+                id: row.id,
+                file_hash: row.file_hash,
+                title: row.title,
+                artist: row.artist,
+                status: row.status,
+                started_at_ms: row.started_at_ms,
+                finished_at_ms: row.finished_at_ms,
+                error_message: row.error_message,
+                snapshot,
+            })
+        })
+        .collect()
+}
+
+pub fn clear_analysis_history() -> Result<(), String> {
+    library_db::analysis_history_clear().map_err(|error| error.to_string())
 }
 
 pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
+    let live = LIVE_ANALYSIS.lock().unwrap().clone();
     let mut tasks = AnalysisQueue::load()
         .entries
         .into_iter()
@@ -59,6 +134,7 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
                     .as_ref()
                     .map(|song| song.artist.clone())
                     .unwrap_or_else(|| "Unknown artist".into()),
+                live: live.get(&file_hash).cloned(),
                 file_hash,
                 status,
             }
@@ -432,6 +508,51 @@ static ANALYZER: LazyLock<Mutex<AnalyzerState>> = LazyLock::new(|| {
     })
 });
 
+static LIVE_ANALYSIS: LazyLock<Mutex<HashMap<String, AnalysisProgressSnapshot>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static ANALYSIS_STARTED: LazyLock<Mutex<HashMap<String, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn unix_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+fn finish_analysis_history(file_hash: &str, status: &str, error_message: Option<&str>) {
+    let Some(started_at_ms) = ANALYSIS_STARTED.lock().unwrap().remove(file_hash) else {
+        return;
+    };
+    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
+        return;
+    };
+    let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get(file_hash).cloned() else {
+        return;
+    };
+    let Ok(snapshot_json) = serde_json::to_string(&snapshot) else {
+        return;
+    };
+    let _ = library_db::analysis_history_insert(
+        file_hash,
+        &song.title,
+        &song.artist,
+        status,
+        started_at_ms,
+        unix_time_ms(),
+        &snapshot_json,
+        error_message,
+    );
+}
+
+fn update_live_analysis(file_hash: &str, snapshot: AnalysisProgressSnapshot) {
+    LIVE_ANALYSIS
+        .lock()
+        .unwrap()
+        .insert(file_hash.to_string(), snapshot);
+}
+
 static FORCE_TRANSCRIBE: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -457,6 +578,9 @@ fn update_queue_status(file_hash: &str, status: QueuedStatus) {
         QueuedStatus::Failed(s) => ("failed", None, Some(s.clone())),
     };
     let _ = library_db::analysis_queue_upsert_row(file_hash, st, pct, msg.as_deref());
+    if let QueuedStatus::Failed(message) = &status {
+        finish_analysis_history(file_hash, "failed", Some(message));
+    }
 }
 
 fn remove_from_queue(file_hash: &str) {
@@ -776,6 +900,17 @@ fn materialize_lyrics_from_transcript(cache: &CacheDir, file_hash: &str) {
     }
 }
 
+fn normalize_analysis_language(language: &str) -> String {
+    let normalized = language.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "jp" | "jpn" => "ja".into(),
+        "eng" => "en".into(),
+        "kor" => "ko".into(),
+        "chi" | "zho" | "cn" | "zh-cn" | "zh-tw" => "zh".into(),
+        _ => normalized,
+    }
+}
+
 // ─── Worker ──────────────────────────────────────────────────────────
 
 fn spawn_worker() {
@@ -807,6 +942,29 @@ fn spawn_worker() {
 }
 
 fn process_song(initial_hash: &str, cache: &CacheDir) {
+    ANALYSIS_STARTED
+        .lock()
+        .unwrap()
+        .insert(initial_hash.to_string(), unix_time_ms());
+    update_queue_status(initial_hash, QueuedStatus::Analyzing(0));
+    update_live_analysis(
+        initial_hash,
+        AnalysisProgressSnapshot {
+            stage: "preparing".into(),
+            stage_progress: 0,
+            operation: "Validating source media".into(),
+            detail: "Checking the source before the analysis runtime starts.".into(),
+            implementation: "Uta Studio native preflight".into(),
+            model: "Source validation".into(),
+            device: "CPU".into(),
+            requested_device: "CPU".into(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            stage_routes: Vec::new(),
+        },
+    );
     let Some(song) = library_db::load_song_by_hash(initial_hash).ok().flatten() else {
         warn!("[analyzer] Song with hash {initial_hash} not found in store, skipping");
         return;
@@ -824,6 +982,23 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         }
     };
     let file_hash = file_hash_owned.as_str();
+
+    if file_hash != initial_hash {
+        let snapshot = LIVE_ANALYSIS.lock().unwrap().remove(initial_hash);
+        if let Some(snapshot) = snapshot {
+            LIVE_ANALYSIS
+                .lock()
+                .unwrap()
+                .insert(file_hash.to_string(), snapshot);
+        }
+        let started = ANALYSIS_STARTED.lock().unwrap().remove(initial_hash);
+        if let Some(started) = started {
+            ANALYSIS_STARTED
+                .lock()
+                .unwrap()
+                .insert(file_hash.to_string(), started);
+        }
+    }
 
     info!(
         "[analyzer] Starting analysis: {} (hash={})",
@@ -870,6 +1045,14 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         "beam_size": config.beam_size(),
         "batch_size": config.batch_size(),
         "separator": config.separator(),
+        "separator_options": {
+            "segment_size": config.separator_segment_size,
+            "overlap": config.separator_overlap(),
+            "batch_size": config.separator_batch_size(),
+            "normalization_pct": config.separator_normalization_pct(),
+            "demucs_shifts": config.demucs_shifts(),
+            "demucs_overlap_pct": config.demucs_overlap_pct(),
+        },
         "engine": config.asr_engine(),
         "align_backend": config.align_backend(),
         "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
@@ -886,6 +1069,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         .language_override(file_hash)
         .map(str::to_string)
         .or_else(|| lyrics_path.as_ref().and_then(|_| song.language.clone()))
+        .map(|language| normalize_analysis_language(&language))
         .filter(|lang| {
             // "unknown"/empty is not a real language: passing it as a forced
             // alignment language crashes whisperx, so let the worker detect it.
@@ -954,7 +1138,6 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
 fn finalize_song(file_hash: &str, cache: &CacheDir) {
     if cache.transcript_exists(file_hash) {
         let meta = read_transcript_meta(cache, file_hash);
-        remove_from_queue(file_hash);
         update_song_analyzed(
             file_hash,
             true,
@@ -963,6 +1146,23 @@ fn finalize_song(file_hash: &str, cache: &CacheDir) {
             meta.key,
             Some(meta.tempo),
         );
+        if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
+            snapshot.stage = "complete".into();
+            snapshot.stage_progress = 100;
+            snapshot.operation = "Analysis complete".into();
+            snapshot.detail = "All requested analysis stages completed successfully.".into();
+            if let Some(route) = snapshot
+                .stage_routes
+                .iter_mut()
+                .find(|route| route.stage == "finalizing")
+            {
+                route.stage_progress = 100;
+                route.operation = "Analysis complete".into();
+            }
+        }
+        finish_analysis_history(file_hash, "completed", None);
+        remove_from_queue(file_hash);
+        LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
         info!("[analyzer] Analysis complete for {file_hash}");
     } else {
         update_queue_status(
@@ -1052,6 +1252,14 @@ fn run_key_pass(
         "beam_size": config.beam_size(),
         "batch_size": config.batch_size(),
         "separator": config.separator(),
+        "separator_options": {
+            "segment_size": config.separator_segment_size,
+            "overlap": config.separator_overlap(),
+            "batch_size": config.separator_batch_size(),
+            "normalization_pct": config.separator_normalization_pct(),
+            "demucs_shifts": config.demucs_shifts(),
+            "demucs_overlap_pct": config.demucs_overlap_pct(),
+        },
         "engine": config.asr_engine(),
         "align_backend": config.align_backend(),
         "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
@@ -1126,6 +1334,30 @@ enum ServerEvent {
         pct: u32,
         #[serde(default)]
         msg: String,
+        #[serde(default)]
+        stage: String,
+        #[serde(default)]
+        stage_progress: usize,
+        #[serde(default)]
+        operation: String,
+        #[serde(default)]
+        implementation: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        device: String,
+        #[serde(default)]
+        requested_device: String,
+        #[serde(default)]
+        fallback_from: Option<String>,
+        #[serde(default)]
+        fallback_reason: Option<String>,
+        #[serde(default)]
+        backend_fallback_from: Option<String>,
+        #[serde(default)]
+        backend_fallback_reason: Option<String>,
+        #[serde(default)]
+        stage_routes: Vec<AnalysisStageRoute>,
     },
     Done,
     Error {
@@ -1170,11 +1402,44 @@ fn send_and_monitor(
         };
 
         match event {
-            ServerEvent::Progress { pct, msg } => {
+            ServerEvent::Progress {
+                pct,
+                msg,
+                stage,
+                stage_progress,
+                operation,
+                implementation,
+                model,
+                device,
+                requested_device,
+                fallback_from,
+                fallback_reason,
+                backend_fallback_from,
+                backend_fallback_reason,
+                stage_routes,
+            } => {
                 if !msg.is_empty() {
                     info!("[analyzer] progress {pct}% {msg}");
                 }
                 if let Some(hash) = progress_hash {
+                    update_live_analysis(
+                        hash,
+                        AnalysisProgressSnapshot {
+                            stage,
+                            stage_progress,
+                            operation,
+                            detail: msg,
+                            implementation,
+                            model,
+                            device,
+                            requested_device,
+                            fallback_from,
+                            fallback_reason,
+                            backend_fallback_from,
+                            backend_fallback_reason,
+                            stage_routes,
+                        },
+                    );
                     update_queue_status(hash, QueuedStatus::Analyzing(pct as usize));
                 }
             }
