@@ -174,6 +174,22 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
         .flat_map(|track| track.phrases.iter())
         .map(|phrase| phrase.notes.len())
         .sum();
+    // Pitch evidence is optional, but when it ships it must parse and must be
+    // declared as an optional feature rather than smuggled in.
+    let pitch_frames = match package.pitch_evidence() {
+        Ok(Some(evidence)) => {
+            if !manifest
+                .optional_features
+                .iter()
+                .any(|feature| feature == "pitch-evidence/1")
+            {
+                return Err("UTZ pitch evidence is undeclared".to_string());
+            }
+            evidence.frequency_hz.len()
+        }
+        Ok(None) => 0,
+        Err(error) => return Err(format!("UTZ pitch evidence is unreadable: {error}")),
+    };
     let audio_assets = [
         Some(&manifest.audio.instrumental),
         manifest.audio.guide_vocals.as_ref(),
@@ -218,7 +234,7 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
         return Err("An exported bundle has no decodable audio asset".to_string());
     }
     Ok(format!(
-        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), hashes valid, {} vocal track(s)/{charted_notes} note(s) validated); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)",
+        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), hashes valid, {} vocal track(s)/{charted_notes} note(s)/{pitch_frames} pitch frame(s) validated); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)",
         vocal_chart.tracks.len()
     ))
 }

@@ -14,8 +14,8 @@ use std::{
 use serde::Serialize;
 use ts_rs::TS;
 use utz::{
-    AssetRef, AssetSource, AudioAssets, ManifestV02, Provenance, SongMetadata, UtzPackage,
-    VOCAL_CHART_MEDIA_TYPE, VisualAssets,
+    AssetRef, AssetSource, AudioAssets, ManifestV02, PITCH_EVIDENCE_MEDIA_TYPE, Provenance,
+    SongMetadata, UtzPackage, VOCAL_CHART_MEDIA_TYPE, VisualAssets,
 };
 
 use crate::{
@@ -27,8 +27,11 @@ use crate::{
     error::UtaStudioError,
     library_db,
     library_model::SongsStore,
-    vocal_chart::load_authoring_chart,
+    vocal_chart::{load_authoring_chart, migrate_pitch_evidence},
 };
+
+/// Where frame-level pitch evidence lives inside a package.
+const PITCH_EVIDENCE_PATH: &str = "analysis/pitch-evidence.json";
 
 struct ExportAudioStaging(PathBuf);
 
@@ -222,6 +225,23 @@ where
         },
         AssetRef::pending("charts/vocal.json", VOCAL_CHART_MEDIA_TYPE),
     );
+    // Frame-level f0 travels as an optional asset: it is what the editor
+    // draws behind the notes, and the format is explicit that a game must
+    // never score against it or fold it back into a note target.
+    if let Some(evidence) = pitch_evidence(file_hash) {
+        sources.insert(
+            PITCH_EVIDENCE_PATH.into(),
+            AssetSource::Bytes(serde_json::to_vec(&evidence)?),
+        );
+        manifest.analysis.pitch_evidence = Some(AssetRef::pending(
+            PITCH_EVIDENCE_PATH,
+            PITCH_EVIDENCE_MEDIA_TYPE,
+        ));
+        manifest
+            .optional_features
+            .push("pitch-evidence/1".to_string());
+    }
+
     manifest.provenance = Provenance {
         generator: Some(format!("uta-studio/{}", env!("CARGO_PKG_VERSION"))),
         source: Some(file_hash.to_owned()),
@@ -331,6 +351,14 @@ fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
         missing.push("pitch_notes".into());
     }
     missing
+}
+
+/// Reads the analyzer's cached pitch track, if it produced one. A missing or
+/// unreadable track simply means the package ships without evidence.
+fn pitch_evidence(file_hash: &str) -> Option<utz::PitchEvidenceV1> {
+    let path = CacheDir::new().pitch_track_path(file_hash);
+    let bytes = std::fs::read(path).ok()?;
+    migrate_pitch_evidence(&serde_json::from_slice(&bytes).ok()?)
 }
 
 fn non_empty(value: String) -> Option<String> {
