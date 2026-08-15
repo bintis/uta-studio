@@ -118,6 +118,13 @@ pub struct ChartNote {
     /// Whether the note carries a pitch target at all. Rhythm and spoken notes
     /// render on a neutral row rather than a pitch row.
     pub pitched: bool,
+    /// The note contributes to the score in some way.
+    pub scores: bool,
+    /// The note is scored against its pitch target specifically.
+    pub scores_pitch: bool,
+    pub golden: bool,
+    /// The note holds a syllable that started on an earlier note.
+    pub continues_lyric: bool,
     pub lyric: Option<String>,
 }
 
@@ -364,6 +371,13 @@ impl EditorDocument {
                 midi: note.pitch.map(|pitch| pitch.midi as f64).unwrap_or(60.0),
                 kind: NoteKind::of(note),
                 pitched: note.pitch.is_some(),
+                scores: note.scoring.mode != ScoringMode::None,
+                scores_pitch: note.scoring.mode == ScoringMode::Pitch,
+                golden: note.bonus == NoteBonus::Golden,
+                continues_lyric: note
+                    .lyrics
+                    .iter()
+                    .any(|token| matches!(token, LyricToken::Continuation { .. })),
                 lyric: note.lyrics.iter().find_map(|token| match token {
                     LyricToken::Text(token) => Some(token.text.clone()),
                     LyricToken::Continuation { .. } => None,
@@ -1432,6 +1446,44 @@ impl EditorDocument {
             self.touch();
         }
         repaired
+    }
+
+    /// Reports what is wrong with the chart, located so the editor can jump to
+    /// it. See [`super::problems`] for why editing tolerates these instead of
+    /// refusing the edit.
+    pub fn problems(&self) -> super::ProblemReport {
+        super::problems::report(self)
+    }
+
+    /// Continuation tokens with no text token to continue, as (id, time). The
+    /// format requires every reference to resolve inside its track.
+    pub(crate) fn unresolved_continuations(&self) -> Vec<(String, f64)> {
+        let Some(track) = self.active_track() else {
+            return Vec::new();
+        };
+        let mut texts = HashSet::new();
+        for phrase in &track.phrases {
+            for note in &phrase.notes {
+                for token in &note.lyrics {
+                    if let LyricToken::Text(token) = token {
+                        texts.insert(token.id.as_str());
+                    }
+                }
+            }
+        }
+        let mut unresolved = Vec::new();
+        for phrase in &track.phrases {
+            for note in &phrase.notes {
+                for token in &note.lyrics {
+                    if let LyricToken::Continuation { continuation_of } = token
+                        && !texts.contains(continuation_of.as_str())
+                    {
+                        unresolved.push((continuation_of.clone(), self.to_seconds(note.start)));
+                    }
+                }
+            }
+        }
+        unresolved
     }
 
     /// Every lyric address in the active track, in reading order.
