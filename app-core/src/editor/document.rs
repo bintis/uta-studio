@@ -66,7 +66,8 @@ impl NoteKind {
         }
     }
 
-    fn from_note(note: &VocalNote) -> Self {
+    /// Classifies a note the way the timeline and the UltraStar exporter see it.
+    pub fn of(note: &VocalNote) -> Self {
         match (note.vocal_mode, note.bonus) {
             (VocalMode::Rap, NoteBonus::Golden) => Self::GoldenRap,
             (VocalMode::Rap | VocalMode::Spoken, _) => Self::Rap,
@@ -361,7 +362,7 @@ impl EditorDocument {
                 start: self.to_seconds(note.start),
                 end: self.to_seconds(note.start.saturating_add(note.duration)),
                 midi: note.pitch.map(|pitch| pitch.midi as f64).unwrap_or(60.0),
-                kind: NoteKind::from_note(note),
+                kind: NoteKind::of(note),
                 pitched: note.pitch.is_some(),
                 lyric: note.lyrics.iter().find_map(|token| match token {
                     LyricToken::Text(token) => Some(token.text.clone()),
@@ -885,7 +886,7 @@ impl EditorDocument {
         let next = indices
             .iter()
             .find_map(|index| self.note_at(*index))
-            .map(|(_, note)| NoteKind::from_note(note).cycle())
+            .map(|(_, note)| NoteKind::of(note).cycle())
             .unwrap_or(NoteKind::Golden);
         self.set_note_kind(indices, next)
     }
@@ -908,7 +909,7 @@ impl EditorDocument {
                 offset: note.start.saturating_sub(origin),
                 duration: note.duration,
                 pitch: note.pitch,
-                kind: NoteKind::from_note(note),
+                kind: NoteKind::of(note),
                 weight: note.scoring.weight,
                 text: note.lyrics.iter().find_map(|token| match token {
                     LyricToken::Text(token) => Some(token.text.clone()),

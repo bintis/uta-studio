@@ -1,6 +1,6 @@
-//! UTZ 0.2 vocal-chart authoring model and legacy analyzer migration.
+//! UTZ 0.2 vocal-chart authoring model and analyzer import.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::{
     authoring::{load_pitch_guide, load_transcript},
@@ -14,7 +14,7 @@ use utz::{
 use crate::error::UtaStudioError;
 
 #[derive(Clone)]
-struct LegacyWord {
+struct AnalyzerWord {
     segment: usize,
     id: String,
     text: String,
@@ -66,8 +66,8 @@ pub fn migrate_analyzer_chart(
         .get("segments")
         .and_then(Value::as_array)
         .ok_or_else(|| UtaStudioError::Other("transcript.segments must be an array".into()))?;
-    let words = legacy_words(segments);
-    let mut notes = legacy_notes(pitch_notes)?;
+    let words = analyzer_words(segments);
+    let mut notes = analyzer_notes(pitch_notes)?;
 
     for word in words {
         let overlapping = notes
@@ -159,73 +159,7 @@ pub fn migrate_analyzer_chart(
     Ok(chart)
 }
 
-pub(crate) fn legacy_projections(chart: &VocalChartV1) -> (Value, Value) {
-    let mut segments = Vec::new();
-    let mut notes = Vec::new();
-    for track in &chart.tracks {
-        for phrase in &track.phrases {
-            let mut words = Vec::new();
-            let mut text = String::new();
-            let mut phrase_start = None::<f64>;
-            let mut phrase_end = None::<f64>;
-            for note in &phrase.notes {
-                let start = units_to_seconds_with_timebase(note.start, chart.timebase);
-                let end = units_to_seconds_with_timebase(
-                    note.start.saturating_add(note.duration),
-                    chart.timebase,
-                );
-                phrase_start = Some(phrase_start.map_or(start, |value| value.min(start)));
-                phrase_end = Some(phrase_end.map_or(end, |value| value.max(end)));
-                if let Some(pitch) = note.pitch {
-                    notes.push(json!({
-                        "id": note.id,
-                        "start": start,
-                        "end": end,
-                        "midi": pitch.midi,
-                        "confidence": 1.0,
-                        "kind": legacy_kind(note),
-                    }));
-                }
-                for token in &note.lyrics {
-                    let LyricToken::Text(token) = token else {
-                        continue;
-                    };
-                    let spaced = token.join_before == LyricJoin::Space;
-                    if spaced && !text.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(&token.text);
-                    // The legacy word encodes its join policy as a leading
-                    // space, which is what re-migration reads back.
-                    words.push(json!({
-                        "id": token.id,
-                        "word": if spaced { format!(" {}", token.text) } else { token.text.clone() },
-                        "start": start,
-                        "end": end,
-                    }));
-                }
-            }
-            if !words.is_empty() {
-                segments.push(json!({
-                    "id": phrase.id,
-                    "text": text,
-                    "start": phrase_start.unwrap_or(0.0),
-                    "end": phrase_end.unwrap_or(0.04),
-                    "words": words,
-                }));
-            }
-        }
-    }
-    (
-        json!({
-            "language": chart.language.clone().unwrap_or_default(),
-            "segments": segments,
-        }),
-        json!({ "format_version": 1, "notes": notes }),
-    )
-}
-
-fn legacy_words(segments: &[Value]) -> Vec<LegacyWord> {
+fn analyzer_words(segments: &[Value]) -> Vec<AnalyzerWord> {
     let mut result = Vec::new();
     for (segment_index, segment) in segments.iter().enumerate() {
         let segment_start = number(segment, "start").unwrap_or(0.0);
@@ -238,7 +172,7 @@ fn legacy_words(segments: &[Value]) -> Vec<LegacyWord> {
                 let end = number(word, "end")
                     .unwrap_or(segment_end)
                     .max(start + 0.001);
-                Some(LegacyWord {
+                Some(AnalyzerWord {
                     segment: segment_index,
                     id: word
                         .get("id")
@@ -255,7 +189,7 @@ fn legacy_words(segments: &[Value]) -> Vec<LegacyWord> {
         } else if let Some(text) = segment.get("text").and_then(Value::as_str)
             && !text.trim().is_empty()
         {
-            result.push(LegacyWord {
+            result.push(AnalyzerWord {
                 segment: segment_index,
                 id: format!("lyric-{}-1", segment_index + 1),
                 text: text.to_string(),
@@ -267,7 +201,7 @@ fn legacy_words(segments: &[Value]) -> Vec<LegacyWord> {
     result
 }
 
-fn legacy_notes(value: &Value) -> Result<Vec<MigratedNote>, UtaStudioError> {
+fn analyzer_notes(value: &Value) -> Result<Vec<MigratedNote>, UtaStudioError> {
     let values = value
         .get("notes")
         .and_then(Value::as_array)
@@ -350,7 +284,7 @@ fn ensure_non_overlapping(notes: &[MigratedNote]) -> Result<(), UtaStudioError> 
     Ok(())
 }
 
-fn text_token(word: &LegacyWord) -> LyricTextToken {
+fn text_token(word: &AnalyzerWord) -> LyricTextToken {
     let leading_space = word.text.chars().next().is_some_and(char::is_whitespace);
     LyricTextToken {
         id: word.id.clone(),
@@ -362,16 +296,6 @@ fn text_token(word: &LegacyWord) -> LyricTextToken {
         },
         reading: None,
         phonemes: None,
-    }
-}
-
-fn legacy_kind(note: &VocalNote) -> &'static str {
-    match (note.vocal_mode, note.bonus) {
-        (VocalMode::Rap, NoteBonus::Golden) => "golden_rap",
-        (VocalMode::Rap | VocalMode::Spoken, _) => "rap",
-        (VocalMode::Freestyle, _) | (_, _) if note.scoring.mode == ScoringMode::None => "freestyle",
-        (_, NoteBonus::Golden) => "golden",
-        _ => "normal",
     }
 }
 
@@ -400,8 +324,8 @@ fn units_to_seconds_with_timebase(value: u64, timebase: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{legacy_projections, migrate_analyzer_chart};
-    use utz::{LyricToken, NoteBonus, ScoringMode, VocalMode};
+    use super::migrate_analyzer_chart;
+    use utz::{LyricToken, ScoringMode};
 
     #[test]
     fn migrates_note_owned_lyrics_and_unpitched_words() {
@@ -430,33 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_round_trip_keeps_phrase_text_and_pitch() {
-        let transcript = serde_json::json!({
-            "language": "ja",
-            "segments": [{
-                "text": "歌詞",
-                "start": 0.0,
-                "end": 1.0,
-                "words": [
-                    {"word": "歌", "start": 0.0, "end": 0.5},
-                    {"word": "詞", "start": 0.5, "end": 1.0}
-                ]
-            }]
-        });
-        let notes = serde_json::json!({
-            "notes": [
-                {"start": 0.0, "end": 0.5, "midi": 60, "confidence": 1.0},
-                {"start": 0.5, "end": 1.0, "midi": 62, "confidence": 1.0}
-            ]
-        });
-        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
-        let (projected_transcript, projected_notes) = legacy_projections(&chart);
-        assert_eq!(projected_transcript["segments"][0]["text"], "歌詞");
-        assert_eq!(projected_notes["notes"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn rejects_overlapping_legacy_notes() {
+    fn rejects_overlapping_analyzer_notes() {
         let transcript = serde_json::json!({
             "language": "en",
             "segments": [{
@@ -476,7 +374,7 @@ mod tests {
             ]
         });
         let error = migrate_analyzer_chart(&transcript, &notes)
-            .expect_err("overlapping legacy notes must not migrate silently");
+            .expect_err("overlapping analyzer notes must not import silently");
         assert!(
             error.to_string().contains("overlap"),
             "unexpected error: {error}"
@@ -513,90 +411,5 @@ mod tests {
         assert_eq!(continuation_of, &head.id);
         // The reference must resolve inside the same track.
         chart.validate().unwrap();
-    }
-
-    #[test]
-    fn migration_is_stable_across_a_projection_round_trip() {
-        let transcript = serde_json::json!({
-            "language": "en",
-            "segments": [
-                {
-                    "text": "hello world",
-                    "start": 1.0,
-                    "end": 3.0,
-                    "words": [
-                        {"word": "hello", "start": 1.0, "end": 1.5},
-                        {"word": " world", "start": 2.0, "end": 2.5}
-                    ]
-                },
-                {
-                    "text": "again",
-                    "start": 4.0,
-                    "end": 5.0,
-                    "words": [{"word": "again", "start": 4.0, "end": 5.0}]
-                }
-            ]
-        });
-        let notes = serde_json::json!({
-            "notes": [
-                {"start": 1.0, "end": 1.5, "midi": 60, "confidence": 1.0, "kind": "normal"},
-                {"start": 2.0, "end": 2.5, "midi": 62, "confidence": 1.0, "kind": "golden"},
-                {"start": 4.0, "end": 5.0, "midi": 65, "confidence": 1.0, "kind": "normal"}
-            ]
-        });
-        let first = migrate_analyzer_chart(&transcript, &notes).unwrap();
-        let (projected_transcript, projected_notes) = legacy_projections(&first);
-        let second = migrate_analyzer_chart(&projected_transcript, &projected_notes).unwrap();
-        assert_eq!(
-            first, second,
-            "a projection round trip must not change the authoring model"
-        );
-    }
-
-    #[test]
-    fn note_kinds_survive_a_projection_round_trip() {
-        let transcript = serde_json::json!({
-            "language": "en",
-            "segments": [{
-                "text": "one two three",
-                "start": 0.0,
-                "end": 3.0,
-                "words": [
-                    {"word": "one", "start": 0.0, "end": 1.0},
-                    {"word": " two", "start": 1.0, "end": 2.0},
-                    {"word": " three", "start": 2.0, "end": 3.0}
-                ]
-            }]
-        });
-        let notes = serde_json::json!({
-            "notes": [
-                {"start": 0.0, "end": 1.0, "midi": 60, "confidence": 1.0, "kind": "golden"},
-                {"start": 1.0, "end": 2.0, "midi": 62, "confidence": 1.0, "kind": "rap"},
-                {"start": 2.0, "end": 3.0, "midi": 64, "confidence": 1.0, "kind": "golden_rap"}
-            ]
-        });
-        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
-        let migrated = &chart.tracks[0].phrases[0].notes;
-        assert_eq!(
-            (migrated[0].vocal_mode, migrated[0].bonus),
-            (VocalMode::Pitched, NoteBonus::Golden)
-        );
-        assert_eq!(
-            (migrated[1].vocal_mode, migrated[1].bonus),
-            (VocalMode::Rap, NoteBonus::Normal)
-        );
-        assert_eq!(
-            (migrated[2].vocal_mode, migrated[2].bonus),
-            (VocalMode::Rap, NoteBonus::Golden)
-        );
-
-        let (_, projected_notes) = legacy_projections(&chart);
-        let kinds = projected_notes["notes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|note| note["kind"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(kinds, ["golden", "rap", "golden_rap"]);
     }
 }

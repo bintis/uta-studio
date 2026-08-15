@@ -467,10 +467,10 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "editor",
-        "save_chart",
+        "save_vocal_chart",
         "mutation",
         false,
-        "Persist edited words and notes"
+        "Persist the edited vocal chart"
     ),
     capability!(
         "authoring",

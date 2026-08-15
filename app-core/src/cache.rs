@@ -218,6 +218,17 @@ impl CacheDir {
             .join(format!("{hash}_editor_{source}.{extension}"))
     }
 
+    /// Drops the authored chart so the next load rebuilds it from analyzer
+    /// output. Call this whenever transcription, alignment, or pitch analysis
+    /// is about to replace what the chart was authored from; otherwise the
+    /// stale chart would hide the new analysis.
+    pub fn invalidate_authored_chart(&self, hash: &str) {
+        let path = self.vocal_chart_path(hash);
+        if path.is_file() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     pub fn delete_transcript_variants(&self, hash: &str) {
         if let Ok(entries) = std::fs::read_dir(&self.path) {
             for entry in entries.flatten() {

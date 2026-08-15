@@ -1,8 +1,8 @@
 //! Editable chart boundary for Uta Studio.
 //!
-//! Analysis artifacts stay in their native, second-based representation. The
-//! editor writes only the authoritative transcript and note segmentation;
-//! target formats such as UltraStar are produced at export time.
+//! Analyzer output is an import source. The editor loads and saves the
+//! authoritative UTZ 0.2 vocal chart; target formats such as UltraStar are
+//! produced from it at export time.
 
 use std::{
     fs::OpenOptions,
@@ -20,7 +20,7 @@ use crate::{
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
     library_db,
-    vocal_chart::{legacy_projections, migrate_analyzer_chart},
+    vocal_chart::migrate_analyzer_chart,
 };
 
 fn playable_audio(
@@ -146,7 +146,7 @@ pub struct ChartDocument {
     /// never scoring data and is never written back into the chart.
     pub pitch_track: serde_json::Value,
     pub audio: ChartAudio,
-    /// Safe, in-memory compatibility repairs applied to legacy analyzer data.
+    /// Safe, in-memory repairs applied while importing analyzer output.
     /// Saving the chart persists these normalized timings.
     pub repaired_issues: Vec<String>,
 }
@@ -209,14 +209,14 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
         let repaired_timings = normalize_transcript_timings(&mut transcript);
         if repaired_timings > 0 {
             repaired_issues.push(format!(
-                "Repaired {repaired_timings} legacy lyric timing{}",
+                "Repaired {repaired_timings} analyzer lyric timing{}",
                 if repaired_timings == 1 { "" } else { "s" }
             ));
         }
         let repaired_notes = normalize_pitch_note_timings(&mut pitch_notes);
         if repaired_notes > 0 {
             repaired_issues.push(format!(
-                "Repaired {repaired_notes} legacy pitch note{}",
+                "Repaired {repaired_notes} analyzer pitch note{}",
                 if repaired_notes == 1 { "" } else { "s" }
             ));
         }
@@ -416,26 +416,6 @@ fn normalize_pitch_note_timings(value: &mut serde_json::Value) -> usize {
     repaired
 }
 
-pub fn save_chart(
-    file_hash: &str,
-    transcript: serde_json::Value,
-    pitch_notes: serde_json::Value,
-) -> Result<(), UtaStudioError> {
-    let song = library_db::load_song_by_hash(file_hash)
-        .map_err(|error| UtaStudioError::Other(error.to_string()))?
-        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
-    if song.key_offset != 0 || normalize_tempo(song.tempo) != 1.0 {
-        return Err(UtaStudioError::Other(
-            "Reset key and tempo before saving the source chart".into(),
-        ));
-    }
-
-    validate_transcript(&transcript)?;
-    validate_pitch_notes(&pitch_notes)?;
-    let vocal_chart = migrate_analyzer_chart(&transcript, &pitch_notes)?;
-    save_vocal_chart(file_hash, vocal_chart)
-}
-
 pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<(), UtaStudioError> {
     let song = library_db::load_song_by_hash(file_hash)
         .map_err(|error| UtaStudioError::Other(error.to_string()))?
@@ -449,16 +429,11 @@ pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<()
         .validate()
         .map_err(|error| UtaStudioError::Other(error.to_string()))?;
 
+    // The chart is the only thing an edit writes. Analyzer output stays as the
+    // untouched record of what the models produced.
     let cache = CacheDir::new();
     let vocal_json = serde_json::to_value(&vocal_chart)?;
     atomic_write_json(&cache.vocal_chart_path(file_hash), &vocal_json)?;
-
-    // Keep analyzer-era projections synchronized for compatibility with the
-    // current analysis and UltraStar paths. They are derived, never authority.
-    let (transcript, pitch_notes) = legacy_projections(&vocal_chart);
-    atomic_write_json(&cache.transcript_path(file_hash), &transcript)?;
-    atomic_write_json(&cache.pitch_notes_path(file_hash), &pitch_notes)?;
-    cache.delete_transcript_variants(file_hash);
     Ok(())
 }
 
