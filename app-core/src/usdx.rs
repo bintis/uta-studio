@@ -97,6 +97,9 @@ fn parse_usdx_str(content: &str) -> Result<UsdxFile, UtaStudioError> {
     let mut current: Vec<UsdxNote> = Vec::new();
     let mut line_offset: i64 = 0;
     let mut in_notes = false;
+    // Duet files split the body into `P1`/`P2` sections. Each player restarts
+    // the relative-timing cursor, and their phrases interleave in time.
+    let mut saw_player_marker = false;
 
     for raw in content.lines() {
         let line = raw.trim_end_matches('\r');
@@ -173,12 +176,26 @@ fn parse_usdx_str(content: &str) -> Result<UsdxFile, UtaStudioError> {
                 }
             }
             'E' => break,
+            'P' => {
+                if trimmed[1..].trim().chars().all(|c| c.is_ascii_digit()) && trimmed.len() > 1 {
+                    if !current.is_empty() {
+                        phrases.push(std::mem::take(&mut current));
+                    }
+                    line_offset = 0;
+                    saw_player_marker = true;
+                }
+            }
             _ => continue,
         }
     }
 
     if !current.is_empty() {
         phrases.push(current);
+    }
+    if saw_player_marker {
+        // The players sang at the same time, so the merged transcript has to
+        // read in time order rather than player order.
+        phrases.sort_by_key(|phrase| phrase.first().map(|note| note.beat).unwrap_or(0));
     }
 
     let title = title.ok_or_else(|| UtaStudioError::Other("Missing #TITLE tag".into()))?;
@@ -636,4 +653,37 @@ pub fn build_usdx_song(path: &Path, cache: &CacheDir) -> Result<Song, UtaStudioE
     };
 
     Ok(song)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duet_players_merge_into_one_time_ordered_transcript() {
+        let file = parse_usdx_str(
+            "#TITLE:Duet\n#ARTIST:Two\n#AUDIO:song.mp3\n#BPM:300\n\
+             #P1:Kai\n#P2:Hana\n\
+             P1\n: 0 4 0 lead\n- 8\n\
+             P2\n: 4 4 2 partner\n- 12\nE\n",
+        )
+        .expect("duet parses");
+        assert_eq!(file.phrases.len(), 2);
+        // P2's line sits between P1's in time, so it reads second, not last by
+        // player order.
+        assert_eq!(file.phrases[0][0].text.trim(), "lead");
+        assert_eq!(file.phrases[0][0].beat, 0);
+        assert_eq!(file.phrases[1][0].text.trim(), "partner");
+        assert_eq!(file.phrases[1][0].beat, 4);
+    }
+
+    #[test]
+    fn a_single_player_file_is_unaffected_by_duet_handling() {
+        let file = parse_usdx_str(
+            "#TITLE:Solo\n#ARTIST:One\n#AUDIO:song.mp3\n#BPM:300\n: 0 4 0 hello\n- 8\nE\n",
+        )
+        .expect("solo parses");
+        assert_eq!(file.phrases.len(), 1);
+        assert_eq!(file.phrases[0][0].text.trim(), "hello");
+    }
 }

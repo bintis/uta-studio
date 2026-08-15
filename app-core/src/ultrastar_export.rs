@@ -14,7 +14,7 @@ use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack};
 use crate::{
     audio_format::{export_extension as audio_export_extension, transcode_audio},
     authoring::get_audio_paths,
-    editor::NoteKind,
+    editor::{NoteKind, TrackRole},
     error::UtaStudioError,
     library_db,
     vocal_chart::load_authoring_chart,
@@ -211,13 +211,40 @@ fn build_ultrastar_text(
         ));
     }
 
-    // UltraStar carries a single lyric line per player. Harmony and ad-lib
-    // tracks would need a duet export, so the lead track is what ships.
-    let Some(track) = lead_track(chart) else {
+    // UltraStar gives one lyric stream to each player. A chart's sung tracks
+    // become those players; harmony, backing, and ad-lib tracks have nowhere
+    // to go in this format and are left out of the projection.
+    let players = player_tracks(chart);
+    if players.is_empty() {
         output.push_str("E\n");
         return output;
-    };
+    }
     let timebase = chart.timebase.max(1);
+    if players.len() > 1 {
+        for (index, track) in players.iter().enumerate() {
+            let name = track
+                .singer
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(sanitize_header)
+                .unwrap_or_else(|| format!("Player {}", index + 1));
+            output.push_str(&format!("#P{}:{name}\n", index + 1));
+        }
+    }
+    for (index, track) in players.iter().enumerate() {
+        if players.len() > 1 {
+            output.push_str(&format!("P{}\n", index + 1));
+        }
+        write_track_notes(&mut output, track, timebase);
+    }
+    output.push_str("E\n");
+    output
+}
+
+/// Writes one player's note body. Each player restarts the beat cursor,
+/// because their lines run in parallel, not one after the other.
+fn write_track_notes(output: &mut String, track: &VocalTrack, timebase: u64) {
     let fallback_pitch = track
         .phrases
         .iter()
@@ -270,12 +297,30 @@ fn build_ultrastar_text(
         output.push_str(&format!("- {separator}\n"));
         cursor = separator;
     }
-    output.push_str("E\n");
-    output
 }
 
-fn lead_track(chart: &VocalChartV1) -> Option<&VocalTrack> {
-    chart.tracks.first()
+/// The tracks UltraStar can carry: the ones a player is meant to sing, with
+/// something in them.
+fn player_tracks(chart: &VocalChartV1) -> Vec<&VocalTrack> {
+    let sung = chart
+        .tracks
+        .iter()
+        .filter(|track| {
+            TrackRole::of(track.role).is_sung()
+                && track.phrases.iter().any(|phrase| !phrase.notes.is_empty())
+        })
+        .collect::<Vec<_>>();
+    if sung.is_empty() {
+        // A chart of only harmony or backing lines still deserves an export
+        // rather than an empty file.
+        return chart
+            .tracks
+            .iter()
+            .filter(|track| track.phrases.iter().any(|phrase| !phrase.notes.is_empty()))
+            .take(1)
+            .collect();
+    }
+    sung
 }
 
 /// The syllable a note sings. A note that only continues the previous syllable
@@ -456,6 +501,89 @@ mod tests {
         );
         assert!(text.ends_with("E\n"));
         assert!(validate_usdx_str(&text).is_ok());
+    }
+
+    /// Splits a chart's notes over a second, duet-role track.
+    fn with_duet_track(chart: &mut VocalChartV1, singer: &str, notes: Vec<utz::VocalNote>) {
+        chart.tracks.push(utz::VocalTrack {
+            id: "duet".into(),
+            role: utz::VocalTrackRole::Duet,
+            singer: Some(singer.into()),
+            scoring_enabled: true,
+            phrases: vec![utz::VocalPhrase {
+                id: "duet-phrase".into(),
+                notes,
+            }],
+        });
+    }
+
+    #[test]
+    fn two_sung_tracks_export_as_an_ultrastar_duet() {
+        let mut chart = chart("en", &[&[(0.0, 0.5, 60, "lead", "normal")]]);
+        let partner = chart.tracks[0].phrases[0]
+            .notes
+            .iter()
+            .map(|note| {
+                let mut note = note.clone();
+                note.id = "duet-note".into();
+                note.start += chart.timebase;
+                note.lyrics = vec![utz::LyricToken::Text(utz::LyricTextToken {
+                    id: "duet-lyric".into(),
+                    text: "partner".into(),
+                    join_before: utz::LyricJoin::Space,
+                    reading: None,
+                    phonemes: None,
+                })];
+                note
+            })
+            .collect();
+        with_duet_track(&mut chart, "Hana", partner);
+        chart.validate().expect("valid duet chart");
+
+        let text =
+            build_ultrastar_text("Title", "Artist", &chart, "song.mp3", None, None, None, 4.0);
+        assert!(text.contains("#P1:Player 1"));
+        assert!(text.contains("#P2:Hana"));
+        let players = text
+            .lines()
+            .filter(|line| *line == "P1" || *line == "P2")
+            .collect::<Vec<_>>();
+        assert_eq!(players, ["P1", "P2"]);
+        assert!(text.lines().any(|line| line.ends_with("lead")));
+        assert!(text.lines().any(|line| line.ends_with("partner")));
+        // Each player restarts its own beat cursor, so the partner keeps the
+        // beat its notes were authored at rather than being pushed after P1.
+        let partner_beat = text
+            .lines()
+            .find(|line| line.ends_with("partner"))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|beat| beat.parse::<i64>().ok())
+            .expect("partner beat");
+        assert_eq!(partner_beat, super::seconds_to_beat(1.0));
+        validate_usdx_str(&text).expect("duet parses back");
+    }
+
+    #[test]
+    fn a_single_sung_track_keeps_the_plain_single_player_body() {
+        let mut chart = chart("en", &[&[(0.0, 0.5, 60, "lead", "normal")]]);
+        chart.tracks.push(utz::VocalTrack {
+            id: "harmony".into(),
+            role: utz::VocalTrackRole::Harmony,
+            singer: None,
+            scoring_enabled: false,
+            phrases: chart.tracks[0].phrases.clone(),
+        });
+        // Harmony has nowhere to live in UltraStar, so it is left out and the
+        // file stays a plain single-player chart.
+        let text =
+            build_ultrastar_text("Title", "Artist", &chart, "song.mp3", None, None, None, 4.0);
+        assert!(!text.contains("#P1:"));
+        assert!(!text.lines().any(|line| line == "P1"));
+        assert_eq!(
+            text.lines().filter(|line| line.starts_with(": ")).count(),
+            1
+        );
+        validate_usdx_str(&text).expect("single player parses back");
     }
 
     #[test]
