@@ -7,8 +7,9 @@
 transcript / pitch_notes 只作为**导入源**，不再是需要同步维护的投影；
 0.1 导出路径不实现。
 
-**进度**：阶段 0、阶段 1 已完成（含 UltraStar 导出改造）。下一步是阶段 2
-的命令系统。
+**进度**：阶段 0、1 完成；阶段 2 的历史部分与阶段 4.1 的 Problems 面板完成。
+下一步建议：阶段 4.2 多轨支持（utz 0.2 的核心新能力），或阶段 3 拆分
+`studio.rs`。
 
 参考材料：
 
@@ -135,17 +136,22 @@ commit `dd82c3f`（编辑器）与 `ed4b018`（导出）。
       授权 chart。
 - [x] 验收：app-core 86 项、desktop 22 项测试通过；studio.rs 减少约 1 900 行。
 
-### 阶段 2 — 命令系统与撤销
+### 阶段 2 — 命令系统与撤销（部分完成，范围已修正）
 
-- [ ] `EditorCommand { label(); apply(&self, doc) -> Result<Inverse>;
-      merge_with(...) }`；阶段 1 的操作改造成命令，`Composite` 覆盖多选
-      批量操作。
-- [ ] `History`：带标签 undo/redo 栈、拖拽合并；历史面板（点条目跳状态，
-      对应 Karedi `HistoryController`）。
+commit `ac74930`。
+
+- [x] `History`：带标签的 undo/redo 栈，撤销/重做提示具体说明撤销了什么；
+      检查器列出最近编辑（最新在上），对应 Karedi `HistoryController`。
+- [x] 拖拽合并：检查点本就在指针按下时取一次而非逐帧，一次拖拽即一条
+      历史，无需额外合并机制。
 - [ ] `actions.rs` 注册表：命令、快捷键、菜单项、`api_capabilities` 诊断
       入口统一由 action 表驱动，替换 `handle_editor_keyboard` 巨型分支。
-- [ ] 验收：每个命令一个 "apply→invert→apply" 性质测试；撤销不再是
-      全量 JSON 快照。
+      （与阶段 3 一起做更自然。）
+- ~~带逆命令的类型化命令层~~ —— **不实现**。原计划用逆命令替代快照，是
+  为了避免 100 份全量 JSON 快照。阶段 1 之后快照的对象是紧凑的
+  `VocalChartV1`（数万字节量级），100 步撤销仅几 MB；而手写 20 余个逆
+  操作每个都是一次损坏用户数据的机会。保留快照、补上标签，拿到了命令
+  层的全部用户可见收益，风险显著更低。
 
 ### 阶段 3 — 拆分 `studio.rs`
 
@@ -156,10 +162,13 @@ commit `dd82c3f`（编辑器）与 `ed4b018`（导出）。
 
 ### 阶段 4 — Karedi 能力增量（每项独立可交付，按价值排序）
 
-- [ ] **Problems 面板**（替换 issue inspector）：轨内重叠（阻断保存）、
-      pitch 模式缺 pitch 目标、无歌词可打分 note、孤儿 continuation、
-      异常短音（<30ms）、phrase 间无间隙、golden 占比异常；每条可点击
-      定位，可修复项一键修（走命令系统，可撤销）。
+- [x] **Problems 面板**（commit `dd1fe1f`，替换只有计数的 issue inspector）：
+      类型化规则 + severity + 定位（时间戳、note、lyric 地址）。规则覆盖
+      轨内重叠、pitch 模式缺 pitch 目标、未解析的 continuation、空音节、
+      过短音符、无歌词的可打分 note、无引导音节、紧邻音符的八度级跳进、
+      phrase 无间隙、golden 占比过高。Error 恰好是格式会拒绝的条件，
+      保存时报告第一条及其时间点；面板每条可点击跳转并居中视口；
+      可修复项一键修（走 checkpoint，可撤销）。
 - [ ] **多轨支持**：轨道条 UI（增/删轨、角色、singer、`scoring_enabled`）、
       当前轨切换、其他轨半透明显示、fill bar 覆盖率条；"移动选区到轨 X"
       命令（规范推荐的重叠合法化路径）。
