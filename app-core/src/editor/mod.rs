@@ -7,9 +7,14 @@
 //! Chart positions are integer timebase units, as the format requires. Seconds
 //! appear only at the rendering and audio-seek boundary.
 
+mod actions;
 mod document;
 mod problems;
 
+pub use actions::{
+    EDITOR_ACTIONS, EditorActionAccess, EditorActionDef, EditorActionGroup, KeyChord,
+    editor_action, editor_action_for_chord, editor_actions,
+};
 pub use document::{
     ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
 };

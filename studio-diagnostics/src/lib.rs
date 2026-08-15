@@ -5,6 +5,7 @@
 //! removes that directory, including when an export or validation fails.
 
 use std::{
+    collections::BTreeSet,
     fs::File,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -263,6 +264,33 @@ pub fn run_feature_diagnostics(request: DiagnosticRequest) -> DiagnosticReport {
         let queue = AnalysisQueue::load();
         Ok(format!("{} queued or active items", queue.entries.len()))
     }));
+    checks.push(timed_check("editor.actions", || {
+        // Read-only enumeration of the editor command registry: the keyboard
+        // map, the toolbars, and the undo labels all resolve through it, so a
+        // duplicate id or a chord bound twice is a real defect.
+        let actions = app_core::editor_actions();
+        let mut commands = BTreeSet::new();
+        let mut chords = BTreeSet::new();
+        for action in actions {
+            if !commands.insert(action.command) {
+                return Err(format!("Duplicate editor command `{}`", action.command));
+            }
+            for chord in action.shortcuts {
+                if !chords.insert((chord.key, chord.ctrl, chord.shift)) {
+                    return Err(format!(
+                        "`{}` reuses the {} shortcut",
+                        action.command,
+                        chord.describe()
+                    ));
+                }
+            }
+        }
+        Ok(format!(
+            "{} editor commands; {} key chords",
+            actions.len(),
+            chords.len()
+        ))
+    }));
     checks.push(timed_check("models.runtime", || {
         let status = app_core::analysis_runtime_status();
         serde_json::to_string(&status)
@@ -404,5 +432,11 @@ mod tests {
                 .iter()
                 .any(|check| check.id == "export.formats")
         );
+        let actions = report
+            .checks
+            .iter()
+            .find(|check| check.id == "editor.actions")
+            .expect("editor action registry check");
+        assert_eq!(actions.status, "passed");
     }
 }

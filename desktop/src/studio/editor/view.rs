@@ -186,7 +186,7 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::Undo,
-                        UiAction::EditorUndo,
+                        UiAction::Editor(EditorAction::Undo),
                         false,
                         false,
                         34.0,
@@ -196,7 +196,7 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::Redo,
-                        UiAction::EditorRedo,
+                        UiAction::Editor(EditorAction::Redo),
                         false,
                         false,
                         34.0,
@@ -206,7 +206,7 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::PanelBottom,
-                        UiAction::ToggleLyrics,
+                        UiAction::Editor(EditorAction::ToggleLyrics),
                         !editor.lyrics_hidden,
                         false,
                         34.0,
@@ -216,7 +216,7 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::PanelRight,
-                        UiAction::ToggleInspector,
+                        UiAction::Editor(EditorAction::ToggleInspector),
                         editor.inspector_open,
                         false,
                         34.0,
@@ -228,7 +228,7 @@ pub(crate) fn spawn_editor(
                         theme,
                         UiIcon::Save,
                         if editor.dirty { "Save *" } else { "Save" },
-                        UiAction::SaveEditor,
+                        UiAction::Editor(EditorAction::Save),
                         false,
                     );
                 });
@@ -387,7 +387,7 @@ pub(crate) fn spawn_editor_dock(
                     } else {
                         UiIcon::Play
                     },
-                    UiAction::TogglePlayback,
+                    UiAction::Editor(EditorAction::TogglePlayback),
                     true,
                     false,
                     36.0,
@@ -397,7 +397,7 @@ pub(crate) fn spawn_editor_dock(
                     icons.clone(),
                     theme,
                     UiIcon::ArrowLeft,
-                    UiAction::SeekEditorStart,
+                    UiAction::Editor(EditorAction::SeekStart),
                     false,
                     false,
                     30.0,
@@ -463,50 +463,110 @@ pub(crate) fn spawn_editor_dock(
             let lyric_context = selected_notes == 0 && selected_lyrics > 0;
             let mut tools = Vec::new();
             let context_label = if lyric_context {
-                tools.push((UiIcon::Add, "Add", UiAction::AddEditorWord, false));
-                tools.push((UiIcon::Scissors, "Split", UiAction::SplitEditorNote, false));
+                tools.push((
+                    UiIcon::Add,
+                    "Add",
+                    UiAction::Editor(EditorAction::AddLyric),
+                    false,
+                ));
+                tools.push((
+                    UiIcon::Scissors,
+                    "Split",
+                    UiAction::Editor(EditorAction::SplitSelection),
+                    false,
+                ));
                 if selected_lyrics > 1 {
-                    tools.push((UiIcon::Combine, "Merge", UiAction::MergeEditorNotes, false));
+                    tools.push((
+                        UiIcon::Combine,
+                        "Merge",
+                        UiAction::Editor(EditorAction::MergeSelection),
+                        false,
+                    ));
                 }
-                tools.push((UiIcon::Trash, "Delete", UiAction::DeleteEditorNote, true));
+                tools.push((
+                    UiIcon::Trash,
+                    "Delete",
+                    UiAction::Editor(EditorAction::DeleteSelection),
+                    true,
+                ));
                 format!("LYRICS · {selected_lyrics}")
             } else if selected_notes > 0 {
-                tools.push((UiIcon::Scissors, "Split", UiAction::SplitEditorNote, false));
+                tools.push((
+                    UiIcon::Scissors,
+                    "Split",
+                    UiAction::Editor(EditorAction::SplitSelection),
+                    false,
+                ));
                 if selected_notes > 1 {
-                    tools.push((UiIcon::Combine, "Merge", UiAction::MergeEditorNotes, false));
+                    tools.push((
+                        UiIcon::Combine,
+                        "Merge",
+                        UiAction::Editor(EditorAction::MergeSelection),
+                        false,
+                    ));
                 }
                 tools.extend([
-                    (UiIcon::Copy, "Copy", UiAction::CopyEditorNote, false),
+                    (
+                        UiIcon::Copy,
+                        "Copy",
+                        UiAction::Editor(EditorAction::CopyNotes),
+                        false,
+                    ),
                     (
                         UiIcon::Copy,
                         "Duplicate",
-                        UiAction::DuplicateEditorNotes,
+                        UiAction::Editor(EditorAction::DuplicateNotes),
                         false,
                     ),
                     (
                         UiIcon::Sparkles,
                         "Type",
-                        UiAction::CycleEditorNoteKind,
+                        UiAction::Editor(EditorAction::CycleNoteKind),
                         false,
                     ),
                     (
                         UiIcon::Grid,
                         "Quantize",
-                        UiAction::QuantizeEditorNotes,
+                        UiAction::Editor(EditorAction::QuantizeNotes),
                         false,
                     ),
-                    (UiIcon::Trash, "Delete", UiAction::DeleteEditorNote, true),
+                    (
+                        UiIcon::Trash,
+                        "Delete",
+                        UiAction::Editor(EditorAction::DeleteSelection),
+                        true,
+                    ),
                 ]);
                 format!("NOTES · {selected_notes}")
             } else {
                 tools.extend([
-                    (UiIcon::Add, "Note", UiAction::AddEditorNote, false),
-                    (UiIcon::Add, "Lyric", UiAction::AddEditorWord, false),
+                    (
+                        UiIcon::Add,
+                        "Note",
+                        UiAction::Editor(EditorAction::AddNote),
+                        false,
+                    ),
+                    (
+                        UiIcon::Add,
+                        "Lyric",
+                        UiAction::Editor(EditorAction::AddLyric),
+                        false,
+                    ),
                 ]);
                 if !editor.clipboard_notes.is_empty() {
-                    tools.push((UiIcon::Clipboard, "Paste", UiAction::PasteEditorNote, false));
+                    tools.push((
+                        UiIcon::Clipboard,
+                        "Paste",
+                        UiAction::Editor(EditorAction::PasteNotes),
+                        false,
+                    ));
                 }
-                tools.push((UiIcon::Repair, "Repair", UiAction::RepairEditorChart, false));
+                tools.push((
+                    UiIcon::Repair,
+                    "Repair",
+                    UiAction::Editor(EditorAction::RepairChart),
+                    false,
+                ));
                 "CREATE".to_string()
             };
             spawn_text(
@@ -566,7 +626,7 @@ pub(crate) fn spawn_editor_dock(
                 icons.clone(),
                 theme,
                 UiIcon::ZoomOut,
-                UiAction::AdjustEditorTimeZoom(-1),
+                UiAction::Editor(EditorAction::ZoomOutTime),
                 false,
                 false,
                 32.0,
@@ -583,7 +643,7 @@ pub(crate) fn spawn_editor_dock(
                 icons,
                 theme,
                 UiIcon::ZoomIn,
-                UiAction::AdjustEditorTimeZoom(1),
+                UiAction::Editor(EditorAction::ZoomInTime),
                 false,
                 false,
                 32.0,
@@ -594,7 +654,7 @@ pub(crate) fn spawn_editor_dock(
                 theme,
                 "Pitch ↓",
                 9.0,
-                UiAction::PanEditorPitch(-1),
+                UiAction::Editor(EditorAction::PanPitchDown),
             );
             spawn_text_button(
                 dock,
@@ -602,7 +662,7 @@ pub(crate) fn spawn_editor_dock(
                 theme,
                 "Pitch ↑",
                 9.0,
-                UiAction::PanEditorPitch(1),
+                UiAction::Editor(EditorAction::PanPitchUp),
             );
             spawn_text_button(
                 dock,
@@ -610,7 +670,7 @@ pub(crate) fn spawn_editor_dock(
                 theme,
                 "Range +",
                 9.0,
-                UiAction::AdjustEditorPitchZoom(-1),
+                UiAction::Editor(EditorAction::ZoomOutPitch),
             );
             spawn_text_button(
                 dock,
@@ -618,7 +678,7 @@ pub(crate) fn spawn_editor_dock(
                 theme,
                 "Range −",
                 9.0,
-                UiAction::AdjustEditorPitchZoom(1),
+                UiAction::Editor(EditorAction::ZoomInPitch),
             );
         });
 }

@@ -134,12 +134,24 @@ impl NativeEditor {
 
     pub(crate) fn restore(&mut self, snapshot: ChartSnapshot) {
         self.document = app_core::EditorDocument::new(snapshot.chart);
+        self.clear_selection();
+        self.dirty = true;
+    }
+
+    /// Drops every note and lyric selection. Used whenever indices stop
+    /// pointing at what the user picked, such as after an undo or a repair.
+    pub(crate) fn clear_selection(&mut self) {
         self.selected_note = None;
         self.selected_notes.clear();
         self.selected_word = None;
         self.selected_words.clear();
         self.word_edit_focus = None;
-        self.dirty = true;
+    }
+
+    /// Keeps the playhead from stealing the viewport back right after the user
+    /// moved it, as the interaction rules require.
+    pub(crate) fn hold_manual_scroll(&mut self) {
+        self.manual_scroll_until = Instant::now() + Duration::from_secs(2);
     }
 
     /// Undoes the most recent edit and reports what it was called.
