@@ -2,14 +2,15 @@
 
 ## 0.2.1 — 2026-08-15
 
-迭代聚焦于“可直接编辑 UTZ 0.2 + 多轨能力 + 编辑体验细化”。
+This release focuses on direct UTZ 0.2 authoring and editor workflow maturity.
 
-- 采用 UTZ 0.2 人声图为主编辑模型，支持直接编辑 UTZ 0.2 曲目数据。
-- 重构编辑器到统一动作注册表，统一命令路径，补齐可读的撤销步命名与最近编辑展示。
-- 新增编辑能力：逐拍点按计时、音调试听、整行重录、按语言拆分音节、问题位置信息回报，以及多轨（含 duet）曲绘能力。
-- 导出端新增“由 vocal chart 构建 UltraStar 多轨 Duet”能力，并将分析音高证据打包到导出结果中。
-- 分析链路补齐 MMS/Karaoke 对齐参数与文案说明，优化后端分析脚本结构。
-- 持续拆分桌面前端为路由模块，补强工程结构；Windows 发布流程补齐 toolchain 锁定行为。
+- Switched the editor model to write directly against the UTZ 0.2 vocal chart.
+- Refactored editor command handling behind a single action registry and improved undo visibility by naming each edit step and showing recent actions.
+- Added lyric and note authoring affordances for line retype, playback-tap timing, tone audition, language-aware syllabization, and chart problem reporting with precise locations.
+- Added multi-track authoring and UltraStar duet export for vocal tracks.
+- Export now includes analyzer pitch evidence in packaged outputs.
+- Refined analysis configuration for MMS/Karaoke alignment and updated analyzer script plumbing.
+- Continued desktop restructuring into route modules; added Windows release toolchain pinning in the release workflow.
 
 ## 0.2.0 — 2026-08-14
 
