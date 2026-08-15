@@ -1223,6 +1223,8 @@ enum UiAction {
     ToggleLibraryQueue,
     TogglePlayback,
     SeekEditorStart,
+    /// Jump the playhead and viewport to a chart problem, in milliseconds.
+    FocusChartProblem(u64),
     OpenEditorSelect(EditorDockSelectKind),
     SelectEditorValue(EditorDockSelectKind, String),
     ToggleLyrics,
@@ -6562,7 +6564,7 @@ fn spawn_editor_inspector(
                 );
             }
 
-            let issues = analyze_chart_issues(&editor.document);
+            let report = editor.document.problems();
             inspector.spawn(Node {
                 width: percent(100),
                 height: px(1),
@@ -6579,24 +6581,59 @@ fn spawn_editor_inspector(
             spawn_wrapped_text(
                 inspector,
                 font.clone(),
-                if issues.total() == 0 {
+                if report.total() == 0 {
                     "No timing or lyric coverage issues found.".to_string()
                 } else {
                     format!(
-                        "{} errors · {} warnings · {} total",
-                        issues.errors,
-                        issues.warnings,
-                        issues.total()
+                        "{} error(s) · {} warning(s)",
+                        report.errors(),
+                        report.warnings()
                     )
                 },
                 9.0,
-                if issues.errors > 0 {
+                if report.blocks_saving() {
                     theme.destructive
                 } else {
                     theme.muted_foreground
                 },
             );
-            if issues.auto_fixable {
+            if report.blocks_saving() {
+                spawn_wrapped_text(
+                    inspector,
+                    font.clone(),
+                    "Saving is blocked until the errors are resolved.",
+                    9.0,
+                    theme.destructive,
+                );
+            }
+            for problem in report.problems.iter().take(EDITOR_PROBLEM_ROWS) {
+                spawn_action_button(
+                    inspector,
+                    font.clone(),
+                    theme,
+                    format!(
+                        "{} {} · {}",
+                        if problem.severity() == app_core::Severity::Error {
+                            "!"
+                        } else {
+                            "·"
+                        },
+                        format_duration(problem.time),
+                        problem.message
+                    ),
+                    UiAction::FocusChartProblem((problem.time * 1000.0).max(0.0) as u64),
+                );
+            }
+            if report.total() > EDITOR_PROBLEM_ROWS {
+                spawn_wrapped_text(
+                    inspector,
+                    font.clone(),
+                    format!("+ {} more", report.total() - EDITOR_PROBLEM_ROWS),
+                    9.0,
+                    theme.muted_foreground,
+                );
+            }
+            if report.auto_fixable() {
                 spawn_action_button(
                     inspector,
                     font.clone(),
@@ -6693,6 +6730,8 @@ fn spawn_editor_inspector(
 
 /// How many recent edits the inspector lists before collapsing the rest.
 const EDITOR_HISTORY_ROWS: usize = 8;
+/// How many chart problems the inspector lists before collapsing the rest.
+const EDITOR_PROBLEM_ROWS: usize = 6;
 
 fn selected_editor_word(
     document: &app_core::EditorDocument,
@@ -15307,6 +15346,28 @@ fn handle_actions(
                     invalidated.0 = true;
                 }
             }
+            UiAction::FocusChartProblem(millis) => {
+                if let Some(editor) = session.editor.as_mut() {
+                    let target = *millis as f64 / 1000.0;
+                    // Centre the problem so its neighbours are visible too.
+                    editor.viewport_start = (target - editor.viewport_duration / 2.0).max(0.0);
+                    editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
+                    let was_playing = editor.audio_status.playing;
+                    match audio.0.seek(target) {
+                        Ok(mut status) => {
+                            if was_playing && let Ok(playing) = audio.0.play() {
+                                status = playing;
+                            }
+                            editor.visible_position = status.position_secs;
+                            editor.audio_status = status;
+                            editor.last_audio_sync = Instant::now();
+                            session.notice = None;
+                        }
+                        Err(error) => session.notice = Some(error),
+                    }
+                    invalidated.0 = true;
+                }
+            }
             UiAction::OpenEditorSelect(kind) => {
                 session.open_editor_select = if session.open_editor_select == Some(*kind) {
                     None
@@ -15354,16 +15415,7 @@ fn handle_actions(
             }
             UiAction::SaveEditor => {
                 if let Some(editor) = session.editor.as_mut() {
-                    session.notice = match app_core::save_vocal_chart(
-                        &editor.chart.file_hash,
-                        editor.document.to_chart(),
-                    ) {
-                        Ok(()) => {
-                            editor.dirty = false;
-                            Some("Chart saved atomically.".to_string())
-                        }
-                        Err(error) => Some(format!("Could not save chart: {error}")),
-                    };
+                    session.notice = Some(save_editor_chart(editor));
                     invalidated.0 = true;
                 }
             }
@@ -17021,16 +17073,7 @@ fn handle_editor_keyboard(
     }
     if control && keys.just_pressed(KeyCode::KeyS) {
         if let Some(editor) = session.editor.as_mut() {
-            session.notice = match app_core::save_vocal_chart(
-                &editor.chart.file_hash,
-                editor.document.to_chart(),
-            ) {
-                Ok(()) => {
-                    editor.dirty = false;
-                    Some("Chart saved atomically.".to_string())
-                }
-                Err(error) => Some(format!("Could not save chart: {error}")),
-            };
+            session.notice = Some(save_editor_chart(editor));
             invalidated.0 = true;
         }
         return;
@@ -18128,49 +18171,30 @@ fn merge_editor_phrase(
     document.merge_phrase_with_next(selection)
 }
 
-#[derive(Default)]
-struct ChartIssueSummary {
-    errors: usize,
-    warnings: usize,
-    auto_fixable: bool,
-}
-
-impl ChartIssueSummary {
-    fn total(&self) -> usize {
-        self.errors + self.warnings
+/// Saves the chart, or explains the first error standing in the way. The
+/// format rejects an invalid chart outright, so the editor names the problem
+/// and where it is instead of surfacing a validation message with no location.
+fn save_editor_chart(editor: &mut NativeEditor) -> String {
+    let report = editor.document.problems();
+    if let Some(problem) = report
+        .problems
+        .iter()
+        .find(|problem| problem.severity() == app_core::Severity::Error)
+    {
+        return format!(
+            "Cannot save: {} at {} ({} error(s)). Open the inspector to jump to it.",
+            problem.message,
+            format_duration(problem.time),
+            report.errors()
+        );
     }
-}
-
-fn analyze_chart_issues(document: &app_core::EditorDocument) -> ChartIssueSummary {
-    let notes = chart_notes(document);
-    let mut summary = ChartIssueSummary::default();
-    for (index, note) in notes.iter().enumerate() {
-        if note.end - note.start < 0.06 {
-            summary.warnings += 1;
+    match app_core::save_vocal_chart(&editor.chart.file_hash, editor.document.to_chart()) {
+        Ok(()) => {
+            editor.dirty = false;
+            "Chart saved atomically.".to_string()
         }
-        if let Some(previous) = index.checked_sub(1).and_then(|index| notes.get(index)) {
-            if note.start < previous.start || note.start < previous.end - 0.001 {
-                summary.errors += 1;
-                summary.auto_fixable = true;
-            }
-            if note.start - previous.end < 0.25
-                && note.pitched
-                && previous.pitched
-                && (note.midi - previous.midi).abs() > 12.0
-            {
-                summary.warnings += 1;
-            }
-        }
+        Err(error) => format!("Could not save chart: {error}"),
     }
-    for lyric in chart_lyrics(document) {
-        if lyric.text.trim().is_empty() {
-            summary.errors += 1;
-        }
-        if !lyric.guided {
-            summary.warnings += 1;
-        }
-    }
-    summary
 }
 
 fn repair_editor_chart(document: &mut app_core::EditorDocument) -> bool {
@@ -19154,7 +19178,7 @@ mod tests {
         assert!(repair_editor_chart(&mut document));
         let notes = chart_notes(&document);
         assert!(notes[0].end <= notes[1].start);
-        assert_eq!(analyze_chart_issues(&document).errors, 0);
+        assert!(!document.problems().blocks_saving());
         document.to_chart().validate().unwrap();
     }
 

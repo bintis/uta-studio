@@ -43,7 +43,8 @@ pub use chart::{
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{
-    ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
+    ChartLyric, ChartNote, ChartProblem, ClipboardNote, EditorDocument, LyricAddress,
+    MIN_NOTE_SECONDS, NoteKind, ProblemKind, ProblemReport, Severity,
 };
 pub use library_db::{init_library, library_db_path, load_song_by_hash};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};

@@ -8,10 +8,12 @@
 //! appear only at the rendering and audio-seek boundary.
 
 mod document;
+mod problems;
 
 pub use document::{
     ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
 };
+pub use problems::{ChartProblem, ProblemKind, ProblemReport, Severity};
 
 pub(crate) fn seconds_to_units(seconds: f64, timebase: u64) -> u64 {
     if !seconds.is_finite() {
