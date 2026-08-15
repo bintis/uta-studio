@@ -625,8 +625,13 @@ impl Default for LibraryPlayback {
 /// words because that is what the lyric lane shows.
 type WordSelection = app_core::LyricAddress;
 
+/// One undoable step: what the chart looked like before an edit, and what to
+/// call that edit in the history.
 #[derive(Clone)]
-struct ChartSnapshot(app_core::VocalChartV1);
+struct ChartSnapshot {
+    label: &'static str,
+    chart: app_core::VocalChartV1,
+}
 
 impl NativeEditor {
     fn new(
@@ -685,12 +690,15 @@ impl NativeEditor {
         self.viewport_start + self.viewport_duration
     }
 
-    fn snapshot(&self) -> ChartSnapshot {
-        ChartSnapshot(self.document.chart().clone())
+    fn snapshot(&self, label: &'static str) -> ChartSnapshot {
+        ChartSnapshot {
+            label,
+            chart: self.document.chart().clone(),
+        }
     }
 
-    fn checkpoint(&mut self) {
-        self.undo.push(self.snapshot());
+    fn checkpoint(&mut self, label: &'static str) {
+        self.undo.push(self.snapshot(label));
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
@@ -698,7 +706,7 @@ impl NativeEditor {
     }
 
     fn restore(&mut self, snapshot: ChartSnapshot) {
-        self.document = app_core::EditorDocument::new(snapshot.0);
+        self.document = app_core::EditorDocument::new(snapshot.chart);
         self.selected_note = None;
         self.selected_notes.clear();
         self.selected_word = None;
@@ -707,22 +715,29 @@ impl NativeEditor {
         self.dirty = true;
     }
 
-    fn undo(&mut self) -> bool {
-        let Some(snapshot) = self.undo.pop() else {
-            return false;
-        };
-        self.redo.push(self.snapshot());
+    /// Undoes the most recent edit and reports what it was called.
+    fn undo(&mut self) -> Option<&'static str> {
+        let snapshot = self.undo.pop()?;
+        let label = snapshot.label;
+        self.redo.push(self.snapshot(label));
         self.restore(snapshot);
-        true
+        Some(label)
     }
 
-    fn redo(&mut self) -> bool {
-        let Some(snapshot) = self.redo.pop() else {
-            return false;
-        };
-        self.undo.push(self.snapshot());
+    fn redo(&mut self) -> Option<&'static str> {
+        let snapshot = self.redo.pop()?;
+        let label = snapshot.label;
+        self.undo.push(self.snapshot(label));
         self.restore(snapshot);
-        true
+        Some(label)
+    }
+
+    /// The edits waiting to be undone and redone, newest last.
+    fn history(&self) -> (Vec<&'static str>, Vec<&'static str>) {
+        (
+            self.undo.iter().map(|entry| entry.label).collect(),
+            self.redo.iter().map(|entry| entry.label).collect(),
+        )
     }
 
     fn select_only_note(&mut self, index: usize) {
@@ -6613,13 +6628,71 @@ fn spawn_editor_inspector(
             );
             spawn_action_button(
                 inspector,
-                font,
+                font.clone(),
                 theme,
                 "Shift all +10 ms",
                 UiAction::ShiftWholeChart(1),
             );
+
+            let (undoable, redoable) = editor.history();
+            inspector.spawn(Node {
+                width: percent(100),
+                height: px(1),
+                margin: UiRect::vertical(px(6)),
+                ..default()
+            });
+            spawn_text(inspector, font.clone(), "HISTORY", 8.0, theme.primary);
+            if undoable.is_empty() && redoable.is_empty() {
+                spawn_wrapped_text(
+                    inspector,
+                    font.clone(),
+                    "No edits yet.",
+                    9.0,
+                    theme.muted_foreground,
+                );
+            } else {
+                // Newest first, so the next undo is the one at the top.
+                for label in undoable.iter().rev().take(EDITOR_HISTORY_ROWS) {
+                    spawn_wrapped_text(
+                        inspector,
+                        font.clone(),
+                        format!("· {label}"),
+                        9.0,
+                        theme.foreground,
+                    );
+                }
+                if undoable.len() > EDITOR_HISTORY_ROWS {
+                    spawn_wrapped_text(
+                        inspector,
+                        font.clone(),
+                        format!("+ {} earlier edit(s)", undoable.len() - EDITOR_HISTORY_ROWS),
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                }
+                if let Some(next) = redoable.last() {
+                    spawn_wrapped_text(
+                        inspector,
+                        font.clone(),
+                        format!("Redo: {next}"),
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                }
+            }
+            spawn_action_button(
+                inspector,
+                font.clone(),
+                theme,
+                "Undo",
+                UiAction::EditorUndo,
+            );
+            spawn_action_button(inspector, font, theme, "Redo", UiAction::EditorRedo);
         });
 }
+
+/// How many recent edits the inspector lists before collapsing the rest.
+const EDITOR_HISTORY_ROWS: usize = 8;
 
 fn selected_editor_word(
     document: &app_core::EditorDocument,
@@ -15295,24 +15368,20 @@ fn handle_actions(
                 }
             }
             UiAction::EditorUndo => {
-                if let Some(editor) = session.editor.as_mut()
-                    && editor.undo()
-                {
-                    session.notice = Some("Undid chart edit.".to_string());
+                if let Some(label) = session.editor.as_mut().and_then(NativeEditor::undo) {
+                    session.notice = Some(format!("Undid: {label}."));
                     invalidated.0 = true;
                 }
             }
             UiAction::EditorRedo => {
-                if let Some(editor) = session.editor.as_mut()
-                    && editor.redo()
-                {
-                    session.notice = Some("Redid chart edit.".to_string());
+                if let Some(label) = session.editor.as_mut().and_then(NativeEditor::redo) {
+                    session.notice = Some(format!("Redid: {label}."));
                     invalidated.0 = true;
                 }
             }
             UiAction::AddEditorNote => {
                 if let Some(editor) = session.editor.as_mut() {
-                    editor.checkpoint();
+                    editor.checkpoint("Add note");
                     let start = editor.visible_position.max(0.0);
                     let midi = ((editor.pitch_min + editor.pitch_max) / 2.0)
                         .round()
@@ -15333,7 +15402,7 @@ fn handle_actions(
                     if selected.is_empty() {
                         let words = editor.selected_word_indices();
                         if !words.is_empty() {
-                            editor.checkpoint();
+                            editor.checkpoint("Delete lyrics");
                             let deleted = delete_editor_words(&mut editor.document, &words);
                             if deleted > 0 {
                                 editor.selected_word = None;
@@ -15348,7 +15417,7 @@ fn handle_actions(
                         }
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Delete notes");
                     let removed = remove_chart_notes(&mut editor.document, &selected);
                     if removed > 0 {
                         editor.selected_note = None;
@@ -15365,7 +15434,7 @@ fn handle_actions(
                     if selected.is_empty() {
                         let words = editor.selected_word_indices();
                         if !words.is_empty() {
-                            editor.checkpoint();
+                            editor.checkpoint("Split lyrics");
                             let next = split_selected_editor_words(
                                 &mut editor.document,
                                 &words,
@@ -15387,7 +15456,7 @@ fn handle_actions(
                         }
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Split notes");
                     let next =
                         split_chart_notes(&mut editor.document, &selected, editor.visible_position);
                     if !next.is_empty() {
@@ -15411,7 +15480,7 @@ fn handle_actions(
                     if selected.len() < 2 {
                         let words = editor.selected_word_indices();
                         if !words.is_empty() {
-                            editor.checkpoint();
+                            editor.checkpoint("Merge lyrics");
                             let merged = if words.len() == 1 {
                                 words.first().copied().filter(|selection| {
                                     merge_editor_word(&mut editor.document, *selection)
@@ -15435,7 +15504,7 @@ fn handle_actions(
                         invalidated.0 = true;
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Merge notes");
                     if let Some(index) =
                         merge_chart_notes(&mut editor.document, &selected, editor.selected_note)
                     {
@@ -15455,7 +15524,7 @@ fn handle_actions(
                         invalidated.0 = true;
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Quantize notes");
                     let changed = quantize_chart_notes(
                         &mut editor.document,
                         Some(&selected),
@@ -15474,7 +15543,7 @@ fn handle_actions(
                         continue;
                     }
                     let duration = editor.document.clipboard_span(&clipboard);
-                    editor.checkpoint();
+                    editor.checkpoint("Duplicate notes");
                     let inserted = paste_chart_notes(
                         &mut editor.document,
                         &clipboard,
@@ -15489,7 +15558,7 @@ fn handle_actions(
             }
             UiAction::RepairEditorChart => {
                 if let Some(editor) = session.editor.as_mut() {
-                    editor.checkpoint();
+                    editor.checkpoint("Repair chart");
                     if repair_editor_chart(&mut editor.document) {
                         editor.selected_note = None;
                         editor.selected_notes.clear();
@@ -15534,7 +15603,7 @@ fn handle_actions(
             }
             UiAction::ShiftWholeChart(direction) => {
                 if let Some(editor) = session.editor.as_mut() {
-                    editor.checkpoint();
+                    editor.checkpoint("Shift whole chart");
                     let seconds = f64::from(*direction) * 0.01;
                     shift_all_chart_timings(&mut editor.document, seconds);
                     editor.dirty = true;
@@ -15560,7 +15629,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut()
                     && !editor.clipboard_notes.is_empty()
                 {
-                    editor.checkpoint();
+                    editor.checkpoint("Paste notes");
                     let inserted = paste_chart_notes(
                         &mut editor.document,
                         &editor.clipboard_notes,
@@ -15579,7 +15648,7 @@ fn handle_actions(
                     if selected.is_empty() {
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Change note type");
                     let changed = cycle_chart_note_kinds(&mut editor.document, &selected);
                     if changed > 0 {
                         editor.dirty = true;
@@ -15645,7 +15714,7 @@ fn handle_actions(
             }
             UiAction::AddEditorWord => {
                 if let Some(editor) = session.editor.as_mut() {
-                    editor.checkpoint();
+                    editor.checkpoint("Add lyric");
                     if let Some(selection) = insert_editor_word(
                         &mut editor.document,
                         editor.selected_word,
@@ -15674,7 +15743,7 @@ fn handle_actions(
                         invalidated.0 = true;
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Delete lyrics");
                     let deleted = delete_editor_words(&mut editor.document, &words);
                     if deleted > 0 {
                         editor.selected_word = None;
@@ -15695,7 +15764,7 @@ fn handle_actions(
                     if words.is_empty() {
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Delete lyrics");
                     let moved = words
                         .iter()
                         .filter(|selection| {
@@ -15722,7 +15791,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut()
                     && let Some(selection) = editor.selected_word
                 {
-                    editor.checkpoint();
+                    editor.checkpoint("Adjust lyric start");
                     if adjust_editor_word_boundary(
                         &mut editor.document,
                         selection,
@@ -15738,7 +15807,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut()
                     && let Some(selection) = editor.selected_word
                 {
-                    editor.checkpoint();
+                    editor.checkpoint("Adjust lyric end");
                     if adjust_editor_word_boundary(
                         &mut editor.document,
                         selection,
@@ -15756,7 +15825,7 @@ fn handle_actions(
                     if words.is_empty() {
                         continue;
                     }
-                    editor.checkpoint();
+                    editor.checkpoint("Split lyrics");
                     let next = split_selected_editor_words(
                         &mut editor.document,
                         &words,
@@ -15779,7 +15848,7 @@ fn handle_actions(
             UiAction::MergeEditorWord => {
                 if let Some(editor) = session.editor.as_mut() {
                     let words = editor.selected_word_indices();
-                    editor.checkpoint();
+                    editor.checkpoint("Merge lyrics");
                     let merged = if words.len() == 1 {
                         words
                             .first()
@@ -15805,7 +15874,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut()
                     && let Some(selection) = editor.selected_word
                 {
-                    editor.checkpoint();
+                    editor.checkpoint("Split phrase");
                     if let Some(next) = split_editor_phrase(&mut editor.document, selection) {
                         editor.select_only_word(next);
                         editor.dirty = true;
@@ -15822,7 +15891,7 @@ fn handle_actions(
                 if let Some(editor) = session.editor.as_mut()
                     && let Some(selection) = editor.selected_word
                 {
-                    editor.checkpoint();
+                    editor.checkpoint("Merge phrase");
                     if let Some(next) = merge_editor_phrase(&mut editor.document, selection) {
                         editor.select_only_word(next);
                         editor.dirty = true;
@@ -15987,7 +16056,7 @@ fn sync_editor_word_input(
         if text == current {
             continue;
         }
-        editor.checkpoint();
+        editor.checkpoint("Edit lyric text");
         if update_editor_word_text(&mut editor.document, marker.0, &text) {
             editor.dirty = true;
         } else {
@@ -16909,20 +16978,16 @@ fn handle_editor_keyboard(
     let control = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if control && keys.just_pressed(KeyCode::KeyZ) && !shift {
-        if let Some(editor) = session.editor.as_mut()
-            && editor.undo()
-        {
-            session.notice = Some("Undid chart edit.".to_string());
+        if let Some(label) = session.editor.as_mut().and_then(NativeEditor::undo) {
+            session.notice = Some(format!("Undid: {label}."));
             invalidated.0 = true;
         }
         return;
     }
     if control && (keys.just_pressed(KeyCode::KeyY) || (shift && keys.just_pressed(KeyCode::KeyZ)))
     {
-        if let Some(editor) = session.editor.as_mut()
-            && editor.redo()
-        {
-            session.notice = Some("Redid chart edit.".to_string());
+        if let Some(label) = session.editor.as_mut().and_then(NativeEditor::redo) {
+            session.notice = Some(format!("Redid: {label}."));
             invalidated.0 = true;
         }
         return;
@@ -16986,7 +17051,7 @@ fn handle_editor_keyboard(
                 return;
             }
             editor.clipboard_notes = copy_chart_notes(&editor.document, &selected);
-            editor.checkpoint();
+            editor.checkpoint("Cut notes");
             let removed = remove_chart_notes(&mut editor.document, &selected);
             editor.selected_note = None;
             editor.selected_notes.clear();
@@ -17000,7 +17065,7 @@ fn handle_editor_keyboard(
         if let Some(editor) = session.editor.as_mut()
             && !editor.clipboard_notes.is_empty()
         {
-            editor.checkpoint();
+            editor.checkpoint("Cut notes");
             let inserted = paste_chart_notes(
                 &mut editor.document,
                 &editor.clipboard_notes,
@@ -17030,7 +17095,7 @@ fn handle_editor_keyboard(
                 })
                 .reduce(f64::max)
                 .unwrap_or(editor.visible_position);
-            editor.checkpoint();
+            editor.checkpoint("Duplicate notes");
             let inserted = paste_chart_notes(
                 &mut editor.document,
                 &clipboard,
@@ -17050,7 +17115,7 @@ fn handle_editor_keyboard(
             if selected.is_empty() {
                 let words = editor.selected_word_indices();
                 if !words.is_empty() {
-                    editor.checkpoint();
+                    editor.checkpoint("Duplicate notes");
                     let deleted = delete_editor_words(&mut editor.document, &words);
                     if deleted > 0 {
                         editor.selected_word = None;
@@ -17065,7 +17130,7 @@ fn handle_editor_keyboard(
                 }
                 return;
             }
-            editor.checkpoint();
+            editor.checkpoint("Delete lyrics");
             let removed = remove_chart_notes(&mut editor.document, &selected);
             if removed > 0 {
                 editor.selected_note = None;
@@ -17081,7 +17146,7 @@ fn handle_editor_keyboard(
         if let Some(editor) = session.editor.as_mut() {
             let selected = editor.selected_note_indices();
             if !selected.is_empty() {
-                editor.checkpoint();
+                editor.checkpoint("Delete notes");
                 let next =
                     split_chart_notes(&mut editor.document, &selected, editor.visible_position);
                 editor.selected_note = next.iter().next().copied();
@@ -17097,7 +17162,7 @@ fn handle_editor_keyboard(
         if let Some(editor) = session.editor.as_mut() {
             let selected = editor.selected_note_indices();
             if selected.len() > 1 {
-                editor.checkpoint();
+                editor.checkpoint("Split notes");
                 if let Some(index) =
                     merge_chart_notes(&mut editor.document, &selected, editor.selected_note)
                 {
@@ -17114,7 +17179,7 @@ fn handle_editor_keyboard(
         if let Some(editor) = session.editor.as_mut() {
             let selected = editor.selected_note_indices();
             if !selected.is_empty() && editor.snap_seconds > 0.0 {
-                editor.checkpoint();
+                editor.checkpoint("Merge notes");
                 quantize_chart_notes(&mut editor.document, Some(&selected), editor.snap_seconds);
                 editor.dirty = true;
                 session.notice = Some("Quantized selected note(s).".to_string());
@@ -17173,7 +17238,7 @@ fn handle_editor_keyboard(
             } else {
                 0.01
             };
-            editor.checkpoint();
+            editor.checkpoint("Nudge lyrics");
             let words = editor.selected_word_indices();
             let moved = words
                 .iter()
@@ -17199,7 +17264,7 @@ fn handle_editor_keyboard(
             return;
         }
         if !selected.is_empty() && (left || right || up || down) {
-            editor.checkpoint();
+            editor.checkpoint("Nudge notes");
             let time_step = if editor.snap_seconds > 0.0 {
                 editor.snap_seconds
             } else {
@@ -17382,7 +17447,7 @@ fn handle_editor_pointer_capture(
                         - f64::from(pitch_fraction) * (editor.pitch_max - editor.pitch_min))
                         .round()
                         .clamp(0.0, 127.0);
-                    editor.checkpoint();
+                    editor.checkpoint("Add note");
                     if let Some(index) = insert_chart_note(
                         &mut editor.document,
                         start,
@@ -17452,7 +17517,7 @@ fn handle_editor_pointer_capture(
         });
         if let Some((selection, edge)) = pressed_lyric_resize {
             if let Some((_, start, end)) = selected_editor_word(&editor.document, selection) {
-                editor.checkpoint();
+                editor.checkpoint("Resize lyric");
                 capture.drag = Some(EditorDrag::ResizeLyric {
                     selection,
                     edge,
@@ -17503,7 +17568,7 @@ fn handle_editor_pointer_capture(
                         })
                     })
                     .collect::<Vec<_>>();
-                editor.checkpoint();
+                editor.checkpoint("Move lyric");
                 capture.drag = Some(EditorDrag::Lyric {
                     pointer_start: pointer,
                     originals,
@@ -17517,7 +17582,7 @@ fn handle_editor_pointer_capture(
                 .into_iter()
                 .find(|note| note.index == index)
             {
-                editor.checkpoint();
+                editor.checkpoint("Resize note");
                 capture.drag = Some(EditorDrag::ResizeNote {
                     index,
                     edge,
@@ -17560,7 +17625,7 @@ fn handle_editor_pointer_capture(
                 })
                 .collect::<Vec<_>>();
             if !originals.is_empty() {
-                editor.checkpoint();
+                editor.checkpoint("Move note");
                 capture.drag = Some(EditorDrag::Note {
                     pointer_start: pointer,
                     originals,
@@ -19007,6 +19072,52 @@ mod tests {
         assert!(lyrics[0].guided);
         assert!(lyrics[1].guided);
         assert!(!lyrics[2].guided);
+    }
+
+    #[test]
+    fn history_names_each_edit_and_survives_undo_redo() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 62, "b")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.checkpoint("Move note");
+        editor.document.move_note(0, 3.0, 3.5, 64.0);
+        editor.checkpoint("Delete notes");
+        editor.document.remove_notes(&BTreeSet::from([1]));
+        assert_eq!(editor.history().0, ["Move note", "Delete notes"]);
+
+        assert_eq!(editor.undo(), Some("Delete notes"));
+        assert_eq!(editor.document.note_count(), 2);
+        assert_eq!(editor.undo(), Some("Move note"));
+        assert!((editor.document.notes()[0].start - 0.0).abs() < 1e-9);
+        assert_eq!(editor.undo(), None);
+
+        assert_eq!(editor.redo(), Some("Move note"));
+        assert!((editor.document.notes()[0].start - 3.0).abs() < 1e-9);
+        assert_eq!(editor.redo(), Some("Delete notes"));
+        assert_eq!(editor.document.note_count(), 1);
+        assert_eq!(editor.redo(), None);
+    }
+
+    #[test]
+    fn a_new_edit_clears_the_redo_stack_and_bounds_history() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        editor.checkpoint("Move note");
+        assert_eq!(editor.undo(), Some("Move note"));
+        editor.checkpoint("Add note");
+        assert!(editor.history().1.is_empty());
+
+        for _ in 0..120 {
+            editor.checkpoint("Nudge notes");
+        }
+        assert_eq!(editor.history().0.len(), 100);
     }
 
     #[test]
