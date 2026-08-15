@@ -45,8 +45,8 @@ pub use config::{AppConfig, LibrarySource};
 pub use editor::{
     ChartLyric, ChartNote, ChartProblem, ClipboardNote, EDITOR_ACTIONS, EditorActionAccess,
     EditorActionDef, EditorActionGroup, EditorDocument, KeyChord, LyricAddress, MIN_NOTE_SECONDS,
-    NoteKind, ProblemKind, ProblemReport, Severity, TrackRole, TrackSummary, editor_action,
-    editor_action_for_chord, editor_actions,
+    NoteKind, ProblemKind, ProblemReport, Severity, Syllable, TrackRole, TrackSummary,
+    editor_action, editor_action_for_chord, editor_actions, kana_morae, syllables,
 };
 pub use library_db::{init_library, library_db_path, load_song_by_hash};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};

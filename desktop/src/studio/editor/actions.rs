@@ -100,6 +100,7 @@ editor_actions! {
     AddLyric => "add_lyric",
     DeleteLyrics => "delete_lyrics",
     SplitLyrics => "split_lyrics",
+    SyllabizeLyrics => "syllabize_lyrics",
     MergeLyrics => "merge_lyrics",
     ShiftLyricEarlier => "shift_lyric_earlier",
     ShiftLyricLater => "shift_lyric_later",
@@ -210,9 +211,11 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         | DuplicateNotes | CopyNotes | CutNotes | PasteNotes | CycleNoteKind | NudgeEarlier
         | NudgeLater | ShortenSelection | LengthenSelection | RaisePitch | LowerPitch
         | RaisePitchOctave | LowerPitchOctave => run_note_action(action, ctx),
-        AddLyric | DeleteLyrics | SplitLyrics | MergeLyrics | ShiftLyricEarlier
-        | ShiftLyricLater | LyricStartEarlier | LyricStartLater | LyricEndEarlier
-        | LyricEndLater | SplitPhrase | MergePhrase => run_lyric_action(action, ctx),
+        AddLyric | DeleteLyrics | SplitLyrics | SyllabizeLyrics | MergeLyrics
+        | ShiftLyricEarlier | ShiftLyricLater | LyricStartEarlier | LyricStartLater
+        | LyricEndEarlier | LyricEndLater | SplitPhrase | MergePhrase => {
+            run_lyric_action(action, ctx)
+        }
     }
 }
 
@@ -1087,6 +1090,30 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
             } else {
                 editor.undo.pop();
                 ctx.session.notice = Some("Could not delete the lyric selection.".to_string());
+            }
+        }
+        SyllabizeLyrics => {
+            let words = editor.selected_word_indices();
+            if words.is_empty() {
+                ctx.session.notice =
+                    Some("Select lyric words to split into syllables.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            }
+            editor.checkpoint(action.label());
+            let produced = editor.document.syllabize_lyrics(&words);
+            if produced.is_empty() {
+                editor.undo.pop();
+                ctx.session.notice = Some(
+                    "Those words are already one syllable, or their notes are too short to divide."
+                        .to_string(),
+                );
+            } else {
+                editor.selected_word = produced.first().copied();
+                editor.selected_words = produced.iter().copied().collect();
+                editor.word_edit_focus = None;
+                editor.dirty = true;
+                ctx.session.notice = Some(format!("Split into {} syllable(s).", produced.len()));
             }
         }
         SplitLyrics => {

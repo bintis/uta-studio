@@ -150,6 +150,10 @@ pub(crate) fn spawn_editor_inspector(
                 for (label, action) in [
                     ("Move selection −10 ms", UiAction::Editor(EditorAction::ShiftLyricEarlier)),
                     ("Move selection +10 ms", UiAction::Editor(EditorAction::ShiftLyricLater)),
+                    (
+                        "Split into syllables",
+                        UiAction::Editor(EditorAction::SyllabizeLyrics),
+                    ),
                     ("Split selected words", UiAction::Editor(EditorAction::SplitLyrics)),
                     ("Merge selected words", UiAction::Editor(EditorAction::MergeLyrics)),
                     ("Delete selected words", UiAction::Editor(EditorAction::DeleteLyrics)),
@@ -212,6 +216,10 @@ pub(crate) fn spawn_editor_inspector(
                     ("Start +10 ms", UiAction::Editor(EditorAction::LyricStartLater)),
                     ("End −10 ms", UiAction::Editor(EditorAction::LyricEndEarlier)),
                     ("End +10 ms", UiAction::Editor(EditorAction::LyricEndLater)),
+                    (
+                        "Split into syllables",
+                        UiAction::Editor(EditorAction::SyllabizeLyrics),
+                    ),
                     ("Split word", UiAction::Editor(EditorAction::SplitLyrics)),
                     ("Merge next word", UiAction::Editor(EditorAction::MergeLyrics)),
                     ("New phrase here", UiAction::Editor(EditorAction::SplitPhrase)),

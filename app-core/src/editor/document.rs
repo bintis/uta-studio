@@ -1611,6 +1611,159 @@ impl EditorDocument {
         result
     }
 
+    /// The phrase and in-phrase position of a flattened note index.
+    fn locate_note(&self, index: usize) -> Option<(usize, usize)> {
+        let track = self.active_track()?;
+        let mut seen = 0usize;
+        for (phrase, entry) in track.phrases.iter().enumerate() {
+            if index < seen + entry.notes.len() {
+                return Some((phrase, index - seen));
+            }
+            seen += entry.notes.len();
+        }
+        None
+    }
+
+    /// Splits each selected word into the syllables its language sings, giving
+    /// every syllable its own note. The word's note is divided in proportion to
+    /// how much of the word each syllable spells, which is closer to how it is
+    /// sung than an even split.
+    ///
+    /// The last syllable keeps the original token's ID so a held note that
+    /// continues the word still points at the syllable it is holding.
+    pub fn syllabize_lyrics(&mut self, addresses: &BTreeSet<LyricAddress>) -> Vec<LyricAddress> {
+        let language = self.chart.language.clone();
+        let minimum = self.min_duration();
+        let mut produced_ids = Vec::new();
+        // Back to front, so the addresses ahead of the cursor stay valid.
+        for address in addresses.iter().rev().copied() {
+            let Some(note_index) = self.resolve(address) else {
+                continue;
+            };
+            let Some((phrase_index, offset)) = self.locate_note(note_index) else {
+                continue;
+            };
+            let Some(note) = self
+                .active_track()
+                .and_then(|track| track.phrases.get(phrase_index))
+                .and_then(|phrase| phrase.notes.get(offset))
+            else {
+                continue;
+            };
+            let Some(token) = note.lyrics.iter().find_map(|token| match token {
+                LyricToken::Text(token) => Some(token.clone()),
+                LyricToken::Continuation { .. } => None,
+            }) else {
+                continue;
+            };
+            let pieces = super::syllabize::syllables(
+                &token.text,
+                token.reading.as_deref(),
+                language.as_deref(),
+            );
+            // A word already one syllable long, or one whose note is too short
+            // to divide, is left exactly as it is.
+            if pieces.len() < 2 || note.duration < minimum.saturating_mul(pieces.len() as u64) {
+                continue;
+            }
+
+            let start = note.start;
+            let duration = note.duration;
+            let pitch = note.pitch;
+            let vocal_mode = note.vocal_mode;
+            let bonus = note.bonus;
+            let scoring = note.scoring.clone();
+            let weights = pieces
+                .iter()
+                .map(|piece| piece.text.chars().count().max(1) as u64)
+                .collect::<Vec<_>>();
+            let total: u64 = weights.iter().sum();
+
+            let mut replacements = Vec::with_capacity(pieces.len());
+            let mut cursor = start;
+            let last = pieces.len() - 1;
+            for (index, piece) in pieces.iter().enumerate() {
+                let end = if index == last {
+                    start.saturating_add(duration)
+                } else {
+                    let offset: u64 = weights[..=index].iter().sum();
+                    start.saturating_add(duration * offset / total)
+                };
+                let piece_duration = end.saturating_sub(cursor).max(minimum);
+                // The last syllable inherits the token ID so continuations
+                // pointing at the word keep resolving to its tail.
+                let token_id = if index == last {
+                    token.id.clone()
+                } else {
+                    self.allocate_id("lyric")
+                };
+                let note_id = if index == 0 {
+                    // Reuse the note ID for the head so nothing else in the
+                    // chart loses track of where the word starts.
+                    None
+                } else {
+                    Some(self.allocate_id("note"))
+                };
+                replacements.push((
+                    note_id,
+                    cursor,
+                    piece_duration,
+                    LyricTextToken {
+                        id: token_id,
+                        text: piece.text.clone(),
+                        // Only the first piece can carry the word's own join;
+                        // the rest are inside the word.
+                        join_before: if index == 0 {
+                            token.join_before
+                        } else {
+                            LyricJoin::None
+                        },
+                        reading: piece.reading.clone(),
+                        phonemes: None,
+                    },
+                ));
+                cursor = cursor.saturating_add(piece_duration);
+            }
+
+            let Some(phrase) = self
+                .chart
+                .tracks
+                .get_mut(self.track)
+                .and_then(|track| track.phrases.get_mut(phrase_index))
+            else {
+                continue;
+            };
+            let original_id = phrase.notes[offset].id.clone();
+            let mut built = Vec::with_capacity(replacements.len());
+            for (note_id, note_start, note_duration, lyric) in replacements {
+                let id = note_id.unwrap_or_else(|| original_id.clone());
+                produced_ids.push(id.clone());
+                built.push(VocalNote {
+                    id,
+                    start: note_start,
+                    duration: note_duration,
+                    pitch,
+                    vocal_mode,
+                    bonus,
+                    scoring: scoring.clone(),
+                    lyrics: vec![LyricToken::Text(lyric)],
+                });
+            }
+            phrase.notes.splice(offset..=offset, built);
+            self.touch();
+        }
+
+        // Addresses are only stable once every split has landed.
+        let notes = self.notes();
+        produced_ids
+            .into_iter()
+            .filter_map(|id| {
+                let index = notes.iter().position(|note| note.id == id)?;
+                self.address_of_note(index)
+            })
+            .collect()
+    }
+
     pub fn shift_lyric(&mut self, address: LyricAddress, delta: f64) -> bool {
         let Some(note) = self.resolve(address) else {
             return false;
@@ -2263,6 +2416,103 @@ mod tests {
         assert!((document.notes()[0].start - 1.5).abs() < 1e-9);
         assert!(document.shift_all(-10.0));
         assert_eq!(document.notes()[0].start, 0.0);
+    }
+
+    #[test]
+    fn syllabizing_gives_every_syllable_its_own_note() {
+        let mut document = document(&[(0.0, 2.0, 60, "wonder"), (2.0, 3.0, 62, "love")]);
+        let produced = document.syllabize_lyrics(&BTreeSet::from([LyricAddress {
+            segment: 0,
+            word: 0,
+        }]));
+        let notes = document.notes();
+        assert_eq!(notes.len(), 3);
+        assert_eq!(
+            notes
+                .iter()
+                .filter_map(|note| note.lyric.clone())
+                .collect::<Vec<_>>(),
+            ["won", "der", "love"]
+        );
+        assert_eq!(produced.len(), 2);
+        // The word keeps its span: the pieces divide it, they do not extend it.
+        assert!((notes[0].start - 0.0).abs() < 1e-9);
+        assert!((notes[1].end - 2.0).abs() < 1e-9);
+        assert!(notes[0].end <= notes[1].start + 1e-9);
+        document.to_chart().validate().expect("valid chart");
+    }
+
+    #[test]
+    fn a_one_syllable_word_is_left_exactly_as_it_was() {
+        let mut document = document(&[(0.0, 1.0, 60, "love")]);
+        assert!(
+            document
+                .syllabize_lyrics(&BTreeSet::from([LyricAddress {
+                    segment: 0,
+                    word: 0
+                }]))
+                .is_empty()
+        );
+        assert_eq!(document.note_count(), 1);
+        assert_eq!(document.revision(), 0);
+    }
+
+    #[test]
+    fn a_note_too_short_to_divide_is_not_syllabized() {
+        let mut document = document(&[(0.0, 0.04, 60, "wonder")]);
+        document.syllabize_lyrics(&BTreeSet::from([LyricAddress {
+            segment: 0,
+            word: 0,
+        }]));
+        assert_eq!(document.note_count(), 1);
+    }
+
+    #[test]
+    fn a_held_word_still_resolves_after_it_is_syllabized() {
+        let mut document = document(&[(0.0, 2.0, 60, "wonder"), (2.0, 3.0, 60, "x")]);
+        let held = match &document.chart().tracks[0].phrases[0].notes[0].lyrics[0] {
+            LyricToken::Text(token) => token.id.clone(),
+            LyricToken::Continuation { .. } => panic!("text token"),
+        };
+        document.chart.tracks[0].phrases[0].notes[1].lyrics = vec![LyricToken::Continuation {
+            continuation_of: held,
+        }];
+        document.syllabize_lyrics(&BTreeSet::from([LyricAddress {
+            segment: 0,
+            word: 0,
+        }]));
+        // The hold now follows the last syllable of the word, not the first.
+        assert!(document.unresolved_continuations(0).is_empty());
+        let notes = document.notes();
+        assert!(notes.last().unwrap().continues_lyric);
+        document.to_chart().validate().expect("valid chart");
+    }
+
+    #[test]
+    fn japanese_words_syllabize_by_mora_and_keep_their_reading() {
+        let mut document = document(&[(0.0, 3.0, 60, "きょうは")]);
+        document.set_language(Some("ja".into()));
+        document.syllabize_lyrics(&BTreeSet::from([LyricAddress {
+            segment: 0,
+            word: 0,
+        }]));
+        let notes = document.notes();
+        assert_eq!(
+            notes
+                .iter()
+                .filter_map(|note| note.lyric.clone())
+                .collect::<Vec<_>>(),
+            ["きょ", "う", "は"]
+        );
+        let readings = document.chart().tracks[0].phrases[0]
+            .notes
+            .iter()
+            .filter_map(|note| match note.lyrics.first() {
+                Some(LyricToken::Text(token)) => token.reading.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(readings, ["きょ", "う", "は"]);
     }
 
     #[test]

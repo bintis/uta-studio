@@ -18,6 +18,10 @@ struct AnalyzerWord {
     segment: usize,
     id: String,
     text: String,
+    /// Pronunciation the aligner recovered, such as the kana the MMS karaoke
+    /// backend emits for Japanese. The format keeps it beside the display
+    /// text rather than replacing it.
+    reading: Option<String>,
     start: f64,
     end: f64,
 }
@@ -182,6 +186,12 @@ fn analyzer_words(segments: &[Value]) -> Vec<AnalyzerWord> {
                             format!("lyric-{}-{}", segment_index + 1, word_index + 1)
                         }),
                     text,
+                    reading: word
+                        .get("reading")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|reading| !reading.is_empty())
+                        .map(str::to_owned),
                     start,
                     end,
                 })
@@ -193,6 +203,7 @@ fn analyzer_words(segments: &[Value]) -> Vec<AnalyzerWord> {
                 segment: segment_index,
                 id: format!("lyric-{}-1", segment_index + 1),
                 text: text.to_string(),
+                reading: None,
                 start: segment_start,
                 end: segment_end.max(segment_start + 0.001),
             });
@@ -294,7 +305,7 @@ fn text_token(word: &AnalyzerWord) -> LyricTextToken {
         } else {
             LyricJoin::None
         },
-        reading: None,
+        reading: word.reading.clone(),
         phonemes: None,
     }
 }

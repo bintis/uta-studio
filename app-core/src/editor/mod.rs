@@ -10,6 +10,7 @@
 mod actions;
 mod document;
 mod problems;
+mod syllabize;
 
 pub use actions::{
     EDITOR_ACTIONS, EditorActionAccess, EditorActionDef, EditorActionGroup, KeyChord,
@@ -20,6 +21,7 @@ pub use document::{
     TrackRole, TrackSummary,
 };
 pub use problems::{ChartProblem, ProblemKind, ProblemReport, Severity};
+pub use syllabize::{Syllable, kana_morae, syllables};
 
 pub(crate) fn seconds_to_units(seconds: f64, timebase: u64) -> u64 {
     if !seconds.is_finite() {
