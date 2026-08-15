@@ -147,7 +147,8 @@ impl TrackRole {
         matches!(self, Self::Lead | Self::Duet)
     }
 
-    fn of(role: VocalTrackRole) -> Self {
+    /// Reads the role a chart stores.
+    pub fn of(role: VocalTrackRole) -> Self {
         match role {
             VocalTrackRole::Lead => Self::Lead,
             VocalTrackRole::Duet => Self::Duet,
