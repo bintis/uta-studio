@@ -50,9 +50,16 @@ editor_actions! {
     RepairChart => "repair_chart",
     ShiftChartEarlier => "shift_chart_earlier",
     ShiftChartLater => "shift_chart_later",
+    AddTrack => "add_track",
+    RemoveTrack => "remove_track",
+    CycleTrackRole => "cycle_track_role",
+    ToggleTrackScoring => "toggle_track_scoring",
+    SelectNextTrack => "select_next_track",
+    MoveSelectionToNextTrack => "move_selection_to_next_track",
     TogglePlayback => "toggle_playback",
     SeekStart => "seek_start",
     ToggleLyrics => "toggle_lyrics",
+    ToggleTracks => "toggle_tracks",
     ToggleInspector => "toggle_inspector",
     CloseInspector => "close_inspector",
     ZoomInTime => "zoom_in_time",
@@ -168,9 +175,17 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         Save | Undo | Redo | RepairChart | ShiftChartEarlier | ShiftChartLater => {
             run_document_action(action, ctx)
         }
+        AddTrack
+        | RemoveTrack
+        | CycleTrackRole
+        | ToggleTrackScoring
+        | SelectNextTrack
+        | MoveSelectionToNextTrack => run_track_action(action, ctx),
         TogglePlayback | SeekStart => run_transport_action(action, ctx),
-        ToggleLyrics | ToggleInspector | CloseInspector | ZoomInTime | ZoomOutTime
-        | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => run_view_action(action, ctx),
+        ToggleLyrics | ToggleTracks | ToggleInspector | CloseInspector | ZoomInTime
+        | ZoomOutTime | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => {
+            run_view_action(action, ctx)
+        }
         SelectAll | SelectNextNote | SelectPreviousNote => run_selection_action(action, ctx),
         AddNote | DeleteSelection | SplitSelection | MergeSelection | QuantizeNotes
         | DuplicateNotes | CopyNotes | CutNotes | PasteNotes | CycleNoteKind | NudgeEarlier
@@ -238,6 +253,124 @@ fn run_document_action(action: EditorAction, ctx: &mut EditorActionContext) {
     }
 }
 
+// -- tracks ---------------------------------------------------------------
+
+fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
+    use EditorAction::*;
+    let Some(editor) = ctx.session.editor.as_mut() else {
+        return;
+    };
+    let active = editor.document.active_track_index();
+    let count = editor.document.track_count();
+    match action {
+        AddTrack => {
+            editor.checkpoint(action.label());
+            let index = editor.document.add_track(app_core::TrackRole::Duet);
+            editor.clear_selection();
+            editor.dirty = true;
+            ctx.session.notice = Some(format!(
+                "Added track {}. It is saved once it has notes.",
+                index + 1
+            ));
+        }
+        RemoveTrack => {
+            editor.checkpoint(action.label());
+            if editor.document.remove_track(active) {
+                editor.clear_selection();
+                editor.dirty = true;
+                ctx.session.notice = Some("Removed the active track.".to_string());
+            } else {
+                editor.undo.pop();
+                ctx.session.notice = Some("A chart needs at least one track.".to_string());
+            }
+        }
+        CycleTrackRole => {
+            let Some(role) = editor
+                .document
+                .tracks()
+                .get(active)
+                .map(|track| track.role.cycle())
+            else {
+                return;
+            };
+            editor.checkpoint(action.label());
+            if editor.document.set_track_role(active, role) {
+                editor.dirty = true;
+                ctx.session.notice = Some(format!("Track {} is now {}.", active + 1, role.label()));
+            } else {
+                editor.undo.pop();
+            }
+        }
+        ToggleTrackScoring => {
+            let Some(enabled) = editor
+                .document
+                .tracks()
+                .get(active)
+                .map(|track| !track.scoring_enabled)
+            else {
+                return;
+            };
+            editor.checkpoint(action.label());
+            if editor.document.set_track_scoring(active, enabled) {
+                editor.dirty = true;
+                ctx.session.notice = Some(if enabled {
+                    "This track is scored.".to_string()
+                } else {
+                    "This track is sung but not scored.".to_string()
+                });
+            } else {
+                editor.undo.pop();
+            }
+        }
+        SelectNextTrack => {
+            if count < 2 {
+                return;
+            }
+            let next = (active + 1) % count;
+            editor.document.set_active_track(next);
+            editor.clear_selection();
+            ctx.session.notice = Some(format!("Editing track {}.", next + 1));
+        }
+        MoveSelectionToNextTrack => {
+            if count < 2 {
+                ctx.session.notice =
+                    Some("Add a second track before moving notes to one.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            }
+            move_selection_to_track(action, (active + 1) % count, ctx);
+            return;
+        }
+        _ => unreachable!("not a track action"),
+    }
+    ctx.invalidated.0 = true;
+}
+
+/// Moves the note selection onto another track. This is the path the format
+/// recommends for two voices that would otherwise overlap.
+fn move_selection_to_track(action: EditorAction, target: usize, ctx: &mut EditorActionContext) {
+    let Some(editor) = ctx.session.editor.as_mut() else {
+        return;
+    };
+    let selected = editor.selected_note_indices();
+    if selected.is_empty() {
+        ctx.session.notice = Some("Select notes to move to another track.".to_string());
+        ctx.invalidated.0 = true;
+        return;
+    }
+    editor.checkpoint(action.label());
+    let moved = editor.document.move_notes_to_track(&selected, target);
+    if moved > 0 {
+        editor.clear_selection();
+        editor.dirty = true;
+        ctx.session.notice = Some(format!("Moved {moved} note(s) to track {}.", target + 1));
+    } else {
+        editor.undo.pop();
+        ctx.session.notice = Some("Those notes could not be moved.".to_string());
+    }
+    ctx.invalidated.0 = true;
+}
+
 // -- transport ------------------------------------------------------------
 
 fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
@@ -261,6 +394,11 @@ fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
 
 fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
+    if action == ToggleTracks {
+        ctx.session.editor_tracks_open = !ctx.session.editor_tracks_open;
+        ctx.invalidated.0 = true;
+        return;
+    }
     let Some(editor) = ctx.session.editor.as_mut() else {
         return;
     };
@@ -817,9 +955,12 @@ pub(crate) fn handle_editor_ui_action(
 ) -> bool {
     match action {
         UiAction::Editor(action) => run_editor_action(*action, ctx),
-        UiAction::FocusChartProblem(millis) => {
+        UiAction::FocusChartProblem(track, millis) => {
             let target = *millis as f64 / 1000.0;
             if let Some(editor) = ctx.session.editor.as_mut() {
+                if editor.document.set_active_track(*track) {
+                    editor.clear_selection();
+                }
                 // Centre the problem so its neighbours are visible too.
                 editor.viewport_start = (target - editor.viewport_duration / 2.0).max(0.0);
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
@@ -861,6 +1002,19 @@ pub(crate) fn handle_editor_ui_action(
                 }
             }
             ctx.invalidated.0 = true;
+        }
+        UiAction::SelectEditorTrack(index) => {
+            let Some(editor) = ctx.session.editor.as_mut() else {
+                return true;
+            };
+            if editor.document.set_active_track(*index) {
+                editor.clear_selection();
+                ctx.session.notice = Some(format!("Editing track {}.", index + 1));
+                ctx.invalidated.0 = true;
+            }
+        }
+        UiAction::MoveSelectionToTrack(index) => {
+            move_selection_to_track(EditorAction::MoveSelectionToNextTrack, *index, ctx);
         }
         UiAction::SelectEditorWord(segment, word, position_ms) => {
             let selection = WordSelection {

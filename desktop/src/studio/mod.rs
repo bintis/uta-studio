@@ -95,6 +95,9 @@ pub(crate) struct StudioSession {
     open_library_select: Option<LibrarySelectKind>,
     export_all_open: bool,
     open_editor_select: Option<EditorDockSelectKind>,
+    /// Whether the track strip is pinned open. A multi-track chart always
+    /// shows it, because the active track decides what an edit touches.
+    editor_tracks_open: bool,
     analysis_tasks: Vec<app_core::AnalysisTask>,
     analysis_history: Vec<app_core::AnalysisRunHistory>,
     selected_analysis_history: Option<i64>,
@@ -148,6 +151,7 @@ impl StudioSession {
             open_library_select: None,
             export_all_open: false,
             open_editor_select: None,
+            editor_tracks_open: false,
             analysis_tasks: app_core::load_analysis_tasks(),
             analysis_history: app_core::load_analysis_history(100),
             selected_analysis_history: None,
@@ -354,11 +358,14 @@ pub(crate) enum UiAction {
     /// A registered editor command. Every toolbar button, inspector button,
     /// and key chord routes through the one registry entry it names.
     Editor(EditorAction),
-    /// Jump the playhead and viewport to a chart problem, in milliseconds.
-    FocusChartProblem(u64),
+    /// Jump the playhead and viewport to a chart problem: the track it is on,
+    /// and where in the timeline, in milliseconds.
+    FocusChartProblem(usize, u64),
     OpenEditorSelect(EditorDockSelectKind),
     SelectEditorValue(EditorDockSelectKind, String),
     SelectEditorWord(usize, usize, u64),
+    SelectEditorTrack(usize),
+    MoveSelectionToTrack(usize),
 }
 
 pub fn run() {
@@ -448,6 +455,7 @@ pub fn run() {
         .add_systems(Update, poll_lyrics_search_job)
         .add_systems(Update, sync_numeric_settings)
         .add_systems(Update, sync_editor_word_input)
+        .add_systems(Update, sync_editor_singer_input)
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
         .add_systems(Update, rebuild_ui.after(handle_actions))
@@ -3011,10 +3019,12 @@ fn handle_actions(
                 invalidated.0 = true;
             }
             UiAction::Editor(_)
-            | UiAction::FocusChartProblem(_)
+            | UiAction::FocusChartProblem(..)
             | UiAction::OpenEditorSelect(_)
             | UiAction::SelectEditorValue(..)
-            | UiAction::SelectEditorWord(..) => {
+            | UiAction::SelectEditorWord(..)
+            | UiAction::SelectEditorTrack(_)
+            | UiAction::MoveSelectionToTrack(_) => {
                 handle_editor_ui_action(
                     action,
                     &keys,
@@ -3361,6 +3371,30 @@ mod tests {
         assert_eq!(editor.redo(), Some("Delete notes"));
         assert_eq!(editor.document.note_count(), 1);
         assert_eq!(editor.redo(), None);
+    }
+
+    #[test]
+    fn ghost_notes_show_the_other_tracks_and_never_the_active_one() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a"), (2.0, 3.0, 62, "b")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            "instrumental",
+        );
+        assert!(other_track_notes(&editor.document).is_empty());
+        editor.document.add_track(app_core::TrackRole::Duet);
+        editor.document.set_active_track(0);
+        editor.document.move_notes_to_track(&BTreeSet::from([1]), 1);
+
+        let notes = chart_notes(&editor.document);
+        let ghosts = other_track_notes(&editor.document);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(ghosts.len(), 1);
+        assert!((ghosts[0].start - 2.0).abs() < 1e-9);
+        // Switching tracks swaps which side is editable.
+        editor.document.set_active_track(1);
+        assert_eq!(chart_notes(&editor.document).len(), 1);
+        assert!((other_track_notes(&editor.document)[0].start - 0.0).abs() < 1e-9);
     }
 
     #[test]

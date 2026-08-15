@@ -92,6 +92,8 @@ pub(crate) fn spawn_editor(
     };
     let song = session.selected_song();
     let notes = chart_notes(&editor.document);
+    let ghosts = other_track_notes(&editor.document);
+    let tracks_visible = session.editor_tracks_open || editor.document.track_count() > 1;
     let lyrics = chart_lyrics(&editor.document);
 
     parent
@@ -215,6 +217,18 @@ pub(crate) fn spawn_editor(
                         toolbar,
                         icons.clone(),
                         theme,
+                        UiIcon::List,
+                        UiAction::Editor(EditorAction::ToggleTracks),
+                        tracks_visible,
+                        // A multi-track chart always shows which track an edit
+                        // would land on, so the toggle has nothing to do.
+                        editor.document.track_count() > 1,
+                        34.0,
+                    );
+                    spawn_icon_button(
+                        toolbar,
+                        icons.clone(),
+                        theme,
                         UiIcon::PanelRight,
                         UiAction::Editor(EditorAction::ToggleInspector),
                         editor.inspector_open,
@@ -251,11 +265,21 @@ pub(crate) fn spawn_editor(
                             ..default()
                         })
                         .with_children(|timeline_column| {
+                            if tracks_visible {
+                                spawn_editor_tracks(
+                                    timeline_column,
+                                    font.clone(),
+                                    icons.clone(),
+                                    editor,
+                                    theme,
+                                );
+                            }
                             spawn_editor_timeline(
                                 timeline_column,
                                 font.clone(),
                                 editor,
                                 &notes,
+                                &ghosts,
                                 theme,
                             );
                             if !editor.lyrics_hidden {
@@ -816,6 +840,8 @@ pub(crate) fn spawn_editor_timeline(
     font: Handle<Font>,
     editor: &NativeEditor,
     notes: &[ChartNoteView],
+    // Notes belonging to the other tracks, drawn behind and not editable.
+    ghosts: &[ChartNoteView],
     theme: &StudioTheme,
 ) {
     parent
@@ -1032,6 +1058,32 @@ pub(crate) fn spawn_editor_timeline(
                             Pickable::IGNORE,
                         ));
                     }
+                }
+                // Other tracks read as context: visible enough to place a
+                // second voice against, never mistakable for what is editable.
+                for ghost in ghosts.iter().filter(|note| {
+                    note.end >= editor.viewport_start && note.start <= editor.viewport_end()
+                }) {
+                    let left = time_percent(ghost.start, editor);
+                    let right = time_percent(ghost.end, editor);
+                    canvas.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: percent(left),
+                            top: percent(pitch_percent(ghost.midi, editor)),
+                            width: percent((right - left).max(0.4)),
+                            min_width: px(6),
+                            height: px(18),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(2)),
+                            ..default()
+                        },
+                        BackgroundColor(editor_note_color(ghost.kind, theme).with_alpha(0.16)),
+                        BorderColor::all(editor_note_color(ghost.kind, theme).with_alpha(0.4)),
+                        UiTransform::from_xy(px(0), px(-9)),
+                        ZIndex(0),
+                        Pickable::IGNORE,
+                    ));
                 }
                 let pitch_frames = chart_pitch_frames(&editor.chart);
                 for note in notes.iter().filter(|note| {

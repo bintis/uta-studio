@@ -300,6 +300,10 @@ pub(crate) struct EditorWordInput(pub(crate) WordSelection);
 #[derive(Component)]
 pub(crate) struct InlineEditorWordInput;
 
+/// The singer-name field of one track in the track strip.
+#[derive(Component)]
+pub(crate) struct EditorSingerInput(pub(crate) usize);
+
 #[derive(Resource, Default)]
 pub(crate) struct EditorPointerCapture {
     pub(crate) drag: Option<EditorDrag>,
@@ -385,6 +389,23 @@ pub(crate) fn all_editor_word_selections(
     document: &app_core::EditorDocument,
 ) -> BTreeSet<WordSelection> {
     document.lyric_addresses()
+}
+
+/// Notes of every track except the one being edited, so the timeline can show
+/// where the other voices sing. They are drawn as ghosts and never picked.
+pub(crate) fn other_track_notes(document: &app_core::EditorDocument) -> Vec<ChartNoteView> {
+    (0..document.track_count())
+        .filter(|index| *index != document.active_track_index())
+        .flat_map(|index| document.track_notes(index))
+        .map(|note| ChartNoteView {
+            index: note.index,
+            start: note.start,
+            end: note.end,
+            midi: note.midi,
+            pitched: note.pitched,
+            kind: note.kind,
+        })
+        .collect()
 }
 
 pub(crate) fn chart_notes(document: &app_core::EditorDocument) -> Vec<ChartNoteView> {
