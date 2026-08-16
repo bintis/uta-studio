@@ -87,8 +87,13 @@ def _classify_progress(pct, message):
     text = str(message).lower()
     if pct >= 100:
         return "complete", "Analysis complete"
-    if "musical key" in text or "chroma" in text:
-        return "key_detection", "Chroma key estimation"
+    if (
+        "musical key" in text
+        or "chroma" in text
+        or "tempo and beat" in text
+        or "music analysis" in text
+    ):
+        return "key_detection", "Musical key and tempo analysis"
     if "pitch" in text or "singing guide" in text:
         return "pitch", "Reference pitch extraction"
     if "align" in text:
@@ -145,7 +150,7 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     elif stage == "alignment":
         implementation, model = align_impl, align_model
     elif stage == "key_detection":
-        implementation, model = "NumPy FFT", "Krumhansl chroma profiles"
+        implementation, model = "Essentia/NumPy FFT", "Key + rhythm analysis"
     elif stage == "audio_preprocessing":
         implementation, model = "Uta Studio audio DSP", "RMS region detection"
     elif stage == "finalizing":

@@ -9,12 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack};
+use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack, VocalTrackRole};
 
 use crate::{
     audio_format::{export_extension as audio_export_extension, transcode_audio},
     authoring::get_audio_paths,
-    editor::{NoteKind, TrackRole},
+    editor::NoteKind,
     error::UtaStudioError,
     library_db,
     vocal_chart::load_authoring_chart,
@@ -301,24 +301,33 @@ fn write_track_notes(output: &mut String, track: &VocalTrack, timebase: u64) {
 
 /// The tracks UltraStar can carry: the ones a player is meant to sing, with
 /// something in them.
+///
+/// UTZ's `part` field is the direct source of UltraStar's P1/P2 player
+/// numbering, so a chart that assigns parts uses them, ordered by part
+/// number. A chart with no part assignments (solo charts, or ones authored
+/// outside Uta Studio) falls back to every non-empty lead track in track
+/// order, matching the single-player and unnumbered-duet cases.
 fn player_tracks(chart: &VocalChartV1) -> Vec<&VocalTrack> {
+    let has_notes =
+        |track: &&VocalTrack| track.phrases.iter().any(|phrase| !phrase.notes.is_empty());
+    let mut parted = chart
+        .tracks
+        .iter()
+        .filter(|track| track.part.is_some() && has_notes(track))
+        .collect::<Vec<_>>();
+    if !parted.is_empty() {
+        parted.sort_by_key(|track| track.part);
+        return parted;
+    }
     let sung = chart
         .tracks
         .iter()
-        .filter(|track| {
-            TrackRole::of(track.role).is_sung()
-                && track.phrases.iter().any(|phrase| !phrase.notes.is_empty())
-        })
+        .filter(|track| track.role == VocalTrackRole::Lead && has_notes(track))
         .collect::<Vec<_>>();
     if sung.is_empty() {
         // A chart of only harmony or backing lines still deserves an export
         // rather than an empty file.
-        return chart
-            .tracks
-            .iter()
-            .filter(|track| track.phrases.iter().any(|phrase| !phrase.notes.is_empty()))
-            .take(1)
-            .collect();
+        return chart.tracks.iter().filter(has_notes).take(1).collect();
     }
     sung
 }
@@ -503,11 +512,14 @@ mod tests {
         assert!(validate_usdx_str(&text).is_ok());
     }
 
-    /// Splits a chart's notes over a second, duet-role track.
+    /// Splits a chart's notes over a second lead track, assigning both
+    /// tracks contiguous duet parts the way `EditorDocument` would.
     fn with_duet_track(chart: &mut VocalChartV1, singer: &str, notes: Vec<utz::VocalNote>) {
+        chart.tracks[0].part = Some(1);
         chart.tracks.push(utz::VocalTrack {
             id: "duet".into(),
-            role: utz::VocalTrackRole::Duet,
+            role: utz::VocalTrackRole::Lead,
+            part: Some(2),
             singer: Some(singer.into()),
             scoring_enabled: true,
             phrases: vec![utz::VocalPhrase {
@@ -569,6 +581,7 @@ mod tests {
         chart.tracks.push(utz::VocalTrack {
             id: "harmony".into(),
             role: utz::VocalTrackRole::Harmony,
+            part: None,
             singer: None,
             scoring_enabled: false,
             phrases: chart.tracks[0].phrases.clone(),

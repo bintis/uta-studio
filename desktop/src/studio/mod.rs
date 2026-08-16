@@ -16,6 +16,7 @@ use app_core::{
 use bevy::{
     asset::RenderAssetUsages,
     color::Mix,
+    ecs::system::SystemParam,
     image::{CompressedImageFormats, ImageSampler, ImageType},
     input_focus::{
         AutoFocus, FocusCause, InputFocus, InputFocusVisible,
@@ -34,6 +35,7 @@ mod folders;
 mod library;
 mod settings;
 mod song_detail;
+mod song_settings;
 mod widgets;
 
 pub(crate) use analysis::*;
@@ -42,6 +44,7 @@ pub(crate) use folders::*;
 pub(crate) use library::*;
 pub(crate) use settings::*;
 pub(crate) use song_detail::*;
+pub(crate) use song_settings::*;
 pub(crate) use widgets::*;
 
 const FONT_PATH: &str = "desktop/assets/fonts/NotoSansCJKsc-Regular.otf";
@@ -85,6 +88,7 @@ pub(crate) struct StudioSession {
     pending_cache_delete: Option<String>,
     authoring_busy: bool,
     language_editor: Option<NativeLanguageEditor>,
+    song_settings: Option<NativeSongSettings>,
     pending_cache_clear: Option<CacheClearScope>,
     pending_leave: Option<PendingLeave>,
     open_settings_select: Option<SettingsSelectKind>,
@@ -141,6 +145,7 @@ impl StudioSession {
             pending_cache_delete: None,
             authoring_busy: false,
             language_editor: None,
+            song_settings: None,
             pending_cache_clear: None,
             pending_leave: None,
             open_settings_select: None,
@@ -338,6 +343,11 @@ pub(crate) enum UiAction {
     ToggleLanguagePicker,
     SelectAnalysisLanguage(String),
     SaveLanguageEditor,
+    OpenSongSettings(String),
+    CloseSongSettings,
+    ChooseBackgroundVideo,
+    ClearBackgroundVideo,
+    SaveSongSettings,
     RealignSong(String),
     ReanalyzeTranscript(String),
     ForceTranscribe(String),
@@ -371,6 +381,16 @@ pub(crate) enum UiAction {
     SelectEditorWord(usize, usize, u64),
     SelectEditorTrack(usize),
     MoveSelectionToTrack(usize),
+    DismissLyricContext,
+    DismissNoteContext,
+    SelectWaveformSource(WaveformSource),
+    SelectWaveformStyle(WaveformStyle),
+    DismissWaveformContext,
+    SetProblemsFilter(ProblemsFilter),
+    ApplyAllLyricsEdit,
+    ExtendLyricOverNote(WordSelection, usize),
+    DismissProblemsPanel,
+    DismissShortcutsPanel,
 }
 
 pub fn run() {
@@ -468,6 +488,13 @@ pub fn run() {
         .add_systems(Update, sync_editor_singer_input)
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
+        .add_systems(
+            Update,
+            refresh_editor_problems_cache
+                .after(handle_actions)
+                .after(handle_editor_pointer_capture)
+                .before(rebuild_ui),
+        )
         .add_systems(Update, rebuild_ui.after(handle_actions))
         .add_systems(Update, update_button_visuals.after(rebuild_ui))
         .add_systems(
@@ -480,6 +507,8 @@ pub fn run() {
         .add_systems(Update, handle_editor_wheel)
         .add_systems(Update, handle_editor_pointer_capture)
         .add_systems(Update, handle_folder_scroll)
+        .add_systems(Update, handle_problems_panel_scroll)
+        .add_systems(Update, handle_shortcuts_panel_scroll)
         .add_systems(Update, handle_analysis_graph_scroll)
         .add_systems(Update, handle_library_scroll)
         .add_systems(Update, handle_song_detail_scroll)
@@ -488,6 +517,8 @@ pub fn run() {
         .add_systems(Update, sync_library_audio)
         .add_systems(Update, update_editor_geometry)
         .add_systems(Update, update_editor_playhead)
+        .add_systems(Update, update_editor_binding_guides)
+        .add_systems(Update, update_editor_shortcuts_panel_visibility)
         .add_systems(Update, update_library_player_ui)
         .run();
 }
@@ -550,6 +581,9 @@ fn setup(
     theme: Res<StudioTheme>,
 ) {
     commands.spawn(Camera2d);
+    // The very first frame, before the window (and any editor route that
+    // could have a context menu open) exists — the configured default
+    // resolution is a fine stand-in.
     render_ui(
         &mut commands,
         &asset_server,
@@ -559,6 +593,7 @@ fn setup(
         &native_setup,
         &cache_stats,
         &theme,
+        Vec2::new(1280.0, 720.0),
     );
 }
 
@@ -575,6 +610,7 @@ fn rebuild_ui(
     theme: Res<StudioTheme>,
     mut invalidated: ResMut<UiInvalidated>,
     roots: Query<Entity, With<StudioUiRoot>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     if !invalidated.0 {
         return;
@@ -582,6 +618,10 @@ fn rebuild_ui(
     for entity in &roots {
         commands.entity(entity).despawn();
     }
+    let window_size = windows
+        .single()
+        .map(|window| Vec2::new(window.width(), window.height()))
+        .unwrap_or(Vec2::new(1280.0, 800.0));
     render_ui(
         &mut commands,
         &asset_server,
@@ -591,10 +631,12 @@ fn rebuild_ui(
         &native_setup,
         &cache_stats,
         &theme,
+        window_size,
     );
     invalidated.0 = false;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_ui(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -604,6 +646,7 @@ fn render_ui(
     native_setup: &NativeSetup,
     cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
+    window_size: Vec2,
 ) {
     let font = asset_server.load(FONT_PATH);
     let icons = asset_server.load(ICON_ATLAS_PATH);
@@ -621,7 +664,7 @@ fn render_ui(
         ))
         .with_children(|root| {
             if session.route == StudioRoute::Editor {
-                spawn_editor(root, font.clone(), icons.clone(), session, theme);
+                spawn_editor(root, font.clone(), icons.clone(), session, theme, window_size);
             } else {
                 root.spawn(Node {
                     min_height: px(0),
@@ -657,6 +700,9 @@ fn render_ui(
             }
             if session.about_open {
                 spawn_about_dialog(root, font.clone(), asset_server, theme);
+            }
+            if let Some(panel) = session.song_settings.as_ref() {
+                spawn_song_settings_panel(root, font.clone(), theme, panel);
             }
             if let Some(destination) = session.pending_leave {
                 spawn_leave_confirmation(root, font, theme, session, destination);
@@ -1610,10 +1656,17 @@ fn register_navigation_targets(
     }
 }
 
-fn action_is_navigation_target(action: &UiAction) -> bool {
+pub(crate) fn action_is_navigation_target(action: &UiAction) -> bool {
     !matches!(
         action,
-        UiAction::CloseActivity | UiAction::DismissFolderContext | UiAction::DismissSongContext
+        UiAction::CloseActivity
+            | UiAction::DismissFolderContext
+            | UiAction::DismissSongContext
+            | UiAction::DismissLyricContext
+            | UiAction::DismissNoteContext
+            | UiAction::DismissWaveformContext
+            | UiAction::DismissProblemsPanel
+            | UiAction::DismissShortcutsPanel
     )
 }
 
@@ -1660,6 +1713,9 @@ fn navigation_back_action(session: &StudioSession) -> Option<UiAction> {
     }
     if session.language_editor.is_some() {
         return Some(UiAction::CloseLanguageEditor);
+    }
+    if session.song_settings.is_some() {
+        return Some(UiAction::CloseSongSettings);
     }
     if session.about_open {
         return Some(UiAction::CloseAbout);
@@ -1813,13 +1869,31 @@ fn handle_accessible_navigation(
     }
 }
 
+/// The song-detail and whole-song lyrics textareas `handle_actions` reads on
+/// save/apply. Grouped into one `SystemParam` because `handle_actions` was
+/// already at Bevy's per-system parameter limit — bundling two related
+/// queries here costs one slot instead of two.
+#[derive(SystemParam)]
+struct EditorTextInputs<'w, 's> {
+    lyrics: Query<'w, 's, &'static EditableText, With<LyricsEditorInput>>,
+    all_lyrics: Query<
+        'w,
+        's,
+        &'static EditableText,
+        (With<EditorAllLyricsInput>, Without<LyricsEditorInput>),
+    >,
+    song_settings_composer: Query<'w, 's, &'static EditableText, With<SongSettingsComposerInput>>,
+    song_settings_country: Query<'w, 's, &'static EditableText, With<SongSettingsCountryInput>>,
+    song_settings_bpm: Query<'w, 's, &'static EditableText, With<SongSettingsBpmInput>>,
+}
+
 // Keeping these as separate Bevy system parameters preserves change detection.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_actions(
     mut commands: Commands,
     interactions: Query<(&Interaction, &UiAction), Changed<Interaction>>,
     keys: Res<ButtonInput<KeyCode>>,
-    lyrics_inputs: Query<&EditableText, With<LyricsEditorInput>>,
+    text_inputs: EditorTextInputs,
     search_inputs: Query<
         &EditableText,
         (
@@ -2671,7 +2745,7 @@ fn handle_actions(
             }
             UiAction::ToggleLyricsInputMode => {
                 if let Some(editor) = session.lyrics_editor.as_mut() {
-                    if let Ok(input) = lyrics_inputs.single() {
+                    if let Ok(input) = text_inputs.lyrics.single() {
                         editor.initial_text = input.value().to_string();
                     }
                     editor.mode = if editor.mode == LyricsInputMode::Plain {
@@ -2684,7 +2758,7 @@ fn handle_actions(
             }
             UiAction::ToggleLyricsSeparateStems => {
                 if let Some(editor) = session.lyrics_editor.as_mut() {
-                    if let Ok(input) = lyrics_inputs.single() {
+                    if let Ok(input) = text_inputs.lyrics.single() {
                         editor.initial_text = input.value().to_string();
                     }
                     editor.separate_stems = !editor.separate_stems;
@@ -2695,7 +2769,7 @@ fn handle_actions(
                 if session.lyrics_search_job.receiver.is_none()
                     && let Some(editor) = session.lyrics_editor.as_mut()
                 {
-                    if let Ok(input) = lyrics_inputs.single() {
+                    if let Ok(input) = text_inputs.lyrics.single() {
                         editor.initial_text = input.value().to_string();
                     }
                     editor.searching = true;
@@ -2714,7 +2788,7 @@ fn handle_actions(
             }
             UiAction::PreviousLrclibCandidate => {
                 if let Some(editor) = session.lyrics_editor.as_mut() {
-                    if let Ok(input) = lyrics_inputs.single() {
+                    if let Ok(input) = text_inputs.lyrics.single() {
                         editor.initial_text = input.value().to_string();
                     }
                     editor.candidate_index = editor.candidate_index.saturating_sub(1);
@@ -2723,7 +2797,7 @@ fn handle_actions(
             }
             UiAction::NextLrclibCandidate => {
                 if let Some(editor) = session.lyrics_editor.as_mut() {
-                    if let Ok(input) = lyrics_inputs.single() {
+                    if let Ok(input) = text_inputs.lyrics.single() {
                         editor.initial_text = input.value().to_string();
                     }
                     editor.candidate_index =
@@ -2753,7 +2827,8 @@ fn handle_actions(
                 }
             }
             UiAction::SaveLyricsEditor => {
-                let value = lyrics_inputs
+                let value = text_inputs
+                    .lyrics
                     .single()
                     .map(|input| input.value().to_string())
                     .unwrap_or_default();
@@ -2883,6 +2958,83 @@ fn handle_actions(
                         } else {
                             format!("Language set to {language}; reprocessing queued.")
                         });
+                    }
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::OpenSongSettings(file_hash) => {
+                session.song_settings = open_song_settings(file_hash);
+                if session.song_settings.is_none() {
+                    session.notice = Some("Could not load this song's settings.".to_string());
+                }
+                invalidated.0 = true;
+            }
+            UiAction::CloseSongSettings => {
+                session.song_settings = None;
+                invalidated.0 = true;
+            }
+            UiAction::ChooseBackgroundVideo => {
+                if session.song_settings.is_some()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Video", &["mp4", "webm", "mkv", "mov", "avi"])
+                        .pick_file()
+                    && let Some(panel) = session.song_settings.as_mut()
+                {
+                    panel.background_video_path = Some(path);
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::ClearBackgroundVideo => {
+                if let Some(panel) = session.song_settings.as_mut() {
+                    panel.background_video_path = None;
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::SaveSongSettings => {
+                if let Some(panel) = session.song_settings.take() {
+                    let composer = text_inputs
+                        .song_settings_composer
+                        .single()
+                        .map(|input| input.value().to_string().trim().to_string())
+                        .unwrap_or_default();
+                    let country = text_inputs
+                        .song_settings_country
+                        .single()
+                        .map(|input| input.value().to_string().trim().to_string())
+                        .unwrap_or_default();
+                    let bpm_text = text_inputs
+                        .song_settings_bpm
+                        .single()
+                        .map(|input| input.value().to_string().trim().to_string())
+                        .unwrap_or_default();
+                    let bpm = if bpm_text.is_empty() {
+                        None
+                    } else {
+                        match bpm_text.parse::<f64>() {
+                            Ok(value) if value.is_finite() && value > 0.0 => Some(value),
+                            _ => {
+                                session.notice =
+                                    Some("BPM must be a positive number, or left blank.".to_string());
+                                session.song_settings = Some(panel);
+                                invalidated.0 = true;
+                                continue;
+                            }
+                        }
+                    };
+                    match app_core::update_song_settings(
+                        &panel.file_hash,
+                        (!composer.is_empty()).then_some(composer),
+                        (!country.is_empty()).then_some(country),
+                        bpm,
+                        panel.background_video_path.clone(),
+                    ) {
+                        Ok(()) => {
+                            session.notice = Some("Song settings saved.".to_string());
+                            session.refresh_library();
+                        }
+                        Err(error) => {
+                            session.notice = Some(format!("Could not save song settings: {error}"));
+                        }
                     }
                     invalidated.0 = true;
                 }
@@ -3027,6 +3179,113 @@ fn handle_actions(
             }
             UiAction::ToggleLibraryQueue => {
                 session.library_playback.queue_open = !session.library_playback.queue_open;
+                invalidated.0 = true;
+            }
+            UiAction::DismissLyricContext => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.lyric_context = None;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::DismissNoteContext => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.note_context = None;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::SelectWaveformSource(source) => {
+                let mut notice = None;
+                if let Some(editor) = session.editor.as_mut() {
+                    if *source == WaveformSource::Vocals && editor.chart.audio.vocals.is_none() {
+                        notice = Some("This chart has no separate vocal source.".to_string());
+                    } else {
+                        set_editor_waveform_source(editor, *source);
+                    }
+                    editor.waveform_context = None;
+                }
+                if notice.is_some() {
+                    session.notice = notice;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::SelectWaveformStyle(style) => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.waveform_style = *style;
+                    editor.waveform_context = None;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::DismissWaveformContext => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.waveform_context = None;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::DismissProblemsPanel => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.problems_panel_open = false;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::DismissShortcutsPanel => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.shortcuts_panel_open = false;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::SetProblemsFilter(filter) => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.problems_filter = *filter;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::ApplyAllLyricsEdit => {
+                let mut notice = None;
+                if let Some(editor) = session.editor.as_mut()
+                    && let Ok(input) = text_inputs.all_lyrics.single()
+                {
+                    let text = input.value().to_string();
+                    let lines = text.split('\n').collect::<Vec<_>>();
+                    let phrase_count = editor.document.phrase_count();
+                    if lines.len() != phrase_count {
+                        notice = Some(format!(
+                            "This chart has {phrase_count} phrase(s) but the text has {} line(s) — keep exactly one line per phrase (blank lines are fine), then apply again.",
+                            lines.len()
+                        ));
+                    } else {
+                        editor.checkpoint("Retype all lyrics");
+                        let mut changed = false;
+                        for (index, line) in lines.iter().enumerate() {
+                            changed |= editor.document.set_phrase_token_text(index, line);
+                        }
+                        if changed {
+                            editor.dirty = true;
+                            notice = Some("Updated all lyrics.".to_string());
+                        } else {
+                            editor.undo.pop();
+                        }
+                        editor.all_lyrics_editor_open = false;
+                    }
+                }
+                if notice.is_some() {
+                    session.notice = notice;
+                }
+                invalidated.0 = true;
+            }
+            UiAction::ExtendLyricOverNote(word, note_index) => {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.checkpoint("Continue syllable");
+                    if extend_editor_lyric(&mut editor.document, *word, *note_index) {
+                        editor.dirty = true;
+                        editor.note_context = None;
+                        session.notice = Some("Extended the syllable onto this note.".to_string());
+                    } else {
+                        editor.undo.pop();
+                        session.notice = Some(
+                            "That note can't continue the syllable — it needs to sit right after it, in the same phrase, with no lyric of its own.".to_string(),
+                        );
+                    }
+                }
                 invalidated.0 = true;
             }
             UiAction::Editor(_)
@@ -3312,7 +3571,10 @@ mod tests {
             end: 1.8,
             midi: 60.0,
             pitched: true,
+            placeholder: false,
             kind: app_core::NoteKind::Normal,
+            lyric: None,
+            continues_lyric: false,
         }];
 
         let snap = snap_lyric_move_to_notes(&words, 0.27, &notes, 0.05).unwrap();
@@ -3337,7 +3599,10 @@ mod tests {
             end: 0.2,
             midi: 60.0,
             pitched: true,
+            placeholder: false,
             kind: app_core::NoteKind::Normal,
+            lyric: None,
+            continues_lyric: false,
         }];
 
         let snap = snap_lyric_move_to_notes(&words, -0.05, &notes, 0.2).unwrap();
@@ -3364,6 +3629,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 62, "b")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.checkpoint("Move note");
@@ -3418,6 +3684,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a"), (2.0, 3.0, 62, "b")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.tap_mode = true;
@@ -3443,6 +3710,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.tap_mode = true;
@@ -3460,6 +3728,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.tap_mode = true;
@@ -3478,6 +3747,7 @@ mod tests {
             ]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.viewport_start = 2.0;
@@ -3510,6 +3780,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a"), (4.0, 5.0, 62, "b")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         let tones = pitch_tones(&editor.document, 3.5, 6.0);
@@ -3527,10 +3798,11 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a"), (2.0, 3.0, 62, "b")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         assert!(other_track_notes(&editor.document).is_empty());
-        editor.document.add_track(app_core::TrackRole::Duet);
+        editor.document.add_track(app_core::TrackRole::Lead);
         editor.document.set_active_track(0);
         editor.document.move_notes_to_track(&BTreeSet::from([1]), 1);
 
@@ -3551,6 +3823,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.checkpoint("Move note");
@@ -3570,6 +3843,7 @@ mod tests {
             chart_fixture(&[(0.0, 1.0, 60, "a")]),
             uta_studio_audio::EditorAudioStatus::default(),
             app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
             "instrumental",
         );
         editor.viewport_start = 10.0;

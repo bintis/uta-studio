@@ -148,6 +148,86 @@ pub(crate) fn spawn_icon_button(
         .with_children(|button| spawn_icon(button, atlas, icon, 16.0, color));
 }
 
+/// A toolbar toggle for anything about multiple singers on one chart (the
+/// duet/harmony track strip). Drawn from plain shapes — two overlapping
+/// head-and-shoulders silhouettes — rather than a sprite: the generic list
+/// icon this used to share with other "show a strip" toggles didn't read as
+/// "more than one voice" at a glance.
+pub(crate) fn spawn_duet_icon_button(
+    parent: &mut ChildSpawnerCommands,
+    theme: &StudioTheme,
+    action: UiAction,
+    active: bool,
+    destructive: bool,
+    size: f32,
+) {
+    let color = if destructive {
+        theme.destructive
+    } else if active {
+        theme.foreground
+    } else {
+        theme.muted_foreground
+    };
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                width: px(size),
+                height: px(size),
+                flex_shrink: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(if active {
+                theme.foreground.with_alpha(0.07)
+            } else {
+                Color::NONE
+            }),
+        ))
+        .with_children(|button| {
+            button
+                .spawn(Node {
+                    position_type: PositionType::Relative,
+                    width: px(17),
+                    height: px(11),
+                    ..default()
+                })
+                .with_children(|glyph| {
+                    for (left, z) in [(0.0_f32, 0), (6.0_f32, 1)] {
+                        glyph.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(left + 2.0),
+                                top: px(0),
+                                width: px(7),
+                                height: px(7),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                            ZIndex(z),
+                        ));
+                        glyph.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(left),
+                                top: px(6),
+                                width: px(11),
+                                height: px(5),
+                                border_radius: BorderRadius::px(5.0, 5.0, 0.0, 0.0),
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                            ZIndex(z),
+                        ));
+                    }
+                });
+        });
+}
+
 pub(crate) fn spawn_activity_button(
     parent: &mut ChildSpawnerCommands,
     atlas: Handle<Image>,
@@ -492,9 +572,13 @@ pub(crate) fn button_background(
     resting: Color,
     theme: &StudioTheme,
 ) -> Color {
-    // Full-surface dismiss targets are intentionally invisible controls. A
-    // hover highlight here reads as if the obscured page itself was selected.
-    if matches!(action, UiAction::CloseActivity) {
+    // Full-surface dismiss targets are intentionally invisible controls that
+    // cover the whole screen — the same set `action_is_navigation_target`
+    // excludes from tab order. A hover highlight on one of these isn't a
+    // subtle accent under the cursor: since the pointer is always somewhere
+    // on screen, it's an immediate solid tint over everything the moment the
+    // backdrop exists.
+    if !action_is_navigation_target(action) {
         return resting;
     }
     match interaction {

@@ -165,6 +165,15 @@ impl CacheDir {
         self.path.join(format!("{hash}_cover.jpg"))
     }
 
+    /// Structured key/rhythm analysis (tonic/scale/confidence, BPM,
+    /// per-beat timestamps, and — when Essentia is installed — a few extra
+    /// descriptors), written once during analysis by `analyze_music` in
+    /// `pipeline.py`. Kept out of the transcript so the beat-timestamp
+    /// array never has to round-trip through it.
+    pub fn music_analysis_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_music_analysis.json"))
+    }
+
     pub fn transcript_exists(&self, hash: &str) -> bool {
         let transcript = self.transcript_path(hash);
         if !transcript.is_file() {
@@ -187,6 +196,7 @@ impl CacheDir {
             self.lyrics_path(hash),
             self.pitch_track_path(hash),
             self.pitch_notes_path(hash),
+            self.music_analysis_path(hash),
         ]
         .into_iter()
         .chain(direct_audio)

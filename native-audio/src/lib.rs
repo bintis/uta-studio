@@ -212,6 +212,14 @@ mod linux {
         path: Option<PathBuf>,
         ended: bool,
         error: Option<String>,
+        /// The position we last told GStreamer to seek to, and when. A
+        /// flushing seek needs to preroll before `query_position` reliably
+        /// reflects it — querying right away can briefly report the
+        /// pre-seek position, which reads as the playhead jumping to where
+        /// you clicked and then flickering back. `status()` trusts this
+        /// commanded position over a fresh (possibly not-yet-settled) query
+        /// until the query catches up or the grace period lapses.
+        pending_seek: Option<(f64, std::time::Instant)>,
     }
 
     impl PlayerInner {
@@ -252,6 +260,7 @@ mod linux {
             self.path = Some(path.to_path_buf());
             self.ended = false;
             self.error = None;
+            self.pending_seek = None;
             Ok(self.status())
         }
 
@@ -308,6 +317,7 @@ mod linux {
                 )
                 .map_err(|error| format!("Could not seek chart audio: {error}"))?;
             self.ended = false;
+            self.pending_seek = Some((position, std::time::Instant::now()));
             Ok(self.status())
         }
 
@@ -354,10 +364,26 @@ mod linux {
                 .query_duration::<gst::ClockTime>()
                 .map(|value| value.seconds_f64())
                 .unwrap_or(0.0);
-            let position_secs = player
+            let mut position_secs = player
                 .query_position::<gst::ClockTime>()
                 .map(|value| value.seconds_f64())
                 .unwrap_or(0.0);
+
+            if let Some((target, requested_at)) = self.pending_seek {
+                const SETTLE_TOLERANCE_SECS: f64 = 0.05;
+                const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
+                if (position_secs - target).abs() <= SETTLE_TOLERANCE_SECS {
+                    self.pending_seek = None;
+                } else if requested_at.elapsed() < GRACE_PERIOD {
+                    position_secs = target;
+                } else {
+                    // The pipeline never reported landing at the commanded
+                    // position within the grace period; trust the live
+                    // query rather than freezing the UI on a stale target.
+                    self.pending_seek = None;
+                }
+            }
+
             EditorAudioStatus {
                 loaded: self.path.is_some(),
                 playing: effective_state == gst::State::Playing
@@ -377,6 +403,7 @@ mod linux {
             self.path = None;
             self.ended = false;
             self.error = None;
+            self.pending_seek = None;
             EditorAudioStatus::default()
         }
     }

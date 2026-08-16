@@ -322,6 +322,13 @@ pub(crate) fn spawn_song_detail(
                                 },
                             );
                             spawn_song_primary_actions(actions, font.clone(), &song, session, theme);
+                            spawn_compact_action_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Settings",
+                                UiAction::OpenSongSettings(song.file_hash.clone()),
+                            );
                         });
                 });
 

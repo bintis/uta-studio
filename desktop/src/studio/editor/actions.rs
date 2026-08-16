@@ -58,6 +58,7 @@ editor_actions! {
     MoveSelectionToNextTrack => "move_selection_to_next_track",
     TogglePlayback => "toggle_playback",
     SeekStart => "seek_start",
+    SeekEnd => "seek_end",
     AuditionSelection => "audition_selection",
     AuditionVisible => "audition_visible",
     AuditionBeforeSelection => "audition_before_selection",
@@ -68,8 +69,14 @@ editor_actions! {
     ToggleTracks => "toggle_tracks",
     ToggleInspector => "toggle_inspector",
     CloseInspector => "close_inspector",
+    ToggleProblemsPanel => "toggle_problems_panel",
+    ToggleShortcutsPanel => "toggle_shortcuts_panel",
+    ToggleLockMode => "toggle_lock_mode",
+    ToggleBeatGrid => "toggle_beat_grid",
     ZoomInTime => "zoom_in_time",
     ZoomOutTime => "zoom_out_time",
+    FitSelection => "fit_selection",
+    FitSong => "fit_song",
     ZoomInPitch => "zoom_in_pitch",
     ZoomOutPitch => "zoom_out_pitch",
     PanPitchUp => "pan_pitch_up",
@@ -78,6 +85,8 @@ editor_actions! {
     SelectNextNote => "select_next_note",
     SelectPreviousNote => "select_previous_note",
     AddNote => "add_note",
+    PlayNotePitch => "play_note_pitch",
+    PlayNoteVocal => "play_note_vocal",
     ToggleTapMode => "toggle_tap_mode",
     TapNote => "tap_note",
     DeleteSelection => "delete_selection",
@@ -97,6 +106,8 @@ editor_actions! {
     LowerPitch => "lower_pitch",
     RaisePitchOctave => "raise_pitch_octave",
     LowerPitchOctave => "lower_pitch_octave",
+    EditLyricLine => "edit_lyric_line",
+    EditAllLyrics => "edit_all_lyrics",
     AddLyric => "add_lyric",
     DeleteLyrics => "delete_lyrics",
     SplitLyrics => "split_lyrics",
@@ -112,6 +123,9 @@ editor_actions! {
     RollLyricsRight => "roll_lyrics_right",
     SplitPhrase => "split_phrase",
     MergePhrase => "merge_phrase",
+    BindNearest => "bind_nearest",
+    UnbindSelection => "unbind_selection",
+    ToggleBindAlignment => "toggle_bind_alignment",
 }
 
 impl EditorAction {
@@ -185,6 +199,10 @@ impl EditorActionContext<'_> {
 /// inspector button — arrives here.
 pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
+    if let Some(editor) = ctx.session.editor.as_mut() {
+        editor.lyric_context = None;
+        editor.note_context = None;
+    }
     match action {
         Save | Undo | Redo | RepairChart | ShiftChartEarlier | ShiftChartLater => {
             run_document_action(action, ctx)
@@ -197,27 +215,109 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         | MoveSelectionToNextTrack => run_track_action(action, ctx),
         TogglePlayback
         | SeekStart
+        | SeekEnd
         | AuditionSelection
         | AuditionVisible
         | AuditionBeforeSelection
         | AuditionAfterSelection
         | StopAudition
         | CycleAuditionMode => run_transport_action(action, ctx),
-        ToggleLyrics | ToggleTracks | ToggleInspector | CloseInspector | ZoomInTime
-        | ZoomOutTime | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => {
+        ToggleLyrics | ToggleTracks | ToggleInspector | CloseInspector | ToggleProblemsPanel
+        | ToggleShortcutsPanel | ToggleLockMode | ToggleBeatGrid | ZoomInTime | ZoomOutTime
+        | FitSelection | FitSong | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => {
             run_view_action(action, ctx)
         }
         SelectAll | SelectNextNote | SelectPreviousNote => run_selection_action(action, ctx),
         ToggleTapMode | TapNote => run_tap_action(action, ctx),
-        AddNote | DeleteSelection | SplitSelection | MergeSelection | QuantizeNotes
-        | DuplicateNotes | CopyNotes | CutNotes | PasteNotes | CycleNoteKind | NudgeEarlier
-        | NudgeLater | ShortenSelection | LengthenSelection | RaisePitch | LowerPitch
-        | RaisePitchOctave | LowerPitchOctave => run_note_action(action, ctx),
-        AddLyric | DeleteLyrics | SplitLyrics | SyllabizeLyrics | MergeLyrics
+        AddNote | PlayNotePitch | PlayNoteVocal | DeleteSelection | SplitSelection
+        | MergeSelection | QuantizeNotes | DuplicateNotes | CopyNotes | CutNotes | PasteNotes
+        | CycleNoteKind | NudgeEarlier | NudgeLater | ShortenSelection | LengthenSelection
+        | RaisePitch | LowerPitch | RaisePitchOctave | LowerPitchOctave => {
+            run_note_action(action, ctx)
+        }
+        EditLyricLine | EditAllLyrics | AddLyric | DeleteLyrics | SplitLyrics | SyllabizeLyrics
+        | MergeLyrics
         | ShiftLyricEarlier | ShiftLyricLater | LyricStartEarlier | LyricStartLater
         | LyricEndEarlier | LyricEndLater | RollLyricsLeft | RollLyricsRight | SplitPhrase
         | MergePhrase => run_lyric_action(action, ctx),
+        BindNearest | UnbindSelection | ToggleBindAlignment => run_bind_action(action, ctx),
     }
+}
+
+/// Binds or unbinds the current selection to its nearest counterpart. A
+/// held-`B`/`C` click (handled in `handle_editor_pointer_capture`) names the
+/// counterpart explicitly instead of searching for the nearest one.
+fn run_bind_action(action: EditorAction, ctx: &mut EditorActionContext) {
+    use EditorAction::*;
+    let Some(editor) = ctx.session.editor.as_mut() else {
+        return;
+    };
+    match action {
+        BindNearest => {
+            if editor.selected_word.is_none() && editor.selected_note.is_none() {
+                ctx.session.notice =
+                    Some("Select an unpitched lyric or a lyric-less note to bind.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            }
+            editor.checkpoint(action.label());
+            let align_to_lyric = editor.bind_alignment == BindAlignment::Lyric;
+            match bind_nearest_editor_selection(
+                &mut editor.document,
+                editor.selected_word,
+                editor.selected_note,
+                align_to_lyric,
+            ) {
+                Some(bound) => {
+                    editor.select_only_note(bound);
+                    editor.dirty = true;
+                    ctx.session.notice = Some(format!(
+                        "Bound lyric to note, keeping {} timing.",
+                        editor.bind_alignment.label()
+                    ));
+                }
+                None => {
+                    editor.undo.pop();
+                    ctx.session.notice = Some(
+                        "No unpitched lyric and lyric-less note nearby to bind.".to_string(),
+                    );
+                }
+            }
+        }
+        UnbindSelection => {
+            if editor.selected_word.is_none() && editor.selected_note.is_none() {
+                ctx.session.notice = Some("Select a bound note or lyric to unbind.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            }
+            editor.checkpoint(action.label());
+            match unbind_editor_selection(
+                &mut editor.document,
+                editor.selected_word,
+                editor.selected_note,
+            ) {
+                Some(freed) => {
+                    editor.select_only_word(freed);
+                    editor.dirty = true;
+                    ctx.session.notice = Some("Unbound lyric from note.".to_string());
+                }
+                None => {
+                    editor.undo.pop();
+                    ctx.session.notice =
+                        Some("This note has no separable pitch and lyric to unbind.".to_string());
+                }
+            }
+        }
+        ToggleBindAlignment => {
+            editor.bind_alignment = editor.bind_alignment.toggled();
+            ctx.session.notice = Some(format!(
+                "Bind will now keep {} timing.",
+                editor.bind_alignment.label()
+            ));
+        }
+        _ => unreachable!(),
+    }
+    ctx.invalidated.0 = true;
 }
 
 // -- chart ----------------------------------------------------------------
@@ -288,7 +388,7 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
     match action {
         AddTrack => {
             editor.checkpoint(action.label());
-            let index = editor.document.add_track(app_core::TrackRole::Duet);
+            let index = editor.document.add_track(app_core::TrackRole::Lead);
             editor.clear_selection();
             editor.dirty = true;
             ctx.session.notice = Some(format!(
@@ -410,6 +510,14 @@ fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if ctx.session.editor.is_some() {
                 stop_audition(ctx);
                 ctx.seek(0.0);
+                ctx.invalidated.0 = true;
+            }
+        }
+        SeekEnd => {
+            if let Some(editor) = ctx.session.editor.as_ref() {
+                let end = editor.audio_status.duration_secs.max(editor.waveform.duration_secs);
+                stop_audition(ctx);
+                ctx.seek(end);
                 ctx.invalidated.0 = true;
             }
         }
@@ -545,6 +653,27 @@ pub(crate) fn stop_audition(ctx: &mut EditorActionContext) {
     if let Some(editor) = ctx.session.editor.as_mut() {
         editor.audition_until = None;
     }
+    restore_audition_source(ctx);
+}
+
+/// Switches playback back to whatever source was active before `PlayNoteVocal`
+/// temporarily loaded the vocal stem, if it did. A no-op the rest of the time.
+fn restore_audition_source(ctx: &mut EditorActionContext) {
+    let Some(editor) = ctx.session.editor.as_ref() else {
+        return;
+    };
+    let Some(source) = editor.audition_restore_source.clone() else {
+        return;
+    };
+    let file_hash = editor.chart.file_hash.clone();
+    if let Ok(status) = ctx.audio.load(&file_hash, &source)
+        && let Some(editor) = ctx.session.editor.as_mut()
+    {
+        editor.audio_source = source;
+        editor.audio_status = status;
+        editor.last_audio_sync = Instant::now();
+        editor.audition_restore_source = None;
+    }
 }
 
 // -- view -----------------------------------------------------------------
@@ -568,11 +697,73 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
             }
             editor.inspector_open = false;
         }
+        ToggleProblemsPanel => editor.problems_panel_open = !editor.problems_panel_open,
+        ToggleShortcutsPanel => editor.shortcuts_panel_open = !editor.shortcuts_panel_open,
+        ToggleLockMode => {
+            editor.lock_mode = !editor.lock_mode;
+            ctx.session.notice = Some(if editor.lock_mode {
+                "Locked: notes and lyrics can no longer be dragged. Arrow keys still nudge them."
+                    .to_string()
+            } else {
+                "Unlocked.".to_string()
+            });
+        }
+        ToggleBeatGrid => {
+            if editor.beats.is_empty() {
+                ctx.session.notice = Some(
+                    "No beat data for this song yet — re-analyze it (Essentia must be installed) to generate a beat grid."
+                        .to_string(),
+                );
+            } else {
+                editor.beat_grid_visible = !editor.beat_grid_visible;
+            }
+        }
         ZoomInTime | ZoomOutTime => {
             let center = editor.viewport_start + editor.viewport_duration / 2.0;
             let factor = if action == ZoomInTime { 0.8 } else { 1.25 };
             editor.viewport_duration = (editor.viewport_duration * factor).clamp(2.0, 180.0);
             editor.viewport_start = (center - editor.viewport_duration / 2.0).max(0.0);
+            editor.hold_manual_scroll();
+        }
+        FitSelection => {
+            let notes = chart_notes(&editor.document);
+            let mut span: Option<(f64, f64)> = None;
+            for index in editor.selected_note_indices() {
+                if let Some(note) = notes.iter().find(|note| note.index == index) {
+                    span = Some(match span {
+                        Some((start, end)) => (start.min(note.start), end.max(note.end)),
+                        None => (note.start, note.end),
+                    });
+                }
+            }
+            for selection in editor.selected_word_indices() {
+                if let Some((_, start, end)) = selected_editor_word(&editor.document, selection) {
+                    span = Some(match span {
+                        Some((current_start, current_end)) => {
+                            (current_start.min(start), current_end.max(end))
+                        }
+                        None => (start, end),
+                    });
+                }
+            }
+            let Some((start, end)) = span else {
+                ctx.session.notice = Some("Select notes or lyrics to fit them in view.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            };
+            let padding = ((end - start) * 0.15).max(0.5);
+            editor.viewport_start = (start - padding).max(0.0);
+            editor.viewport_duration = ((end - start) + padding * 2.0).clamp(2.0, 180.0);
+            editor.hold_manual_scroll();
+        }
+        FitSong => {
+            let duration = editor
+                .audio_status
+                .duration_secs
+                .max(editor.waveform.duration_secs)
+                .max(2.0);
+            editor.viewport_start = 0.0;
+            editor.viewport_duration = duration.clamp(2.0, 180.0);
             editor.hold_manual_scroll();
         }
         ZoomInPitch | ZoomOutPitch => {
@@ -658,18 +849,74 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             let Some(editor) = ctx.session.editor.as_mut() else {
                 return;
             };
-            editor.checkpoint(action.label());
-            let start = editor.visible_position.max(0.0);
-            let midi = ((editor.pitch_min + editor.pitch_max) / 2.0)
-                .round()
-                .clamp(0.0, 127.0);
-            if let Some(selected) =
-                insert_chart_note(&mut editor.document, start, start + 0.5, midi)
-            {
-                editor.select_only_note(selected);
+            // Arms the tool instead of inserting immediately: the next
+            // press-and-drag on the canvas (handled in
+            // `handle_editor_pointer_capture`) places the note where the
+            // pointer goes down and sizes it to the drag.
+            editor.note_insert_armed = true;
+            ctx.session.notice =
+                Some("Click and drag on the canvas to place a note.".to_string());
+            ctx.invalidated.0 = true;
+        }
+        PlayNotePitch => {
+            let Some(editor) = ctx.session.editor.as_ref() else {
+                return;
+            };
+            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor)
+            else {
+                ctx.session.notice = Some("Select a note to play its pitch.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            };
+            let tones = pitch_tones(&editor.document, start, end);
+            ctx.tones.stop();
+            let notice = match ctx.tones.start(&tones, (end - start).max(0.05), 0.9) {
+                Ok(()) => "Playing pitch.".to_string(),
+                Err(error) => format!("Pitch audition is unavailable: {error}"),
+            };
+            ctx.session.notice = Some(notice);
+            ctx.invalidated.0 = true;
+        }
+        PlayNoteVocal => {
+            let Some(editor) = ctx.session.editor.as_ref() else {
+                return;
+            };
+            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor)
+            else {
+                ctx.session.notice = Some("Select a note to play its vocal.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            };
+            if editor.chart.audio.vocals.is_none() {
+                ctx.session.notice = Some("This chart has no separate vocal source.".to_string());
+                ctx.invalidated.0 = true;
+                return;
             }
-            editor.dirty = true;
-            ctx.session.notice = Some("Added note at the playhead.".to_string());
+            let file_hash = editor.chart.file_hash.clone();
+            let previous_source = editor.audio_source.clone();
+            let restore = (previous_source != "vocals").then_some(previous_source);
+            ctx.tones.stop();
+            let mut notice = None;
+            if restore.is_some()
+                && let Err(error) = ctx.audio.load(&file_hash, "vocals")
+            {
+                notice = Some(error);
+            }
+            if notice.is_none() {
+                ctx.seek(start);
+                if let Err(error) = ctx.audio.play() {
+                    notice = Some(error);
+                }
+            }
+            if notice.is_none()
+                && let Some(editor) = ctx.session.editor.as_mut()
+            {
+                editor.audio_source = "vocals".to_string();
+                editor.audition_until = Some(end);
+                editor.audition_restore_source = restore;
+                editor.hold_manual_scroll();
+            }
+            ctx.session.notice = notice.or_else(|| Some("Playing the vocal.".to_string()));
             ctx.invalidated.0 = true;
         }
         DeleteSelection => {
@@ -1053,6 +1300,31 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
         return;
     };
     match action {
+        EditLyricLine => {
+            let lyrics = chart_lyrics(&editor.document);
+            let selection = lyrics
+                .iter()
+                .find(|lyric| {
+                    editor.visible_position >= lyric.start && editor.visible_position < lyric.end
+                })
+                .or_else(|| lyrics.iter().find(|lyric| lyric.start >= editor.visible_position))
+                .or_else(|| lyrics.last())
+                .map(|lyric| WordSelection {
+                    segment: lyric.segment,
+                    word: lyric.word,
+                });
+            if let Some(selection) = selection {
+                editor.select_only_word(selection);
+                editor.inspector_open = true;
+            } else {
+                ctx.session.notice = Some("This chart has no lyrics yet.".to_string());
+            }
+            ctx.invalidated.0 = true;
+        }
+        EditAllLyrics => {
+            editor.all_lyrics_editor_open = !editor.all_lyrics_editor_open;
+            ctx.invalidated.0 = true;
+        }
         AddLyric => {
             editor.checkpoint(action.label());
             if let Some(selection) = insert_editor_word(
@@ -1394,6 +1666,9 @@ fn chord_key_name(key: KeyCode) -> Option<&'static str> {
         KeyCode::KeyA => "KeyA",
         KeyCode::KeyC => "KeyC",
         KeyCode::KeyD => "KeyD",
+        KeyCode::KeyF => "KeyF",
+        KeyCode::KeyH => "KeyH",
+        KeyCode::KeyL => "KeyL",
         KeyCode::KeyM => "KeyM",
         KeyCode::KeyQ => "KeyQ",
         KeyCode::KeyS => "KeyS",
@@ -1407,6 +1682,8 @@ fn chord_key_name(key: KeyCode) -> Option<&'static str> {
         KeyCode::Escape => "Escape",
         KeyCode::Delete => "Delete",
         KeyCode::Backspace => "Backspace",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
         KeyCode::ArrowLeft => "ArrowLeft",
         KeyCode::ArrowRight => "ArrowRight",
         KeyCode::ArrowUp => "ArrowUp",
@@ -1430,6 +1707,9 @@ const CHORD_KEYS: &[KeyCode] = &[
     KeyCode::KeyA,
     KeyCode::KeyC,
     KeyCode::KeyD,
+    KeyCode::KeyF,
+    KeyCode::KeyH,
+    KeyCode::KeyL,
     KeyCode::KeyM,
     KeyCode::KeyQ,
     KeyCode::KeyS,
@@ -1443,6 +1723,8 @@ const CHORD_KEYS: &[KeyCode] = &[
     KeyCode::Escape,
     KeyCode::Delete,
     KeyCode::Backspace,
+    KeyCode::Home,
+    KeyCode::End,
     KeyCode::ArrowLeft,
     KeyCode::ArrowRight,
     KeyCode::ArrowUp,

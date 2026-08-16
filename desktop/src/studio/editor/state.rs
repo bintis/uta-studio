@@ -13,6 +13,16 @@ pub(crate) const EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX: f32 = 9.0;
 
 pub(crate) const EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS: f64 = 0.12;
 
+/// A note/lyric move or resize drag only starts changing the chart once the
+/// pointer has moved this far from where the mouse went down. Below it, a
+/// press-and-release reads as a plain click rather than an edit — without
+/// this, an ordinary click can jitter a pixel or two and, worse, land inside
+/// the lyric/note snap radius (`EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX`), which
+/// then snaps a bound note to a neighboring boundary the user never meant to
+/// touch. Densely packed lyrics (several overlapping rows) are exactly where
+/// notes sit close enough for that snap to fire from a near-zero movement.
+pub(crate) const EDITOR_DRAG_MIN_PX: f32 = 4.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EditorDockSelectKind {
     AudioSource,
@@ -31,6 +41,30 @@ pub(crate) enum AuditionMode {
     Pitch,
     /// Both at once, for checking the chart against the recording.
     Mixed,
+}
+
+/// Which stem the overview waveform is decoded from. Independent of
+/// `audio_source` (what plays back) — the waveform is an alignment aid, so
+/// it's picked separately, right-click on the waveform itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaveformSource {
+    Instrumental,
+    Vocals,
+    Original,
+}
+
+/// How the overview waveform's peaks are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WaveformStyle {
+    #[default]
+    Bars,
+    Filled,
+    Line,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WaveformContextMenu {
+    pub(crate) position: Vec2,
 }
 
 impl AuditionMode {
@@ -99,7 +133,31 @@ pub(crate) struct NativeEditor {
     /// The authoritative UTZ 0.2 chart under edit. Every note and lyric change
     /// goes through it; nothing is re-derived from analyzer JSON on save.
     pub(crate) document: app_core::EditorDocument,
+    /// The chart's analyzer pitch evidence, decoded from `chart.pitch_track`
+    /// once at load. That JSON is read-only analyzer output — editing never
+    /// touches it — so re-parsing it on every UI rebuild (as `view.rs` used
+    /// to, once per visible note) was pure waste.
+    pub(crate) pitch_frames: Vec<ChartPitchFrame>,
+    /// Absolute-second beat timestamps from `{file_hash}_music_analysis.json`,
+    /// decoded once at load, same as `pitch_frames`. Empty when analysis
+    /// never ran, found no confident tempo, or produced no individually
+    /// detected beats — the beat grid then draws nothing rather than a
+    /// fabricated or misleading one.
+    pub(crate) beats: Vec<f64>,
+    /// Whether the beat grid draws at all, independent of whether `beats`
+    /// has data. User-toggleable; on by default when there is data to show.
+    pub(crate) beat_grid_visible: bool,
+    /// The last-computed chart-checks report, alongside the document
+    /// revision it was computed from. `refresh_editor_problems_cache`
+    /// recomputes it only when the revision has moved, since a full
+    /// problems() pass over every note and lyric on every UI rebuild is
+    /// wasted work when nothing changed.
+    pub(crate) problems_cache: (u64, app_core::ProblemReport),
     pub(crate) waveform: app_core::ChartWaveform,
+    pub(crate) waveform_source: WaveformSource,
+    pub(crate) waveform_style: WaveformStyle,
+    /// The right-click waveform menu, open at a screen position.
+    pub(crate) waveform_context: Option<WaveformContextMenu>,
     pub(crate) audio_source: String,
     pub(crate) visible_position: f64,
     pub(crate) audio_status: uta_studio_audio::EditorAudioStatus,
@@ -128,11 +186,113 @@ pub(crate) struct NativeEditor {
     pub(crate) undo: Vec<ChartSnapshot>,
     pub(crate) redo: Vec<ChartSnapshot>,
     pub(crate) clipboard_notes: Vec<app_core::ClipboardNote>,
+    /// The right-click lyric menu, open at a screen position. Its actions run
+    /// against whatever is selected at the time it's opened.
+    pub(crate) lyric_context: Option<LyricContextMenu>,
+    /// The right-click note (pitch) menu, open at a screen position.
+    pub(crate) note_context: Option<NoteContextMenu>,
+    /// Whether the chart-checks panel (opened from its own toolbar button)
+    /// is showing. Kept out of the inspector column so a long problem list
+    /// can't crowd out the rest of it.
+    pub(crate) problems_panel_open: bool,
+    pub(crate) problems_filter: ProblemsFilter,
+    /// The keyboard/mouse shortcut cheat sheet, opened from its own toolbar
+    /// button. Covers the gestures with no single-key registry entry to
+    /// read a shortcut from: marquee-select, the wheel modifiers, tap mode.
+    pub(crate) shortcuts_panel_open: bool,
+    /// The whole-song lyrics editor: every phrase's text, one per line, so a
+    /// pass over the whole song doesn't mean clicking into each line one at
+    /// a time. Unlike the song-detail lyrics dialog, this writes straight
+    /// into the existing phrases/notes rather than re-running alignment, so
+    /// pitch and timing already authored survive it.
+    pub(crate) all_lyrics_editor_open: bool,
+    /// Set by the "Add note" toolbar button: the next press-and-drag on the
+    /// timeline canvas places a note and sizes it to the drag instead of
+    /// selecting or panning. Cleared once that drag starts.
+    pub(crate) note_insert_armed: bool,
+    /// While locked, the mouse cannot move or resize a note or lyric — only
+    /// select, pan, zoom, and the keyboard nudge/pitch chords still work.
+    /// Guards against an accidental drag once timing is dialed in.
+    pub(crate) lock_mode: bool,
+    /// Which side's timing wins when "Bind" merges a lyric-only note onto a
+    /// pitch-only one — the MIDI note's own start/end (the historical
+    /// behavior) or the lyric's.
+    pub(crate) bind_alignment: BindAlignment,
+    /// The audio source `PlayNoteVocal` temporarily switched to (always
+    /// "vocals"), to be restored once the ranged audition it started ends.
+    /// `None` when no such restore is pending.
+    pub(crate) audition_restore_source: Option<String>,
+}
+
+/// Which timing a "Bind" merge keeps when the lyric and the pitch note it is
+/// bound to disagree — see [`NativeEditor::bind_alignment`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum BindAlignment {
+    #[default]
+    Pitch,
+    Lyric,
+}
+
+impl BindAlignment {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Pitch => "MIDI",
+            Self::Lyric => "Lyric",
+        }
+    }
+
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Pitch => Self::Lyric,
+            Self::Lyric => Self::Pitch,
+        }
+    }
 }
 
 /// A lyric token address: (phrase, syllable). The editor still calls these
 /// words because that is what the lyric lane shows.
 pub(crate) type WordSelection = app_core::LyricAddress;
+
+#[derive(Clone, Copy)]
+pub(crate) struct LyricContextMenu {
+    pub(crate) position: Vec2,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NoteContextMenu {
+    pub(crate) position: Vec2,
+    /// The selected syllable that this note could hold as a pitch-glide
+    /// continuation, captured before right-clicking the note replaces the
+    /// selection with the note itself.
+    pub(crate) continue_word: Option<WordSelection>,
+}
+
+/// Which severities the chart-checks panel lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ProblemsFilter {
+    #[default]
+    All,
+    Errors,
+    Warnings,
+}
+
+impl ProblemsFilter {
+    pub(crate) fn matches(self, severity: app_core::Severity) -> bool {
+        match self {
+            Self::All => true,
+            Self::Errors => severity == app_core::Severity::Error,
+            Self::Warnings => severity == app_core::Severity::Warning,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Errors => "Errors",
+            Self::Warnings => "Warnings",
+        }
+    }
+}
 
 /// One undoable step: what the chart looked like before an edit, and what to
 /// call that edit in the history.
@@ -147,9 +307,13 @@ impl NativeEditor {
         chart: app_core::ChartDocument,
         audio_status: uta_studio_audio::EditorAudioStatus,
         waveform: app_core::ChartWaveform,
+        waveform_source: WaveformSource,
         audio_source: impl Into<String>,
     ) -> Self {
         let document = app_core::EditorDocument::new(chart.vocal_chart.clone());
+        let pitch_frames = chart_pitch_frames(&chart);
+        let beats = load_editor_beats(&chart.file_hash);
+        let problems_cache = (document.revision(), document.problems());
         let notes = document.notes();
         let pitch_min = notes
             .iter()
@@ -170,7 +334,14 @@ impl NativeEditor {
         Self {
             chart,
             document,
+            pitch_frames,
+            beat_grid_visible: !beats.is_empty(),
+            beats,
+            problems_cache,
             waveform,
+            waveform_source,
+            waveform_style: WaveformStyle::default(),
+            waveform_context: None,
             audio_source: audio_source.into(),
             visible_position: audio_status.position_secs,
             audio_status,
@@ -196,11 +367,31 @@ impl NativeEditor {
             undo: Vec::new(),
             redo: Vec::new(),
             clipboard_notes: Vec::new(),
+            lyric_context: None,
+            note_context: None,
+            problems_panel_open: false,
+            problems_filter: ProblemsFilter::default(),
+            shortcuts_panel_open: false,
+            all_lyrics_editor_open: false,
+            note_insert_armed: false,
+            lock_mode: false,
+            bind_alignment: BindAlignment::default(),
+            audition_restore_source: None,
         }
     }
 
     pub(crate) fn viewport_end(&self) -> f64 {
         self.viewport_start + self.viewport_duration
+    }
+
+    /// The chart-checks report, recomputed only when the document has
+    /// actually changed since the last call.
+    pub(crate) fn refresh_problems(&mut self) -> &app_core::ProblemReport {
+        let revision = self.document.revision();
+        if self.problems_cache.0 != revision {
+            self.problems_cache = (revision, self.document.problems());
+        }
+        &self.problems_cache.1
     }
 
     pub(crate) fn snapshot(&self, label: &'static str) -> ChartSnapshot {
@@ -310,7 +501,16 @@ pub(crate) struct ChartNoteView {
     pub(crate) midi: f64,
     /// Rhythm, spoken, and freestyle notes carry no pitch target to hit.
     pub(crate) pitched: bool,
+    /// An unclassified placeholder nobody has confirmed yet — reads as white
+    /// so it's never mistaken for an intentionally authored Rap note.
+    pub(crate) placeholder: bool,
     pub(crate) kind: app_core::NoteKind,
+    /// This note's own syllable, when it carries one directly (not a held
+    /// continuation of an earlier syllable).
+    pub(crate) lyric: Option<String>,
+    /// Whether this note holds a syllable started on an earlier note, so the
+    /// timeline can mark it as a continuation rather than a separate word.
+    pub(crate) continues_lyric: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +529,11 @@ pub(crate) struct ChartLyricView {
     pub(crate) text: String,
     pub(crate) lane: usize,
     pub(crate) guided: bool,
+    /// Flattened index of the note this lyric is bound to.
+    pub(crate) note: usize,
+    /// Flattened indices of any notes that hold this syllable through a
+    /// pitch change past `note` — see `app_core::ChartLyric::continuation_notes`.
+    pub(crate) continuation_notes: Vec<usize>,
 }
 
 #[derive(Resource)]
@@ -379,6 +584,46 @@ pub(crate) struct EditorLyricResizeHandle {
     pub(crate) selection: WordSelection,
     pub(crate) edge: NoteEdge,
 }
+
+/// A vertical mark at the shared time of a bound note and lyric. Three
+/// instances — one in the pitch canvas, one in the gap strip between canvas
+/// and lyric lane, one in the lyric lane — are kept at the same `left` each
+/// frame and each sized to its `EditorBindingGuidePart`, so together they
+/// read as one line running from the note's own pitch height down to the
+/// lyric's own lane, through the gap in between.
+#[derive(Component)]
+pub(crate) struct EditorBindingGuide;
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorBindingGuidePart {
+    /// From the bound note's pitch height down to the bottom of the canvas.
+    Canvas,
+    /// The full height of the thin strip between canvas and lyric lane.
+    Gap,
+    /// From the top of the lyric lane down to the bound word's own lane.
+    Lane,
+}
+
+/// The rectangle drawn while shift-dragging a marquee selection over the
+/// note canvas.
+#[derive(Component)]
+pub(crate) struct EditorMarqueeBox;
+
+/// The scrollable problem list inside the chart-checks panel.
+#[derive(Component)]
+pub(crate) struct EditorProblemsList;
+
+/// The scrollable shortcuts cheat sheet panel.
+#[derive(Component)]
+pub(crate) struct EditorShortcutsPanel;
+
+/// The status-bar hint text that reveals the shortcuts panel on hover.
+#[derive(Component)]
+pub(crate) struct EditorShortcutsHoverTrigger;
+
+/// The whole-song lyrics textarea: one line per phrase, in phrase order.
+#[derive(Component)]
+pub(crate) struct EditorAllLyricsInput;
 
 #[derive(Component)]
 pub(crate) struct EditorWordInput(pub(crate) WordSelection);
@@ -445,6 +690,16 @@ pub(crate) enum EditorDrag {
         pitch_min: f64,
         pitch_max: f64,
     },
+    /// A note placed by the armed "Add note" tool: `note_index` was created
+    /// at press time with a minimal length, and every frame of the drag
+    /// resizes it to span from `anchor_time` to the pointer, in either
+    /// direction.
+    InsertNote {
+        note_index: usize,
+        anchor_time: f64,
+        pointer_start: Vec2,
+        viewport_duration: f64,
+    },
 }
 
 #[derive(Clone)]
@@ -464,9 +719,6 @@ pub(crate) struct EditorWordOriginal {
 
 /// How many recent edits the inspector lists before collapsing the rest.
 pub(crate) const EDITOR_HISTORY_ROWS: usize = 8;
-
-/// How many chart problems the inspector lists before collapsing the rest.
-pub(crate) const EDITOR_PROBLEM_ROWS: usize = 6;
 
 pub(crate) fn selected_editor_word(
     document: &app_core::EditorDocument,
@@ -493,7 +745,10 @@ pub(crate) fn other_track_notes(document: &app_core::EditorDocument) -> Vec<Char
             end: note.end,
             midi: note.midi,
             pitched: note.pitched,
+            placeholder: note.placeholder,
             kind: note.kind,
+            lyric: note.lyric,
+            continues_lyric: note.continues_lyric,
         })
         .collect()
 }
@@ -508,7 +763,10 @@ pub(crate) fn chart_notes(document: &app_core::EditorDocument) -> Vec<ChartNoteV
             end: note.end,
             midi: note.midi,
             pitched: note.pitched,
+            placeholder: note.placeholder,
             kind: note.kind,
+            lyric: note.lyric,
+            continues_lyric: note.continues_lyric,
         })
         .collect()
 }
@@ -534,6 +792,22 @@ pub(crate) fn chart_pitch_frames(chart: &app_core::ChartDocument) -> Vec<ChartPi
             })
         })
         .collect()
+}
+
+/// Beat timestamps for the background beat grid. Deliberately conservative:
+/// a missing analysis, an unconfident tempo, or a backend that could only
+/// guess a global BPM without individual beats (see `rhythm.py`) all read as
+/// "nothing to draw" here rather than a grid that might be wrong.
+const EDITOR_BEAT_GRID_MIN_CONFIDENCE: f64 = 0.15;
+
+fn load_editor_beats(file_hash: &str) -> Vec<f64> {
+    app_core::load_music_analysis(&app_core::CacheDir::new(), file_hash)
+        .filter(|analysis| {
+            analysis.rhythm.bpm.is_some()
+                && analysis.rhythm.confidence >= EDITOR_BEAT_GRID_MIN_CONFIDENCE
+        })
+        .map(|analysis| analysis.rhythm.beats)
+        .unwrap_or_default()
 }
 
 pub(crate) fn abstract_pitch_contour(
@@ -569,17 +843,29 @@ pub(crate) fn abstract_pitch_contour(
         .collect()
 }
 
+/// Lyric lanes grow on demand as overlapping words need them, rather than
+/// hard-capping at a fixed count and cramming the overflow into whichever
+/// lane frees up soonest. A dense run of overlapping lyrics still degrades
+/// past this many lanes, but 3 was cramping far more often than it needed to.
+pub(crate) const MAX_LYRIC_LANES: usize = 5;
+
 pub(crate) fn chart_lyrics(document: &app_core::EditorDocument) -> Vec<ChartLyricView> {
     let mut lyrics = document.lyrics();
     lyrics.retain(|lyric| !lyric.text.trim().is_empty());
     lyrics.sort_by(|left, right| left.start.total_cmp(&right.start));
-    let mut lane_ends = [f64::NEG_INFINITY; 3];
+    let mut lane_ends: Vec<f64> = Vec::new();
     lyrics
         .into_iter()
         .map(|lyric| {
             let lane = lane_ends
                 .iter()
                 .position(|lane_end| *lane_end <= lyric.start)
+                .or_else(|| {
+                    (lane_ends.len() < MAX_LYRIC_LANES).then(|| {
+                        lane_ends.push(f64::NEG_INFINITY);
+                        lane_ends.len() - 1
+                    })
+                })
                 .unwrap_or_else(|| {
                     lane_ends
                         .iter()
@@ -597,6 +883,8 @@ pub(crate) fn chart_lyrics(document: &app_core::EditorDocument) -> Vec<ChartLyri
                 text: lyric.text,
                 lane,
                 guided: lyric.guided,
+                note: lyric.note,
+                continuation_notes: lyric.continuation_notes,
             }
         })
         .collect()
@@ -624,7 +912,17 @@ pub(crate) fn midi_note_name(midi: f64) -> String {
     format!("{}{}", NAMES[midi.rem_euclid(12) as usize], midi / 12 - 1)
 }
 
-pub(crate) fn editor_note_color(kind: app_core::NoteKind, theme: &StudioTheme) -> Color {
+pub(crate) fn editor_note_color(
+    kind: app_core::NoteKind,
+    placeholder: bool,
+    theme: &StudioTheme,
+) -> Color {
+    // An unconfirmed placeholder reads as neutral white regardless of what
+    // it would otherwise render as (usually Rap) — it hasn't been triaged,
+    // so it shouldn't look like an intentional choice.
+    if placeholder {
+        return Color::srgb(0.86, 0.86, 0.88);
+    }
     match kind {
         app_core::NoteKind::Golden => Color::srgb(0.94, 0.67, 0.2),
         app_core::NoteKind::GoldenRap => Color::srgb(0.94, 0.45, 0.18),

@@ -193,10 +193,12 @@ where
         sources.insert(name.clone(), AssetSource::File(path.clone()));
     }
     let cover_path = song.album_art_path.clone().filter(|path| path.is_file());
+    // A user-picked background video wins over one carried by a USDX import
+    // or the song's own file, since it was chosen deliberately.
     let source_video = song
-        .usdx
-        .as_ref()
-        .and_then(|bundle| bundle.video.clone())
+        .background_video_path
+        .clone()
+        .or_else(|| song.usdx.as_ref().and_then(|bundle| bundle.video.clone()))
         .or_else(|| song.is_video.then_some(song.path.clone()))
         .filter(|path| path.is_file());
 
@@ -208,8 +210,17 @@ where
             album: non_empty(song.album),
             language: song.language,
             duration_seconds: song.duration_secs,
-            bpm: None,
+            bpm: song.override_bpm.or(song.bpm),
             key: song.override_key.or(song.key),
+            title_sort: None,
+            artist_sort: None,
+            genre: None,
+            year: None,
+            creator: Some(format!("Uta Studio {}", env!("CARGO_PKG_VERSION"))),
+            composer: song.composer,
+            country: song.country,
+            tags: Vec::new(),
+            preview_start_seconds: None,
         },
         AudioAssets {
             instrumental: AssetRef::pending(
@@ -221,7 +232,7 @@ where
                 .zip(guide_path.as_ref())
                 .map(|(name, path)| AssetRef::pending(name, audio_media_type(path))),
             original: None,
-            audio_offset_seconds: 0.0,
+            loudness: None,
         },
         AssetRef::pending("charts/vocal.json", VOCAL_CHART_MEDIA_TYPE),
     );
@@ -254,6 +265,7 @@ where
         manifest.visuals = VisualAssets {
             cover: Some(AssetRef::pending(&cover_name, media_type(&cover))),
             video: None,
+            video_offset_seconds: 0.0,
         };
     }
 

@@ -89,7 +89,11 @@ pub(crate) fn handle_editor_wheel(
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Editor {
+    if session.route != StudioRoute::Editor
+        || session.editor.as_ref().is_some_and(|editor| {
+            editor.problems_panel_open || editor.shortcuts_panel_open
+        })
+    {
         wheel.clear();
         return;
     }
@@ -159,12 +163,16 @@ pub(crate) fn handle_editor_pointer_capture(
         (&ComputedNode, &UiGlobalTransform),
         (With<EditorLyricsSurface>, Without<EditorTimelineSurface>),
     >,
+    mut marquee_box: Query<&mut Node, With<EditorMarqueeBox>>,
     mut capture: ResMut<EditorPointerCapture>,
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let focus_lost = focus_events.read().any(|event| !event.focused);
     if session.route != StudioRoute::Editor || focus_lost || !mouse.pressed(MouseButton::Left) {
+        for mut node in &mut marquee_box {
+            node.display = Display::None;
+        }
         let finished = capture.drag.take();
         capture.alignment_guide = None;
         let had_finished = finished.is_some();
@@ -258,6 +266,21 @@ pub(crate) fn handle_editor_pointer_capture(
         capture.drag = None;
         return;
     };
+    // Locking mid-drag cancels it immediately rather than letting the
+    // in-flight move/resize finish.
+    if editor.lock_mode
+        && matches!(
+            capture.drag,
+            Some(
+                EditorDrag::Note { .. }
+                    | EditorDrag::Lyric { .. }
+                    | EditorDrag::ResizeNote { .. }
+                    | EditorDrag::ResizeLyric { .. }
+            )
+        )
+    {
+        capture.drag = None;
+    }
 
     if capture.drag.is_none() && mouse.just_pressed(MouseButton::Left) {
         let pressed_resize = resize_interactions
@@ -278,19 +301,67 @@ pub(crate) fn handle_editor_pointer_capture(
         let pressed_lyric = lyric_interactions.iter().find_map(|(interaction, lyric)| {
             (*interaction == Interaction::Pressed).then_some(lyric.selection)
         });
+        let bind_held = keys.pressed(KeyCode::KeyB);
+        let unbind_held = keys.pressed(KeyCode::KeyC);
+        if bind_held && (pressed_note.is_some() || pressed_lyric.is_some()) {
+            let pair = pressed_note
+                .and_then(|note_index| editor.selected_word.map(|word| (word, note_index)))
+                .or_else(|| {
+                    pressed_lyric.and_then(|word| editor.selected_note.map(|note_index| (word, note_index)))
+                });
+            editor.checkpoint("Bind lyric to note");
+            match pair.and_then(|(word, note_index)| {
+                bind_editor_lyric(&mut editor.document, word, note_index)
+            }) {
+                Some(bound) => {
+                    editor.select_only_note(bound);
+                    editor.dirty = true;
+                    session.notice = Some("Bound lyric to note.".to_string());
+                }
+                None => {
+                    editor.undo.pop();
+                    session.notice = Some(
+                        "Select an unpitched lyric and a lyric-less note, then hold B and click the other one to bind them."
+                            .to_string(),
+                    );
+                }
+            }
+            invalidated.0 = true;
+            return;
+        } else if unbind_held && (pressed_note.is_some() || pressed_lyric.is_some()) {
+            let note_index = pressed_note
+                .or_else(|| pressed_lyric.and_then(|word| editor_note_for_word(&editor.document, word)));
+            editor.checkpoint("Unbind note");
+            match note_index.and_then(|index| unbind_editor_note(&mut editor.document, index)) {
+                Some(freed) => {
+                    editor.select_only_word(freed);
+                    editor.dirty = true;
+                    session.notice = Some("Unbound lyric from note.".to_string());
+                }
+                None => {
+                    editor.undo.pop();
+                    session.notice =
+                        Some("This note has no separable pitch and lyric to unbind.".to_string());
+                }
+            }
+            invalidated.0 = true;
+            return;
+        }
         if let Some((selection, edge)) = pressed_lyric_resize {
             if let Some((_, start, end)) = selected_editor_word(&editor.document, selection) {
-                editor.checkpoint("Resize lyric");
-                capture.drag = Some(EditorDrag::ResizeLyric {
-                    selection,
-                    edge,
-                    pointer_start: pointer,
-                    original_start: start,
-                    original_end: end,
-                    viewport_duration: editor.viewport_duration,
-                });
                 editor.select_only_word(selection);
                 editor.inspector_open = true;
+                if !editor.lock_mode {
+                    editor.checkpoint("Resize lyric");
+                    capture.drag = Some(EditorDrag::ResizeLyric {
+                        selection,
+                        edge,
+                        pointer_start: pointer,
+                        original_start: start,
+                        original_end: end,
+                        viewport_duration: editor.viewport_duration,
+                    });
+                }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
                 invalidated.0 = true;
             }
@@ -331,12 +402,14 @@ pub(crate) fn handle_editor_pointer_capture(
                         })
                     })
                     .collect::<Vec<_>>();
-                editor.checkpoint("Move lyric");
-                capture.drag = Some(EditorDrag::Lyric {
-                    pointer_start: pointer,
-                    originals,
-                    viewport_duration: editor.viewport_duration,
-                });
+                if !editor.lock_mode {
+                    editor.checkpoint("Move lyric");
+                    capture.drag = Some(EditorDrag::Lyric {
+                        pointer_start: pointer,
+                        originals,
+                        viewport_duration: editor.viewport_duration,
+                    });
+                }
             }
             editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
             invalidated.0 = true;
@@ -345,16 +418,18 @@ pub(crate) fn handle_editor_pointer_capture(
                 .into_iter()
                 .find(|note| note.index == index)
             {
-                editor.checkpoint("Resize note");
-                capture.drag = Some(EditorDrag::ResizeNote {
-                    index,
-                    edge,
-                    pointer_start: pointer,
-                    original_start: note.start,
-                    original_end: note.end,
-                    viewport_duration: editor.viewport_duration,
-                });
                 editor.select_only_note(index);
+                if !editor.lock_mode {
+                    editor.checkpoint("Resize note");
+                    capture.drag = Some(EditorDrag::ResizeNote {
+                        index,
+                        edge,
+                        pointer_start: pointer,
+                        original_start: note.start,
+                        original_end: note.end,
+                        viewport_duration: editor.viewport_duration,
+                    });
+                }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
                 invalidated.0 = true;
             }
@@ -388,13 +463,15 @@ pub(crate) fn handle_editor_pointer_capture(
                 })
                 .collect::<Vec<_>>();
             if !originals.is_empty() {
-                editor.checkpoint("Move note");
-                capture.drag = Some(EditorDrag::Note {
-                    pointer_start: pointer,
-                    originals,
-                    viewport_duration: editor.viewport_duration,
-                    pitch_span: editor.pitch_max - editor.pitch_min,
-                });
+                if !editor.lock_mode {
+                    editor.checkpoint("Move note");
+                    capture.drag = Some(EditorDrag::Note {
+                        pointer_start: pointer,
+                        originals,
+                        viewport_duration: editor.viewport_duration,
+                        pitch_span: editor.pitch_max - editor.pitch_min,
+                    });
+                }
                 editor.selected_note = Some(index);
                 editor.selected_word = None;
                 editor.selected_words.clear();
@@ -406,7 +483,54 @@ pub(crate) fn handle_editor_pointer_capture(
             .iter()
             .any(|interaction| *interaction == Interaction::Pressed)
         {
-            if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+            if editor.note_insert_armed {
+                // The "Add note" button armed this: place a minimal note
+                // where the pointer went down, then let the drag below size
+                // it as the pointer moves, in either direction.
+                editor.note_insert_armed = false;
+                if let Ok((computed, global_transform)) = timeline.single()
+                    && computed.size().x > 1.0
+                    && computed.size().y > 1.0
+                {
+                    let size = computed.size() * computed.inverse_scale_factor();
+                    let local = global_transform
+                        .affine()
+                        .inverse()
+                        .transform_point2(pointer);
+                    let fraction = (local.x / size.x + 0.5).clamp(0.0, 1.0);
+                    let surface_y = (local.y / size.y + 0.5).clamp(0.0, 1.0);
+                    let target =
+                        editor.viewport_start + f64::from(fraction) * editor.viewport_duration;
+                    let start = if editor.snap_seconds > 0.0 {
+                        (target / editor.snap_seconds).round() * editor.snap_seconds
+                    } else {
+                        target
+                    }
+                    .max(0.0);
+                    let pitch_fraction = surface_pitch_fraction(surface_y);
+                    let midi = (editor.pitch_max
+                        - f64::from(pitch_fraction) * (editor.pitch_max - editor.pitch_min))
+                        .round()
+                        .clamp(0.0, 127.0);
+                    editor.checkpoint("Add note");
+                    let min_len = editor.snap_seconds.max(0.05);
+                    if let Some(index) =
+                        insert_chart_note(&mut editor.document, start, start + min_len, midi)
+                    {
+                        editor.select_only_note(index);
+                        editor.dirty = true;
+                        capture.drag = Some(EditorDrag::InsertNote {
+                            note_index: index,
+                            anchor_time: start,
+                            pointer_start: pointer,
+                            viewport_duration: editor.viewport_duration,
+                        });
+                        invalidated.0 = true;
+                    } else {
+                        editor.undo.pop();
+                    }
+                }
+            } else if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
                 capture.drag = Some(EditorDrag::Marquee {
                     pointer_start: pointer,
                     base: editor.selected_note_indices(),
@@ -422,6 +546,11 @@ pub(crate) fn handle_editor_pointer_capture(
                     pitch_min: editor.pitch_min,
                     pitch_max: editor.pitch_max,
                 });
+                // A click on empty canvas is also how the workspace clears
+                // whatever was selected — it used to leave a selected note
+                // in place, only clearing lyric selection.
+                editor.selected_note = None;
+                editor.selected_notes.clear();
                 editor.selected_word = None;
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
@@ -433,6 +562,11 @@ pub(crate) fn handle_editor_pointer_capture(
     let Some(drag) = capture.drag.clone() else {
         return;
     };
+    if !matches!(drag, EditorDrag::Marquee { .. }) {
+        for mut node in &mut marquee_box {
+            node.display = Display::None;
+        }
+    }
     let surface = if matches!(
         drag,
         EditorDrag::Lyric { .. } | EditorDrag::ResizeLyric { .. }
@@ -455,9 +589,26 @@ pub(crate) fn handle_editor_pointer_capture(
             | EditorDrag::Lyric { pointer_start, .. }
             | EditorDrag::ResizeLyric { pointer_start, .. }
             | EditorDrag::Pan { pointer_start, .. }
-            | EditorDrag::Marquee { pointer_start, .. } => pointer_start,
+            | EditorDrag::Marquee { pointer_start, .. }
+            | EditorDrag::InsertNote { pointer_start, .. } => pointer_start,
         };
     capture.alignment_guide = None;
+
+    // A note/lyric move or resize only takes effect once the pointer has
+    // actually moved; otherwise a plain click (which frequently jitters a
+    // pixel or two) can fall inside the snap radius below and silently
+    // resize a bound note. Pan and marquee-select stay responsive from the
+    // first frame since neither one edits the chart.
+    let is_editing_drag = matches!(
+        drag,
+        EditorDrag::Note { .. }
+            | EditorDrag::ResizeNote { .. }
+            | EditorDrag::Lyric { .. }
+            | EditorDrag::ResizeLyric { .. }
+    );
+    if is_editing_drag && delta.length() < EDITOR_DRAG_MIN_PX {
+        return;
+    }
 
     match drag {
         EditorDrag::Note {
@@ -515,6 +666,23 @@ pub(crate) fn handle_editor_pointer_capture(
                 ),
             };
             if resize_chart_note(&mut editor.document, index, start, end) {
+                editor.dirty = true;
+            } else {
+                capture.drag = None;
+                invalidated.0 = true;
+            }
+        }
+        EditorDrag::InsertNote {
+            note_index,
+            anchor_time,
+            viewport_duration,
+            ..
+        } => {
+            let time_delta = f64::from(delta.x / size.x) * viewport_duration;
+            let current_time = (anchor_time + time_delta).max(0.0);
+            let start = anchor_time.min(current_time);
+            let end = anchor_time.max(current_time).max(start + 0.02);
+            if resize_chart_note(&mut editor.document, note_index, start, end) {
                 editor.dirty = true;
             } else {
                 capture.drag = None;
@@ -636,6 +804,17 @@ pub(crate) fn handle_editor_pointer_capture(
             let current = inverse.transform_point2(pointer) / size;
             let left = start.x.min(current.x) + 0.5;
             let right = start.x.max(current.x) + 0.5;
+            let raw_top = (start.y.min(current.y) + 0.5).clamp(0.0, 1.0);
+            let raw_bottom = (start.y.max(current.y) + 0.5).clamp(0.0, 1.0);
+            if let Ok(mut node) = marquee_box.single_mut() {
+                let clamped_left = left.clamp(0.0, 1.0);
+                let clamped_right = right.clamp(0.0, 1.0);
+                node.display = Display::Flex;
+                node.left = percent(clamped_left * 100.0);
+                node.width = percent(((clamped_right - clamped_left) * 100.0).max(0.0));
+                node.top = percent(raw_top * 100.0);
+                node.height = percent(((raw_bottom - raw_top) * 100.0).max(0.0));
+            }
             let top = surface_pitch_fraction(start.y.min(current.y) + 0.5);
             let bottom = surface_pitch_fraction(start.y.max(current.y) + 0.5);
             let time_start = viewport_start + f64::from(left) * viewport_duration;

@@ -97,13 +97,15 @@ impl NoteKind {
 }
 
 /// What one track of a chart is for. Mirrors the format's `VocalTrackRole`
-/// with the editor-facing naming the track strip and the UltraStar exporter
-/// share.
+/// exactly — role is purely musical. A track's UltraStar-style duet part
+/// number (`VocalTrack::part`) is a separate, automatically derived concept:
+/// [`EditorDocument::recompute_track_parts`] assigns contiguous parts to every
+/// `Lead` track whenever there is more than one, so a second lead track is
+/// what makes a chart a duet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrackRole {
     #[default]
     Lead,
-    Duet,
     Harmony,
     Backing,
     Adlib,
@@ -113,7 +115,6 @@ impl TrackRole {
     pub fn label(self) -> &'static str {
         match self {
             Self::Lead => "lead",
-            Self::Duet => "duet",
             Self::Harmony => "harmony",
             Self::Backing => "backing",
             Self::Adlib => "ad-lib",
@@ -122,7 +123,6 @@ impl TrackRole {
 
     pub fn from_label(value: &str) -> Self {
         match value {
-            "duet" => Self::Duet,
             "harmony" => Self::Harmony,
             "backing" => Self::Backing,
             "ad-lib" | "adlib" => Self::Adlib,
@@ -133,8 +133,7 @@ impl TrackRole {
     /// Cycle order used by the track strip's role button.
     pub fn cycle(self) -> Self {
         match self {
-            Self::Lead => Self::Duet,
-            Self::Duet => Self::Harmony,
+            Self::Lead => Self::Harmony,
             Self::Harmony => Self::Backing,
             Self::Backing => Self::Adlib,
             Self::Adlib => Self::Lead,
@@ -144,14 +143,13 @@ impl TrackRole {
     /// Whether a player is expected to sing this track, as opposed to it being
     /// reference or colour material. Drives the UltraStar duet projection.
     pub fn is_sung(self) -> bool {
-        matches!(self, Self::Lead | Self::Duet)
+        matches!(self, Self::Lead)
     }
 
     /// Reads the role a chart stores.
     pub fn of(role: VocalTrackRole) -> Self {
         match role {
             VocalTrackRole::Lead => Self::Lead,
-            VocalTrackRole::Duet => Self::Duet,
             VocalTrackRole::Harmony => Self::Harmony,
             VocalTrackRole::Backing => Self::Backing,
             VocalTrackRole::Adlib => Self::Adlib,
@@ -161,7 +159,6 @@ impl TrackRole {
     fn to_format(self) -> VocalTrackRole {
         match self {
             Self::Lead => VocalTrackRole::Lead,
-            Self::Duet => VocalTrackRole::Duet,
             Self::Harmony => VocalTrackRole::Harmony,
             Self::Backing => VocalTrackRole::Backing,
             Self::Adlib => VocalTrackRole::Adlib,
@@ -175,6 +172,10 @@ pub struct TrackSummary {
     pub index: usize,
     pub id: String,
     pub role: TrackRole,
+    /// UltraStar-style duet part number (1, 2, ...), when this track is one
+    /// of two or more lead tracks. `None` for a solo lead or any non-lead
+    /// track.
+    pub part: Option<u32>,
     pub singer: Option<String>,
     pub scoring_enabled: bool,
     pub note_count: usize,
@@ -207,6 +208,11 @@ pub struct ChartNote {
     /// Whether the note carries a pitch target at all. Rhythm and spoken notes
     /// render on a neutral row rather than a pitch row.
     pub pitched: bool,
+    /// An unclassified note nobody has triaged yet — the analyzer's
+    /// placeholder for a lyric it couldn't match to a detected pitch, or one
+    /// freed by unbinding. Distinct from an intentionally authored `Rap`
+    /// note: nothing else in this module ever sets `VocalMode::Spoken`.
+    pub placeholder: bool,
     /// The note contributes to the score in some way.
     pub scores: bool,
     /// The note is scored against its pitch target specifically.
@@ -228,6 +234,11 @@ pub struct ChartLyric {
     pub guided: bool,
     /// Flattened index of the note that owns the token.
     pub note: usize,
+    /// Flattened indices of the notes (if any) that hold this syllable
+    /// through a pitch change — a held note whose pitch glides partway
+    /// through, authored as a chain of continuation tokens. Empty for a
+    /// syllable that isn't held past its own note.
+    pub continuation_notes: Vec<usize>,
 }
 
 /// A note copied to the editor clipboard, with times relative to the copy origin.
@@ -412,6 +423,7 @@ impl EditorDocument {
                     index,
                     id: track.id.clone(),
                     role: TrackRole::of(track.role),
+                    part: track.part,
                     singer: track.singer.clone(),
                     scoring_enabled: track.scoring_enabled,
                     note_count: notes().count(),
@@ -445,6 +457,7 @@ impl EditorDocument {
         self.chart.tracks.push(VocalTrack {
             id,
             role: role.to_format(),
+            part: None,
             singer: None,
             scoring_enabled: role.is_sung(),
             // A track with no notes has no phrases either; the first note
@@ -453,6 +466,7 @@ impl EditorDocument {
             phrases: Vec::new(),
         });
         self.track = self.chart.tracks.len() - 1;
+        self.recompute_track_parts();
         self.touch();
         self.track
     }
@@ -464,6 +478,7 @@ impl EditorDocument {
         }
         self.chart.tracks.remove(index);
         self.track = self.track.min(self.chart.tracks.len() - 1);
+        self.recompute_track_parts();
         self.touch();
         true
     }
@@ -477,8 +492,33 @@ impl EditorDocument {
             return false;
         }
         track.role = role;
+        self.recompute_track_parts();
         self.touch();
         true
+    }
+
+    /// Assigns contiguous UltraStar-style duet part numbers (1, 2, ...) to
+    /// every `Lead` track, in track order, whenever there is more than one —
+    /// a second lead track is what makes a chart a duet. A solo lead track,
+    /// and every non-lead track, carries no part.
+    fn recompute_track_parts(&mut self) {
+        let lead_indexes: Vec<usize> = self
+            .chart
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.role == VocalTrackRole::Lead)
+            .map(|(index, _)| index)
+            .collect();
+        let assign_parts = lead_indexes.len() > 1;
+        for (position, index) in lead_indexes.into_iter().enumerate() {
+            self.chart.tracks[index].part = assign_parts.then(|| position as u32 + 1);
+        }
+        for track in &mut self.chart.tracks {
+            if track.role != VocalTrackRole::Lead {
+                track.part = None;
+            }
+        }
     }
 
     pub fn set_track_singer(&mut self, index: usize, singer: Option<String>) -> bool {
@@ -676,6 +716,7 @@ impl EditorDocument {
             midi: note.pitch.map(|pitch| pitch.midi as f64).unwrap_or(60.0),
             kind: NoteKind::of(note),
             pitched: note.pitch.is_some(),
+            placeholder: note.vocal_mode == VocalMode::Spoken,
             scores: note.scoring.mode != ScoringMode::None,
             scores_pitch: note.scoring.mode == ScoringMode::Pitch,
             golden: note.bonus == NoteBonus::Golden,
@@ -683,10 +724,23 @@ impl EditorDocument {
                 .lyrics
                 .iter()
                 .any(|token| matches!(token, LyricToken::Continuation { .. })),
-            lyric: note.lyrics.iter().find_map(|token| match token {
-                LyricToken::Text(token) => Some(token.text.clone()),
-                LyricToken::Continuation { .. } => None,
-            }),
+            // A note usually carries one syllable, but nothing stops two
+            // short ones sharing a note (this happens in practice — a
+            // syllable pair with no room for its own pitch target). Joining
+            // every text token here, instead of showing only the first,
+            // keeps the note's label from silently dropping a syllable.
+            lyric: {
+                let mut joined = String::new();
+                for token in &note.lyrics {
+                    if let LyricToken::Text(token) = token {
+                        if token.join_before == LyricJoin::Space && !joined.is_empty() {
+                            joined.push(' ');
+                        }
+                        joined.push_str(&token.text);
+                    }
+                }
+                (!joined.is_empty()).then_some(joined)
+            },
         }
     }
 
@@ -747,7 +801,8 @@ impl EditorDocument {
                     };
                     // A held syllable ends at the last note that continues it.
                     let mut end = note.start.saturating_add(note.duration);
-                    for held in entry.notes.iter().skip(offset + 1) {
+                    let mut continuation_notes = Vec::new();
+                    for (held_offset, held) in entry.notes.iter().enumerate().skip(offset + 1) {
                         let continues = held.lyrics.iter().any(|candidate| {
                             matches!(
                                 candidate,
@@ -759,6 +814,7 @@ impl EditorDocument {
                             break;
                         }
                         end = held.start.saturating_add(held.duration);
+                        continuation_notes.push(note_index + held_offset);
                     }
                     result.push(ChartLyric {
                         address: LyricAddress {
@@ -770,6 +826,7 @@ impl EditorDocument {
                         text: token.text.clone(),
                         guided: note.pitch.is_some(),
                         note: note_index + offset,
+                        continuation_notes,
                     });
                     word += 1;
                 }
@@ -819,8 +876,32 @@ impl EditorDocument {
         };
         note.start = start_units;
         note.duration = end_units.saturating_sub(start_units).max(minimum);
-        if let Some(pitch) = note.pitch.as_mut() {
-            pitch.midi = midi.round().clamp(0.0, 127.0) as u8;
+        let target_midi = midi.round().clamp(0.0, 127.0) as u8;
+        match note.pitch.as_mut() {
+            Some(pitch) => pitch.midi = target_midi,
+            // A note with no pitch (a lyric split off `unbind_note`, or the
+            // "analyzer found no matching pitch note" placeholder
+            // `migrate_analyzer_chart` leaves behind) renders at a fixed
+            // default height, so a vertical drag used to silently do
+            // nothing. Dragging it is a deliberate "put this note here"
+            // gesture, so it now gives the note the pitch it's dragged to
+            // instead of ignoring that axis.
+            None => {
+                note.pitch = Some(NotePitch {
+                    midi: target_midi,
+                    cents: 0,
+                });
+                // Both of those placeholders are authored as `Spoken`,
+                // scored as rhythm-only — leaving that in place would mean
+                // the note now has a pitch but still isn't actually judged
+                // on it. A deliberately non-pitched Rap/Freestyle note is
+                // left alone; only the "nobody's decided this yet"
+                // placeholder gets promoted.
+                if note.vocal_mode == VocalMode::Spoken {
+                    note.vocal_mode = VocalMode::Pitched;
+                    note.scoring.mode = ScoringMode::Pitch;
+                }
+            }
         }
         self.touch();
         true
@@ -869,6 +950,7 @@ impl EditorDocument {
             self.chart.tracks.push(VocalTrack {
                 id: track_id,
                 role: VocalTrackRole::Lead,
+                part: None,
                 singer: None,
                 scoring_enabled: true,
                 phrases: vec![VocalPhrase {
@@ -1007,20 +1089,35 @@ impl EditorDocument {
             };
             let mut left = note.clone();
             left.duration = split - start;
+            // More than one lyric relationship can share a note (two short
+            // syllables with no room for their own notes, or a note that
+            // both continues an earlier syllable and starts a new one) —
+            // only the first belongs before the split point.
+            left.lyrics.truncate(1);
             selected.insert(output.len());
             output.push(FlatNote { phrase, note: left });
 
             let mut right = note;
             right.start = split;
             right.duration = end - split;
-            // The tail keeps singing the same syllable.
-            let head = right.lyrics.iter().find_map(|token| match token {
-                LyricToken::Text(token) => Some(token.id.clone()),
-                LyricToken::Continuation { continuation_of } => Some(continuation_of.clone()),
-            });
-            right.lyrics = head
-                .map(|continuation_of| vec![LyricToken::Continuation { continuation_of }])
-                .unwrap_or_default();
+            right.lyrics = if right.lyrics.len() > 1 {
+                // Everything past the first token already has its own
+                // identity (its own syllable, or a continuation of a
+                // different earlier one) — keep it as-is on the right half
+                // instead of collapsing it into a continuation of the first
+                // and silently losing it.
+                right.lyrics.split_off(1)
+            } else {
+                // A single relationship (one syllable, or continuing an
+                // earlier one) — splitting mid-syllable means both halves
+                // keep singing it, so the tail continues it.
+                let head = right.lyrics.iter().find_map(|token| match token {
+                    LyricToken::Text(token) => Some(token.id.clone()),
+                    LyricToken::Continuation { continuation_of } => Some(continuation_of.clone()),
+                });
+                head.map(|continuation_of| vec![LyricToken::Continuation { continuation_of }])
+                    .unwrap_or_default()
+            };
             selected.insert(output.len());
             output.push(FlatNote {
                 phrase,
@@ -1423,6 +1520,301 @@ impl EditorDocument {
         }));
         self.touch();
         self.address_of_note(note_index)
+    }
+
+    /// Moves the lyric at `word` onto `note_index`, the format's way of
+    /// attaching text to a pitch target that was authored separately. `word`'s
+    /// own note must carry no pitch (a placeholder `insert_lyric` created for
+    /// text with nowhere pitched to land) and `note_index` must carry no lyric
+    /// yet; the emptied placeholder is then dropped. Works from either
+    /// selection direction — callers don't need to know which side is which.
+    pub fn bind_lyric_to_note(&mut self, word: LyricAddress, note_index: usize) -> Option<usize> {
+        self.bind_lyric_to_note_aligned(word, note_index, false)
+    }
+
+    /// Same as [`Self::bind_lyric_to_note`], but when `align_to_lyric` is
+    /// true the merged note keeps the lyric's own start/end instead of the
+    /// pitch note's. The format has one start/end per note, so a bind must
+    /// pick a side when the two disagree; this makes that pick explicit
+    /// instead of the pitch note's timing always silently winning.
+    pub fn bind_lyric_to_note_aligned(
+        &mut self,
+        word: LyricAddress,
+        note_index: usize,
+        align_to_lyric: bool,
+    ) -> Option<usize> {
+        let source_index = self.resolve(word)?;
+        if source_index == note_index {
+            return None;
+        }
+        let (_, source) = self.note_at(source_index)?;
+        if source.pitch.is_some() {
+            return None;
+        }
+        let source_start = source.start;
+        let source_duration = source.duration;
+        let source_token_ids: HashSet<String> = source
+            .lyrics
+            .iter()
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => Some(token.id.clone()),
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect();
+        if source_token_ids.len() != source.lyrics.len() {
+            // A continuation token here means the source is itself the tail
+            // of a held syllable; its head note is the one to bind instead.
+            return None;
+        }
+        let (target_phrase, target) = self.note_at(note_index)?;
+        if !target.lyrics.is_empty() {
+            return None;
+        }
+        let source_phrase = self.note_at(source_index).map(|(phrase, _)| phrase)?;
+        if source_phrase != target_phrase {
+            return None;
+        }
+        // A later note holding this syllable through a continuation would be
+        // orphaned by moving its anchor away.
+        let held_elsewhere = self
+            .active_track()?
+            .phrases
+            .get(source_phrase)?
+            .notes
+            .iter()
+            .any(|note| {
+                note.lyrics.iter().any(|token| match token {
+                    LyricToken::Continuation { continuation_of } => {
+                        source_token_ids.contains(continuation_of)
+                    }
+                    LyricToken::Text(_) => false,
+                })
+            });
+        if held_elsewhere {
+            return None;
+        }
+        let tokens = std::mem::take(&mut self.note_at_mut(source_index)?.lyrics);
+        self.note_at_mut(note_index)?.lyrics = tokens;
+        if align_to_lyric {
+            let target_note = self.note_at_mut(note_index)?;
+            target_note.start = source_start;
+            target_note.duration = source_duration;
+        }
+        let mut orphan = BTreeSet::new();
+        orphan.insert(source_index);
+        self.remove_notes(&orphan);
+        self.touch();
+        Some(note_index - usize::from(note_index > source_index))
+    }
+
+    /// The syllable at `word`'s own phrase, the flat index of the last note
+    /// currently holding it (itself, if it isn't held past that), and its
+    /// text token id — the shared groundwork for deciding what note it could
+    /// extend onto next.
+    fn lyric_chain_tail(&self, word: LyricAddress) -> Option<(usize, usize, String)> {
+        let source_index = self.resolve(word)?;
+        let (source_phrase, source_note) = self.note_at(source_index)?;
+        let token_id = source_note.lyrics.iter().find_map(|token| match token {
+            LyricToken::Text(text) => Some(text.id.clone()),
+            LyricToken::Continuation { .. } => None,
+        })?;
+        let mut tail_index = source_index;
+        loop {
+            let Some(next_index) = tail_index.checked_add(1) else {
+                break;
+            };
+            let Some((phrase, note)) = self.note_at(next_index) else {
+                break;
+            };
+            if phrase != source_phrase {
+                break;
+            }
+            let continues = note.lyrics.iter().any(|token| {
+                matches!(token, LyricToken::Continuation { continuation_of } if *continuation_of == token_id)
+            });
+            if !continues {
+                break;
+            }
+            tail_index = next_index;
+        }
+        Some((source_phrase, tail_index, token_id))
+    }
+
+    /// The text token `note_index` would continue if `extend_lyric_over_note`
+    /// were called with the same arguments, or `None` if it isn't eligible.
+    /// A pitch that glides partway through one sung syllable is authored as
+    /// a chain of continuation tokens across physically adjacent notes, so
+    /// `note_index` must immediately follow the syllable's current last held
+    /// note (same phrase, no gap) and carry no lyric of its own.
+    fn continuation_target(&self, word: LyricAddress, note_index: usize) -> Option<String> {
+        let (source_phrase, tail_index, token_id) = self.lyric_chain_tail(word)?;
+        if note_index != tail_index + 1 {
+            return None;
+        }
+        let (target_phrase, target_note) = self.note_at(note_index)?;
+        if target_phrase != source_phrase || !target_note.lyrics.is_empty() {
+            return None;
+        }
+        Some(token_id)
+    }
+
+    /// Whether `extend_lyric_over_note(word, note_index)` would succeed, for
+    /// deciding whether to offer it in the UI without mutating anything.
+    pub fn can_extend_lyric_over_note(&self, word: LyricAddress, note_index: usize) -> bool {
+        self.continuation_target(word, note_index).is_some()
+    }
+
+    /// The note `extend_lyric_over_note(word, ..)` would target next, if
+    /// any — the note right after the syllable's current held chain. Lets a
+    /// right-click on the syllable itself offer "extend onto the next note"
+    /// without the user having to separately right-click that note.
+    pub fn next_extendable_note(&self, word: LyricAddress) -> Option<usize> {
+        let (_, tail_index, _) = self.lyric_chain_tail(word)?;
+        let candidate = tail_index + 1;
+        self.can_extend_lyric_over_note(word, candidate)
+            .then_some(candidate)
+    }
+
+    /// Extends the syllable at `word` to also hold `note_index`, the format's
+    /// way of authoring a pitch that changes partway through one sung
+    /// syllable: the note becomes a continuation instead of a separate note,
+    /// and the syllable's lyric-lane block grows to cover it.
+    pub fn extend_lyric_over_note(&mut self, word: LyricAddress, note_index: usize) -> bool {
+        let Some(token_id) = self.continuation_target(word, note_index) else {
+            return false;
+        };
+        let Some(note) = self.note_at_mut(note_index) else {
+            return false;
+        };
+        note.lyrics = vec![LyricToken::Continuation {
+            continuation_of: token_id,
+        }];
+        self.touch();
+        true
+    }
+
+    /// The flat index range a phrase's notes occupy, for searching within it
+    /// without knowing how earlier phrases are sized.
+    fn phrase_flat_range(&self, phrase: usize) -> Option<std::ops::Range<usize>> {
+        let track = self.active_track()?;
+        let mut base = 0usize;
+        for (index, entry) in track.phrases.iter().enumerate() {
+            if index == phrase {
+                return Some(base..base + entry.notes.len());
+            }
+            base += entry.notes.len();
+        }
+        None
+    }
+
+    /// Binds the given selection (a lyric, a note, or both — one drives the
+    /// search when only one is selected) to its nearest eligible counterpart
+    /// in the same phrase. The toolbar button and the bare `B` shortcut use
+    /// this; a held-`B` click names the counterpart explicitly instead of
+    /// searching for one.
+    pub fn bind_nearest(
+        &mut self,
+        word: Option<LyricAddress>,
+        note: Option<usize>,
+        align_to_lyric: bool,
+    ) -> Option<usize> {
+        if let Some(word) = word {
+            let source_index = self.resolve(word)?;
+            let (phrase, source) = self.note_at(source_index)?;
+            if source.pitch.is_some() {
+                return None;
+            }
+            let source_start = source.start;
+            let range = self.phrase_flat_range(phrase)?;
+            let target_index = range
+                .filter(|index| *index != source_index)
+                .filter_map(|index| self.note_at(index).map(|(_, note)| (index, note)))
+                .filter(|(_, note)| note.pitch.is_some() && note.lyrics.is_empty())
+                .min_by_key(|(_, note)| note.start.abs_diff(source_start))
+                .map(|(index, _)| index)?;
+            return self.bind_lyric_to_note_aligned(word, target_index, align_to_lyric);
+        }
+        let note_index = note?;
+        let (phrase, target) = self.note_at(note_index)?;
+        if target.pitch.is_none() || !target.lyrics.is_empty() {
+            return None;
+        }
+        let target_start = target.start;
+        let range = self.phrase_flat_range(phrase)?;
+        let source_index = range
+            .filter(|index| *index != note_index)
+            .filter_map(|index| self.note_at(index).map(|(_, note)| (index, note)))
+            .filter(|(_, note)| {
+                note.pitch.is_none()
+                    && !note.lyrics.is_empty()
+                    && note
+                        .lyrics
+                        .iter()
+                        .all(|token| matches!(token, LyricToken::Text(_)))
+            })
+            .min_by_key(|(_, note)| note.start.abs_diff(target_start))
+            .map(|(index, _)| index)?;
+        let word = self.address_of_note(source_index)?;
+        self.bind_lyric_to_note_aligned(word, note_index, align_to_lyric)
+    }
+
+    /// Unbinds whichever note the selection names — directly, or through the
+    /// note a selected lyric belongs to.
+    pub fn unbind_selected(
+        &mut self,
+        word: Option<LyricAddress>,
+        note: Option<usize>,
+    ) -> Option<LyricAddress> {
+        let note_index = note.or_else(|| word.and_then(|word| self.resolve(word)))?;
+        self.unbind_note(note_index)
+    }
+
+    /// Splits `note_index`'s pitch and lyric apart into two adjacent notes:
+    /// the first half keeps the pitch, the second half becomes a new
+    /// unpitched note carrying the lyric text. The inverse of
+    /// [`Self::bind_lyric_to_note`].
+    pub fn unbind_note(&mut self, note_index: usize) -> Option<LyricAddress> {
+        let minimum = self.min_duration();
+        let mut flat = self.take_flat();
+        let eligible = flat.get(note_index).is_some_and(|entry| {
+            entry.note.pitch.is_some()
+                && !entry.note.lyrics.is_empty()
+                && entry.note.duration >= minimum * 2
+                && entry
+                    .note
+                    .lyrics
+                    .iter()
+                    .all(|token| matches!(token, LyricToken::Text(_)))
+        });
+        if !eligible {
+            self.restore_flat(flat);
+            return None;
+        }
+        let FlatNote { phrase, mut note } = flat.remove(note_index);
+        let lyrics = std::mem::take(&mut note.lyrics);
+        let start = note.start;
+        let end = note.start.saturating_add(note.duration);
+        let split = start + note.duration / 2;
+        note.duration = split - start;
+        let text_note = VocalNote {
+            id: self.allocate_id("note"),
+            start: split,
+            duration: end - split,
+            pitch: None,
+            vocal_mode: VocalMode::Spoken,
+            bonus: NoteBonus::Normal,
+            scoring: NoteScoring {
+                mode: ScoringMode::Rhythm,
+                weight: 1.0,
+            },
+            lyrics,
+        };
+        flat.insert(note_index, FlatNote { phrase, note });
+        flat.insert(note_index + 1, FlatNote { phrase, note: text_note });
+        self.restore_flat(flat);
+        self.reassign_duplicate_note_ids();
+        self.touch();
+        self.address_of_note(note_index + 1)
     }
 
     fn address_of_note(&self, note: usize) -> Option<LyricAddress> {
@@ -2120,6 +2512,12 @@ impl EditorDocument {
     }
 
     /// Text and time span of one lyric, for the inline lyric editor.
+    /// The note a lyric address currently resolves to, so a click on a lyric
+    /// can locate its owning note without knowing how the format nests them.
+    pub fn note_for_word(&self, address: LyricAddress) -> Option<usize> {
+        self.resolve(address)
+    }
+
     pub fn lyric(&self, address: LyricAddress) -> Option<(String, f64, f64)> {
         self.lyrics()
             .into_iter()
@@ -2259,6 +2657,7 @@ mod tests {
         let mut chart = VocalChartV1::new(vec![VocalTrack {
             id: "lead".into(),
             role: VocalTrackRole::Lead,
+            part: None,
             singer: None,
             scoring_enabled: true,
             phrases: vec![phrase],
@@ -2296,6 +2695,23 @@ mod tests {
     }
 
     #[test]
+    fn a_syllable_held_across_a_pitch_change_lists_every_note_it_spans() {
+        let mut document = document(&[(0.0, 1.0, 60, "hold"), (1.0, 2.0, 62, "gap")]);
+        // "gap"'s own note becomes a second continuation of "hold" — the
+        // shape a pitch glide partway through one syllable takes.
+        let head_id = document.lyrics()[0].address;
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 1,
+        });
+        document.extend_lyric_over_note(head_id, 1);
+        let lyrics = document.lyrics();
+        assert_eq!(lyrics.len(), 1);
+        assert_eq!(lyrics[0].note, 0);
+        assert_eq!(lyrics[0].continuation_notes, vec![1]);
+    }
+
+    #[test]
     fn split_gives_the_tail_a_continuation_and_a_unique_id() {
         let mut document = document(&[(0.0, 1.0, 60, "hold")]);
         let selected = document.split_notes(&selection(&[0]), 0.4);
@@ -2313,10 +2729,199 @@ mod tests {
     }
 
     #[test]
+    fn splitting_a_note_with_two_syllables_keeps_both_instead_of_dropping_the_second() {
+        let mut document = document(&[(0.0, 1.0, 60, "me")]);
+        // Two short syllables sharing one note, with no room for their own
+        // (the shape a chart carries when a note's own duration is too
+        // short to split further during authoring).
+        document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-1".into(),
+                text: "me".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-2".into(),
+                text: "ru".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+        ];
+        document.split_notes(&selection(&[0]), 0.5);
+        let lyrics = document.lyrics();
+        assert_eq!(
+            lyrics.iter().map(|lyric| lyric.text.as_str()).collect::<Vec<_>>(),
+            ["me", "ru"],
+            "the second syllable must survive the split, not disappear"
+        );
+        assert!(lyrics[1].guided, "the second half keeps its own pitch");
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
     fn split_refuses_a_note_that_is_too_short() {
         let mut document = document(&[(0.0, 0.05, 60, "a")]);
         document.split_notes(&selection(&[0]), 0.02);
         assert_eq!(document.note_count(), 1);
+    }
+
+    #[test]
+    fn unbind_splits_pitch_and_lyric_into_adjacent_notes() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi")]);
+        let freed = document.unbind_note(0).expect("unbind");
+        assert_eq!(freed, LyricAddress { segment: 0, word: 0 });
+        let notes = document.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].pitched);
+        assert!(notes[0].lyric.is_none());
+        assert!(!notes[1].pitched);
+        assert_eq!(notes[1].lyric.as_deref(), Some("hi"));
+        assert!((notes[0].end - notes[1].start).abs() < 1e-9);
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn dragging_an_unpitched_note_gives_it_pitch_and_promotes_it_to_a_scored_note() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi")]);
+        let freed = document.unbind_note(0).expect("unbind");
+        let index = document.resolve(freed).expect("the freed lyric's note");
+        // Before: the note has no pitch, and is a rhythm-only placeholder —
+        // dragging it in the pitch canvas should currently do nothing.
+        let before = document.notes();
+        assert!(!before[index].pitched);
+        assert_eq!(before[index].kind, NoteKind::Rap, "reads as unpitched rap/spoken");
+        assert!(before[index].placeholder, "unclassified until triaged");
+
+        let (start, end) = (before[index].start, before[index].end);
+        assert!(document.move_note(index, start, end, 64.0));
+
+        let after = document.notes();
+        assert!(after[index].pitched, "the drag now gives it a real pitch");
+        assert_eq!(after[index].midi, 64.0);
+        assert_eq!(
+            after[index].kind,
+            NoteKind::Normal,
+            "promoted to a normal scored note instead of staying rhythm-only"
+        );
+        assert!(
+            !after[index].placeholder,
+            "triaged once it has a real pitch and mode"
+        );
+        // A lyric this note owns is guided now that it has a pitch target.
+        let lyrics = document.lyrics();
+        assert!(lyrics.iter().any(|lyric| lyric.text == "hi" && lyric.guided));
+    }
+
+    #[test]
+    fn unbind_refuses_a_note_too_short_to_split() {
+        let mut document = document(&[(0.0, 0.04, 60, "a")]);
+        assert!(document.unbind_note(0).is_none());
+        assert_eq!(document.note_count(), 1);
+    }
+
+    #[test]
+    fn unbind_refuses_a_note_with_no_lyric() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        document.delete_lyric(LyricAddress { segment: 0, word: 0 });
+        assert!(document.unbind_note(0).is_none());
+    }
+
+    #[test]
+    fn bind_moves_the_lyric_onto_the_target_and_drops_the_placeholder() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi")]);
+        let freed = document.unbind_note(0).expect("unbind");
+        assert_eq!(document.note_count(), 2);
+        let bound = document.bind_lyric_to_note(freed, 0).expect("bind");
+        assert_eq!(bound, 0);
+        assert_eq!(document.note_count(), 1);
+        let notes = document.notes();
+        assert!(notes[0].pitched);
+        assert_eq!(notes[0].lyric.as_deref(), Some("hi"));
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn bind_refuses_a_target_that_already_has_a_lyric() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi"), (1.0, 2.0, 62, "there")]);
+        let freed = document.unbind_note(0).expect("unbind");
+        assert!(document.bind_lyric_to_note(freed, 2).is_none());
+        assert_eq!(document.note_count(), 3);
+    }
+
+    #[test]
+    fn bind_nearest_finds_the_closest_lyric_less_note_in_the_phrase() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi"), (5.0, 6.0, 62, "there")]);
+        let freed = document.unbind_note(1).expect("unbind");
+        // Notes are now: "hi" (0), pitch-only (1), pitch-only-of-split (2)? no:
+        // index 0 = "hi" bound note, 1 = pitch half of "there", 2 = lyric half "there".
+        let bound = document
+            .bind_nearest(Some(freed), None, false)
+            .expect("bind nearest");
+        assert_eq!(bound, 1);
+        assert_eq!(document.note_count(), 2);
+    }
+
+    #[test]
+    fn bind_nearest_can_keep_the_lyrics_own_timing_instead_of_the_pitch_notes() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi"), (5.0, 6.0, 62, "there")]);
+        let freed = document.unbind_note(1).expect("unbind");
+        let bound = document
+            .bind_nearest(Some(freed), None, true)
+            .expect("bind nearest");
+        let note = &document.notes()[bound];
+        assert_eq!(note.start, 5.5);
+        assert_eq!(note.end, 6.0);
+    }
+
+    #[test]
+    fn extending_a_lyric_over_the_next_note_turns_it_into_a_held_continuation() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi"), (1.0, 2.0, 62, "there")]);
+        // Clear "there"'s own text so its note is a lyric-less pitch target,
+        // the shape a pitch glide's second half needs to extend onto.
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 1,
+        });
+        let hi = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        assert_eq!(document.next_extendable_note(hi), Some(1));
+        assert!(document.can_extend_lyric_over_note(hi, 1));
+        assert!(document.extend_lyric_over_note(hi, 1));
+        let lyrics = document.lyrics();
+        assert_eq!(lyrics.len(), 1, "the continuation is not its own word");
+        assert_eq!(lyrics[0].text, "hi");
+        assert_eq!(lyrics[0].start, 0.0);
+        assert_eq!(lyrics[0].end, 2.0, "spans through the continuing note");
+        // Now the chain's tail is note 1, so a further note it could extend
+        // onto would be note 2 — offered by the lyric's own right-click menu
+        // without a separate right-click on that note.
+        assert_eq!(document.next_extendable_note(hi), None);
+    }
+
+    #[test]
+    fn extending_refuses_a_note_that_is_not_immediately_next() {
+        let mut document = document(&[
+            (0.0, 1.0, 60, "hi"),
+            (1.0, 2.0, 62, "mid"),
+            (2.0, 3.0, 64, "there"),
+        ]);
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 2,
+        });
+        let hi = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        // "mid" still holds its own syllable in between, so "hi" cannot
+        // reach past it to claim the third note.
+        assert!(!document.can_extend_lyric_over_note(hi, 2));
+        assert!(!document.extend_lyric_over_note(hi, 2));
     }
 
     #[test]
@@ -2807,12 +3412,16 @@ mod tests {
     fn a_new_track_becomes_active_and_starts_empty() {
         let mut document = document(&[(0.0, 1.0, 60, "a")]);
         assert_eq!(document.track_count(), 1);
-        let index = document.add_track(TrackRole::Duet);
+        let index = document.add_track(TrackRole::Lead);
         assert_eq!(index, 1);
         assert_eq!(document.active_track_index(), 1);
         assert!(document.notes().is_empty());
         let tracks = document.tracks();
-        assert_eq!(tracks[1].role, TrackRole::Duet);
+        // A second lead track is automatically a duet partner: both lead
+        // tracks pick up contiguous UltraStar-style part numbers.
+        assert_eq!(tracks[1].role, TrackRole::Lead);
+        assert_eq!(tracks[0].part, Some(1));
+        assert_eq!(tracks[1].part, Some(2));
         assert!(tracks[1].scoring_enabled);
         // The lead track keeps its material and its coverage.
         assert_eq!(tracks[0].note_count, 1);
@@ -2823,7 +3432,7 @@ mod tests {
     fn the_last_track_cannot_be_removed() {
         let mut document = document(&[(0.0, 1.0, 60, "a")]);
         assert!(!document.remove_track(0));
-        document.add_track(TrackRole::Duet);
+        document.add_track(TrackRole::Lead);
         assert!(document.remove_track(1));
         assert_eq!(document.track_count(), 1);
         assert_eq!(document.active_track_index(), 0);
@@ -2833,7 +3442,7 @@ mod tests {
     fn moving_a_selection_to_another_track_legalizes_an_overlap() {
         let mut document = document(&[(0.0, 1.0, 60, "a"), (0.5, 1.5, 62, "b")]);
         assert!(document.problems().blocks_saving());
-        document.add_track(TrackRole::Duet);
+        document.add_track(TrackRole::Lead);
         document.set_active_track(0);
         assert_eq!(document.move_notes_to_track(&selection(&[1]), 1), 1);
         assert_eq!(document.notes().len(), 1);
@@ -2885,7 +3494,7 @@ mod tests {
     #[test]
     fn problems_cover_tracks_the_user_is_not_editing() {
         let mut document = document(&[(0.0, 1.0, 60, "a")]);
-        document.add_track(TrackRole::Duet);
+        document.add_track(TrackRole::Lead);
         document.insert_note(0.0, 1.0, 62.0);
         document.insert_note(0.5, 1.5, 64.0);
         document.set_active_track(0);

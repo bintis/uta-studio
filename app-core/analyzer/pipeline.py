@@ -1,5 +1,6 @@
 """Shared analysis pipeline used by both server.py and analyze.py."""
 
+import glob
 import json
 import os
 import subprocess
@@ -7,7 +8,8 @@ import tempfile
 
 from gpu import hard_free_gpu, log_vram
 from whisper_compat import progress
-from key_detect import detect_key
+from key_detect import analyze_extra_descriptors, detect_key_structured, format_key
+from rhythm import analyze_rhythm
 from stems import (
     separate_stems,
     separate_stems_openvino_demucs,
@@ -61,24 +63,6 @@ def normalize_tempo(tempo):
     return round(t + 1e-8, 1)
 
 
-def format_tempo(tempo):
-    return f"{normalize_tempo(tempo):.1f}"
-
-
-def sanitize_key(key):
-    raw = str(key or "").strip()
-    out = []
-    for ch in raw:
-        if ch.isalnum() or ch in ("#", "b"):
-            out.append(ch)
-        elif ch in (" ", "-", "_"):
-            out.append("_")
-    cleaned = "".join(out).strip("_")
-    while "__" in cleaned:
-        cleaned = cleaned.replace("__", "_")
-    return cleaned or "Unknown"
-
-
 def _separator_marker_path(output_dir, file_hash):
     return os.path.join(output_dir, f"{file_hash}_separator.json")
 
@@ -116,25 +100,48 @@ def _write_separator_marker(output_dir, file_hash, separator, options):
         json.dump({"separator": separator, "options": options}, marker)
 
 
+def _find_legacy_stem_cache(output_dir, file_hash, extension):
+    """Finds a stem cache from before separation was decoupled from
+    detected key/tempo (`{file_hash}_vocals_{key}_{tempo}.ext`). Only
+    `tempo == 1.0` candidates count — that's what the default separation
+    always used; a different tempo means a deliberately shifted variant,
+    not the base separation this is trying to recognize.
+
+    Returns `(vocals, instrumental)` or `None`. Never deletes, renames, or
+    otherwise touches what it finds — an update to the key/tempo detection
+    algorithm must not force a costly re-separation for existing libraries,
+    but nothing else may still depend on the old filename either, so it's
+    left in place.
+    """
+    prefix = os.path.join(output_dir, f"{file_hash}_vocals_")
+    for vocals in sorted(glob.glob(f"{prefix}*_1.0.{extension}")):
+        instrumental = os.path.join(
+            output_dir, f"{file_hash}_instrumental_{vocals[len(prefix):]}"
+        )
+        if os.path.isfile(instrumental):
+            return vocals, instrumental
+    return None
+
+
 def separate_and_cache(
-    audio_path, output_dir, file_hash, separator, device, key, tempo,
+    audio_path, output_dir, file_hash, separator, device,
     separator_options=None, free_gpu_fn=None,
 ):
-    """Run stem separation or reuse cached stems. Returns the vocals path."""
+    """Run stem separation or reuse cached stems. Returns the vocals path.
+
+    Stem identity is the source file hash, separator backend, and separator
+    options — never a detected key or tempo (see `_cached_separator_matches`
+    below), so a BPM/key algorithm update never forces a re-separation.
+    """
     progress(4, "Inspecting source codec and cache format...")
-    key_safe = sanitize_key(key)
-    tempo_safe = format_tempo(tempo)
     lossless = source_is_lossless(audio_path)
     cache_extension = "flac" if lossless else "mp3"
-    final_vocals = os.path.join(output_dir, f"{file_hash}_vocals_{key_safe}_{tempo_safe}.{cache_extension}")
-    final_instrumental = os.path.join(output_dir, f"{file_hash}_instrumental_{key_safe}_{tempo_safe}.{cache_extension}")
+    final_vocals = os.path.join(output_dir, f"{file_hash}_vocals.{cache_extension}")
+    final_instrumental = os.path.join(output_dir, f"{file_hash}_instrumental.{cache_extension}")
     active_options = _active_separator_options(separator, separator_options)
+    separator_matches = _cached_separator_matches(output_dir, file_hash, separator, active_options)
 
-    if (
-        os.path.isfile(final_vocals)
-        and os.path.isfile(final_instrumental)
-        and _cached_separator_matches(output_dir, file_hash, separator, active_options)
-    ):
+    if os.path.isfile(final_vocals) and os.path.isfile(final_instrumental) and separator_matches:
         progress(
             50,
             "Stems already cached, skipping separation",
@@ -142,6 +149,17 @@ def separate_and_cache(
             actual_device="cache",
         )
         return final_vocals
+
+    if separator_matches:
+        legacy = _find_legacy_stem_cache(output_dir, file_hash, cache_extension)
+        if legacy is not None:
+            progress(
+                50,
+                "Stems already cached, skipping separation",
+                requested_device="cache",
+                actual_device="cache",
+            )
+            return legacy[0]
 
     with tempfile.TemporaryDirectory(prefix="uta_studio_") as work_dir:
         if separator == "karaoke":
@@ -207,6 +225,93 @@ def transcribe_or_align(
     )
 
 
+MUSIC_ANALYSIS_VERSION = 1
+
+
+def _music_analysis_path(output_dir, file_hash):
+    return os.path.join(output_dir, f"{file_hash}_music_analysis.json")
+
+
+def _read_music_analysis_cache(path):
+    """Loads a previously written `music_analysis.json`, or `None` if it's
+    missing, corrupt, or from an older version — regenerated rather than
+    trusted in any of those cases."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"[uta-studio:LOG] Music analysis cache unreadable, regenerating: {e}", flush=True)
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != MUSIC_ANALYSIS_VERSION
+        or not isinstance(data.get("key"), dict)
+        or not isinstance(data.get("rhythm"), dict)
+    ):
+        return None
+    return data
+
+
+def _write_music_analysis_cache(path, data):
+    """Temp-file-plus-atomic-replace so a crash or kill mid-write never
+    leaves a half-written (and therefore corrupt-looking, triggering a
+    pointless re-analysis) JSON file behind."""
+    directory = os.path.dirname(path) or "."
+    fd, temp_path = tempfile.mkstemp(prefix="music_analysis_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+    except OSError as e:
+        print(f"[uta-studio:LOG] Failed to write music analysis cache: {e}", flush=True)
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def analyze_music(audio_path, output_dir, file_hash):
+    """Key + rhythm (+ a few extra descriptors when Essentia is installed),
+    cached to `{file_hash}_music_analysis.json`. Reuses a valid existing
+    cache instead of re-running analysis: realigning lyrics or re-running
+    transcription must not repeat key/BPM detection, and re-running this
+    alone must not touch stems or the transcript.
+
+    Always returns a dict shaped like the cache file (`version`/`key`/
+    `rhythm`, `descriptors` only when available) — key/rhythm fields are
+    the explicit "unknown" shape on failure, never a fabricated default.
+    """
+    path = _music_analysis_path(output_dir, file_hash)
+    cached = _read_music_analysis_cache(path)
+    if cached is not None:
+        progress(3, "Music analysis already cached, skipping...")
+        return cached
+
+    progress(3, "Analyzing musical key...", implementation="Essentia/NumPy FFT", model="KeyExtractor / Krumhansl chroma profiles")
+    key = detect_key_structured(audio_path)
+
+    progress(4, "Analyzing tempo and beat positions...", implementation="Essentia/NumPy FFT", model="RhythmExtractor2013 / onset autocorrelation")
+    rhythm = analyze_rhythm(audio_path)
+
+    if key.get("tonic") is None and rhythm.get("bpm") is None:
+        progress(4, "Music analysis unavailable; continuing without beat grid...")
+
+    result = {"version": MUSIC_ANALYSIS_VERSION, "key": key, "rhythm": rhythm}
+
+    try:
+        descriptors = analyze_extra_descriptors(audio_path)
+        if descriptors:
+            result["descriptors"] = descriptors
+    except Exception as e:
+        # Never let an optional descriptor pass take key/rhythm down with it.
+        print(f"[uta-studio:LOG] Extra descriptors unavailable: {e}", flush=True)
+
+    _write_music_analysis_cache(path, result)
+    return result
+
+
 def run_pipeline(
     audio_path, output_dir, file_hash, device, *,
     model_name="large-v3", beam_size=5, batch_size=16,
@@ -240,16 +345,15 @@ def run_pipeline(
 
     try:
         log_vram("phase:start")
-        progress(3, "Detecting musical key with chroma analysis...")
-        detected_key = detect_key(audio_path)
+        music = analyze_music(audio_path, output_dir, file_hash)
+        detected_key = format_key(music["key"])
+        detected_bpm = music["rhythm"]["bpm"]
         tempo = 1.0
 
         vocals_path = None
         if not skip_separation:
             vocals_path = separate_and_cache(
                 audio_path, output_dir, file_hash, separator, device,
-                key=detected_key,
-                tempo=tempo,
                 separator_options=separator_options,
                 free_gpu_fn=free_gpu_fn,
             )
@@ -295,6 +399,7 @@ def run_pipeline(
                     print(f"[uta-studio:LOG] Failed to read provided transcript: {e}", flush=True)
             transcript["key"] = detected_key
             transcript["tempo"] = normalize_tempo(tempo)
+            transcript["bpm"] = detected_bpm
             progress(95, "Writing transcript...")
             with open(transcript_path, "w", encoding="utf-8") as f:
                 json.dump(transcript, f, ensure_ascii=False, indent=2)
@@ -318,6 +423,7 @@ def run_pipeline(
 
         transcript["key"] = detected_key
         transcript["tempo"] = normalize_tempo(tempo)
+        transcript["bpm"] = detected_bpm
 
         progress(95, "Writing transcript...")
         with open(transcript_path, "w", encoding="utf-8") as f:

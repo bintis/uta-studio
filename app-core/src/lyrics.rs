@@ -177,7 +177,7 @@ pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<()
     cache.delete_transcript_variants(file_hash);
     cache.invalidate_authored_chart(file_hash);
 
-    update_song_analyzed(file_hash, false, previous_language, None, None, None);
+    update_song_analyzed(file_hash, false, previous_language, None, None, None, None);
     enqueue_one(file_hash);
     Ok(())
 }
@@ -238,7 +238,7 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
         write_transcript_json(&cache, file_hash, &value)
             .map_err(|e| format!("Failed to write transcript: {e}"))?;
         // Stays not-analyzed until stem separation finishes.
-        update_song_analyzed(file_hash, false, language, None, None, None);
+        update_song_analyzed(file_hash, false, language, None, None, None, None);
         mark_stems_only(file_hash);
         enqueue_one(file_hash);
     } else {

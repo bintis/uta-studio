@@ -56,7 +56,10 @@ pub use lyrics::{
     save_lyrics_and_realign, search_lrclib_for_hash,
 };
 pub use scanner::{clear_library_index, start_scan};
-pub use song::{Song, SongOrigin, TranscriptSource};
+pub use song::{
+    MusicAnalysis, MusicAnalysisDescriptors, MusicKeyAnalysis, MusicRhythmAnalysis, Song,
+    SongOrigin, TranscriptSource, load_music_analysis, update_song_settings,
+};
 pub use source::{
     FolderSource, LibraryFolderEntry, MediaSource, active_source, list_library_folder,
 };
