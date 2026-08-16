@@ -593,6 +593,7 @@ pub(crate) fn update_song_analyzed(
     language: Option<String>,
     transcript_source: Option<TranscriptSource>,
     key: Option<String>,
+    bpm: Option<f64>,
     tempo: Option<f64>,
 ) {
     let Some(mut song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
@@ -603,6 +604,7 @@ pub(crate) fn update_song_analyzed(
     song.transcript_source = transcript_source;
     if is_analyzed {
         song.key = key;
+        song.bpm = bpm;
         if let Some(value) = tempo {
             song.tempo = value;
         }
@@ -612,6 +614,7 @@ pub(crate) fn update_song_analyzed(
     } else {
         song.key = None;
         song.override_key = None;
+        song.bpm = None;
         song.tempo = 1.0;
         song.key_offset = 0;
         song.no_stems = false;
@@ -758,7 +761,7 @@ pub fn delete_cache(file_hash: &str) {
     }
     let cache = CacheDir::new();
     cache.delete_song_cache(file_hash);
-    update_song_analyzed(file_hash, false, None, None, None, None);
+    update_song_analyzed(file_hash, false, None, None, None, None, None);
 }
 
 pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) {
@@ -830,6 +833,7 @@ pub fn realign(file_hash: &str, language: Option<String>) {
         None,
         None,
         None,
+        None,
     );
     enqueue_one(file_hash);
 }
@@ -857,7 +861,7 @@ fn reanalyze(file_hash: &str, full: bool) {
         cache.invalidate_authored_chart(file_hash);
         let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
     }
-    update_song_analyzed(file_hash, false, None, None, None, None);
+    update_song_analyzed(file_hash, false, None, None, None, None, None);
     enqueue_one(file_hash);
 }
 
@@ -1147,6 +1151,7 @@ fn finalize_song(file_hash: &str, cache: &CacheDir) {
             meta.language,
             Some(meta.source),
             meta.key,
+            meta.bpm,
             Some(meta.tempo),
         );
         if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
@@ -1214,13 +1219,15 @@ pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
     song.transcript_source = Some(TranscriptSource::Lrc);
     song.key = None;
     song.override_key = None;
+    song.bpm = None;
     song.tempo = 1.0;
     song.key_offset = 0;
     song.no_stems = true;
     library_db::update_song_fields(&real_hash, &song)
         .map_err(|e| UtaStudioError::Other(e.to_string()))?;
-    // Detect the key off-queue in the background; patch it onto the row once it
-    // lands so key/tempo export variants unlock without blocking authoring.
+    // Detect the key (and tempo) off-queue in the background; patch them onto
+    // the row once they land so key/tempo export variants unlock without
+    // blocking authoring.
     std::thread::spawn(move || {
         let cache = CacheDir::new();
         if let Err(e) = run_key_pass(&cache, &local_path, &real_hash) {
@@ -1230,6 +1237,7 @@ pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
         let meta = read_transcript_meta(&cache, &real_hash);
         if let Some(mut updated) = library_db::load_song_by_hash(&real_hash).ok().flatten() {
             updated.key = meta.key;
+            updated.bpm = meta.bpm;
             let _ = library_db::update_song_fields(&real_hash, &updated);
         }
         info!("[analyzer] LRC key detection complete for {real_hash}");

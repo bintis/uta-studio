@@ -34,7 +34,9 @@ pub(crate) fn spawn_editor_tracks(
         .spawn((
             Node {
                 width: percent(100),
-                height: px(62),
+                // Tall enough for the active card's grown, four-row layout
+                // (see `spawn_track_card`) plus a little breathing room.
+                height: px(72),
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
                 column_gap: px(8),
@@ -105,7 +107,13 @@ fn spawn_track_card(
             UiAction::SelectEditorTrack(track.index),
             Node {
                 width: px(TRACK_CARD_WIDTH),
-                height: px(46),
+                // The active card packs an extra row (the singer name field)
+                // and swaps its labels for pill buttons, both taller than the
+                // idle card's plain text. A fixed height squeezed everything
+                // down until rows overlapped; let the card grow to fit
+                // instead, with `min_height` keeping idle cards from looking
+                // collapsed.
+                min_height: px(46),
                 flex_shrink: 0.0,
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,

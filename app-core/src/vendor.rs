@@ -1850,6 +1850,25 @@ fn step_install_packages_for_backend(
     install_torch_runtime(&uv, &py_str, &gpu, true, &mut on_progress, &mut on_output)?;
     verify_torch_runtime(&py, backend, &mut on_output)?;
 
+    // Essentia sharpens BPM/key detection and adds a few extra descriptors
+    // (see `analyze_with_essentia` in key_detect.py), but PyPI ships no
+    // Windows wheel for it — a failed or skipped install here must not fail
+    // setup on any platform. `key_detect.py` falls back to its own
+    // dependency-free estimators whenever the import fails.
+    let essentia_args = ["pip", "install", "essentia", "--python", &py_str];
+    match run_uv_pip_command(&uv, &essentia_args, &mut on_progress, &mut on_output) {
+        Ok(output) if !output.status.success() => {
+            on_output(format!(
+                "Essentia is unavailable on this platform; using built-in BPM/key detection instead. ({})",
+                String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or_default()
+            ));
+        }
+        Err(e) => on_output(format!(
+            "Essentia install skipped; using built-in BPM/key detection instead. ({e})"
+        )),
+        Ok(_) => {}
+    }
+
     Ok(())
 }
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — 2026-08-16
+
+This release focuses on richer musical analysis, an authoring safety net for locking in timing, and more complete song metadata.
+
+- Added a rhythm analyzer alongside key detection: BPM, tempo confidence, and absolute-second beat timestamps, backed by Essentia when it's installed (no Windows wheel) and a dependency-free spectral-flux/autocorrelation estimator otherwise. Key detection is now structured (`tonic`/`scale`/`confidence`) and never silently defaults to C major on failure or silence.
+- Key/rhythm/descriptor analysis now caches independently to its own `{file_hash}_music_analysis.json`, written atomically. Realigning lyrics no longer repeats BPM/key detection, and re-running that analysis alone no longer repeats stem separation or transcription.
+- Decoupled the stem cache's identity from the detected key and tempo — an analyzer update no longer forces existing libraries to re-run stem separation; pre-update caches are still recognized and reused, never deleted.
+- Added an optional, viewport-culled beat grid to the editor timeline, toggleable from the dock toolbar, shown only when the song has confident beat data.
+- The chart's analyzer pitch evidence is now a single static background reference spanning the full timeline instead of a per-note overlay.
+- Added right-click context menus for notes, lyrics, and the waveform (pitch/vocal audition, split/merge/duplicate/quantize, bind/unbind, waveform source and style), a keyboard shortcut cheat sheet, a chart-checks panel with precise problem locations, and a whole-song lyrics editor.
+- Note context menu gained "Play vocal" alongside "Play pitch," auditioning the isolated vocal stem for the clicked note's range instead of a synthesized tone.
+- "Bind" (merging an unpitched lyric onto a lyric-less pitch note) now offers a choice of which side's timing wins — the MIDI note's or the lyric's — instead of always keeping the pitch note's.
+- Added a Lock mode that blocks accidental note/lyric dragging while leaving keyboard nudging, selection, panning, and zoom untouched.
+- Added a shared song settings panel (composer, country, BPM override, background video, and analysis descriptors), opened from both the library detail page and the editor.
+- UTZ export now writes BPM and key metadata (previously never populated) plus the new composer/country fields; extended the UTZ format itself with `composer`/`country` on song metadata.
+- Fixed a native audio seek race where clicking the timeline could make the playhead jump to the clicked position and then flicker back to the old one before the pipeline settled.
+
 ## 0.2.1 — 2026-08-15
 
 This release focuses on direct UTZ 0.2 authoring and editor workflow maturity.

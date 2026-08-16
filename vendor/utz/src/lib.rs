@@ -12,10 +12,10 @@ use thiserror::Error;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const FORMAT_ID: &str = "uta.song";
-pub const FORMAT_VERSION: &str = "0.2.0";
+pub const FORMAT_VERSION: &str = "0.3.0";
 pub const LEGACY_FORMAT_VERSION: &str = "0.1.0";
 pub const VOCAL_CHART_FORMAT: &str = "uta.vocal-chart";
-pub const VOCAL_CHART_VERSION: &str = "1.0.0";
+pub const VOCAL_CHART_VERSION: &str = "1.1.0";
 pub const VOCAL_CHART_MEDIA_TYPE: &str = "application/vnd.uta.vocal-chart+json;version=1";
 pub const PITCH_EVIDENCE_FORMAT: &str = "uta.pitch-evidence";
 pub const PITCH_EVIDENCE_VERSION: &str = "1.0.0";
@@ -26,6 +26,8 @@ pub const MANIFEST_PATH: &str = "manifest.json";
 pub const MAX_FILES: usize = 128;
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_DUET_PARTS: u32 = 9;
+pub const MAX_ID_BYTES: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum UtzError {
@@ -80,10 +82,30 @@ pub struct SongMetadata {
     pub bpm: Option<f64>,
     #[serde(default)]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_sort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist_sort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_start_seconds: Option<f64>,
 }
 
+/// UTZ 0.1 audio map. The chart-to-audio offset only exists in 0.1; UTZ 0.2
+/// defines chart time zero as instrumental time zero instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AudioAssets {
+pub struct AudioAssetsV01 {
     pub instrumental: AssetRef,
     #[serde(default)]
     pub guide_vocals: Option<AssetRef>,
@@ -93,12 +115,36 @@ pub struct AudioAssets {
     pub audio_offset_seconds: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AudioAssets {
+    pub instrumental: AssetRef,
+    #[serde(default)]
+    pub guide_vocals: Option<AssetRef>,
+    #[serde(default)]
+    pub original: Option<AssetRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<AudioLoudness>,
+}
+
+/// Advisory integrated loudness (EBU R 128 LUFS) per audio stem.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AudioLoudness {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrumental_lufs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_vocals_lufs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_lufs: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct VisualAssets {
     #[serde(default)]
     pub cover: Option<AssetRef>,
     #[serde(default)]
     pub video: Option<AssetRef>,
+    #[serde(default)]
+    pub video_offset_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -143,7 +189,7 @@ pub struct ManifestV01 {
     pub package_id: String,
     pub revision: u32,
     pub song: SongMetadata,
-    pub audio: AudioAssets,
+    pub audio: AudioAssetsV01,
     pub charts: ChartAssetsV01,
     #[serde(default)]
     pub visuals: VisualAssets,
@@ -157,7 +203,7 @@ impl ManifestV01 {
     pub fn new(
         package_id: impl Into<String>,
         song: SongMetadata,
-        audio: AudioAssets,
+        audio: AudioAssetsV01,
         charts: ChartAssetsV01,
     ) -> Self {
         Self {
@@ -199,7 +245,8 @@ pub struct ManifestV02 {
     pub analysis: AnalysisAssetsV02,
     #[serde(default)]
     pub visuals: VisualAssets,
-    pub scoring: ScoringConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<ScoringConfig>,
     pub required_features: Vec<String>,
     #[serde(default)]
     pub optional_features: Vec<String>,
@@ -226,11 +273,7 @@ impl ManifestV02 {
             charts: ChartAssetsV02 { vocal: vocal_chart },
             analysis: AnalysisAssetsV02::default(),
             visuals: VisualAssets::default(),
-            scoring: ScoringConfig {
-                engine: "uta.vocal".into(),
-                version: 1,
-                octave_tolerance: false,
-            },
+            scoring: None,
             required_features: vec!["vocal-chart/1".into()],
             optional_features: Vec::new(),
             extensions: BTreeMap::new(),
@@ -303,25 +346,29 @@ impl UtzManifest {
     }
 
     pub fn assets(&self) -> Vec<&AssetRef> {
-        let (audio, visuals) = match self {
-            Self::V0_1(value) => (&value.audio, &value.visuals),
-            Self::V0_2(value) => (&value.audio, &value.visuals),
-        };
-        let mut assets = vec![&audio.instrumental];
-        assets.extend(audio.guide_vocals.iter());
-        assets.extend(audio.original.iter());
-        match self {
-            Self::V0_1(value) => assets.extend([
-                &value.charts.transcript,
-                &value.charts.pitch_track,
-                &value.charts.pitch_notes,
-            ]),
+        let mut assets = Vec::new();
+        let visuals = match self {
+            Self::V0_1(value) => {
+                assets.push(&value.audio.instrumental);
+                assets.extend(value.audio.guide_vocals.iter());
+                assets.extend(value.audio.original.iter());
+                assets.extend([
+                    &value.charts.transcript,
+                    &value.charts.pitch_track,
+                    &value.charts.pitch_notes,
+                ]);
+                &value.visuals
+            }
             Self::V0_2(value) => {
+                assets.push(&value.audio.instrumental);
+                assets.extend(value.audio.guide_vocals.iter());
+                assets.extend(value.audio.original.iter());
                 assets.push(&value.charts.vocal);
                 assets.extend(value.analysis.pitch_evidence.iter());
                 assets.extend(value.extensions.values());
+                &value.visuals
             }
-        }
+        };
         assets.extend(visuals.cover.iter());
         assets.extend(visuals.video.iter());
         assets
@@ -383,15 +430,13 @@ impl UtzManifest {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let (format, version, package_id, revision, song, audio, scoring) = match self {
+        let (format, version, package_id, revision, song) = match self {
             Self::V0_1(value) => (
                 &value.format,
                 &value.format_version,
                 &value.package_id,
                 value.revision,
                 &value.song,
-                &value.audio,
-                &value.scoring,
             ),
             Self::V0_2(value) => (
                 &value.format,
@@ -399,16 +444,16 @@ impl UtzManifest {
                 &value.package_id,
                 value.revision,
                 &value.song,
-                &value.audio,
-                &value.scoring,
             ),
         };
         if format != FORMAT_ID {
             return invalid(format!("unsupported format {format:?}"));
         }
+        // 0.3 only adds optional, defaulted fields to the 0.2 manifest shape,
+        // so a reader for one reads the other losslessly.
         let supported = match self {
             Self::V0_1(_) => version.starts_with("0.1."),
-            Self::V0_2(_) => version.starts_with("0.2."),
+            Self::V0_2(_) => version.starts_with("0.2.") || version.starts_with("0.3."),
         };
         if !supported {
             return invalid(format!("unsupported format version {version:?}"));
@@ -422,34 +467,57 @@ impl UtzManifest {
         if revision == 0
             || !song.duration_seconds.is_finite()
             || song.duration_seconds < 0.0
-            || !audio.audio_offset_seconds.is_finite()
             || song
                 .bpm
                 .is_some_and(|value| !value.is_finite() || value <= 0.0)
         {
             return invalid("revision, song timing, or BPM is invalid");
         }
+        if song
+            .preview_start_seconds
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return invalid("preview_start_seconds must be a finite non-negative number");
+        }
+        if song.tags.iter().any(|tag| tag.trim().is_empty()) {
+            return invalid("song tags must be non-empty strings");
+        }
         match self {
-            Self::V0_1(_) if scoring.engine != "uta.pitch" || scoring.version != 1 => {
-                return invalid(format!(
-                    "unsupported 0.1 scoring engine {} version {}",
-                    scoring.engine, scoring.version
-                ));
+            Self::V0_1(value) => {
+                if value.scoring.engine != "uta.pitch" || value.scoring.version != 1 {
+                    return invalid(format!(
+                        "unsupported 0.1 scoring engine {} version {}",
+                        value.scoring.engine, value.scoring.version
+                    ));
+                }
+                if !value.audio.audio_offset_seconds.is_finite() {
+                    return invalid("audio_offset_seconds must be finite");
+                }
             }
             Self::V0_2(value) => validate_v02_manifest(value)?,
-            _ => {}
+        }
+
+        let visuals = match self {
+            Self::V0_1(value) => &value.visuals,
+            Self::V0_2(value) => &value.visuals,
+        };
+        if !visuals.video_offset_seconds.is_finite() {
+            return invalid("video_offset_seconds must be finite");
         }
 
         let mut paths = HashSet::new();
         for asset in self.assets() {
             validate_package_path(&asset.path)?;
-            if asset.path == MANIFEST_PATH {
+            let folded = asset.path.to_lowercase();
+            if folded == MANIFEST_PATH {
                 return invalid("manifest.json cannot be used as an asset");
             }
             if asset.media_type.trim().is_empty() {
                 return invalid(format!("asset {} has no media type", asset.path));
             }
-            if !paths.insert(asset.path.as_str()) {
+            // Case-insensitive uniqueness protects extraction onto Windows
+            // and macOS file systems.
+            if !paths.insert(folded) {
                 return invalid(format!("asset path is used more than once: {}", asset.path));
             }
             if asset.sha256.len() != 64
@@ -466,8 +534,24 @@ impl UtzManifest {
 }
 
 fn validate_v02_manifest(value: &ManifestV02) -> Result<()> {
-    if value.scoring.engine.trim().is_empty() || value.scoring.version == 0 {
-        return invalid("0.2 scoring engine and version are required");
+    if let Some(scoring) = &value.scoring {
+        if scoring.engine.trim().is_empty() || scoring.version == 0 {
+            return invalid("scoring hints need a non-empty engine and version");
+        }
+    }
+    if let Some(loudness) = &value.audio.loudness {
+        for lufs in [
+            loudness.instrumental_lufs,
+            loudness.guide_vocals_lufs,
+            loudness.original_lufs,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !lufs.is_finite() || !(-70.0..=0.0).contains(&lufs) {
+                return invalid("loudness values must be LUFS between -70 and 0");
+            }
+        }
     }
     if value.charts.vocal.media_type != VOCAL_CHART_MEDIA_TYPE {
         return invalid("vocal chart has the wrong media type");
@@ -546,7 +630,9 @@ impl VocalChartV1 {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.format != VOCAL_CHART_FORMAT || !self.format_version.starts_with("1.0.") {
+        // Readers accept any 1.x chart; fields introduced by a newer minor
+        // version are ignorable by design.
+        if self.format != VOCAL_CHART_FORMAT || !self.format_version.starts_with("1.") {
             return invalid("unsupported vocal chart format or version");
         }
         validate_time_value(self.timebase, "vocal chart timebase")?;
@@ -556,10 +642,20 @@ impl VocalChartV1 {
         let mut track_ids = HashSet::new();
         let mut phrase_ids = HashSet::new();
         let mut note_ids = HashSet::new();
+        let mut parts = std::collections::BTreeSet::new();
         for track in &self.tracks {
             validate_id(&track.id, "track")?;
             if !track_ids.insert(track.id.as_str()) {
                 return invalid(format!("duplicate track id {}", track.id));
+            }
+            if let Some(part) = track.part {
+                if !(1..=MAX_DUET_PARTS).contains(&part) {
+                    return invalid(format!(
+                        "track {} part must be between 1 and {MAX_DUET_PARTS}",
+                        track.id
+                    ));
+                }
+                parts.insert(part);
             }
             if track.phrases.is_empty() {
                 return invalid(format!("track {} has no phrases", track.id));
@@ -648,6 +744,13 @@ impl VocalChartV1 {
                 }
             }
         }
+        // Assigned duet parts must be exactly 1..=N with no gaps, mirroring
+        // the UltraStar voice numbering rule.
+        if let Some(max) = parts.last().copied() {
+            if parts.len() as u32 != max {
+                return invalid("duet parts must be contiguous starting at 1");
+            }
+        }
         Ok(())
     }
 }
@@ -656,6 +759,10 @@ impl VocalChartV1 {
 pub struct VocalTrack {
     pub id: String,
     pub role: VocalTrackRole,
+    /// Duet part this track belongs to, counted from 1 (UltraStar P1/P2).
+    /// `None` means the track is not assigned to a specific player.
+    #[serde(default)]
+    pub part: Option<u32>,
     #[serde(default)]
     pub singer: Option<String>,
     #[serde(default = "default_true")]
@@ -667,7 +774,6 @@ pub struct VocalTrack {
 #[serde(rename_all = "snake_case")]
 pub enum VocalTrackRole {
     Lead,
-    Duet,
     Harmony,
     Backing,
     Adlib,
@@ -834,6 +940,7 @@ impl UtzPackage {
             return invalid(format!("package has more than {MAX_FILES} files"));
         }
         let mut files = BTreeMap::new();
+        let mut folded_names = HashSet::new();
         let mut total = 0u64;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
@@ -851,9 +958,10 @@ impl UtzPackage {
             }
             let mut content = Vec::with_capacity(entry.size().min(usize::MAX as u64) as usize);
             entry.read_to_end(&mut content)?;
-            if files.insert(name.clone(), content).is_some() {
+            if !folded_names.insert(name.to_lowercase()) {
                 return invalid(format!("duplicate archive path: {name}"));
             }
+            files.insert(name, content);
         }
         let manifest_bytes = files
             .remove(MANIFEST_PATH)
@@ -1031,10 +1139,15 @@ fn validate_file_map(files: &BTreeMap<String, Vec<u8>>) -> Result<()> {
         return invalid(format!("package has more than {MAX_FILES} files"));
     }
     let mut total = 0u64;
+    let mut folded_names = HashSet::new();
     for (path, bytes) in files {
         validate_package_path(path)?;
-        if path == MANIFEST_PATH {
+        let folded = path.to_lowercase();
+        if folded == MANIFEST_PATH {
             return invalid("files map must not contain manifest.json");
+        }
+        if !folded_names.insert(folded) {
+            return invalid(format!("duplicate archive path: {path}"));
         }
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return invalid(format!("asset is too large: {path}"));
@@ -1142,6 +1255,9 @@ fn validate_id(value: &str, role: &str) -> Result<()> {
     if value.trim().is_empty() {
         return invalid(format!("{role} id is empty"));
     }
+    if value.len() > MAX_ID_BYTES {
+        return invalid(format!("{role} id is longer than {MAX_ID_BYTES} bytes"));
+    }
     Ok(())
 }
 
@@ -1171,6 +1287,22 @@ pub fn validate_package_path(path: &str) -> Result<()> {
     {
         return invalid(format!("unsafe package path: {path:?}"));
     }
+    // Names that break extraction on Windows file systems.
+    for part in path.split('/') {
+        if part.ends_with('.') || part.ends_with(' ') {
+            return invalid(format!("unsafe package path: {path:?}"));
+        }
+        let base = part.split('.').next().unwrap_or_default();
+        if matches!(
+            base.to_ascii_lowercase().as_str(),
+            "con" | "prn" | "aux" | "nul"
+        ) || (base.len() == 4
+            && matches!(&base.to_ascii_lowercase()[..3], "com" | "lpt")
+            && base.as_bytes()[3].is_ascii_digit())
+        {
+            return invalid(format!("unsafe package path: {path:?}"));
+        }
+    }
     if Path::new(path)
         .components()
         .any(|part| !matches!(part, Component::Normal(_)))
@@ -1193,11 +1325,29 @@ mod tests {
             duration_seconds: 12.0,
             bpm: Some(120.0),
             key: Some("C".into()),
+            title_sort: None,
+            artist_sort: None,
+            genre: None,
+            year: None,
+            creator: None,
+            composer: None,
+            country: None,
+            tags: Vec::new(),
+            preview_start_seconds: Some(4.0),
         }
     }
 
     fn audio() -> AudioAssets {
         AudioAssets {
+            instrumental: AssetRef::pending("audio/instrumental.mp3", "audio/mpeg"),
+            guide_vocals: None,
+            original: None,
+            loudness: None,
+        }
+    }
+
+    fn audio_v01() -> AudioAssetsV01 {
+        AudioAssetsV01 {
             instrumental: AssetRef::pending("audio/instrumental.mp3", "audio/mpeg"),
             guide_vocals: None,
             original: None,
@@ -1231,6 +1381,7 @@ mod tests {
         VocalChartV1::new(vec![VocalTrack {
             id: "lead".into(),
             role: VocalTrackRole::Lead,
+            part: None,
             singer: None,
             scoring_enabled: true,
             phrases: vec![VocalPhrase {
@@ -1238,6 +1389,20 @@ mod tests {
                 notes: vec![note("note-1", 0, "lyric-1", "歌")],
             }],
         }])
+    }
+
+    fn duet_track(id: &str, part: u32, note_id: &str, lyric_id: &str) -> VocalTrack {
+        VocalTrack {
+            id: id.into(),
+            role: VocalTrackRole::Lead,
+            part: Some(part),
+            singer: None,
+            scoring_enabled: true,
+            phrases: vec![VocalPhrase {
+                id: format!("{id}-phrase"),
+                notes: vec![note(note_id, 0, lyric_id, "歌")],
+            }],
+        }
     }
 
     fn sample_v02() -> (ManifestV02, BTreeMap<String, Vec<u8>>) {
@@ -1261,7 +1426,7 @@ mod tests {
         let manifest = ManifestV01::new(
             "org.uta.legacy",
             song(),
-            audio(),
+            audio_v01(),
             ChartAssetsV01 {
                 transcript: AssetRef::pending("charts/transcript.json", "application/json"),
                 pitch_track: AssetRef::pending("charts/pitch-track.json", "application/json"),
@@ -1379,5 +1544,66 @@ mod tests {
         assert!(validate_package_path("C:/track.mp3").is_err());
         assert!(validate_package_path("audio//track.mp3").is_err());
         assert!(validate_package_path("audio/track.mp3").is_ok());
+    }
+
+    #[test]
+    fn windows_hostile_paths_are_rejected() {
+        assert!(validate_package_path("aux.mp3").is_err());
+        assert!(validate_package_path("audio/NUL.txt").is_err());
+        assert!(validate_package_path("audio/COM1").is_err());
+        assert!(validate_package_path("audio/track.mp3.").is_err());
+        assert!(validate_package_path("audio /track.mp3").is_err());
+        assert!(validate_package_path("audio/com10.mp3").is_ok());
+        assert!(validate_package_path("audio/console.mp3").is_ok());
+    }
+
+    #[test]
+    fn case_insensitive_duplicate_paths_are_rejected() {
+        let (mut manifest, mut files) = sample_v02();
+        files.insert("Audio/Instrumental.mp3".into(), b"copy".to_vec());
+        manifest.audio.original =
+            Some(AssetRef::pending("Audio/Instrumental.mp3", "audio/mpeg"));
+        assert!(UtzPackage::build(manifest, files).is_err());
+    }
+
+    #[test]
+    fn duet_parts_must_be_contiguous() {
+        let mut valid = VocalChartV1::new(vec![
+            duet_track("p1", 1, "note-1", "lyric-1"),
+            duet_track("p2", 2, "note-2", "lyric-2"),
+        ]);
+        assert!(valid.validate().is_ok());
+        valid.tracks[0].part = Some(2);
+        valid.tracks[1].part = Some(3);
+        assert!(valid.validate().is_err());
+        valid.tracks[0].part = Some(1);
+        valid.tracks[1].part = Some(1);
+        assert!(valid.validate().is_ok());
+        valid.tracks[1].part = Some(0);
+        assert!(valid.validate().is_err());
+    }
+
+    #[test]
+    fn a_note_with_no_lyric_tokens_yet_is_still_valid() {
+        let mut value = chart();
+        value.tracks[0].phrases[0].notes[0].lyrics.clear();
+        assert!(value.validate().is_ok());
+    }
+
+    #[test]
+    fn preview_start_must_be_non_negative() {
+        let (mut manifest, files) = sample_v02();
+        manifest.song.preview_start_seconds = Some(-1.0);
+        assert!(UtzPackage::build(manifest, files).is_err());
+    }
+
+    #[test]
+    fn loudness_must_be_plausible_lufs() {
+        let (mut manifest, files) = sample_v02();
+        manifest.audio.loudness = Some(AudioLoudness {
+            instrumental_lufs: Some(3.0),
+            ..AudioLoudness::default()
+        });
+        assert!(UtzPackage::build(manifest, files).is_err());
     }
 }

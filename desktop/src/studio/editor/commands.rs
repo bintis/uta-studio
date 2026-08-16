@@ -179,11 +179,90 @@ pub(crate) fn merge_editor_phrase(
     document.merge_phrase_with_next(selection)
 }
 
+/// Binds an unpitched lyric onto a lyric-less pitch note, wherever the two
+/// were authored. Returns the bound note's index.
+pub(crate) fn bind_editor_lyric(
+    document: &mut app_core::EditorDocument,
+    word: WordSelection,
+    note_index: usize,
+) -> Option<usize> {
+    document.bind_lyric_to_note(word, note_index)
+}
+
+/// Splits a bound note's pitch and lyric apart. Returns the freed lyric's
+/// new address.
+pub(crate) fn unbind_editor_note(
+    document: &mut app_core::EditorDocument,
+    note_index: usize,
+) -> Option<WordSelection> {
+    document.unbind_note(note_index)
+}
+
+/// The note a lyric currently belongs to, for resolving a click on the lyric
+/// lane into the note an unbind should act on.
+pub(crate) fn editor_note_for_word(
+    document: &app_core::EditorDocument,
+    selection: WordSelection,
+) -> Option<usize> {
+    document.note_for_word(selection)
+}
+
+/// Whether `note_index` could become a held continuation of the syllable at
+/// `word` — the note right-click menu uses this to decide whether to offer
+/// it, without mutating anything.
+pub(crate) fn can_extend_editor_lyric(
+    document: &app_core::EditorDocument,
+    word: WordSelection,
+    note_index: usize,
+) -> bool {
+    document.can_extend_lyric_over_note(word, note_index)
+}
+
+/// Makes `note_index` a held continuation of the syllable at `word`, for a
+/// pitch that glides partway through one sung syllable.
+pub(crate) fn extend_editor_lyric(
+    document: &mut app_core::EditorDocument,
+    word: WordSelection,
+    note_index: usize,
+) -> bool {
+    document.extend_lyric_over_note(word, note_index)
+}
+
+/// The note `word` could extend onto next, if any — lets the lyric's own
+/// right-click menu offer it directly instead of requiring a separate
+/// right-click on that note.
+pub(crate) fn next_extendable_editor_note(
+    document: &app_core::EditorDocument,
+    word: WordSelection,
+) -> Option<usize> {
+    document.next_extendable_note(word)
+}
+
+/// Binds the current selection to its nearest eligible counterpart, for the
+/// dock button and the bare `B` shortcut.
+pub(crate) fn bind_nearest_editor_selection(
+    document: &mut app_core::EditorDocument,
+    word: Option<WordSelection>,
+    note: Option<usize>,
+    align_to_lyric: bool,
+) -> Option<usize> {
+    document.bind_nearest(word, note, align_to_lyric)
+}
+
+/// Unbinds whichever note the current selection names.
+pub(crate) fn unbind_editor_selection(
+    document: &mut app_core::EditorDocument,
+    word: Option<WordSelection>,
+    note: Option<usize>,
+) -> Option<WordSelection> {
+    document.unbind_selected(word, note)
+}
+
 /// Saves the chart, or explains the first error standing in the way. The
 /// format rejects an invalid chart outright, so the editor names the problem
 /// and where it is instead of surfacing a validation message with no location.
 pub(crate) fn save_editor_chart(editor: &mut NativeEditor) -> String {
-    let report = editor.document.problems();
+    let report = editor.refresh_problems();
     if let Some(problem) = report
         .problems
         .iter()

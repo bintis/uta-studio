@@ -16,6 +16,7 @@ use std::{fs::File, io::Read};
 use crate::{
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
+    library_db,
     usdx::UsdxBundle,
 };
 
@@ -60,6 +61,11 @@ pub struct Song {
     pub key: Option<String>,
     #[serde(default)]
     pub override_key: Option<String>,
+    /// The song's musical tempo in beats per minute, detected by analysis or
+    /// preserved from an imported UltraStar chart's `#BPM`. Informational —
+    /// unlike `tempo`, nothing in the editor's own timing depends on it.
+    #[serde(default)]
+    pub bpm: Option<f64>,
     #[serde(default = "default_tempo")]
     pub tempo: f64,
     #[serde(default)]
@@ -86,10 +92,89 @@ pub struct Song {
     pub editor_ready: bool,
     #[serde(default)]
     pub editor_blocked_reason: Option<String>,
+    /// User-editable metadata that analysis never touches — set from the
+    /// song settings panel, shared by the library detail page and the
+    /// editor's own settings menu. `bpm` above is analysis's own estimate;
+    /// this wins over it wherever the two disagree, the same way
+    /// `override_key` wins over `key`.
+    #[serde(default)]
+    pub override_bpm: Option<f64>,
+    #[serde(default)]
+    pub composer: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    /// A user-picked video to show behind the song during playback,
+    /// independent of any video the song's own source or a USDX import
+    /// carries. Wins over both when set.
+    #[serde(default)]
+    pub background_video_path: Option<PathBuf>,
 }
 
 fn default_tempo() -> f64 {
     1.0
+}
+
+/// Structured musical key, as produced by `detect_key_structured` in
+/// `key_detect.py`. `tonic`/`scale` are `None` (never a fabricated "C
+/// major") when analysis found nothing confident to report.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MusicKeyAnalysis {
+    pub tonic: Option<String>,
+    pub scale: Option<String>,
+    pub confidence: f64,
+}
+
+/// Structured tempo/beat analysis, as produced by `analyze_rhythm` in
+/// `rhythm.py`. `bpm` is `None` when nothing could be determined; `beats`
+/// (absolute seconds, strictly increasing) is empty whenever the backend
+/// could only estimate a global tempo without individually detected beats.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MusicRhythmAnalysis {
+    pub bpm: Option<f64>,
+    pub confidence: f64,
+    #[serde(default)]
+    pub beats: Vec<f64>,
+}
+
+/// A few extra Essentia descriptors with no dependency-free fallback —
+/// present only when Essentia was installed at analysis time (it has no
+/// Windows wheel).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MusicAnalysisDescriptors {
+    /// 0-1; how suitable the track's rhythm is for dancing.
+    pub danceability: f64,
+    pub dynamic_complexity_db: f64,
+    pub loudness_db: f64,
+}
+
+/// The cached contents of `{file_hash}_music_analysis.json`, written once
+/// during analysis by `analyze_music` in `pipeline.py`. Unlike `Song`, this
+/// never round-trips through the library database — it's read fresh from
+/// disk whenever something (the settings panel, the editor's beat grid)
+/// needs it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MusicAnalysis {
+    pub version: u32,
+    pub key: MusicKeyAnalysis,
+    pub rhythm: MusicRhythmAnalysis,
+    #[serde(default)]
+    pub descriptors: Option<MusicAnalysisDescriptors>,
+}
+
+/// Reads the cached key/rhythm analysis for a song, if analysis produced
+/// one. `None` when the song hasn't been analyzed since this was added, or
+/// the cache file is missing, unreadable, or from an older format version —
+/// never an error, since every caller must keep working without it (no
+/// beat grid, no extra descriptors) rather than fail.
+pub fn load_music_analysis(cache: &CacheDir, file_hash: &str) -> Option<MusicAnalysis> {
+    let path = cache.music_analysis_path(file_hash);
+    let data = std::fs::read_to_string(path).ok()?;
+    let analysis: MusicAnalysis = serde_json::from_str(&data).ok()?;
+    (analysis.version == 1).then_some(analysis)
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +182,8 @@ pub struct TranscriptMetaInfo {
     pub source: TranscriptSource,
     pub language: Option<String>,
     pub key: Option<String>,
+    /// The song's detected tempo in beats per minute, informational only.
+    pub bpm: Option<f64>,
     pub tempo: f64,
     pub no_stems: bool,
 }
@@ -112,6 +199,7 @@ impl Song {
         transcript_source: Option<TranscriptSource>,
         key: Option<String>,
         override_key: Option<String>,
+        bpm: Option<f64>,
         tempo: f64,
         key_offset: i32,
         is_video: bool,
@@ -160,6 +248,7 @@ impl Song {
             transcript_source,
             key,
             override_key,
+            bpm,
             tempo,
             key_offset,
             is_video,
@@ -170,6 +259,10 @@ impl Song {
             authoring_missing: Vec::new(),
             editor_ready: false,
             editor_blocked_reason: None,
+            override_bpm: None,
+            composer: None,
+            country: None,
+            background_video_path: None,
         }
     }
 
@@ -220,6 +313,29 @@ impl Song {
     }
 }
 
+/// Persists an edit from the song settings panel — the one path both the
+/// library detail page and the editor's own settings menu save through, so
+/// neither can drift out of sync with the other. `None` for a field clears
+/// it; a caller that only means to touch one field should read the current
+/// `Song` first and carry the rest through unchanged.
+pub fn update_song_settings(
+    file_hash: &str,
+    composer: Option<String>,
+    country: Option<String>,
+    override_bpm: Option<f64>,
+    background_video_path: Option<PathBuf>,
+) -> Result<(), UtaStudioError> {
+    let mut song = library_db::load_song_by_hash(file_hash)
+        .map_err(|e| UtaStudioError::Other(e.to_string()))?
+        .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
+    song.composer = composer;
+    song.country = country;
+    song.override_bpm = override_bpm;
+    song.background_video_path = background_video_path;
+    library_db::update_song_fields(file_hash, &song)
+        .map_err(|e| UtaStudioError::Other(e.to_string()))
+}
+
 pub(crate) fn compute_file_hash(path: &Path) -> Result<String, std::io::Error> {
     let mut file = File::open(path)?;
     let mut hasher = Hasher::new();
@@ -242,17 +358,18 @@ pub fn build_song(path: &Path, cache: &CacheDir, is_video: bool) -> Result<Song,
     let file_hash = compute_file_hash(path)?;
 
     let is_analyzed = cache.transcript_exists(&file_hash);
-    let (transcript_source, language, key, tempo, no_stems) = if is_analyzed {
+    let (transcript_source, language, key, bpm, tempo, no_stems) = if is_analyzed {
         let meta = read_transcript_meta(cache, &file_hash);
         (
             Some(meta.source),
             meta.language,
             meta.key,
+            meta.bpm,
             meta.tempo,
             meta.no_stems,
         )
     } else {
-        (None, None, None, default_tempo(), false)
+        (None, None, None, None, default_tempo(), false)
     };
 
     let mut song = Song::from_path(
@@ -264,6 +381,7 @@ pub fn build_song(path: &Path, cache: &CacheDir, is_video: bool) -> Result<Song,
         transcript_source,
         key,
         None,
+        bpm,
         tempo,
         0,
         is_video,
@@ -283,6 +401,8 @@ pub fn read_transcript_meta(cache: &CacheDir, hash: &str) -> TranscriptMetaInfo 
         language: Option<String>,
         #[serde(default)]
         key: Option<String>,
+        #[serde(default)]
+        bpm: Option<f64>,
         #[serde(default = "default_tempo")]
         tempo: f64,
         #[serde(default)]
@@ -302,6 +422,7 @@ pub fn read_transcript_meta(cache: &CacheDir, hash: &str) -> TranscriptMetaInfo 
             source: src,
             language: parsed.language,
             key: parsed.key,
+            bpm: parsed.bpm.filter(|value| value.is_finite() && *value > 0.0),
             tempo: parsed.tempo,
             no_stems: parsed.no_stems,
         };
@@ -310,6 +431,7 @@ pub fn read_transcript_meta(cache: &CacheDir, hash: &str) -> TranscriptMetaInfo 
         source: TranscriptSource::Generated,
         language: None,
         key: None,
+        bpm: None,
         tempo: default_tempo(),
         no_stems: false,
     }

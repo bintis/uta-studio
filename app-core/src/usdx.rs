@@ -480,6 +480,9 @@ fn synthesize_transcript(file: &UsdxFile) -> serde_json::Value {
         "language": language,
         "segments": segments,
         "source": "usdx",
+        // The only real (non-detected) BPM this pipeline ever sees — an
+        // author-provided `#BPM`, not an estimate — so it always wins.
+        "bpm": file.bpm,
     })
 }
 
@@ -640,6 +643,7 @@ pub fn build_usdx_song(path: &Path, cache: &CacheDir) -> Result<Song, UtaStudioE
         transcript_source: Some(TranscriptSource::Usdx),
         key: None,
         override_key: None,
+        bpm: Some(file.bpm),
         tempo: 1.0,
         key_offset: 0,
         is_video: false,
@@ -650,6 +654,10 @@ pub fn build_usdx_song(path: &Path, cache: &CacheDir) -> Result<Song, UtaStudioE
         authoring_missing: Vec::new(),
         editor_ready: true,
         editor_blocked_reason: None,
+        override_bpm: None,
+        composer: None,
+        country: None,
+        background_video_path: None,
     };
 
     Ok(song)

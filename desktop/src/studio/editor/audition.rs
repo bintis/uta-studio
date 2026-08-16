@@ -66,8 +66,18 @@ pub(crate) fn load_native_editor(
     bevy::log::info!("Loading chart for the native editor");
     let chart = app_core::load_chart(file_hash).map_err(|error| error.to_string())?;
     bevy::log::info!("Decoding the bounded editor waveform while playback is stopped");
-    let waveform = app_core::decode_chart_waveform(std::path::Path::new(&chart.audio.instrumental))
-        .unwrap_or_default();
+    // The overview waveform is a lyric/pitch alignment aid, so it defaults to
+    // the voice, not whatever instrumental happens to be auditioned — but
+    // it's independent of `audio_source` and can be repointed at any stem
+    // with a right-click on the waveform itself.
+    let waveform_source = if chart.audio.vocals.is_some() {
+        WaveformSource::Vocals
+    } else {
+        WaveformSource::Instrumental
+    };
+    let waveform_path = waveform_source_path(&chart.audio, waveform_source);
+    let waveform =
+        app_core::decode_chart_waveform(std::path::Path::new(waveform_path)).unwrap_or_default();
     bevy::log::info!("Preparing native editor audio");
     // Authoring does not depend on playback initialization. Keep the native
     // audio error on the editor status so transport can explain the problem,
@@ -75,7 +85,32 @@ pub(crate) fn load_native_editor(
     let status =
         editor_audio_status(audio.load_path(std::path::Path::new(&chart.audio.instrumental)));
     bevy::log::info!("Native editor is ready");
-    Ok(NativeEditor::new(chart, status, waveform, "instrumental"))
+    Ok(NativeEditor::new(
+        chart,
+        status,
+        waveform,
+        waveform_source,
+        "instrumental",
+    ))
+}
+
+/// Resolves which file a waveform source refers to, falling back to the
+/// instrumental stem when the chart has no separate vocal track.
+pub(crate) fn waveform_source_path(audio: &app_core::ChartAudio, source: WaveformSource) -> &str {
+    match source {
+        WaveformSource::Vocals => audio.vocals.as_deref().unwrap_or(audio.instrumental.as_str()),
+        WaveformSource::Original => audio.original.as_str(),
+        WaveformSource::Instrumental => audio.instrumental.as_str(),
+    }
+}
+
+/// Repoints the overview waveform at a different stem, independent of
+/// whatever plays back through `audio_source`.
+pub(crate) fn set_editor_waveform_source(editor: &mut NativeEditor, source: WaveformSource) {
+    let path = waveform_source_path(&editor.chart.audio, source);
+    editor.waveform =
+        app_core::decode_chart_waveform(std::path::Path::new(path)).unwrap_or_default();
+    editor.waveform_source = source;
 }
 
 pub(crate) fn editor_audio_status(
@@ -116,14 +151,8 @@ pub(crate) fn select_editor_audio_source(
     }
     let was_playing = editor.audio_status.playing;
     let mut status = audio.load(&editor.chart.file_hash, source)?;
-    let path = match source {
-        "vocals" => editor.chart.audio.vocals.as_deref(),
-        "original" => Some(editor.chart.audio.original.as_str()),
-        _ => Some(editor.chart.audio.instrumental.as_str()),
-    };
-    editor.waveform = path
-        .and_then(|path| app_core::decode_chart_waveform(std::path::Path::new(path)).ok())
-        .unwrap_or_default();
+    // The overview waveform is independent of playback source — it's set
+    // separately with a right-click on the waveform (`set_editor_waveform_source`).
     if was_playing {
         status = audio.play()?;
     }
@@ -200,6 +229,25 @@ pub(crate) fn sync_editor_audio(
             editor.visible_position = status.position_secs;
             editor.audio_status = status;
             editor.last_audio_sync = Instant::now();
+        }
+        // `PlayNoteVocal` may have temporarily switched playback to the
+        // vocal stem; put the user's chosen source back now that it's done.
+        let restore = session
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.audition_restore_source.clone());
+        if let Some(source) = restore
+            && let Some(editor) = session.editor.as_ref()
+        {
+            let file_hash = editor.chart.file_hash.clone();
+            if let Ok(status) = audio.0.load(&file_hash, &source)
+                && let Some(editor) = session.editor.as_mut()
+            {
+                editor.audio_source = source;
+                editor.audio_status = status;
+                editor.last_audio_sync = Instant::now();
+                editor.audition_restore_source = None;
+            }
         }
         invalidated.0 = true;
     }

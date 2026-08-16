@@ -152,6 +152,7 @@ pub fn migrate_analyzer_chart(
     let mut chart = VocalChartV1::new(vec![VocalTrack {
         id: "lead".into(),
         role: VocalTrackRole::Lead,
+        part: None,
         singer: None,
         scoring_enabled: true,
         phrases,

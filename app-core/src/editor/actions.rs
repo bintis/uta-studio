@@ -210,7 +210,20 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         Read,
         [KeyChord::plain("Space")]
     ),
-    action!("seek_start", "Jump to the start", Transport, Read, []),
+    action!(
+        "seek_start",
+        "Jump to the start",
+        Transport,
+        Read,
+        [KeyChord::plain("Home")]
+    ),
+    action!(
+        "seek_end",
+        "Jump to the end",
+        Transport,
+        Read,
+        [KeyChord::plain("End")]
+    ),
     action!(
         "audition_selection",
         "Play the selection",
@@ -270,8 +283,51 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         Read,
         [KeyChord::plain("Escape")]
     ),
+    action!(
+        "toggle_problems_panel",
+        "Show or hide chart checks",
+        View,
+        Read,
+        []
+    ),
+    action!(
+        "toggle_shortcuts_panel",
+        "Show or hide the shortcut cheat sheet",
+        View,
+        Read,
+        [KeyChord::plain("KeyH")]
+    ),
+    action!(
+        "toggle_lock_mode",
+        "Lock notes and lyrics",
+        View,
+        Read,
+        [KeyChord::ctrl("KeyL")]
+    ),
+    action!("toggle_beat_grid", "Show or hide the beat grid", View, Read, []),
+    action!(
+        "edit_all_lyrics",
+        "Edit all lyrics",
+        Lyrics,
+        Read,
+        [KeyChord::ctrl_shift("KeyL")]
+    ),
     action!("zoom_in_time", "Zoom in", View, Read, []),
     action!("zoom_out_time", "Zoom out", View, Read, []),
+    action!(
+        "fit_selection",
+        "Zoom to fit the selection",
+        View,
+        Read,
+        [KeyChord::shift("KeyF")]
+    ),
+    action!(
+        "fit_song",
+        "Zoom to fit the whole song",
+        View,
+        Read,
+        [KeyChord::plain("KeyF")]
+    ),
     action!("zoom_in_pitch", "Zoom in on pitch", View, Read, []),
     action!("zoom_out_pitch", "Zoom out on pitch", View, Read, []),
     action!("pan_pitch_up", "Pan up", View, Read, []),
@@ -300,6 +356,8 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     ),
     // -- notes ------------------------------------------------------------
     action!("add_note", "Add note", Notes, Mutation, []),
+    action!("play_note_pitch", "Play pitch", Notes, Read, []),
+    action!("play_note_vocal", "Play vocal", Notes, Read, []),
     action!(
         "toggle_tap_mode",
         "Tap to time",
@@ -428,6 +486,10 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         [KeyChord::shift("ArrowDown")]
     ),
     // -- lyrics -----------------------------------------------------------
+    // Selects the line at the playhead and opens the inspector's whole-line
+    // editor directly, so editing lyric text doesn't require first clicking
+    // a word in the lyric lane.
+    action!("edit_lyric_line", "Edit lyric line", Lyrics, Read, []),
     action!("add_lyric", "Add lyric word", Lyrics, Mutation, []),
     action!("delete_lyrics", "Delete lyric words", Lyrics, Mutation, []),
     action!("split_lyrics", "Split lyric words", Lyrics, Mutation, []),
@@ -497,6 +559,23 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     ),
     action!("split_phrase", "Start a new phrase", Lyrics, Mutation, []),
     action!("merge_phrase", "Join the next phrase", Lyrics, Mutation, []),
+    // No key chord: the bare key is reserved as the held modifier for a
+    // precise click-to-bind/unbind gesture (see the editor's pointer input).
+    action!("bind_nearest", "Bind lyric to note", Lyrics, Mutation, []),
+    action!(
+        "unbind_selection",
+        "Unbind lyric from note",
+        Lyrics,
+        Mutation,
+        []
+    ),
+    action!(
+        "toggle_bind_alignment",
+        "Change which side Bind aligns to",
+        Lyrics,
+        Read,
+        []
+    ),
 ];
 
 pub fn editor_actions() -> &'static [EditorActionDef] {
