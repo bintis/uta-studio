@@ -2647,7 +2647,11 @@ pub(crate) fn spawn_analysis_artifact_node(
                 }
             ),
             6.5,
-            if ready { accent } else { theme.muted_foreground },
+            if ready {
+                accent
+            } else {
+                theme.muted_foreground
+            },
         );
         spawn_text(node, font.clone(), title, 9.0, theme.foreground);
         spawn_bounded_wrapped_text(node, font, detail, 7.0, theme.muted_foreground);

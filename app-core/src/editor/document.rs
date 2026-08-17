@@ -1999,7 +1999,10 @@ impl EditorDocument {
             for token in &note.lyrics {
                 if let LyricToken::Text(text) = token {
                     if text.id == token_id {
-                        return Some(LyricAddress { segment: phrase, word });
+                        return Some(LyricAddress {
+                            segment: phrase,
+                            word,
+                        });
                     }
                     word += 1;
                 }
@@ -3052,9 +3055,7 @@ mod tests {
             segment: 0,
             word: 0,
         };
-        let freed = document
-            .unbind_selected(Some(word), None)
-            .expect("unbind");
+        let freed = document.unbind_selected(Some(word), None).expect("unbind");
         let notes = document.notes();
         assert_eq!(notes.len(), 2);
         assert!(notes[0].pitched);

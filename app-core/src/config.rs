@@ -62,6 +62,10 @@ pub struct AppConfig {
     pub auto_analyze: Option<bool>,
     #[serde(default)]
     pub font_scale_percent: Option<u32>,
+    /// Interface language: `en`, `zh-CN`, or `ja`. `None` follows the
+    /// locale supplied by the operating environment and falls back to English.
+    #[serde(default)]
+    pub ui_language: Option<String>,
     pub song_list_view: Option<String>,
     pub language_overrides: Option<HashMap<String, String>>,
 }
@@ -96,6 +100,7 @@ impl Default for AppConfig {
             vocal_detection_threshold_pct: None,
             auto_analyze: None,
             font_scale_percent: Some(100),
+            ui_language: None,
             song_list_view: None,
             language_overrides: None,
         }
@@ -131,6 +136,13 @@ impl AppConfig {
             None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
         ) {
             self.align_backend = Some("whisperx".to_string());
+        }
+        if self
+            .ui_language
+            .as_deref()
+            .is_some_and(|language| !matches!(language, "en" | "zh-CN" | "ja"))
+        {
+            self.ui_language = None;
         }
         self
     }
@@ -234,12 +246,17 @@ impl AppConfig {
                     cfg.align_backend.as_deref(),
                     None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
                 );
+                let had_invalid_ui_language = cfg
+                    .ui_language
+                    .as_deref()
+                    .is_some_and(|language| !matches!(language, "en" | "zh-CN" | "ja"));
                 (
                     cfg.with_defaults(),
                     !had_data_path
                         || had_invalid_separator
                         || had_invalid_pitch_model
-                        || had_invalid_align_backend,
+                        || had_invalid_align_backend
+                        || had_invalid_ui_language,
                 )
             }
             None => (Self::default().with_defaults(), true),
@@ -337,6 +354,10 @@ impl AppConfig {
         self.font_scale_percent() as f32 / 100.0
     }
 
+    pub fn ui_language(&self) -> &str {
+        self.ui_language.as_deref().unwrap_or("system")
+    }
+
     pub fn language_override(&self, file_hash: &str) -> Option<&str> {
         self.language_overrides
             .as_ref()
@@ -416,6 +437,24 @@ mod tests {
                 .library_source
                 .is_none()
         );
+    }
+
+    #[test]
+    fn interface_language_is_persisted_and_invalid_values_are_repaired() {
+        let explicit = AppConfig {
+            ui_language: Some("ja".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(explicit.ui_language(), "ja");
+
+        let repaired = AppConfig {
+            ui_language: Some("unsupported".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(repaired.ui_language(), "system");
+        assert!(repaired.ui_language.is_none());
     }
 
     #[test]

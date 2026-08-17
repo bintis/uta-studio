@@ -34,6 +34,7 @@ mod analysis_layout;
 mod analysis_model;
 mod editor;
 mod folders;
+mod i18n;
 mod library;
 mod settings;
 mod song_detail;
@@ -46,6 +47,7 @@ pub(crate) use analysis_layout::*;
 pub(crate) use analysis_model::*;
 pub(crate) use editor::*;
 pub(crate) use folders::*;
+pub(crate) use i18n::*;
 pub(crate) use library::*;
 pub(crate) use settings::*;
 pub(crate) use song_detail::*;
@@ -851,6 +853,7 @@ pub fn run() {
                 .before(rebuild_ui),
         )
         .add_systems(Update, rebuild_ui.after(handle_actions))
+        .add_systems(Update, localize_ui_text.after(rebuild_ui))
         .add_systems(Update, update_button_visuals.after(rebuild_ui))
         .add_systems(
             Update,
@@ -2772,6 +2775,9 @@ fn handle_actions(
             }
             UiAction::SelectSettingsValue(kind, value) => {
                 match kind {
+                    SettingsSelectKind::UiLanguage => {
+                        session.config.ui_language = (value != "system").then(|| value.clone());
+                    }
                     SettingsSelectKind::ComputeBackend => {
                         session.config.compute_backend = Some(value.clone());
                     }
@@ -2802,6 +2808,9 @@ fn handle_actions(
                 session.open_settings_select = None;
                 session.notice = save_config_error(&session.config).or_else(|| {
                     Some(match kind {
+                        SettingsSelectKind::UiLanguage => {
+                            "Interface language updated.".to_string()
+                        }
                         SettingsSelectKind::ComputeBackend => format!(
                             "Acceleration set to {}. Reconfigure the runtime to apply it.",
                             settings_select_label(*kind, value)

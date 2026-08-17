@@ -26,6 +26,7 @@ impl SettingsTab {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsSelectKind {
+    UiLanguage,
     ComputeBackend,
     Separator,
     SeparatorPreset,
@@ -164,7 +165,14 @@ pub(crate) fn spawn_settings(
                         flex_grow: 1.0,
                         ..default()
                     });
-                    spawn_text_button(nav, font.clone(), theme, "About Uta! Studio", 10.0, UiAction::OpenAbout);
+                    spawn_text_button(
+                        nav,
+                        font.clone(),
+                        theme,
+                        "About Uta! Studio",
+                        10.0,
+                        UiAction::OpenAbout,
+                    );
                 });
 
             settings
@@ -199,9 +207,13 @@ pub(crate) fn spawn_settings(
                         })
                         .with_children(|page| {
                             match session.settings_tab {
-                                SettingsTab::General => {
-                                    spawn_general_settings(page, font.clone(), session, theme)
-                                }
+                                SettingsTab::General => spawn_general_settings(
+                                    page,
+                                    font.clone(),
+                                    icons.clone(),
+                                    session,
+                                    theme,
+                                ),
                                 SettingsTab::Storage => spawn_storage_settings(
                                     page,
                                     font.clone(),
@@ -333,6 +345,7 @@ pub(crate) fn spawn_settings_header(
 pub(crate) fn spawn_general_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    icons: Handle<Image>,
     session: &StudioSession,
     theme: &StudioTheme,
 ) {
@@ -365,6 +378,16 @@ pub(crate) fn spawn_general_settings(
         },
         session.config.fullscreen.unwrap_or(false),
         UiAction::ToggleFullscreen,
+    );
+    spawn_select_setting_row(
+        parent,
+        font.clone(),
+        icons,
+        theme,
+        "Interface language",
+        "Choose the language used by Uta Studio. System default follows the locale provided by your operating environment.",
+        SettingsSelectKind::UiLanguage,
+        session,
     );
     spawn_setting_row(
         parent,
@@ -2918,6 +2941,7 @@ pub(crate) fn pitch_model_label(value: &str) -> &'static str {
 
 pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig) -> &str {
     match kind {
+        SettingsSelectKind::UiLanguage => config.ui_language(),
         SettingsSelectKind::ComputeBackend => config.compute_backend.as_deref().unwrap_or("cpu"),
         SettingsSelectKind::Separator => config.separator(),
         SettingsSelectKind::SeparatorPreset => separator_preset(config),
@@ -2930,6 +2954,12 @@ pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig
 
 pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'static str {
     match kind {
+        SettingsSelectKind::UiLanguage => match value {
+            "en" => "English",
+            "zh-CN" => "简体中文",
+            "ja" => "日本語",
+            _ => "System default",
+        },
         SettingsSelectKind::ComputeBackend => compute_backend_label(value),
         SettingsSelectKind::Separator => separator_label(value),
         SettingsSelectKind::SeparatorPreset => match value {
@@ -2958,6 +2988,12 @@ pub(crate) fn settings_select_options(
     intel_backend: bool,
 ) -> &'static [(&'static str, &'static str)] {
     match kind {
+        SettingsSelectKind::UiLanguage => &[
+            ("system", "System default"),
+            ("en", "English"),
+            ("zh-CN", "简体中文"),
+            ("ja", "日本語"),
+        ],
         SettingsSelectKind::ComputeBackend => &[
             ("cpu", "CPU"),
             ("cuda", "NVIDIA CUDA"),

@@ -32,6 +32,13 @@ Durable product, audio, API, testing, and AI-agent rules live in
 [`docs/engineering-constraints.md`](docs/engineering-constraints.md) and the
 repository-level [`AGENTS.md`](AGENTS.md).
 
+## Documentation and localization
+
+- **[User guide / 用户说明书 / ユーザーガイド](docs/USER_GUIDE.md)** — installation, first-run setup, analysis, editing, export, backup, and troubleshooting in English, Simplified Chinese, and Japanese.
+- **[Internationalization guide](docs/I18N.md)** — locale resolution, catalog maintenance, dynamic messages, tests, and migration guidance.
+
+The native interface supports English, Simplified Chinese, and Japanese. Select the language in **Settings > General > Interface language**; English remains the fallback for untranslated copy.
+
 ## Build
 
 ```sh
