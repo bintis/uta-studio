@@ -336,13 +336,19 @@ fn spawn_track_card(
 
 /// Applies a typed singer name to the track it belongs to.
 pub(crate) fn sync_editor_singer_input(
-    inputs: Query<(&EditableText, &EditorSingerInput), Changed<EditableText>>,
+    inputs: Query<(Ref<EditableText>, &EditorSingerInput)>,
     mut session: ResMut<StudioSession>,
 ) {
     let Some(editor) = session.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {
+        // See `sync_editor_word_input`: `Changed<EditableText>` also fires on
+        // spawn, which would wrongly treat this card respawning (e.g. the
+        // active track changing) as the user having retyped the name.
+        if input.is_added() || !input.is_changed() {
+            continue;
+        }
         let text = input.value().to_string().trim().to_string();
         let current = editor
             .document

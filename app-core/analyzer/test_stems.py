@@ -19,9 +19,17 @@ else:
 
 
 class _FakeSeparator:
-    def __init__(self, model_file_dir: str, output_dir: str):
+    def __init__(
+        self,
+        model_file_dir: str,
+        output_dir: str,
+        normalization_threshold=None,
+        mdxc_params=None,
+    ):
         self.model_file_dir = model_file_dir
         self.output_dir = output_dir
+        self.normalization_threshold = normalization_threshold
+        self.mdxc_params = mdxc_params
         self.loaded_model = None
         self.input_path = None
 
@@ -82,6 +90,7 @@ class SeparateStemsTests(unittest.TestCase):
                             input_audio,
                             work_dir,
                             "/tmp/models",
+                            "cpu",
                         )
 
             ensure_wav_mock.assert_called_once_with(input_audio, work_dir)

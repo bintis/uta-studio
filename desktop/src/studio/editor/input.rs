@@ -37,13 +37,24 @@ pub(crate) fn handle_tap_release(
 }
 
 pub(crate) fn sync_editor_word_input(
-    inputs: Query<(&EditableText, &EditorWordInput), Changed<EditableText>>,
+    inputs: Query<(Ref<EditableText>, &EditorWordInput)>,
     mut session: ResMut<StudioSession>,
 ) {
     let Some(editor) = session.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {
+        // `Changed<EditableText>` also fires the instant the component is
+        // spawned — including every time this widget respawns for a
+        // *different* selection on a UI rebuild (e.g. right after Unbind
+        // reselects a freshly detached word). Reacting to that as "the user
+        // edited it" wrote the newly spawned widget's seed value back over
+        // whatever `current` had briefly become out of sync with by then,
+        // corrupting or blanking real text. Only a change to an
+        // already-existing entity is a genuine edit.
+        if input.is_added() || !input.is_changed() {
+            continue;
+        }
         let text = input.value().to_string();
         let current = selected_editor_word(&editor.document, marker.0)
             .map(|(text, _, _)| text)
@@ -90,9 +101,10 @@ pub(crate) fn handle_editor_wheel(
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if session.route != StudioRoute::Editor
-        || session.editor.as_ref().is_some_and(|editor| {
-            editor.problems_panel_open || editor.shortcuts_panel_open
-        })
+        || session
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.problems_panel_open || editor.shortcuts_panel_open)
     {
         wheel.clear();
         return;
@@ -307,7 +319,8 @@ pub(crate) fn handle_editor_pointer_capture(
             let pair = pressed_note
                 .and_then(|note_index| editor.selected_word.map(|word| (word, note_index)))
                 .or_else(|| {
-                    pressed_lyric.and_then(|word| editor.selected_note.map(|note_index| (word, note_index)))
+                    pressed_lyric
+                        .and_then(|word| editor.selected_note.map(|note_index| (word, note_index)))
                 });
             editor.checkpoint("Bind lyric to note");
             match pair.and_then(|(word, note_index)| {
@@ -329,8 +342,9 @@ pub(crate) fn handle_editor_pointer_capture(
             invalidated.0 = true;
             return;
         } else if unbind_held && (pressed_note.is_some() || pressed_lyric.is_some()) {
-            let note_index = pressed_note
-                .or_else(|| pressed_lyric.and_then(|word| editor_note_for_word(&editor.document, word)));
+            let note_index = pressed_note.or_else(|| {
+                pressed_lyric.and_then(|word| editor_note_for_word(&editor.document, word))
+            });
             editor.checkpoint("Unbind note");
             match note_index.and_then(|index| unbind_editor_note(&mut editor.document, index)) {
                 Some(freed) => {

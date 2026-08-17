@@ -108,9 +108,9 @@ pub(crate) fn spawn_editor(
             .find(|lyric| lyric.segment == word.segment && lyric.word == word.word && lyric.guided)
     } else {
         editor.selected_note.and_then(|note_index| {
-            lyrics
-                .iter()
-                .find(|lyric| lyric.note == note_index || lyric.continuation_notes.contains(&note_index))
+            lyrics.iter().find(|lyric| {
+                lyric.note == note_index || lyric.continuation_notes.contains(&note_index)
+            })
         })
     };
     let bound_notes: BTreeSet<usize> = selected_lyric
@@ -1844,8 +1844,7 @@ pub(crate) fn spawn_waveform_context_menu(
         BackgroundColor(Color::NONE),
         ZIndex(40),
     ));
-    let (left, top) =
-        clamp_menu_position(context.position, window_size, Vec2::new(190.0, 230.0));
+    let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(190.0, 230.0));
     parent
         .spawn((
             Node {
@@ -1865,13 +1864,20 @@ pub(crate) fn spawn_waveform_context_menu(
             ZIndex(41),
         ))
         .with_children(|menu| {
-            spawn_text(menu, font.clone(), "WAVEFORM TRACK", 8.0, theme.muted_foreground);
+            spawn_text(
+                menu,
+                font.clone(),
+                "WAVEFORM TRACK",
+                8.0,
+                theme.muted_foreground,
+            );
             for (label, source) in [
                 ("Instrumental", WaveformSource::Instrumental),
                 ("Vocals", WaveformSource::Vocals),
                 ("Original", WaveformSource::Original),
             ] {
-                let available = source != WaveformSource::Vocals || editor.chart.audio.vocals.is_some();
+                let available =
+                    source != WaveformSource::Vocals || editor.chart.audio.vocals.is_some();
                 let active = editor.waveform_source == source;
                 spawn_menu_check_row(
                     menu,
@@ -1891,7 +1897,13 @@ pub(crate) fn spawn_waveform_context_menu(
                 },
                 BackgroundColor(theme.border.with_alpha(0.5)),
             ));
-            spawn_text(menu, font.clone(), "WAVEFORM STYLE", 8.0, theme.muted_foreground);
+            spawn_text(
+                menu,
+                font.clone(),
+                "WAVEFORM STYLE",
+                8.0,
+                theme.muted_foreground,
+            );
             for (label, style) in [
                 ("Bars", WaveformStyle::Bars),
                 ("Filled", WaveformStyle::Filled),
@@ -1945,7 +1957,13 @@ pub(crate) fn spawn_menu_check_row(
         row.insert((Button, action));
     }
     row.with_children(|row| {
-        spawn_text(row, font.clone(), if active { "✓" } else { " " }, 10.0, color);
+        spawn_text(
+            row,
+            font.clone(),
+            if active { "✓" } else { " " },
+            10.0,
+            color,
+        );
         spawn_text(row, font, label, 10.0, color);
     });
 }
@@ -1965,7 +1983,8 @@ pub(crate) fn spawn_editor_lyrics(
         .map(|lyric| lyric.lane + 1)
         .max()
         .unwrap_or(1);
-    let lane_height = (14.0 + visible_lane_count as f32 * 26.0).clamp(46.0, 14.0 + MAX_LYRIC_LANES as f32 * 26.0);
+    let lane_height =
+        (14.0 + visible_lane_count as f32 * 26.0).clamp(46.0, 14.0 + MAX_LYRIC_LANES as f32 * 26.0);
     parent
         .spawn((
             Node {
@@ -2164,7 +2183,12 @@ pub(crate) fn spawn_editor_lyrics(
                               mut session: ResMut<StudioSession>,
                               mut invalidated: ResMut<UiInvalidated>| {
                             event.propagate(false);
-                            open_lyric_from_click(&event, selection, &mut session, &mut invalidated);
+                            open_lyric_from_click(
+                                &event,
+                                selection,
+                                &mut session,
+                                &mut invalidated,
+                            );
                         },
                     );
                 }
@@ -2243,8 +2267,7 @@ pub(crate) fn spawn_note_context_menu(
         ZIndex(40),
     ));
     let count = editor.selected_note_indices().len().max(1);
-    let (left, top) =
-        clamp_menu_position(context.position, window_size, Vec2::new(190.0, 280.0));
+    let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(190.0, 280.0));
     parent
         .spawn((
             Node {
@@ -2279,6 +2302,11 @@ pub(crate) fn spawn_note_context_menu(
                 height: px(3),
                 ..default()
             });
+            let selected_note_view = editor.selected_note.and_then(|index| {
+                chart_notes(&editor.document)
+                    .into_iter()
+                    .find(|note| note.index == index)
+            });
             if let Some(word) = context.continue_word
                 && let Some(note_index) = editor.selected_note
             {
@@ -2298,6 +2326,22 @@ pub(crate) fn spawn_note_context_menu(
                     },
                     BackgroundColor(theme.border.with_alpha(0.5)),
                 ));
+            }
+            // Only offered for a note with no lyric of its own yet — one
+            // that already has text (or continues an earlier one) is edited
+            // in place in the lyric lane instead.
+            if selected_note_view
+                .as_ref()
+                .is_some_and(|note| note.lyric.is_none() && !note.continues_lyric)
+            {
+                spawn_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    "Edit lyric",
+                    10.0,
+                    UiAction::Editor(EditorAction::EditNoteLyric),
+                );
             }
             spawn_text_button(
                 menu,
@@ -2363,10 +2407,37 @@ pub(crate) fn spawn_note_context_menu(
                 menu,
                 font.clone(),
                 theme,
-                "Cycle note type",
+                "Unbind from lyric",
                 10.0,
-                UiAction::Editor(EditorAction::CycleNoteKind),
+                UiAction::Editor(EditorAction::UnbindSelection),
             );
+            menu.spawn((
+                Node {
+                    height: px(1),
+                    margin: UiRect::vertical(px(3)),
+                    ..default()
+                },
+                BackgroundColor(theme.border.with_alpha(0.5)),
+            ));
+            spawn_text(menu, font.clone(), "TYPE", 8.0, theme.muted_foreground);
+            let current_kind = selected_note_view.as_ref().map(|note| note.kind);
+            for kind in [
+                app_core::NoteKind::Normal,
+                app_core::NoteKind::Golden,
+                app_core::NoteKind::Freestyle,
+                app_core::NoteKind::Rap,
+                app_core::NoteKind::GoldenRap,
+            ] {
+                spawn_menu_check_row(
+                    menu,
+                    font.clone(),
+                    theme,
+                    &kind.label().replace('_', " "),
+                    current_kind == Some(kind),
+                    true,
+                    UiAction::SetNoteKind(kind),
+                );
+            }
             menu.spawn((
                 Node {
                     height: px(1),
@@ -2433,8 +2504,7 @@ pub(crate) fn spawn_lyric_context_menu(
         ZIndex(40),
     ));
     let word_count = editor.selected_word_indices().len().max(1);
-    let (left, top) =
-        clamp_menu_position(context.position, window_size, Vec2::new(200.0, 280.0));
+    let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(200.0, 280.0));
     parent
         .spawn((
             Node {
@@ -2710,11 +2780,12 @@ pub(crate) fn update_editor_binding_guides(
     session: Res<StudioSession>,
     mut guides: Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>,
 ) {
-    let hide = |guides: &mut Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>| {
-        for (_, mut node) in guides.iter_mut() {
-            node.display = Display::None;
-        }
-    };
+    let hide =
+        |guides: &mut Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>| {
+            for (_, mut node) in guides.iter_mut() {
+                node.display = Display::None;
+            }
+        };
     let Some(editor) = session.editor.as_ref() else {
         hide(&mut guides);
         return;

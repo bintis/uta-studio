@@ -599,6 +599,13 @@ pub fn build_usdx_song(path: &Path, cache: &CacheDir) -> Result<Song, UtaStudioE
         &transcript_path,
         serde_json::to_string_pretty(&transcript_json)?,
     )?;
+    // §4.4: USDX import doesn't go through the Python pipeline's
+    // `chart.build_candidate` either, so it must also write the dedicated
+    // TimedTranscript artifact itself, matching `lyrics.rs::write_transcript_json`.
+    std::fs::write(
+        cache.timed_transcript_path(&file_hash),
+        serde_json::to_string_pretty(&transcript_json)?,
+    )?;
     let (pitch_track, pitch_notes) = synthesize_pitch_assets(&file);
     std::fs::write(
         cache.pitch_track_path(&file_hash),

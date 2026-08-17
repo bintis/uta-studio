@@ -801,7 +801,15 @@ pub(crate) fn chart_pitch_frames(chart: &app_core::ChartDocument) -> Vec<ChartPi
 const EDITOR_BEAT_GRID_MIN_CONFIDENCE: f64 = 0.15;
 
 fn load_editor_beats(file_hash: &str) -> Vec<f64> {
-    app_core::load_music_analysis(&app_core::CacheDir::new(), file_hash)
+    // `try_new` (not `new`, which panics if the cache directory can't be
+    // created) -- same "missing data reads as nothing to draw" philosophy
+    // this function already documents above applies here too: a cache
+    // directory that can't be created is just another reason to skip the
+    // beat grid, not a reason to crash the whole editor.
+    let Some(cache) = app_core::CacheDir::try_new() else {
+        return Vec::new();
+    };
+    app_core::load_music_analysis(&cache, file_hash)
         .filter(|analysis| {
             analysis.rhythm.bpm.is_some()
                 && analysis.rhythm.confidence >= EDITOR_BEAT_GRID_MIN_CONFIDENCE

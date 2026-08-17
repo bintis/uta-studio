@@ -7,7 +7,7 @@ from audio import detect_vocal_region, highpass_filter, normalize_rms
 from gpu import gpu_model, hard_free_gpu
 from hallucination import is_hallucination, remove_hallucinated_words
 from language import detect_language_multiwindow
-from whisper_compat import progress, align_with_fallback, get_align_backend
+from whisper_compat import progress, progress_node, align_with_fallback, get_align_backend
 
 
 def transcribe_vocals(
@@ -40,12 +40,12 @@ def transcribe_vocals(
     if device in ("mps", "xpu"):
         device = "cpu"
 
-    progress(55, f"Loading audio ({vocals_path})...")
+    progress_node("lyrics.preprocess", "node_started", 55, f"Loading audio ({vocals_path})...")
     full_audio = whisperx.load_audio(vocals_path)
     duration_secs = len(full_audio) / 16000
     print(f"[uta-studio:LOG] Audio loaded: {len(full_audio)} samples ({duration_secs:.1f}s) from {vocals_path}", flush=True)
 
-    progress(56, "Detecting vocal region...")
+    progress_node("lyrics.preprocess", "node_progress", 56, "Detecting vocal region...")
     vocal_start, vocal_end = detect_vocal_region(full_audio)
     trim_start_samples = int(vocal_start * 16000)
     trim_end_samples = int(vocal_end * 16000)
@@ -56,6 +56,7 @@ def transcribe_vocals(
     audio = highpass_filter(audio)
     audio = normalize_rms(audio)
     print(f"[uta-studio:LOG] Settings: engine={engine}, model={model_name}, beam_size={beam_size}, batch_size={batch_size}", flush=True)
+    progress_node("lyrics.preprocess", "node_completed", 57, "Vocal-region preprocessing complete")
 
     if engine == "parakeet":
         payload, language, engine_used = _transcribe_parakeet_or_fallback(
@@ -157,9 +158,25 @@ def _build_result_from_raw_segments(
 
     raw_segments = _filter_hallucinations(raw_segments, duration_secs)
 
+    # Sentence-level ASR output, captured before wav2vec2 forced alignment
+    # refines it into word-level timing below. This is the real
+    # `recognized_text` artifact (app-core/src/analysis_graph.rs's
+    # `lyrics.transcribe -> [RecognizedText, AsrSegments]` edge) --
+    # `pipeline.py::run_transcription` pops this transient key off before
+    # the result flows any further, so it never reaches `transcript.json`.
+    pre_alignment_segments = [
+        {
+            "text": seg.get("text", ""),
+            "start": seg.get("start", 0.0),
+            "end": seg.get("end", 0.0),
+        }
+        for seg in raw_segments
+    ]
+
     progress(75, f"Language: {language}")
     result = _align_and_build(raw_segments, full_audio, language, device, pre_align_cleanup)
     result["source"] = "generated"
+    result["_pre_alignment_segments"] = pre_alignment_segments
     return result
 
 

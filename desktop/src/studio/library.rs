@@ -40,9 +40,9 @@ impl LibraryView {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::All => "Song Library",
-            Self::Queue => "Analysis Queue",
+            Self::Queue => "Analysis",
             Self::Completed => "Completed Charts",
-            Self::Videos => "Video Library",
+            Self::Videos => "Video",
             Self::Artists => "Artists",
             Self::Albums => "Albums",
         }
@@ -2177,6 +2177,35 @@ pub(crate) fn play_library_song(
     Ok(())
 }
 
+/// §7.6 "Play audio artifact": plays one artifact revision's file (a
+/// vocal/instrumental stem at whichever revision the user picked) through
+/// the same player `play_library_song` uses, but as a one-off preview
+/// outside the library queue -- `playback.file_hash`/`queue`/`queue_index`
+/// are cleared rather than repurposed, since this isn't "now playing this
+/// song," it's "now previewing this artifact revision."
+pub(crate) fn play_artifact_revision(
+    audio: &uta_studio_audio::EditorAudioPlayer,
+    path: &std::path::Path,
+    playback: &mut LibraryPlayback,
+) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("Artifact file is unavailable: {}", path.display()));
+    }
+    audio.load_path(path)?;
+    audio.set_volume(playback.volume)?;
+    let status = audio.play()?;
+    if let Some(error) = status.error.as_ref() {
+        return Err(format!("Could not play this artifact: {error}"));
+    }
+    playback.file_hash = None;
+    playback.queue.clear();
+    playback.queue_index = None;
+    playback.visible_position = status.position_secs;
+    playback.status = status;
+    playback.last_audio_sync = Instant::now();
+    Ok(())
+}
+
 pub(crate) fn prepare_library_queue(
     songs: &[Song],
     file_hash: &str,
@@ -2485,6 +2514,100 @@ pub(crate) fn reveal_library_entry(path: &std::path::Path, config: &AppConfig) -
     }
 }
 
+/// Same authorization shape as `validate_source_path`, scoped to the app's
+/// own generated-cache root instead of the user's configured library
+/// folders -- artifact revisions live under the cache root, never a
+/// library folder, so reusing `validate_source_path` would always reject
+/// them.
+pub(crate) fn validate_cache_path(
+    path: &std::path::Path,
+    cache_root: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let requested = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+    let root = std::fs::canonicalize(cache_root).map_err(|error| error.to_string())?;
+    requested
+        .starts_with(&root)
+        .then_some(requested)
+        .ok_or_else(|| "This item is outside the app's cache directory".to_string())
+}
+
+/// §7.6/§6.3 "Open Artifact" -- the artifact-revision counterpart of
+/// `open_library_entry`, scoped to the cache root instead of the user's
+/// library folders via the same `validate_cache_path` check
+/// `reveal_artifact_entry` already uses. Opens the artifact file itself
+/// (whatever the OS's default handler for its extension is), not its
+/// containing folder.
+pub(crate) fn open_artifact_entry(path: &std::path::Path) -> String {
+    let cache_root = app_core::CacheDir::new().path;
+    match validate_cache_path(path, &cache_root) {
+        Ok(path) => match open::that_detached(&path) {
+            Ok(()) => format!("Opened {}", path.display()),
+            Err(error) => format!("Could not open {}: {error}", path.display()),
+        },
+        Err(error) => format!("Could not open this artifact: {error}"),
+    }
+}
+
+/// §7.6 "Preview": a bounded, in-app text preview for a JSON/text artifact
+/// (transcript, pitch data, music analysis -- everything but the audio
+/// stems, which already have "Play" for exactly this purpose). Reads at
+/// most `PREVIEW_BYTE_LIMIT` bytes rather than the whole file -- some
+/// artifacts (pitch tracks) can be large, and this is a quick look, not an
+/// editor. Same `validate_cache_path` boundary as `open_artifact_entry`/
+/// `reveal_artifact_entry`.
+const PREVIEW_BYTE_LIMIT: usize = 4000;
+
+pub(crate) fn preview_artifact_entry(path: &std::path::Path) -> String {
+    let cache_root = app_core::CacheDir::new().path;
+    let validated = match validate_cache_path(path, &cache_root) {
+        Ok(path) => path,
+        Err(error) => return format!("Could not preview this artifact: {error}"),
+    };
+    let bytes = match std::fs::read(&validated) {
+        Ok(bytes) => bytes,
+        Err(error) => return format!("Could not read {}: {error}", validated.display()),
+    };
+    format_artifact_preview(&validated, &bytes)
+}
+
+/// Testable core of `preview_artifact_entry`, separated from the real
+/// `CacheDir`/filesystem read so the truncation/byte-count formatting can
+/// be tested without a real cache root or on-disk fixture.
+fn format_artifact_preview(path: &std::path::Path, bytes: &[u8]) -> String {
+    let total_len = bytes.len();
+    let truncated = total_len > PREVIEW_BYTE_LIMIT;
+    let shown = &bytes[..total_len.min(PREVIEW_BYTE_LIMIT)];
+    let text = String::from_utf8_lossy(shown);
+    if truncated {
+        format!(
+            "{} ({total_len} bytes, showing first {PREVIEW_BYTE_LIMIT}):\n{text}…",
+            path.display()
+        )
+    } else {
+        format!("{} ({total_len} bytes):\n{text}", path.display())
+    }
+}
+
+pub(crate) fn reveal_artifact_entry(path: &std::path::Path) -> String {
+    let cache_root = app_core::CacheDir::new().path;
+    match validate_cache_path(path, &cache_root) {
+        Ok(path) => {
+            let target = if path.is_dir() {
+                path.as_path()
+            } else if let Some(parent) = path.parent() {
+                parent
+            } else {
+                path.as_path()
+            };
+            match open::that_detached(target) {
+                Ok(()) => format!("Revealed {}", path.display()),
+                Err(error) => format!("Could not reveal {}: {error}", path.display()),
+            }
+        }
+        Err(error) => format!("Could not reveal this artifact: {error}"),
+    }
+}
+
 pub(crate) fn export_song(
     file_hash: &str,
     extension: &str,
@@ -2635,5 +2758,119 @@ pub(crate) fn refresh_library_while_scanning(
     if session.meta.processed_count >= session.meta.count && session.meta.count > 0 {
         session.scanning = false;
         invalidated.0 = true;
+    }
+}
+
+#[cfg(test)]
+mod play_artifact_revision_tests {
+    //! §7.6 "Play audio artifact". `play_artifact_revision` itself drives
+    //! real playback hardware once past the existence check, which is out
+    //! of scope for a unit test (see `native-audio/examples/
+    //! playback_smoke_test.rs` for that level of verification) -- this just
+    //! locks the one thing safe to assert without real audio output: a
+    //! missing file is rejected before the player is ever touched.
+    use super::{LibraryPlayback, play_artifact_revision};
+
+    #[test]
+    fn a_missing_artifact_file_is_rejected_without_touching_the_player() {
+        let audio = uta_studio_audio::EditorAudioPlayer::new();
+        let mut playback = LibraryPlayback::default();
+        let missing =
+            std::env::temp_dir().join("uta-studio-play-artifact-test-does-not-exist.flac");
+
+        let result = play_artifact_revision(&audio, &missing, &mut playback);
+
+        assert!(result.is_err());
+        assert!(playback.file_hash.is_none());
+    }
+}
+
+#[cfg(test)]
+mod format_artifact_preview_tests {
+    //! §7.6 "Preview".
+    use super::{PREVIEW_BYTE_LIMIT, format_artifact_preview};
+    use std::path::Path;
+
+    #[test]
+    fn a_short_file_is_shown_in_full_with_its_byte_count() {
+        let copy = format_artifact_preview(Path::new("/cache/song_transcript.json"), b"{}");
+        assert!(copy.contains("(2 bytes)"));
+        assert!(copy.contains("{}"));
+        assert!(!copy.contains("showing first"));
+    }
+
+    #[test]
+    fn a_long_file_is_truncated_and_says_so() {
+        let bytes = vec![b'x'; PREVIEW_BYTE_LIMIT + 500];
+        let copy = format_artifact_preview(Path::new("/cache/song_pitch_track.json"), &bytes);
+        assert!(copy.contains(&format!("({} bytes", PREVIEW_BYTE_LIMIT + 500)));
+        assert!(copy.contains("showing first"));
+        // The shown content itself must actually be truncated, not just the
+        // label claiming it is -- count only the filler character, which
+        // appears nowhere else in the surrounding label text.
+        let shown_x_count = copy.matches('x').count();
+        assert!(shown_x_count <= PREVIEW_BYTE_LIMIT);
+        assert!(shown_x_count > 0);
+    }
+}
+
+#[cfg(test)]
+mod cache_path_tests {
+    use super::validate_cache_path;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "uta-studio-cache-path-test-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn a_file_inside_the_cache_root_is_accepted() {
+        let root = temp_dir("inside");
+        let file = root.join("song_transcript.json");
+        std::fs::write(&file, b"{}").unwrap();
+
+        assert!(validate_cache_path(&file, &root).is_ok());
+    }
+
+    #[test]
+    fn a_file_outside_the_cache_root_is_rejected() {
+        let root = temp_dir("outside-root");
+        let outsider_dir = temp_dir("outside-file");
+        let file = outsider_dir.join("not_cache.json");
+        std::fs::write(&file, b"{}").unwrap();
+
+        assert!(validate_cache_path(&file, &root).is_err());
+    }
+
+    #[test]
+    fn a_sibling_directory_that_shares_a_path_prefix_is_still_rejected() {
+        // Regression guard for the classic `starts_with` string-prefix trap:
+        // "/cache-evil" starts with the *string* "/cache" but is not really
+        // inside it.
+        let base = temp_dir("prefix-guard");
+        let root = base.join("cache");
+        let sibling = base.join("cache-evil");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let file = sibling.join("not_cache.json");
+        std::fs::write(&file, b"{}").unwrap();
+
+        assert!(validate_cache_path(&file, &root).is_err());
+    }
+
+    #[test]
+    fn a_nonexistent_path_is_rejected_rather_than_panicking() {
+        let root = temp_dir("nonexistent");
+        let missing = root.join("does_not_exist.json");
+
+        assert!(validate_cache_path(&missing, &root).is_err());
     }
 }

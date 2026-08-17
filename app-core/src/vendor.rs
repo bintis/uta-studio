@@ -409,13 +409,44 @@ fn mms_karaoke_alignment_model_ready() -> bool {
     )
 }
 
+/// Which separator/ASR/alignment models `model_install_statuses` should
+/// check readiness for. Extracted so status can be computed for a specific
+/// song's *resolved* config (global defaults overridden by
+/// `song_analysis_profile`, see `node_model_availability_for`) instead of
+/// only ever the process-global `AppConfig::load()` -- §8.6's real blocker
+/// (see docs/plan.md): computing a song's model availability by reading
+/// global config directly gets the wrong answer for any song whose profile
+/// overrides separator/asr_engine/align_backend.
+pub struct ModelAvailabilityParams<'a> {
+    pub backend: &'a str,
+    pub separator: &'a str,
+    pub align_backend: &'a str,
+    pub asr_engine: &'a str,
+    pub whisper_model: &'a str,
+}
+
 pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
     let config = crate::config::AppConfig::load();
-    let backend = configured_backend_name();
-    let whisper_model = config.whisper_model();
+    model_install_statuses_for(ModelAvailabilityParams {
+        backend: configured_backend_name(),
+        separator: config.separator(),
+        align_backend: config.align_backend(),
+        asr_engine: config.asr_engine(),
+        whisper_model: config.whisper_model(),
+    })
+}
+
+fn model_install_statuses_for(params: ModelAvailabilityParams) -> Vec<ModelInstallStatus> {
+    let ModelAvailabilityParams {
+        backend,
+        separator,
+        align_backend,
+        asr_engine,
+        whisper_model,
+    } = params;
     let mut models = Vec::new();
 
-    if backend == "intel" && config.asr_engine() == "whisper" {
+    if backend == "intel" && asr_engine == "whisper" {
         models.push(ModelInstallStatus {
             target: ModelDownloadTarget::OpenVinoWhisper,
             label: "OpenVINO Whisper large-v3-turbo".to_string(),
@@ -424,7 +455,7 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         });
     }
 
-    if config.asr_engine() == "parakeet" {
+    if asr_engine == "parakeet" {
         models.push(ModelInstallStatus {
             target: ModelDownloadTarget::Parakeet,
             label: "Parakeet v3 transcription".to_string(),
@@ -433,11 +464,11 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         });
     }
 
-    if config.asr_engine() == "parakeet" || backend == "intel" {
+    if asr_engine == "parakeet" || backend == "intel" {
         models.push(ModelInstallStatus {
             target: ModelDownloadTarget::WhisperLanguageDetection,
             label: "Whisper Tiny language detection".to_string(),
-            description: if config.asr_engine() == "parakeet" {
+            description: if asr_engine == "parakeet" {
                 "Detects the language before choosing Parakeet or the Whisper fallback.".to_string()
             } else {
                 "Detects the language before Intel OpenVINO Whisper transcription.".to_string()
@@ -449,7 +480,7 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
     models.push(ModelInstallStatus {
         target: ModelDownloadTarget::Whisper,
         label: format!("Whisper {whisper_model}"),
-        description: if config.asr_engine() == "parakeet" || backend == "intel" {
+        description: if asr_engine == "parakeet" || backend == "intel" {
             "Language and compatibility fallback used when the primary engine cannot run."
                 .to_string()
         } else {
@@ -458,7 +489,7 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         available: whisper_model_ready(whisper_model),
     });
 
-    let (label, description, available) = separator_model_status(config.separator());
+    let (label, description, available) = separator_model_status(separator);
     models.push(ModelInstallStatus {
         target: ModelDownloadTarget::Separator,
         label,
@@ -466,9 +497,7 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         available,
     });
 
-    if let Some((label, description, available)) =
-        qwen_alignment_model_status(config.align_backend())
-    {
+    if let Some((label, description, available)) = qwen_alignment_model_status(align_backend) {
         models.push(ModelInstallStatus {
             target: ModelDownloadTarget::Alignment,
             label,
@@ -480,7 +509,7 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
     models.push(ModelInstallStatus {
         target: ModelDownloadTarget::MmsKaraokeAlignment,
         label: "MMS Karaoke Japanese aligner".to_string(),
-        description: if config.align_backend() == "mms_karaoke" {
+        description: if align_backend == "mms_karaoke" {
             "Selected 1.26 GB Japanese karaoke alignment model (AGPL-3.0).".to_string()
         } else {
             "Optional 1.26 GB Japanese karaoke alignment model (AGPL-3.0); select MMS Karaoke in Analysis to use it."
@@ -496,6 +525,127 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
         available: pitch_model_path().is_file(),
     });
     models
+}
+
+/// Pure routing logic behind `node_model_availability_for`: given
+/// already-resolved readiness booleans for the individual models a specific
+/// asr_engine/backend/align_backend combination actually depends on, decides
+/// whether each analysis node's required model(s) are present. Split out
+/// from the real filesystem checks so this branching (which check(s) matter
+/// for which combination) is unit-testable without touching the real,
+/// process-global `models_dir()`.
+pub(crate) fn node_model_availability_from_checks(
+    separator_ready: bool,
+    pitch_ready: bool,
+    asr_engine: &str,
+    backend: &str,
+    primary_asr_model_ready: bool,
+    language_detector_ready: bool,
+    align_backend: &str,
+    align_model_ready: bool,
+) -> std::collections::BTreeMap<crate::analysis_graph::AnalysisNodeId, bool> {
+    use crate::analysis_graph::AnalysisNodeId;
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(AnalysisNodeId::new("stems.separate"), separator_ready);
+    map.insert(AnalysisNodeId::new("pitch.extract"), pitch_ready);
+
+    // Parakeet and Intel OpenVINO Whisper both also need the tiny Whisper
+    // language detector as a real prerequisite step (mirrors
+    // `model_install_statuses_for`'s own `asr_engine == "parakeet" ||
+    // backend == "intel"` condition) -- the plain CPU/CUDA Whisper path
+    // doesn't need a separate detector model, it detects language with the
+    // same model it transcribes with.
+    let transcribe_ready = if asr_engine == "parakeet" || backend == "intel" {
+        primary_asr_model_ready && language_detector_ready
+    } else {
+        primary_asr_model_ready
+    };
+    map.insert(AnalysisNodeId::new("lyrics.transcribe"), transcribe_ready);
+
+    // "whisperx"/"ctc" forced alignment resolve their wav2vec2 model
+    // per-language on demand (`cjk::align_model_for`) rather than one fixed
+    // model tracked up front -- `model_install_statuses` has never listed
+    // one for these two backends, so there is nothing to gate on here
+    // either; only the two backends with a single fixed, trackable model
+    // (qwen, mms_karaoke) can genuinely block the node.
+    let align_ready = match align_backend {
+        "qwen" | "mms_karaoke" => align_model_ready,
+        _ => true,
+    };
+    map.insert(AnalysisNodeId::new("lyrics.align"), align_ready);
+
+    map
+}
+
+/// Per-song model availability for `AnalysisRequest.model_availability`,
+/// resolved against `params` (the song's *effective* separator/asr_engine/
+/// align_backend/backend -- global defaults overridden by
+/// `song_analysis_profile`) rather than global `AppConfig`. This is the
+/// real §8.6 wiring: every prior call site left `model_availability` an
+/// empty `BTreeMap`, so `build_plan`'s "model missing -> Blocked" branch
+/// (`analysis_plan.rs`'s `model_available = ...unwrap_or(true)`) was
+/// unreachable in practice, not merely untested.
+pub fn node_model_availability_for(
+    params: &ModelAvailabilityParams,
+) -> std::collections::BTreeMap<crate::analysis_graph::AnalysisNodeId, bool> {
+    let separator_ready = separator_model_status(params.separator).2;
+    let pitch_ready = pitch_model_path().is_file();
+    let primary_asr_model_ready = if params.asr_engine == "parakeet" {
+        parakeet_model_ready(params.backend)
+    } else if params.backend == "intel" {
+        openvino_whisper_model_ready()
+    } else {
+        whisper_model_ready(params.whisper_model)
+    };
+    let language_detector_ready = whisper_model_ready("tiny");
+    let align_model_ready = match params.align_backend {
+        "qwen" => qwen_alignment_model_status(params.align_backend)
+            .map(|(_, _, ready)| ready)
+            .unwrap_or(true),
+        "mms_karaoke" => mms_karaoke_alignment_model_ready(),
+        _ => true,
+    };
+    node_model_availability_from_checks(
+        separator_ready,
+        pitch_ready,
+        params.asr_engine,
+        params.backend,
+        primary_asr_model_ready,
+        language_detector_ready,
+        params.align_backend,
+        align_model_ready,
+    )
+}
+
+/// Builds `ModelAvailabilityParams` from a song's resolved analysis profile
+/// (`song_analysis_profile`, already merged with global defaults by
+/// `get_song_analysis_profile`) plus the process-global compute backend --
+/// `compute_backend` (cuda/intel/cpu) and the specific Whisper model size
+/// are not among the fields `song_analysis_profile` can override (see
+/// `AnalysisProfileSnapshot`), so those two stay sourced from `AppConfig`
+/// while separator/asr_engine/align_backend come from the song's own
+/// profile. The real fix for §8.6: every caller used to build this from
+/// `AppConfig::load()` alone, silently ignoring a song's own profile.
+pub fn model_availability_params_for_profile(
+    profile: &crate::analysis_profile::AnalysisProfileSnapshot,
+) -> ModelAvailabilityParams<'_> {
+    let config = crate::config::AppConfig::load();
+    ModelAvailabilityParams {
+        backend: configured_backend_name(),
+        separator: &profile.separator,
+        align_backend: &profile.alignment_backend,
+        asr_engine: &profile.asr_engine,
+        whisper_model: match config.whisper_model() {
+            "tiny" => "tiny",
+            "base" => "base",
+            "small" => "small",
+            "medium" => "medium",
+            "large-v3" => "large-v3",
+            "large-v3-turbo" => "large-v3-turbo",
+            _ => "large-v3",
+        },
+    }
 }
 
 fn selected_models_status() -> (bool, Vec<String>, Vec<String>) {
@@ -1860,7 +2010,10 @@ fn step_install_packages_for_backend(
         Ok(output) if !output.status.success() => {
             on_output(format!(
                 "Essentia is unavailable on this platform; using built-in BPM/key detection instead. ({})",
-                String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or_default()
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or_default()
             ));
         }
         Err(e) => on_output(format!(
@@ -2132,6 +2285,89 @@ pub fn refresh_analyzer_scripts_if_ready() -> Result<(), String> {
 pub fn mark_ready() -> Result<(), String> {
     std::fs::write(ready_marker(), expected_ready_marker())
         .map_err(|e| format!("Failed to mark ready: {e}"))
+}
+
+#[cfg(test)]
+mod node_model_availability_tests {
+    use super::node_model_availability_from_checks;
+    use crate::analysis_graph::AnalysisNodeId;
+
+    #[test]
+    fn separator_and_pitch_map_directly_to_their_own_node() {
+        let map = node_model_availability_from_checks(
+            false, true, "whisper", "cpu", true, true, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("stems.separate")], false);
+        assert_eq!(map[&AnalysisNodeId::new("pitch.extract")], true);
+    }
+
+    #[test]
+    fn plain_cpu_whisper_does_not_need_the_language_detector() {
+        // Whisper detects language with the same model it transcribes
+        // with -- unlike parakeet/intel, which need a separate tiny model
+        // first. A missing (false) detector must not block this path.
+        let map = node_model_availability_from_checks(
+            true, true, "whisper", "cpu", true, false, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], true);
+    }
+
+    #[test]
+    fn parakeet_requires_both_its_own_model_and_the_language_detector() {
+        let map = node_model_availability_from_checks(
+            true, true, "parakeet", "cuda", true, false, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+
+        let map = node_model_availability_from_checks(
+            true, true, "parakeet", "cuda", true, true, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], true);
+    }
+
+    #[test]
+    fn intel_backend_requires_the_language_detector_regardless_of_asr_engine() {
+        let map = node_model_availability_from_checks(
+            true, true, "whisper", "intel", true, false, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+    }
+
+    #[test]
+    fn missing_primary_asr_model_blocks_transcription_even_with_a_ready_detector() {
+        let map = node_model_availability_from_checks(
+            true, true, "parakeet", "cuda", false, true, "whisperx", true,
+        );
+        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+    }
+
+    #[test]
+    fn whisperx_and_ctc_alignment_are_never_blocked_by_a_missing_fixed_model() {
+        // Neither backend has one fixed, trackable model -- they resolve a
+        // per-language wav2vec2 model on demand, so `align_model_ready` must
+        // simply be ignored for them, not used as a gate.
+        for backend in ["whisperx", "ctc"] {
+            let map = node_model_availability_from_checks(
+                true, true, "whisper", "cpu", true, true, backend, false,
+            );
+            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], true);
+        }
+    }
+
+    #[test]
+    fn qwen_and_mms_karaoke_alignment_are_blocked_when_their_model_is_missing() {
+        for backend in ["qwen", "mms_karaoke"] {
+            let map = node_model_availability_from_checks(
+                true, true, "whisper", "cpu", true, true, backend, false,
+            );
+            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], false);
+
+            let map = node_model_availability_from_checks(
+                true, true, "whisper", "cpu", true, true, backend, true,
+            );
+            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], true);
+        }
+    }
 }
 
 #[cfg(test)]

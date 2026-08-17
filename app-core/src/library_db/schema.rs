@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 6;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -91,8 +91,244 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON playlist_songs(playlist_id, position);
         CREATE INDEX IF NOT EXISTS idx_playlist_songs_song
             ON playlist_songs(song_id);
+
+        CREATE TABLE IF NOT EXISTS analysis_artifacts (
+            id TEXT PRIMARY KEY,
+            file_hash TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            producer_node TEXT NOT NULL,
+            input_revisions TEXT NOT NULL,
+            config_hash TEXT NOT NULL,
+            algorithm_version TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            byte_size INTEGER NOT NULL,
+            active INTEGER NOT NULL,
+            legacy INTEGER NOT NULL,
+            invalidated INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_song_kind
+            ON analysis_artifacts(file_hash, kind);
+        CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_active
+            ON analysis_artifacts(file_hash, kind, active);
+
+        CREATE TABLE IF NOT EXISTS song_analysis_profiles (
+            file_hash TEXT PRIMARY KEY,
+            profile_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        -- Phase 2/3 (docs/analysis-dag-redesign.md, phase plan §2.3): one
+        -- row per real node id that a completed/failed run's
+        -- `stage_routes` recorded (i.e. the emitting Python call site had
+        -- migrated to `progress_node`/`artifact_reused`; routes without a
+        -- node_id -- pre-Phase-3 call sites -- don't produce a row). A
+        -- separate `analysis_runs` table was in the original phase plan's
+        -- text, but `analysis_history` already fills that role (run id,
+        -- file hash, status, timing, error) and is already relied on
+        -- throughout the desktop UI -- duplicating it risked drifting the
+        -- two out of sync for no real benefit, so `run_id` here references
+        -- `analysis_history.id` directly instead.
+        CREATE TABLE IF NOT EXISTS analysis_node_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL REFERENCES analysis_history(id) ON DELETE CASCADE,
+            file_hash TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress INTEGER NOT NULL,
+            operation TEXT NOT NULL,
+            implementation TEXT NOT NULL,
+            model TEXT NOT NULL,
+            requested_device TEXT NOT NULL,
+            actual_device TEXT NOT NULL,
+            fallback_from TEXT,
+            fallback_reason TEXT,
+            backend_fallback_from TEXT,
+            backend_fallback_reason TEXT,
+            started_at_ms INTEGER,
+            finished_at_ms INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_node_attempts_run
+            ON analysis_node_attempts(run_id);
+        CREATE INDEX IF NOT EXISTS idx_analysis_node_attempts_song_node
+            ON analysis_node_attempts(file_hash, node_id);
         ",
     )?;
+    // SCHEMA_VERSION 4 -> 5: Phase 6 `invalidate_analysis_artifact` /
+    // Phase 7 §7.6 "Invalidate" needs a per-revision flag distinct from
+    // `active`/`legacy`. `analysis_artifacts` already existed for anyone
+    // upgrading from an earlier build, so (unlike every table above) a
+    // plain `CREATE TABLE IF NOT EXISTS` can't add this column to their
+    // existing rows -- `ALTER TABLE ADD COLUMN` is the first schema change
+    // in this codebase that isn't a brand new table, hence the explicit
+    // existence check (SQLite has no `ADD COLUMN IF NOT EXISTS`).
+    if !column_exists(conn, "analysis_artifacts", "invalidated")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_artifacts ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    // SCHEMA_VERSION 5 -> 6: Phase 7 "Duration 检查器字段" gap closed --
+    // per-node Start/Finish wall-clock timestamps
+    // (`server.py::_progress_payload`). Nullable (not `DEFAULT 0`, unlike
+    // `invalidated` above): 0 would read as a real Unix-epoch timestamp
+    // instead of "unknown," and every row recorded before this migration
+    // genuinely has no timing data to backfill.
+    if !column_exists(conn, "analysis_node_attempts", "started_at_ms")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_node_attempts ADD COLUMN started_at_ms INTEGER;
+             ALTER TABLE analysis_node_attempts ADD COLUMN finished_at_ms INTEGER;",
+        )?;
+    }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
     Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{column_exists, ensure_schema};
+    use rusqlite::Connection;
+
+    /// The real regression this guards: SCHEMA_VERSION 4 -> 5 added
+    /// `invalidated` to a table that already existed for anyone who
+    /// installed before this change -- `CREATE TABLE IF NOT EXISTS` is a
+    /// no-op against their already-created table, so without the explicit
+    /// `ALTER TABLE` migration their `analysis_artifacts` would silently
+    /// stay on the old shape forever and every `invalidate_artifact_
+    /// revision` call would fail with "no such column". This test
+    /// reproduces exactly that pre-migration state by hand (the old
+    /// `CREATE TABLE` shape, minus `invalidated`) before calling
+    /// `ensure_schema`, rather than trusting a fresh DB (which would pass
+    /// even if the `ALTER TABLE` step were silently deleted).
+    #[test]
+    fn ensure_schema_adds_the_invalidated_column_to_a_pre_existing_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE analysis_artifacts (
+                id TEXT PRIMARY KEY,
+                file_hash TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                producer_node TEXT NOT NULL,
+                input_revisions TEXT NOT NULL,
+                config_hash TEXT NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                byte_size INTEGER NOT NULL,
+                active INTEGER NOT NULL,
+                legacy INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analysis_artifacts (
+                id, file_hash, kind, path, content_hash, producer_node,
+                input_revisions, config_hash, algorithm_version, created_at_ms,
+                byte_size, active, legacy
+             ) VALUES ('id1', 'hashA', 'vocal_stem', 'p', 'c', 'n', '[]', 'cfg', '1', 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "analysis_artifacts", "invalidated").unwrap());
+
+        ensure_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "analysis_artifacts", "invalidated").unwrap());
+        let invalidated: i64 = conn
+            .query_row(
+                "SELECT invalidated FROM analysis_artifacts WHERE id = 'id1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            invalidated, 0,
+            "a pre-existing row must default to not-invalidated"
+        );
+    }
+
+    #[test]
+    fn ensure_schema_is_idempotent_when_the_column_already_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        // Calling it again (e.g. every time the app opens the DB) must not
+        // error on "duplicate column name".
+        ensure_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "analysis_artifacts", "invalidated").unwrap());
+    }
+
+    /// Same regression shape as the `invalidated` migration test above,
+    /// for SCHEMA_VERSION 5 -> 6 (`started_at_ms`/`finished_at_ms` on
+    /// `analysis_node_attempts`, Phase 7's Duration field).
+    #[test]
+    fn ensure_schema_adds_the_timing_columns_to_a_pre_existing_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Deliberately does *not* pre-create `analysis_history`: this
+        // connection never runs `configure()`, so `PRAGMA foreign_keys` is
+        // off and the FK reference below is never validated -- only
+        // `analysis_node_attempts`'s own pre-migration shape matters for
+        // this test. Pre-creating a minimal `analysis_history` here would
+        // itself be a trap: `ensure_schema`'s own `CREATE TABLE IF NOT
+        // EXISTS analysis_history` would then skip creating the *real*
+        // one, and its `CREATE INDEX ... (finished_at_ms DESC)` would fail
+        // against a fixture table missing that column.
+        conn.execute_batch(
+            "CREATE TABLE analysis_node_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                file_hash TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL,
+                operation TEXT NOT NULL,
+                implementation TEXT NOT NULL,
+                model TEXT NOT NULL,
+                requested_device TEXT NOT NULL,
+                actual_device TEXT NOT NULL,
+                fallback_from TEXT,
+                fallback_reason TEXT,
+                backend_fallback_from TEXT,
+                backend_fallback_reason TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analysis_node_attempts (
+                run_id, file_hash, node_id, status, progress, operation,
+                implementation, model, requested_device, actual_device
+             ) VALUES (1, 'hashA', 'pitch.extract', 'succeeded', 100, 'op', 'impl', 'model', 'cpu', 'cpu')",
+            [],
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "analysis_node_attempts", "started_at_ms").unwrap());
+
+        ensure_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "analysis_node_attempts", "started_at_ms").unwrap());
+        assert!(column_exists(&conn, "analysis_node_attempts", "finished_at_ms").unwrap());
+        let started_at_ms: Option<i64> = conn
+            .query_row(
+                "SELECT started_at_ms FROM analysis_node_attempts WHERE run_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            started_at_ms, None,
+            "a pre-existing row has no timing data to backfill"
+        );
+    }
 }

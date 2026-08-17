@@ -85,6 +85,7 @@ editor_actions! {
     SelectNextNote => "select_next_note",
     SelectPreviousNote => "select_previous_note",
     AddNote => "add_note",
+    EditNoteLyric => "edit_note_lyric",
     PlayNotePitch => "play_note_pitch",
     PlayNoteVocal => "play_note_vocal",
     ToggleTapMode => "toggle_tap_mode",
@@ -229,17 +230,16 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         }
         SelectAll | SelectNextNote | SelectPreviousNote => run_selection_action(action, ctx),
         ToggleTapMode | TapNote => run_tap_action(action, ctx),
-        AddNote | PlayNotePitch | PlayNoteVocal | DeleteSelection | SplitSelection
-        | MergeSelection | QuantizeNotes | DuplicateNotes | CopyNotes | CutNotes | PasteNotes
-        | CycleNoteKind | NudgeEarlier | NudgeLater | ShortenSelection | LengthenSelection
-        | RaisePitch | LowerPitch | RaisePitchOctave | LowerPitchOctave => {
+        AddNote | EditNoteLyric | PlayNotePitch | PlayNoteVocal | DeleteSelection
+        | SplitSelection | MergeSelection | QuantizeNotes | DuplicateNotes | CopyNotes
+        | CutNotes | PasteNotes | CycleNoteKind | NudgeEarlier | NudgeLater | ShortenSelection
+        | LengthenSelection | RaisePitch | LowerPitch | RaisePitchOctave | LowerPitchOctave => {
             run_note_action(action, ctx)
         }
         EditLyricLine | EditAllLyrics | AddLyric | DeleteLyrics | SplitLyrics | SyllabizeLyrics
-        | MergeLyrics
-        | ShiftLyricEarlier | ShiftLyricLater | LyricStartEarlier | LyricStartLater
-        | LyricEndEarlier | LyricEndLater | RollLyricsLeft | RollLyricsRight | SplitPhrase
-        | MergePhrase => run_lyric_action(action, ctx),
+        | MergeLyrics | ShiftLyricEarlier | ShiftLyricLater | LyricStartEarlier
+        | LyricStartLater | LyricEndEarlier | LyricEndLater | RollLyricsLeft | RollLyricsRight
+        | SplitPhrase | MergePhrase => run_lyric_action(action, ctx),
         BindNearest | UnbindSelection | ToggleBindAlignment => run_bind_action(action, ctx),
     }
 }
@@ -278,9 +278,8 @@ fn run_bind_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 }
                 None => {
                     editor.undo.pop();
-                    ctx.session.notice = Some(
-                        "No unpitched lyric and lyric-less note nearby to bind.".to_string(),
-                    );
+                    ctx.session.notice =
+                        Some("No unpitched lyric and lyric-less note nearby to bind.".to_string());
                 }
             }
         }
@@ -515,7 +514,10 @@ fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         SeekEnd => {
             if let Some(editor) = ctx.session.editor.as_ref() {
-                let end = editor.audio_status.duration_secs.max(editor.waveform.duration_secs);
+                let end = editor
+                    .audio_status
+                    .duration_secs
+                    .max(editor.waveform.duration_secs);
                 stop_audition(ctx);
                 ctx.seek(end);
                 ctx.invalidated.0 = true;
@@ -747,7 +749,8 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 }
             }
             let Some((start, end)) = span else {
-                ctx.session.notice = Some("Select notes or lyrics to fit them in view.".to_string());
+                ctx.session.notice =
+                    Some("Select notes or lyrics to fit them in view.".to_string());
                 ctx.invalidated.0 = true;
                 return;
             };
@@ -854,16 +857,40 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             // `handle_editor_pointer_capture`) places the note where the
             // pointer goes down and sizes it to the drag.
             editor.note_insert_armed = true;
-            ctx.session.notice =
-                Some("Click and drag on the canvas to place a note.".to_string());
+            ctx.session.notice = Some("Click and drag on the canvas to place a note.".to_string());
+            ctx.invalidated.0 = true;
+        }
+        EditNoteLyric => {
+            let Some(editor) = ctx.session.editor.as_mut() else {
+                return;
+            };
+            let Some(note_index) = editor.selected_note else {
+                ctx.session.notice = Some("Select a note to give it a lyric.".to_string());
+                ctx.invalidated.0 = true;
+                return;
+            };
+            editor.checkpoint(action.label());
+            match add_lyric_to_editor_note(&mut editor.document, note_index) {
+                Some(word) => {
+                    editor.select_only_word(word);
+                    editor.word_edit_focus = Some(word);
+                    editor.dirty = true;
+                    ctx.session.notice = Some("Type the syllable, then press Enter.".to_string());
+                }
+                None => {
+                    editor.undo.pop();
+                    ctx.session.notice = Some(
+                        "This note already has a lyric — edit it in the lyric lane.".to_string(),
+                    );
+                }
+            }
             ctx.invalidated.0 = true;
         }
         PlayNotePitch => {
             let Some(editor) = ctx.session.editor.as_ref() else {
                 return;
             };
-            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor)
-            else {
+            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor) else {
                 ctx.session.notice = Some("Select a note to play its pitch.".to_string());
                 ctx.invalidated.0 = true;
                 return;
@@ -881,8 +908,7 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             let Some(editor) = ctx.session.editor.as_ref() else {
                 return;
             };
-            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor)
-            else {
+            let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor) else {
                 ctx.session.notice = Some("Select a note to play its vocal.".to_string());
                 ctx.invalidated.0 = true;
                 return;
@@ -1307,7 +1333,11 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 .find(|lyric| {
                     editor.visible_position >= lyric.start && editor.visible_position < lyric.end
                 })
-                .or_else(|| lyrics.iter().find(|lyric| lyric.start >= editor.visible_position))
+                .or_else(|| {
+                    lyrics
+                        .iter()
+                        .find(|lyric| lyric.start >= editor.visible_position)
+                })
                 .or_else(|| lyrics.last())
                 .map(|lyric| WordSelection {
                     segment: lyric.segment,
@@ -1613,6 +1643,26 @@ pub(crate) fn handle_editor_ui_action(
         }
         UiAction::MoveSelectionToTrack(index) => {
             move_selection_to_track(EditorAction::MoveSelectionToNextTrack, *index, ctx);
+        }
+        UiAction::SetNoteKind(kind) => {
+            let Some(editor) = ctx.session.editor.as_mut() else {
+                return true;
+            };
+            let selected = editor.selected_note_indices();
+            if selected.is_empty() {
+                ctx.session.notice = Some("Select a note to change its type.".to_string());
+                ctx.invalidated.0 = true;
+                return true;
+            }
+            editor.checkpoint("Change note type");
+            let changed = editor.document.set_note_kind(&selected, *kind);
+            if changed > 0 {
+                editor.dirty = true;
+                ctx.session.notice = Some(format!("Set to {}.", kind.label().replace('_', " ")));
+            } else {
+                editor.undo.pop();
+            }
+            ctx.invalidated.0 = true;
         }
         UiAction::SelectEditorWord(segment, word, position_ms) => {
             let selection = WordSelection {

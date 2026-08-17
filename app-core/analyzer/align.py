@@ -7,7 +7,7 @@ import cjk
 from audio import detect_vocal_region
 from gpu import gpu_model
 from language import detect_language_multiwindow
-from whisper_compat import progress, align_device_for, compute_type_for, align_with_fallback, get_align_backend
+from whisper_compat import progress, progress_node, align_device_for, compute_type_for, align_with_fallback, get_align_backend
 
 
 def align_lyrics(
@@ -44,12 +44,14 @@ def align_lyrics(
         if text:
             clean_lines.append(text)
 
+    progress_node("lyrics.preprocess", "node_started", 55, f"Loading audio ({vocals_path})...")
     audio = whisperx.load_audio(vocals_path)
     duration_secs = len(audio) / 16000
     print(f"[uta-studio:LOG] Vocals audio loaded: {len(audio)} samples ({duration_secs:.1f}s)", flush=True)
 
-    progress(56, "Detecting vocal regions...")
+    progress_node("lyrics.preprocess", "node_progress", 56, "Detecting vocal regions...")
     vocal_start, vocal_end = detect_vocal_region(audio)
+    progress_node("lyrics.preprocess", "node_completed", 57, "Vocal-region preprocessing complete")
 
     a_device = align_device_for(device)
     c_type = compute_type_for(device)

@@ -123,7 +123,7 @@ pub(crate) fn spawn_song_settings_panel(
                         dialog,
                         font.clone(),
                         theme,
-                        "BPM",
+                        "Musical BPM",
                         SongSettingsBpmInput,
                         &panel.initial_bpm,
                     );
@@ -132,7 +132,7 @@ pub(crate) fn spawn_song_settings_panel(
                         dialog,
                         font.clone(),
                         format!(
-                            "Key: {} — use the key/tempo tool on this song to change it.",
+                            "Detected key: {} — use the Key transpose control on this song to change it.",
                             panel.key.as_deref().unwrap_or("Unknown")
                         ),
                         9.0,
@@ -207,12 +207,12 @@ pub(crate) fn spawn_song_settings_panel(
                         );
                         if let Some(bpm) = analysis.rhythm.bpm {
                             summary.push_str(&format!(
-                                " · BPM {bpm:.1} (confidence {:.2}) · {} beats detected",
+                                " · Musical BPM {bpm:.1} (confidence {:.2}) · {} beats detected",
                                 analysis.rhythm.confidence,
                                 analysis.rhythm.beats.len()
                             ));
                         } else {
-                            summary.push_str(" · Tempo unavailable");
+                            summary.push_str(" · Musical BPM unavailable");
                         }
                         if let Some(descriptors) = &analysis.descriptors {
                             summary.push_str(&format!(

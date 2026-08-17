@@ -1522,6 +1522,30 @@ impl EditorDocument {
         self.address_of_note(note_index)
     }
 
+    /// Gives `note_index` its own lyric text directly, right where the pitch
+    /// already is — no separate placeholder note and no follow-up "Bind"
+    /// step, unlike [`Self::insert_lyric`]. Only works on a note that
+    /// doesn't already carry a lyric of its own; a note with existing text
+    /// or a held continuation should be edited in place instead.
+    pub fn add_lyric_to_note(&mut self, note_index: usize) -> Option<LyricAddress> {
+        let (_, note) = self.note_at(note_index)?;
+        if !note.lyrics.is_empty() {
+            return None;
+        }
+        let join = self.default_join();
+        let id = self.allocate_id("lyric");
+        let note = self.note_at_mut(note_index)?;
+        note.lyrics.push(LyricToken::Text(LyricTextToken {
+            id,
+            text: "New lyric".into(),
+            join_before: join,
+            reading: None,
+            phonemes: None,
+        }));
+        self.touch();
+        self.address_of_note(note_index)
+    }
+
     /// Moves the lyric at `word` onto `note_index`, the format's way of
     /// attaching text to a pitch target that was authored separately. `word`'s
     /// own note must carry no pitch (a placeholder `insert_lyric` created for
@@ -1707,6 +1731,18 @@ impl EditorDocument {
         None
     }
 
+    /// The note within `phrase` that owns the text token `token_id` — the
+    /// reverse of walking a continuation chain forward from its head.
+    fn note_owning_token(&self, phrase: usize, token_id: &str) -> Option<usize> {
+        self.phrase_flat_range(phrase)?.find(|&index| {
+            self.note_at(index).is_some_and(|(_, note)| {
+                note.lyrics
+                    .iter()
+                    .any(|token| matches!(token, LyricToken::Text(text) if text.id == token_id))
+            })
+        })
+    }
+
     /// Binds the given selection (a lyric, a note, or both — one drives the
     /// search when only one is selected) to its nearest eligible counterpart
     /// in the same phrase. The toolbar button and the bare `B` shortcut use
@@ -1759,37 +1795,111 @@ impl EditorDocument {
     }
 
     /// Unbinds whichever note the selection names — directly, or through the
-    /// note a selected lyric belongs to.
+    /// note a selected lyric belongs to. When `word` names a specific token
+    /// on a note that carries more than one, that exact token — not just
+    /// whichever one the note-position lookup happens to land on — is what
+    /// comes back reselected.
     pub fn unbind_selected(
         &mut self,
         word: Option<LyricAddress>,
         note: Option<usize>,
     ) -> Option<LyricAddress> {
         let note_index = note.or_else(|| word.and_then(|word| self.resolve(word)))?;
-        self.unbind_note(note_index)
+        let preferred_token_id = word.and_then(|address| self.token_id_at(address));
+        self.unbind_note_preferring(note_index, preferred_token_id.as_deref())
     }
 
     /// Splits `note_index`'s pitch and lyric apart into two adjacent notes:
     /// the first half keeps the pitch, the second half becomes a new
     /// unpitched note carrying the lyric text. The inverse of
     /// [`Self::bind_lyric_to_note`].
+    ///
+    /// When `note_index` instead holds a *continuation* — one note among
+    /// several a syllable is held across (see
+    /// [`Self::extend_lyric_over_note`]) — there is nothing to split; the
+    /// note is detached from the chain instead, keeping its pitch and
+    /// getting its own independent copy of the syllable's text (a fresh
+    /// token, not shared with the head note it used to continue), so
+    /// detaching it never makes that text disappear. Only the chain's
+    /// current tail can be detached this way, since a syllable is only
+    /// ever extended onto the immediate next note; undoing it the same way
+    /// keeps the chain always contiguous instead of leaving a later note
+    /// orphaned mid-chain.
     pub fn unbind_note(&mut self, note_index: usize) -> Option<LyricAddress> {
+        self.unbind_note_preferring(note_index, None)
+    }
+
+    /// `preferred_token_id` names the specific lyric token the caller had
+    /// selected, when the note being split carries more than one — the
+    /// resulting address follows that token rather than an arbitrary one.
+    /// `None` (the plain [`Self::unbind_note`] entry point) falls back to
+    /// the note's first token, deterministically.
+    fn unbind_note_preferring(
+        &mut self,
+        note_index: usize,
+        preferred_token_id: Option<&str>,
+    ) -> Option<LyricAddress> {
+        let (phrase, note) = self.note_at(note_index)?;
+        if let Some(LyricToken::Continuation { continuation_of }) = note.lyrics.first() {
+            let token_id = continuation_of.clone();
+            let is_tail = !matches!(
+                self.note_at(note_index + 1),
+                Some((next_phrase, next_note))
+                    if next_phrase == phrase
+                        && next_note.lyrics.iter().any(|token| matches!(
+                            token,
+                            LyricToken::Continuation { continuation_of } if *continuation_of == token_id
+                        ))
+            );
+            if !is_tail {
+                return None;
+            }
+            let source_text = self
+                .note_owning_token(phrase, &token_id)
+                .and_then(|owner| self.note_at(owner))
+                .and_then(|(_, owner_note)| {
+                    owner_note.lyrics.iter().find_map(|token| match token {
+                        LyricToken::Text(text) if text.id == token_id => Some(text.clone()),
+                        _ => None,
+                    })
+                });
+            let new_id = self.allocate_id("lyric");
+            let detached_note = self.note_at_mut(note_index)?;
+            detached_note.lyrics = match source_text {
+                Some(mut text) => {
+                    text.id = new_id;
+                    vec![LyricToken::Text(text)]
+                }
+                // The head's text somehow no longer carries this token
+                // (only reachable from a chart a repair already had to
+                // touch) — detach cleanly rather than invent placeholder
+                // text.
+                None => Vec::new(),
+            };
+            self.touch();
+            return self.address_of_note(note_index);
+        }
+
         let minimum = self.min_duration();
-        let mut flat = self.take_flat();
-        let eligible = flat.get(note_index).is_some_and(|entry| {
-            entry.note.pitch.is_some()
-                && !entry.note.lyrics.is_empty()
-                && entry.note.duration >= minimum * 2
-                && entry
-                    .note
-                    .lyrics
-                    .iter()
-                    .all(|token| matches!(token, LyricToken::Text(_)))
-        });
+        let eligible = note.pitch.is_some()
+            && !note.lyrics.is_empty()
+            && note.duration >= minimum * 2
+            && note
+                .lyrics
+                .iter()
+                .all(|token| matches!(token, LyricToken::Text(_)));
         if !eligible {
-            self.restore_flat(flat);
+            // Nothing has been touched yet — a plain `None` return, not a
+            // take/restore round-trip through `flat`. `unbind_note`'s
+            // callers checkpoint before calling and discard that checkpoint
+            // on `None`; if this validation ran after a mutating
+            // take_flat/restore_flat pair (as it used to), that discarded
+            // checkpoint would be the only record of a structural change
+            // (and a revision bump) the document had already undergone.
             return None;
         }
+
+        let mut flat = self.take_flat();
         let FlatNote { phrase, mut note } = flat.remove(note_index);
         let lyrics = std::mem::take(&mut note.lyrics);
         let start = note.start;
@@ -1809,12 +1919,37 @@ impl EditorDocument {
             },
             lyrics,
         };
+        // Resolved by stable token id, not by re-deriving a note position
+        // after the split: `text_note` can carry more than one lyric token
+        // (the eligibility check above only requires all-Text, not
+        // exactly-one), and a note-position lookup can't tell them apart —
+        // it would just hand back whichever one it happens to land on.
+        let target_token_id = text_note
+            .lyrics
+            .iter()
+            .filter_map(|token| match token {
+                LyricToken::Text(text) => Some(text.id.as_str()),
+                LyricToken::Continuation { .. } => None,
+            })
+            .find(|id| Some(*id) == preferred_token_id)
+            .or_else(|| {
+                text_note.lyrics.iter().find_map(|token| match token {
+                    LyricToken::Text(text) => Some(text.id.as_str()),
+                    LyricToken::Continuation { .. } => None,
+                })
+            })
+            .map(str::to_owned);
         flat.insert(note_index, FlatNote { phrase, note });
-        flat.insert(note_index + 1, FlatNote { phrase, note: text_note });
+        flat.insert(
+            note_index + 1,
+            FlatNote {
+                phrase,
+                note: text_note,
+            },
+        );
         self.restore_flat(flat);
         self.reassign_duplicate_note_ids();
-        self.touch();
-        self.address_of_note(note_index + 1)
+        target_token_id.and_then(|id| self.address_of_token(phrase, &id))
     }
 
     fn address_of_note(&self, note: usize) -> Option<LyricAddress> {
@@ -1827,6 +1962,50 @@ impl EditorDocument {
                 segment: phrase,
                 word,
             })
+    }
+
+    /// The stable id of the specific lyric token `address` names, distinct
+    /// from `resolve`'s note index — a note can carry several tokens, and
+    /// the id is what survives a restructure (a note split, a reassembled
+    /// flat list) that a `(segment, word)` position does not.
+    fn token_id_at(&self, address: LyricAddress) -> Option<String> {
+        let note = self.resolve(address)?;
+        let ordinal = self
+            .phrase_tokens(address.segment)
+            .into_iter()
+            .take_while(|(word, _)| *word < address.word)
+            .filter(|(_, candidate)| *candidate == note)
+            .count();
+        self.note_at(note)?
+            .1
+            .lyrics
+            .iter()
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => Some(token),
+                LyricToken::Continuation { .. } => None,
+            })
+            .nth(ordinal)
+            .map(|token| token.id.clone())
+    }
+
+    /// The current `LyricAddress` of the token identified by `token_id`,
+    /// wherever it now lives in `phrase` — the inverse of `token_id_at`,
+    /// used to reselect a token by identity after a restructure moved it
+    /// instead of guessing from a note position.
+    fn address_of_token(&self, phrase: usize, token_id: &str) -> Option<LyricAddress> {
+        let entry = self.active_track()?.phrases.get(phrase)?;
+        let mut word = 0usize;
+        for note in &entry.notes {
+            for token in &note.lyrics {
+                if let LyricToken::Text(text) = token {
+                    if text.id == token_id {
+                        return Some(LyricAddress { segment: phrase, word });
+                    }
+                    word += 1;
+                }
+            }
+        }
+        None
     }
 
     /// Removes a lyric token. The owning note stays: deleting a syllable must
@@ -2753,7 +2932,10 @@ mod tests {
         document.split_notes(&selection(&[0]), 0.5);
         let lyrics = document.lyrics();
         assert_eq!(
-            lyrics.iter().map(|lyric| lyric.text.as_str()).collect::<Vec<_>>(),
+            lyrics
+                .iter()
+                .map(|lyric| lyric.text.as_str())
+                .collect::<Vec<_>>(),
             ["me", "ru"],
             "the second syllable must survive the split, not disappear"
         );
@@ -2772,7 +2954,13 @@ mod tests {
     fn unbind_splits_pitch_and_lyric_into_adjacent_notes() {
         let mut document = document(&[(0.0, 1.0, 60, "hi")]);
         let freed = document.unbind_note(0).expect("unbind");
-        assert_eq!(freed, LyricAddress { segment: 0, word: 0 });
+        assert_eq!(
+            freed,
+            LyricAddress {
+                segment: 0,
+                word: 0
+            }
+        );
         let notes = document.notes();
         assert_eq!(notes.len(), 2);
         assert!(notes[0].pitched);
@@ -2784,6 +2972,115 @@ mod tests {
     }
 
     #[test]
+    fn unbind_of_a_note_with_two_syllables_defaults_to_the_first_one() {
+        let mut document = document(&[(0.0, 1.0, 60, "me")]);
+        // Two short syllables sharing one note (same shape as
+        // `splitting_a_note_with_two_syllables_keeps_both_instead_of_dropping_the_second`).
+        document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-1".into(),
+                text: "me".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-2".into(),
+                text: "ru".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+        ];
+        // Both syllables move onto the same new unpitched note, so the
+        // note itself can't distinguish them — only the returned address's
+        // `word` can. The plain note-only entry point has no specific
+        // token to prefer; it must still resolve to a real, deterministic
+        // one (the first) rather than whichever one a stale position
+        // search happens to land on.
+        let freed = document.unbind_note(0).expect("unbind");
+        assert_eq!(
+            freed,
+            LyricAddress {
+                segment: 0,
+                word: 0
+            }
+        );
+        assert_eq!(document.lyrics()[freed.word].text, "me");
+    }
+
+    #[test]
+    fn unbind_selected_keeps_the_specific_syllable_that_was_selected() {
+        let mut document = document(&[(0.0, 1.0, 60, "me")]);
+        document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-1".into(),
+                text: "me".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+            LyricToken::Text(LyricTextToken {
+                id: "lyric-2".into(),
+                text: "ru".into(),
+                join_before: LyricJoin::None,
+                reading: None,
+                phonemes: None,
+            }),
+        ];
+        // The user had the *second* syllable selected, not the note as a
+        // whole — unbinding must reselect that same syllable, not just
+        // whichever token a note-position lookup happens to land on.
+        let selected = LyricAddress {
+            segment: 0,
+            word: 1,
+        };
+        let freed = document
+            .unbind_selected(Some(selected), None)
+            .expect("unbind");
+        assert_eq!(document.lyrics()[freed.word].text, "ru");
+    }
+
+    #[test]
+    fn unbind_selected_by_lyric_alone_keeps_the_text_the_same_as_unbind_by_note() {
+        // The common single-syllable case, unbound through the *lyric*
+        // selection path (`word: Some(_), note: None`) instead of the note
+        // path `unbind_note` already covers -- must behave identically, not
+        // just for a note carrying more than one syllable.
+        let mut document = document(&[(0.0, 1.0, 60, "hi")]);
+        let word = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        let freed = document
+            .unbind_selected(Some(word), None)
+            .expect("unbind");
+        let notes = document.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].pitched);
+        assert!(notes[0].lyric.is_none());
+        assert!(!notes[1].pitched);
+        assert_eq!(notes[1].lyric.as_deref(), Some("hi"));
+        assert_eq!(document.lyrics()[freed.word].text, "hi");
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn a_failed_unbind_leaves_the_document_untouched() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 0,
+        });
+        let before = document.revision();
+        // A note with no lyric can't be unbound — and rejecting it must not
+        // itself count as a document change (no take/restore round-trip
+        // that bumps the revision on the way to returning `None`).
+        assert!(document.unbind_note(0).is_none());
+        assert_eq!(document.revision(), before);
+    }
+
+    #[test]
     fn dragging_an_unpitched_note_gives_it_pitch_and_promotes_it_to_a_scored_note() {
         let mut document = document(&[(0.0, 1.0, 60, "hi")]);
         let freed = document.unbind_note(0).expect("unbind");
@@ -2792,7 +3089,11 @@ mod tests {
         // dragging it in the pitch canvas should currently do nothing.
         let before = document.notes();
         assert!(!before[index].pitched);
-        assert_eq!(before[index].kind, NoteKind::Rap, "reads as unpitched rap/spoken");
+        assert_eq!(
+            before[index].kind,
+            NoteKind::Rap,
+            "reads as unpitched rap/spoken"
+        );
         assert!(before[index].placeholder, "unclassified until triaged");
 
         let (start, end) = (before[index].start, before[index].end);
@@ -2812,7 +3113,11 @@ mod tests {
         );
         // A lyric this note owns is guided now that it has a pitch target.
         let lyrics = document.lyrics();
-        assert!(lyrics.iter().any(|lyric| lyric.text == "hi" && lyric.guided));
+        assert!(
+            lyrics
+                .iter()
+                .any(|lyric| lyric.text == "hi" && lyric.guided)
+        );
     }
 
     #[test]
@@ -2825,7 +3130,10 @@ mod tests {
     #[test]
     fn unbind_refuses_a_note_with_no_lyric() {
         let mut document = document(&[(0.0, 1.0, 60, "a")]);
-        document.delete_lyric(LyricAddress { segment: 0, word: 0 });
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 0,
+        });
         assert!(document.unbind_note(0).is_none());
     }
 
@@ -2901,6 +3209,81 @@ mod tests {
         // onto would be note 2 — offered by the lyric's own right-click menu
         // without a separate right-click on that note.
         assert_eq!(document.next_extendable_note(hi), None);
+    }
+
+    #[test]
+    fn unbind_detaches_a_continuation_note_from_its_held_syllable() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi"), (1.0, 2.0, 62, "there")]);
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 1,
+        });
+        let hi = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        assert!(document.extend_lyric_over_note(hi, 1));
+
+        let freed = document.unbind_note(1).expect("detach the continuation");
+        assert_eq!(
+            freed,
+            LyricAddress {
+                segment: 0,
+                word: 1
+            },
+            "selects the detached note's own new independent copy"
+        );
+        let notes = document.notes();
+        assert_eq!(
+            notes.len(),
+            2,
+            "nothing was split off; the note keeps its pitch"
+        );
+        assert!(notes[1].pitched);
+        // The detach must never make the syllable's text disappear — the
+        // detached note gets its own independent copy of it.
+        assert_eq!(notes[1].lyric.as_deref(), Some("hi"));
+        assert!(!notes[1].continues_lyric);
+        assert_eq!(
+            notes[0].lyric.as_deref(),
+            Some("hi"),
+            "the head keeps its own copy too"
+        );
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn unbind_refuses_a_continuation_note_that_is_not_the_chains_tail() {
+        let mut document = document(&[
+            (0.0, 1.0, 60, "hi"),
+            (1.0, 2.0, 62, "there"),
+            (2.0, 3.0, 64, "you"),
+        ]);
+        let hi = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        // Deleted back to front so the second delete's word index isn't
+        // thrown off by the first one shifting later words down.
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 2,
+        });
+        document.delete_lyric(LyricAddress {
+            segment: 0,
+            word: 1,
+        });
+        assert!(document.extend_lyric_over_note(hi, 1));
+        assert!(document.extend_lyric_over_note(hi, 2));
+
+        // Note 1 is the middle of the chain (note 2 continues past it);
+        // detaching it would strand note 2, so it's refused. The tail,
+        // note 2, can be detached.
+        assert!(document.unbind_note(1).is_none());
+        assert!(document.unbind_note(2).is_some());
+        let notes = document.notes();
+        assert!(!notes[2].continues_lyric);
+        assert!(notes[1].continues_lyric, "the middle note is untouched");
     }
 
     #[test]
@@ -3153,6 +3536,31 @@ mod tests {
             .unwrap();
         assert!(!lyric.guided, "a fresh lyric has no pitch guidance yet");
         document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn add_lyric_to_note_gives_a_lyric_less_note_its_own_text_directly() {
+        let mut document = document(&[(0.0, 1.0, 60, "hi")]);
+        // `unbind_note` leaves note 0 pitched with no lyric of its own.
+        document.unbind_note(0).expect("unbind");
+        assert_eq!(document.note_count(), 2, "no new note should be created");
+
+        let address = document.add_lyric_to_note(0).expect("add lyric");
+        assert_eq!(document.lyric_text(address).as_deref(), Some("New lyric"));
+        assert_eq!(
+            document.note_count(),
+            2,
+            "the text lands on the existing note"
+        );
+        let notes = document.notes();
+        assert_eq!(notes[0].lyric.as_deref(), Some("New lyric"));
+        assert!(notes[0].pitched, "the note keeps the pitch it already had");
+        document.to_chart().validate().unwrap();
+
+        assert!(
+            document.add_lyric_to_note(0).is_none(),
+            "refuses a note that already has its own lyric"
+        );
     }
 
     #[test]

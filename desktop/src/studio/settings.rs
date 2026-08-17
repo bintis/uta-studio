@@ -159,6 +159,12 @@ pub(crate) fn spawn_settings(
                             session.settings_tab == tab,
                         );
                     }
+                    nav.spawn(Node {
+                        min_height: px(4),
+                        flex_grow: 1.0,
+                        ..default()
+                    });
+                    spawn_text_button(nav, font.clone(), theme, "About Uta! Studio", 10.0, UiAction::OpenAbout);
                 });
 
             settings
@@ -3422,10 +3428,16 @@ pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {
 }
 
 pub(crate) fn sync_numeric_settings(
-    mut inputs: Query<(&mut EditableText, &NumericSetting), Changed<EditableText>>,
+    mut inputs: Query<(&mut EditableText, &NumericSetting)>,
     mut session: ResMut<StudioSession>,
 ) {
     for (mut input, setting) in &mut inputs {
+        // `Changed<EditableText>` also fires the instant the component is
+        // spawned, which would wrongly treat this field respawning (e.g. the
+        // settings panel switching tabs) as the user having retyped it.
+        if input.is_added() || !input.is_changed() {
+            continue;
+        }
         let raw = input.value().to_string();
         let Ok(parsed) = raw.trim().parse::<u32>() else {
             continue;

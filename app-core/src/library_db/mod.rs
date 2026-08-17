@@ -18,17 +18,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cache::uta_studio_dir;
 
+mod analysis_artifacts;
 mod analysis_history;
+mod analysis_node_attempts;
 mod analysis_queue;
 mod connection;
 mod playlists;
 mod queries;
 mod rebase;
 mod schema;
+mod song_analysis_profiles;
 mod songs;
 
+pub use analysis_artifacts::{
+    AnalysisArtifactRow, analysis_active_artifact, analysis_artifact_delete,
+    analysis_artifact_set_active, analysis_artifact_set_invalidated, analysis_artifact_upsert,
+    analysis_artifacts_for_kind, analysis_artifacts_for_song,
+};
 pub use analysis_history::{
     analysis_history_clear, analysis_history_insert, analysis_history_load,
+};
+pub use analysis_node_attempts::{
+    NewAnalysisNodeAttempt, analysis_node_attempts_insert_batch, analysis_node_attempts_load,
 };
 pub use analysis_queue::{
     analysis_queue_clear, analysis_queue_delete, analysis_queue_load_rows,
@@ -40,6 +51,9 @@ pub use queries::{
     query_library_menu_items,
 };
 pub use rebase::{rebase_song_album_art_cache_paths, rebase_song_album_art_paths};
+pub use song_analysis_profiles::{
+    song_analysis_profile_delete, song_analysis_profile_get, song_analysis_profile_set,
+};
 pub use songs::{
     append_songs_for_scan, delete_songs_not_in_paths, load_all_songs, load_song_by_hash,
     load_song_path_strings, read_library_meta, replace_all_songs_sorted, update_library_meta,
@@ -76,4 +90,24 @@ pub fn reconnect_library_at_root(root: &Path) -> Result<(), String> {
     let conn = connection::open_connection(&db_path)
         .map_err(|e| format!("failed opening relocated songs db: {e}"))?;
     connection::replace_or_install(conn)
+}
+
+/// Test-only isolation for the process-wide DB singleton. `library_db`'s
+/// connection is a single `OnceLock`, so any test module that needs to
+/// exercise real SQL must serialize against every *other* such test module
+/// in the crate, not just against itself -- hence one shared lock here
+/// rather than a per-module `Mutex`, which would only prevent races within
+/// one module and still race across modules (e.g. `analysis_artifact`'s
+/// tests vs. `analysis_profile`'s tests running on different threads).
+/// Reconnects to a caller-provided temp directory -- never the real app
+/// data root -- so nothing exercised under this guard can touch a user's
+/// actual library database.
+#[cfg(test)]
+pub(crate) fn reconnect_for_test(root: &Path) -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = GUARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reconnect_library_at_root(root).expect("reconnect to isolated test db");
+    guard
 }

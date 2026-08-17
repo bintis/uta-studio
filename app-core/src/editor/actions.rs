@@ -304,7 +304,13 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
         Read,
         [KeyChord::ctrl("KeyL")]
     ),
-    action!("toggle_beat_grid", "Show or hide the beat grid", View, Read, []),
+    action!(
+        "toggle_beat_grid",
+        "Show or hide the beat grid",
+        View,
+        Read,
+        []
+    ),
     action!(
         "edit_all_lyrics",
         "Edit all lyrics",
@@ -356,6 +362,7 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     ),
     // -- notes ------------------------------------------------------------
     action!("add_note", "Add note", Notes, Mutation, []),
+    action!("edit_note_lyric", "Edit lyric", Notes, Mutation, []),
     action!("play_note_pitch", "Play pitch", Notes, Read, []),
     action!("play_note_vocal", "Play vocal", Notes, Read, []),
     action!(

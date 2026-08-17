@@ -5,7 +5,8 @@ use tracing::{info, warn};
 use ts_rs::TS;
 
 use crate::analyzer::{
-    enqueue_one, is_usdx_song, mark_stems_only, prepare_lrc_no_stems, update_song_analyzed,
+    AnalysisProgressSnapshot, AnalysisStageRoute, enqueue_one, is_usdx_song, mark_stems_only,
+    prepare_lrc_no_stems, unix_time_ms, update_song_analyzed,
 };
 use crate::cache::CacheDir;
 use crate::library_db;
@@ -150,6 +151,18 @@ pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {
     serde_json::from_slice::<LyricsFile>(&bytes).ok()
 }
 
+/// Drops the transcript so it regenerates from the new lyrics source.
+/// Preserves the Authored Chart -- editing the lyrics source must not
+/// discard chart edits (docs/analysis-dag-redesign.md §6/Phase 5). Shared
+/// by every lyrics-source-change entry point in this file.
+fn apply_lyrics_edit_reset(cache: &CacheDir, file_hash: &str) {
+    let _ = std::fs::remove_file(cache.transcript_path(file_hash));
+    let _ = std::fs::remove_file(cache.recognized_text_path(file_hash));
+    let _ = std::fs::remove_file(cache.asr_segments_path(file_hash));
+    let _ = std::fs::remove_file(cache.timed_transcript_path(file_hash));
+    cache.delete_transcript_variants(file_hash);
+}
+
 pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<(), String> {
     if is_usdx_song(file_hash) {
         return Err("Cannot edit lyrics for USDX songs".to_string());
@@ -173,9 +186,7 @@ pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<()
     write_lyrics_file(&cache, file_hash, &normalized)
         .map_err(|e| format!("Failed to write lyrics file: {e}"))?;
 
-    let _ = std::fs::remove_file(cache.transcript_path(file_hash));
-    cache.delete_transcript_variants(file_hash);
-    cache.invalidate_authored_chart(file_hash);
+    apply_lyrics_edit_reset(&cache, file_hash);
 
     update_song_analyzed(file_hash, false, previous_language, None, None, None, None);
     enqueue_one(file_hash);
@@ -208,7 +219,13 @@ fn write_transcript_json(
     value: &serde_json::Value,
 ) -> std::io::Result<()> {
     let out = cache.transcript_path(file_hash);
-    std::fs::write(&out, serde_json::to_string_pretty(value).unwrap())
+    std::fs::write(&out, serde_json::to_string_pretty(value).unwrap())?;
+    // §4.4: known-lyrics/Timed-LRC routes never run through the Python
+    // pipeline's `chart.build_candidate`, so this Rust-side writer is the
+    // one place that needs to also produce the dedicated TimedTranscript
+    // artifact for those routes.
+    let timed = cache.timed_transcript_path(file_hash);
+    std::fs::write(&timed, serde_json::to_string_pretty(value).unwrap())
 }
 
 /// Provide LRC / Enhanced LRC for a not-yet-analyzed song, building the
@@ -227,8 +244,7 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
     };
 
     let cache = CacheDir::new();
-    cache.delete_transcript_variants(file_hash);
-    cache.invalidate_authored_chart(file_hash);
+    apply_lyrics_edit_reset(&cache, file_hash);
     let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let language = song.language.clone();
@@ -275,9 +291,9 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     let no_stems = song.no_stems;
 
     // Timing changed: drop any tempo-shifted transcript variants and the plain
-    // lyrics sidecar, and reset the song back to its base key/tempo.
+    // lyrics sidecar, and reset the song back to its base key/tempo. The
+    // Authored Chart is preserved (docs/analysis-dag-redesign.md §6/Phase 5).
     cache.delete_transcript_variants(file_hash);
-    cache.invalidate_authored_chart(file_hash);
     let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let value = build_lrc_transcript(
@@ -300,7 +316,96 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     updated.no_stems = no_stems;
     library_db::update_song_fields(file_hash, &updated).map_err(|e| e.to_string())?;
 
+    record_timed_lyrics_import(file_hash, &updated.title, &updated.artist);
+
     Ok(())
+}
+
+/// `lyrics.import_timed`'s own real event/history record
+/// (docs/analysis-dag-redesign.md Phase 3 status note). This Rust-side
+/// Timed LRC import path completes synchronously and entirely outside the
+/// Python-queue-driven `process_song`/`LIVE_ANALYSIS`/`ANALYSIS_STARTED`
+/// machinery -- there is no "in-flight" window for a progress poll to ever
+/// observe, so it never produced a run history entry the way a queued
+/// analysis does, and "Last successful run" always read "None yet" after a
+/// Timed LRC import. This is a separate, minimal, purely-additive pair of
+/// inserts (`analysis_history` + `analysis_node_attempts`) rather than
+/// routing through the queue's shared mutable state, since there's nothing
+/// in-flight to coordinate with. Best-effort: a failure here must not fail
+/// the import itself, which is why every fallible step below is silently
+/// dropped rather than propagated.
+fn record_timed_lyrics_import(file_hash: &str, title: &str, artist: &str) {
+    let now = unix_time_ms();
+    let route = AnalysisStageRoute {
+        stage: "finalizing".to_string(),
+        node_id: Some("lyrics.import_timed".to_string()),
+        node_event: Some("node_completed".to_string()),
+        operation: "Imported timed lyrics".to_string(),
+        implementation: "Uta Studio LRC parser".to_string(),
+        model: "N/A".to_string(),
+        stage_progress: 100,
+        requested_device: "cpu".to_string(),
+        actual_device: "cpu".to_string(),
+        fallback_from: None,
+        fallback_reason: None,
+        backend_fallback_from: None,
+        backend_fallback_reason: None,
+        started_at_ms: Some(now),
+        finished_at_ms: Some(now),
+    };
+    let snapshot = AnalysisProgressSnapshot {
+        stage: "complete".to_string(),
+        stage_progress: 100,
+        operation: "Timed lyrics imported".to_string(),
+        detail: "Transcript rebuilt directly from the provided timed LRC.".to_string(),
+        implementation: "Uta Studio LRC parser".to_string(),
+        model: "N/A".to_string(),
+        device: "cpu".to_string(),
+        requested_device: "cpu".to_string(),
+        fallback_from: None,
+        fallback_reason: None,
+        backend_fallback_from: None,
+        backend_fallback_reason: None,
+        stage_routes: vec![route],
+        node_id: Some("lyrics.import_timed".to_string()),
+        node_event: Some("node_completed".to_string()),
+        artifact_reused_reason: None,
+    };
+    let Ok(snapshot_json) = serde_json::to_string(&snapshot) else {
+        return;
+    };
+    let Ok(run_id) = library_db::analysis_history_insert(
+        file_hash,
+        title,
+        artist,
+        "completed",
+        now,
+        now,
+        &snapshot_json,
+        None,
+    ) else {
+        return;
+    };
+    let _ = library_db::analysis_node_attempts_insert_batch(
+        run_id,
+        file_hash,
+        &[library_db::NewAnalysisNodeAttempt {
+            node_id: "lyrics.import_timed",
+            status: "succeeded",
+            progress: 100,
+            operation: "Imported timed lyrics",
+            implementation: "Uta Studio LRC parser",
+            model: "N/A",
+            requested_device: "cpu",
+            actual_device: "cpu",
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            started_at_ms: Some(now),
+            finished_at_ms: Some(now),
+        }],
+    );
 }
 
 pub(crate) fn write_lyrics_file(
@@ -345,5 +450,164 @@ pub(crate) fn fetch_lrclib_lyrics(song: &Song, cache: &CacheDir) -> Option<PathB
             warn!("[lrclib] Failed to write lyrics: {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod chart_protection_tests {
+    use super::apply_lyrics_edit_reset;
+    use crate::cache::CacheDir;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_cache() -> CacheDir {
+        let nonce = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-lyrics-reset-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        CacheDir { path }
+    }
+
+    #[test]
+    fn lyrics_edit_reset_preserves_the_authored_chart() {
+        let cache = temp_cache();
+        let hash = "songLyricsEdit";
+        std::fs::write(cache.vocal_chart_path(hash), b"{}").unwrap();
+        std::fs::write(cache.transcript_path(hash), b"{}").unwrap();
+        std::fs::write(cache.variant_transcript_path(hash, 1.2), b"{}").unwrap();
+
+        apply_lyrics_edit_reset(&cache, hash);
+
+        assert!(
+            cache.vocal_chart_path(hash).is_file(),
+            "authored chart must survive a lyrics source change"
+        );
+        assert!(!cache.transcript_path(hash).is_file());
+        assert!(!cache.variant_transcript_path(hash, 1.2).is_file());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn lyrics_edit_reset_also_drops_the_split_transcript_artifacts() {
+        // §4.4: a lyrics-source change must invalidate all four transcript
+        // files, not just the compatibility one -- otherwise stale ASR
+        // artifacts from the previous source would linger and mislead the
+        // Artifact Inventory/UI.
+        let cache = temp_cache();
+        let hash = "songLyricsEditSplit";
+        std::fs::write(cache.transcript_path(hash), b"{}").unwrap();
+        std::fs::write(cache.recognized_text_path(hash), b"{}").unwrap();
+        std::fs::write(cache.asr_segments_path(hash), b"{}").unwrap();
+        std::fs::write(cache.timed_transcript_path(hash), b"{}").unwrap();
+
+        apply_lyrics_edit_reset(&cache, hash);
+
+        assert!(!cache.recognized_text_path(hash).is_file());
+        assert!(!cache.asr_segments_path(hash).is_file());
+        assert!(!cache.timed_transcript_path(hash).is_file());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn write_transcript_json_also_writes_the_dedicated_timed_transcript_file() {
+        // §4.4: the known-lyrics/Timed-LRC routes never run through the
+        // Python pipeline's `chart.build_candidate`, so this Rust-side
+        // writer is the one place that has to produce TimedTranscript for
+        // those routes.
+        let cache = temp_cache();
+        let hash = "songWriteTranscriptSplit";
+        let value = serde_json::json!({"segments": [], "source": "lrc"});
+
+        super::write_transcript_json(&cache, hash, &value).unwrap();
+
+        assert!(cache.transcript_path(hash).is_file());
+        assert!(cache.timed_transcript_path(hash).is_file());
+        let transcript: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cache.transcript_path(hash)).unwrap())
+                .unwrap();
+        let timed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cache.timed_transcript_path(hash)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(transcript, timed);
+        assert_eq!(transcript, value);
+        cache.clear_all();
+    }
+}
+
+#[cfg(test)]
+mod timed_lyrics_import_history_tests {
+    //! §7.3/Phase 3 status note: `lyrics.import_timed` never produced a run
+    //! history entry (it's a synchronous Rust-only path with no
+    //! `process_song` queue lifecycle to hook into), so "Last successful
+    //! run" always read "None yet" after a Timed LRC import. These lock
+    //! `record_timed_lyrics_import`'s real INSERT behavior against an
+    //! actual DB fixture, not mocks.
+    use super::record_timed_lyrics_import;
+    use crate::library_db;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "uta-studio-timed-lyrics-history-test-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn records_a_completed_history_row_and_a_matching_node_attempt() {
+        let root = temp_root("basic");
+        let _guard = library_db::reconnect_for_test(&root);
+
+        record_timed_lyrics_import("songTimedLrc", "Test Title", "Test Artist");
+
+        let history = library_db::analysis_history_load(50).expect("load history");
+        let run = history
+            .iter()
+            .find(|row| row.file_hash == "songTimedLrc")
+            .expect("a history row must exist for this import");
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.title, "Test Title");
+
+        let attempts = library_db::analysis_node_attempts_load(run.id).expect("load attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].node_id, "lyrics.import_timed");
+        assert_eq!(attempts[0].status, "succeeded");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_snapshot_json_round_trips_through_the_real_progress_snapshot_type() {
+        // Guards against a silent no-op: if `AnalysisProgressSnapshot`'s
+        // shape ever drifts out of sync with what this function hand-builds,
+        // `load_analysis_history`'s `serde_json::from_str(..).ok()?` would
+        // just drop the row instead of erroring -- this asserts the row
+        // parses back into a real snapshot with the fields this feature
+        // depends on, not just that a row exists.
+        let root = temp_root("roundtrip");
+        let _guard = library_db::reconnect_for_test(&root);
+
+        record_timed_lyrics_import("songTimedLrcRoundtrip", "Title", "Artist");
+
+        let history = library_db::analysis_history_load(50).expect("load history");
+        let row = history
+            .iter()
+            .find(|row| row.file_hash == "songTimedLrcRoundtrip")
+            .expect("row must exist");
+        let snapshot: crate::analyzer::AnalysisProgressSnapshot =
+            serde_json::from_str(&row.snapshot_json).expect("snapshot_json must parse");
+        assert_eq!(snapshot.node_id.as_deref(), Some("lyrics.import_timed"));
+        assert_eq!(snapshot.node_event.as_deref(), Some("node_completed"));
+        assert_eq!(snapshot.stage_routes.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

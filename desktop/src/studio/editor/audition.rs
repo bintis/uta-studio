@@ -98,7 +98,10 @@ pub(crate) fn load_native_editor(
 /// instrumental stem when the chart has no separate vocal track.
 pub(crate) fn waveform_source_path(audio: &app_core::ChartAudio, source: WaveformSource) -> &str {
     match source {
-        WaveformSource::Vocals => audio.vocals.as_deref().unwrap_or(audio.instrumental.as_str()),
+        WaveformSource::Vocals => audio
+            .vocals
+            .as_deref()
+            .unwrap_or(audio.instrumental.as_str()),
         WaveformSource::Original => audio.original.as_str(),
         WaveformSource::Instrumental => audio.instrumental.as_str(),
     }
