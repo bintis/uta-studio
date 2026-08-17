@@ -7,11 +7,52 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Ubuntu does not currently ship Astral uv in its standard repository.
+  # The DEB therefore carries only this small helper binary; FFmpeg, Python,
+  # GStreamer and graphics libraries remain normal system dependencies.
+  UV_VERSION: "0.12.0"
 
 jobs:
-  package-linux:
-    name: Package Linux binary, DEB and RPM
+  metadata:
+    name: Read release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Read and verify version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' desktop/Cargo.toml)
+          if [[ -z "$version" ]]; then
+            echo "Could not read version from desktop/Cargo.toml" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            .github/scripts/verify-version.sh "$tag_version"
+            version="$tag_version"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Packaging Uta Studio $version"
+
+  package-linux-portable:
+    name: Package self-contained Linux binary
+    needs: metadata
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -20,79 +61,424 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
-      - name: Read and verify version
-        id: version
-        shell: bash
-        run: |
-          version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' desktop/Cargo.toml)
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            .github/scripts/verify-version.sh "$tag_version"
-            version="$tag_version"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Build packaged application
         run: nix build path:.#uta-studio --print-build-logs
+
+      - name: Show Nix closure size
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix path-info -Sh "$(readlink -f result)"
 
       - name: Build self-contained executable
         shell: bash
         run: |
-          artifact="uta-studio-${{ steps.version.outputs.version }}-x86_64-linux"
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          artifact="uta-studio-${version}-x86_64-linux"
+
           nix bundle \
             --bundler github:NixOS/bundlers#toArx \
             path:.#uta-studio \
             --out-link "$artifact"
+
           cp --dereference "$artifact" "${artifact}.bin"
           chmod 0755 "${artifact}.bin"
+          sha256sum "${artifact}.bin" > "uta-studio-${version}-linux-portable.sha256"
+          ls -lh "${artifact}.bin" "uta-studio-${version}-linux-portable.sha256"
 
-      - name: Build DEB and RPM packages
-        shell: bash
-        run: |
-          version="${{ steps.version.outputs.version }}"
-          bundle="uta-studio-${version}-x86_64-linux.bin"
-          root="$RUNNER_TEMP/uta-studio-package"
-          install -Dm755 "$bundle" "$root/usr/bin/uta-studio"
-          install -Dm644 desktop/uta-studio.desktop \
-            "$root/usr/share/applications/uta-studio.desktop"
-          install -Dm644 icon.png \
-            "$root/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
-
-          common=(
-            -s dir
-            -n uta-studio
-            -v "$version"
-            --iteration 1
-            --license GPL-3.0-only
-            --description "AI-assisted song chart editor with UTZ and UltraStar export"
-            --url "https://github.com/${GITHUB_REPOSITORY}"
-            -C "$root"
-          )
-          nix shell nixpkgs#fpm -c fpm "${common[@]}" \
-            -t deb -a amd64 \
-            -p "uta-studio_${version}-1_amd64.deb" .
-          nix shell nixpkgs#fpm -c fpm "${common[@]}" \
-            -t rpm -a x86_64 \
-            -p "uta-studio-${version}-1.x86_64.rpm" .
-          sha256sum \
-            "$bundle" \
-            "uta-studio_${version}-1_amd64.deb" \
-            "uta-studio-${version}-1.x86_64.rpm" \
-            > "uta-studio-${version}-linux.sha256"
-
-      - name: Upload Linux packages
+      - name: Upload portable Linux package
         uses: actions/upload-artifact@v4
         with:
-          name: uta-studio-${{ steps.version.outputs.version }}-linux-packages
+          name: uta-studio-${{ needs.metadata.outputs.version }}-linux-portable-package
           path: |
-            uta-studio-${{ steps.version.outputs.version }}-x86_64-linux.bin
-            uta-studio_${{ steps.version.outputs.version }}-1_amd64.deb
-            uta-studio-${{ steps.version.outputs.version }}-1.x86_64.rpm
-            uta-studio-${{ steps.version.outputs.version }}-linux.sha256
+            uta-studio-${{ needs.metadata.outputs.version }}-x86_64-linux.bin
+            uta-studio-${{ needs.metadata.outputs.version }}-linux-portable.sha256
+          if-no-files-found: error
+
+  package-linux-deb:
+    name: Package native DEB
+    needs: metadata
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            zlib1g-dev \
+            libudev-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libglvnd-dev \
+            libvulkan-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            dpkg-dev \
+            binutils \
+            file
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install pinned uv fallback for the DEB
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Build native Linux executable
+        run: cargo build --release --locked -p uta-studio-desktop
+
+      - name: Verify native executable linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/release/uta-studio
+
+          file "$binary"
+          readelf -l "$binary" | grep 'interpreter' || true
+          readelf -d "$binary" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$binary" | tee /tmp/uta-studio-ldd.txt
+
+          if grep -q 'not found' /tmp/uta-studio-ldd.txt; then
+            echo "The native executable has unresolved shared libraries" >&2
+            exit 1
+          fi
+          if grep -aFq '/nix/store/' "$binary"; then
+            echo "The native executable unexpectedly references /nix/store" >&2
+            exit 1
+          fi
+
+          strip --strip-unneeded "$binary"
+          ls -lh "$binary"
+
+      - name: Build DEB package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          package="uta-studio_${version}-1_amd64.deb"
+          root="$RUNNER_TEMP/uta-studio-deb-root"
+          metadata="$RUNNER_TEMP/uta-studio-deb-metadata"
+
+          rm -rf "$root" "$metadata"
+          mkdir -p "$root" "$metadata/debian"
+
+          install -Dm755 target/release/uta-studio \
+            "$root/usr/lib/uta-studio/uta-studio"
+          install -Dm755 "$(command -v uv)" \
+            "$root/usr/lib/uta-studio/uv"
+
+          install -Dm644 icon.png \
+            "$root/usr/share/uta-studio/icon.png"
+          install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
+            "$root/usr/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf"
+          install -Dm644 desktop/assets/icons/ui-icons.svg \
+            "$root/usr/share/uta-studio/desktop/assets/icons/ui-icons.svg"
+          install -Dm644 desktop/assets/icons/ui-icons.png \
+            "$root/usr/share/uta-studio/desktop/assets/icons/ui-icons.png"
+          install -Dm644 icon.png \
+            "$root/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
+          install -Dm644 desktop/uta-studio.desktop \
+            "$root/usr/share/applications/uta-studio.desktop"
+          install -Dm644 LICENSE \
+            "$root/usr/share/doc/uta-studio/LICENSE"
+          install -d "$root/usr/bin"
+
+          cat > "$root/usr/bin/uta-studio" <<'SH'
+          #!/bin/sh
+          export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
+          export WINIT_UNIX_BACKEND=wayland
+
+          # Prefer an administrator-installed uv. Ubuntu's standard repositories
+          # do not currently provide Astral uv, so the package keeps a small,
+          # pinned fallback rather than bundling the full Nix runtime closure.
+          if command -v uv >/dev/null 2>&1; then
+            export UTA_STUDIO_UV_PATH="$(command -v uv)"
+          else
+            export UTA_STUDIO_UV_PATH=/usr/lib/uta-studio/uv
+          fi
+
+          exec /usr/lib/uta-studio/uta-studio "$@"
+          SH
+          chmod 0755 "$root/usr/bin/uta-studio"
+
+          cat > "$metadata/debian/control" <<EOF
+          Source: uta-studio
+          Section: sound
+          Priority: optional
+          Maintainer: Uta Studio contributors <noreply@github.com>
+          Standards-Version: 4.7.0
+
+          Package: uta-studio
+          Architecture: amd64
+          Description: AI-assisted song chart editor
+           Native Wayland desktop editor for analysing local songs, correcting
+           lyric timing and pitch, and exporting UTZ and UltraStar charts.
+          EOF
+
+          pushd "$metadata" >/dev/null
+          shlib_deps=$(
+            dpkg-shlibdeps -O \
+              -e"$root/usr/lib/uta-studio/uta-studio" \
+              -e"$root/usr/lib/uta-studio/uv" \
+              | sed -n 's/^shlibs:Depends=//p'
+          )
+          popd >/dev/null
+
+          if [[ -z "$shlib_deps" ]]; then
+            echo "dpkg-shlibdeps did not produce dependency metadata" >&2
+            exit 1
+          fi
+
+          installed_size=$(du -sk "$root" | awk '{print $1}')
+          mkdir -p "$root/DEBIAN"
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: uta-studio
+          Version: ${version}-1
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Uta Studio contributors <noreply@github.com>
+          Homepage: https://github.com/${GITHUB_REPOSITORY}
+          Installed-Size: ${installed_size}
+          Depends: ${shlib_deps}, ca-certificates, ffmpeg, python3 (>= 3.10), tar, unzip, xz-utils, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libegl1, libgles2, libvulkan1
+          Recommends: gstreamer1.0-pipewire, xdg-desktop-portal
+          Description: AI-assisted song chart editor
+           Native Wayland desktop editor for analysing local songs, correcting
+           lyric timing and pitch, and exporting UTZ and UltraStar charts.
+          EOF
+
+          dpkg-deb --build --root-owner-group "$root" "$package"
+          dpkg-deb --info "$package"
+          dpkg-deb --contents "$package" | sed -n '1,80p'
+          sha256sum "$package" > "uta-studio-${version}-linux-deb.sha256"
+          ls -lh "$package" "uta-studio-${version}-linux-deb.sha256"
+
+      - name: Upload DEB package
+        uses: actions/upload-artifact@v4
+        with:
+          name: uta-studio-${{ needs.metadata.outputs.version }}-linux-deb-package
+          path: |
+            uta-studio_${{ needs.metadata.outputs.version }}-1_amd64.deb
+            uta-studio-${{ needs.metadata.outputs.version }}-linux-deb.sha256
+          if-no-files-found: error
+
+  package-linux-rpm:
+    name: Package native RPM
+    needs: metadata
+    runs-on: ubuntu-24.04
+    container:
+      image: fedora:43
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - name: Install native build and packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            gcc \
+            gcc-c++ \
+            make \
+            pkgconf-pkg-config \
+            openssl-devel \
+            zlib-devel \
+            systemd-devel \
+            wayland-devel \
+            wayland-protocols-devel \
+            libxkbcommon-devel \
+            libglvnd-devel \
+            vulkan-loader-devel \
+            gstreamer1-devel \
+            gstreamer1-plugins-base-devel \
+            rpm-build \
+            rpmdevtools \
+            git \
+            curl \
+            ca-certificates \
+            tar \
+            gzip \
+            xz \
+            findutils \
+            file \
+            binutils
+          dnf clean all
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Build native Linux executable
+        run: cargo build --release --locked -p uta-studio-desktop
+
+      - name: Verify native executable linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/release/uta-studio
+
+          file "$binary"
+          readelf -l "$binary" | grep 'interpreter' || true
+          readelf -d "$binary" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$binary" | tee /tmp/uta-studio-ldd.txt
+
+          if grep -q 'not found' /tmp/uta-studio-ldd.txt; then
+            echo "The native executable has unresolved shared libraries" >&2
+            exit 1
+          fi
+          if grep -aFq '/nix/store/' "$binary"; then
+            echo "The native executable unexpectedly references /nix/store" >&2
+            exit 1
+          fi
+
+          strip --strip-unneeded "$binary"
+          ls -lh "$binary"
+
+      - name: Build RPM package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          output="uta-studio-${version}-1.x86_64.rpm"
+          payload="$RUNNER_TEMP/uta-studio-rpm-payload"
+          source_dir="$RUNNER_TEMP/uta-studio-${version}"
+          topdir="$RUNNER_TEMP/rpmbuild"
+
+          rm -rf "$payload" "$source_dir" "$topdir"
+          mkdir -p "$payload" "$source_dir" \
+            "$topdir/BUILD" "$topdir/BUILDROOT" "$topdir/RPMS" \
+            "$topdir/SOURCES" "$topdir/SPECS" "$topdir/SRPMS"
+
+          install -Dm755 target/release/uta-studio \
+            "$payload/usr/libexec/uta-studio/uta-studio"
+          install -Dm644 icon.png \
+            "$payload/usr/share/uta-studio/icon.png"
+          install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
+            "$payload/usr/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf"
+          install -Dm644 desktop/assets/icons/ui-icons.svg \
+            "$payload/usr/share/uta-studio/desktop/assets/icons/ui-icons.svg"
+          install -Dm644 desktop/assets/icons/ui-icons.png \
+            "$payload/usr/share/uta-studio/desktop/assets/icons/ui-icons.png"
+          install -Dm644 icon.png \
+            "$payload/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
+          install -Dm644 desktop/uta-studio.desktop \
+            "$payload/usr/share/applications/uta-studio.desktop"
+          install -Dm644 LICENSE \
+            "$payload/usr/share/licenses/uta-studio/LICENSE"
+          install -d "$payload/usr/bin"
+
+          cat > "$payload/usr/bin/uta-studio" <<'SH'
+          #!/bin/sh
+          export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
+          export WINIT_UNIX_BACKEND=wayland
+          exec /usr/libexec/uta-studio/uta-studio "$@"
+          SH
+          chmod 0755 "$payload/usr/bin/uta-studio"
+
+          cp -a "$payload" "$source_dir/payload"
+          tar -C "$RUNNER_TEMP" -czf \
+            "$topdir/SOURCES/uta-studio-${version}.tar.gz" \
+            "uta-studio-${version}"
+
+          changelog_date=$(LC_ALL=C date '+%a %b %d %Y')
+
+          cat > "$topdir/SPECS/uta-studio.spec" <<EOF
+          %global debug_package %{nil}
+
+          Name:           uta-studio
+          Version:        ${version}
+          Release:        1
+          Summary:        AI-assisted song chart editor
+          License:        GPL-3.0-only
+          URL:            https://github.com/${GITHUB_REPOSITORY}
+          Source0:        %{name}-%{version}.tar.gz
+          AutoReqProv:    yes
+
+          Requires:       /usr/bin/ffmpeg
+          Requires:       /usr/bin/python3
+          Requires:       uv
+          Requires:       ca-certificates
+          Requires:       tar
+          Requires:       unzip
+          Requires:       xz
+          Requires:       gstreamer1-plugins-base
+          Requires:       gstreamer1-plugins-good
+          Requires:       gstreamer1-plugin-libav
+          Requires:       libglvnd-egl
+          Requires:       libglvnd-gles
+          Requires:       vulkan-loader
+          Recommends:     pipewire-gstreamer
+          Recommends:     xdg-desktop-portal
+
+          %description
+          Native Wayland desktop editor for analysing local songs, correcting
+          lyric timing and pitch, and exporting UTZ and UltraStar charts.
+
+          %prep
+          %setup -q
+
+          %build
+
+          %install
+          rm -rf %{buildroot}
+          cp -a payload/. %{buildroot}/
+
+          %files
+          %license %{_licensedir}/uta-studio/LICENSE
+          %{_bindir}/uta-studio
+          %{_libexecdir}/uta-studio/
+          %{_datadir}/uta-studio/
+          %{_datadir}/applications/uta-studio.desktop
+          %{_datadir}/icons/hicolor/512x512/apps/uta-studio.png
+
+          %changelog
+          * ${changelog_date} Uta Studio contributors <noreply@github.com> - ${version}-1
+          - Native system-dependency package
+          EOF
+
+          rpmbuild --define "_topdir $topdir" -bb "$topdir/SPECS/uta-studio.spec"
+
+          rpm_path=$(find "$topdir/RPMS" -type f -name 'uta-studio-*.rpm' -print -quit)
+          if [[ -z "$rpm_path" ]]; then
+            echo "rpmbuild did not produce an RPM" >&2
+            exit 1
+          fi
+
+          cp "$rpm_path" "$output"
+          rpm -qpi "$output"
+          rpm -qpR "$output" | sort
+          sha256sum "$output" > "uta-studio-${version}-linux-rpm.sha256"
+          ls -lh "$output" "uta-studio-${version}-linux-rpm.sha256"
+
+      - name: Upload RPM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: uta-studio-${{ needs.metadata.outputs.version }}-linux-rpm-package
+          path: |
+            uta-studio-${{ needs.metadata.outputs.version }}-1.x86_64.rpm
+            uta-studio-${{ needs.metadata.outputs.version }}-linux-rpm.sha256
           if-no-files-found: error
 
   package-windows:
     name: Package Windows x86_64
+    needs: metadata
     runs-on: windows-2025
     steps:
       - name: Check out source
@@ -103,25 +489,13 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Read and verify version
-        id: version
-        shell: bash
-        run: |
-          version=$(awk -F'"' '/^version *= *"/ { print $2; exit }' desktop/Cargo.toml)
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            .github/scripts/verify-version.sh "$tag_version"
-            version="$tag_version"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Build Windows executable
         run: cargo build --release --locked -p uta-studio-desktop
 
       - name: Assemble portable ZIP
         shell: pwsh
         run: |
-          $version = "${{ steps.version.outputs.version }}"
+          $version = "${{ needs.metadata.outputs.version }}"
           $root = Join-Path $env:RUNNER_TEMP "uta-studio-$version-windows"
           New-Item -ItemType Directory -Force "$root/bin" | Out-Null
           New-Item -ItemType Directory -Force "$root/share/uta-studio/desktop/assets/fonts" | Out-Null
@@ -139,19 +513,24 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: uta-studio-${{ steps.version.outputs.version }}-windows-package
+          name: uta-studio-${{ needs.metadata.outputs.version }}-windows-package
           path: |
-            uta-studio-${{ steps.version.outputs.version }}-x86_64-windows.zip
-            uta-studio-${{ steps.version.outputs.version }}-windows.sha256
+            uta-studio-${{ needs.metadata.outputs.version }}-x86_64-windows.zip
+            uta-studio-${{ needs.metadata.outputs.version }}-windows.sha256
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub release
     if: github.ref_type == 'tag'
     needs:
-      - package-linux
+      - metadata
+      - package-linux-portable
+      - package-linux-deb
+      - package-linux-rpm
       - package-windows
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -159,13 +538,21 @@ jobs:
       - name: Download release packages
         uses: actions/download-artifact@v4
         with:
-          pattern: uta-studio-*-package*
+          pattern: uta-studio-*-package
           path: release-assets
           merge-multiple: true
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
 
       - name: Extract release notes
         shell: bash
         run: |
+          set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           .github/scripts/extract-changelog-notes.sh "$version" release-notes.md
 

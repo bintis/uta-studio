@@ -149,6 +149,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Reveal media in the OS file manager"
     ),
     capability!(
+        "analysis",
+        "open_artifact_entry",
+        "external",
+        false,
+        "Open an analysis artifact revision with the OS -- path resolved and confined to the cache root"
+    ),
+    capability!(
+        "analysis",
+        "reveal_artifact_entry",
+        "external",
+        false,
+        "Reveal an analysis artifact revision in the OS file manager -- path resolved and confined to the cache root"
+    ),
+    capability!(
         "storage",
         "open_export_folder",
         "external",
@@ -192,11 +206,39 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Load named analysis tasks"
     ),
     capability!(
+        "library",
+        "update_song_settings",
+        "mutation",
+        false,
+        "Persist composer/country/override BPM/background video edits from song settings"
+    ),
+    capability!(
         "analysis",
         "load_analysis_history",
         "read",
         true,
         "Load completed and failed analysis sessions"
+    ),
+    capability!(
+        "analysis",
+        "load_analysis_node_attempts",
+        "read",
+        true,
+        "Load per-node attempt records (status, timing, device, fallback) for one analysis run"
+    ),
+    capability!(
+        "analysis",
+        "compare_analysis_runs",
+        "read",
+        true,
+        "Diff per-node attempt records between two analysis runs of the same song"
+    ),
+    capability!(
+        "analysis",
+        "compare_node_attempt_with_previous_run",
+        "read",
+        true,
+        "Diff one node's attempt against the nearest earlier analysis run of the same song"
     ),
     capability!(
         "analysis",
@@ -269,6 +311,167 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Force transcription"
     ),
     capability!(
+        "analysis",
+        "run_analysis_plan",
+        "mutation",
+        false,
+        "Run an explicit target/disabled-node set through the generic per-node executor"
+    ),
+    capability!(
+        "analysis",
+        "run_analysis_node",
+        "mutation",
+        false,
+        "Run a single node and its real upstream closure only"
+    ),
+    capability!(
+        "analysis",
+        "run_analysis_node_downstream",
+        "mutation",
+        false,
+        "Run a node and every node that transitively consumes its output"
+    ),
+    capability!(
+        "analysis",
+        "disable_analysis_node_for_run",
+        "mutation",
+        false,
+        "Run the default full analysis with one node turned off for this run"
+    ),
+    capability!(
+        "analysis",
+        "freeze_analysis_node_outputs_for_run",
+        "mutation",
+        false,
+        "Force-reuse a node's current on-disk output for this run, ignoring config-driven cache invalidation"
+    ),
+    capability!(
+        "analysis",
+        "bypass_analysis_node_with_original_mix_for_run",
+        "mutation",
+        false,
+        "Route stems.separate around for this run, using the source media directly in place of a separated vocal stem"
+    ),
+    capability!(
+        "analysis",
+        "cancel_analysis_run",
+        "mutation",
+        false,
+        "Remove a not-yet-started song from the analysis queue; rejects if it is already running"
+    ),
+    capability!(
+        "analysis",
+        "get_analysis_graph",
+        "read",
+        true,
+        "Load the static analysis DAG node/edge definition"
+    ),
+    capability!(
+        "analysis",
+        "preview_analysis_plan",
+        "read",
+        true,
+        "Preview which nodes a targeted analysis request would run, reuse, freeze, or block"
+    ),
+    capability!(
+        "analysis",
+        "load_analysis_artifacts",
+        "read",
+        true,
+        "Load every artifact revision recorded for a song"
+    ),
+    capability!(
+        "analysis",
+        "load_artifact_revisions",
+        "read",
+        true,
+        "Load every revision of one artifact kind for a song"
+    ),
+    capability!(
+        "analysis",
+        "import_legacy_artifacts",
+        "mutation",
+        false,
+        "Record existing cached files on disk as artifact revisions, without modifying them"
+    ),
+    capability!(
+        "analysis",
+        "set_active_artifact_revision",
+        "mutation",
+        false,
+        "Select which artifact revision is the active one for a song and kind"
+    ),
+    capability!(
+        "analysis",
+        "delete_artifact_revision",
+        "destructive",
+        false,
+        "Delete one artifact revision and its backing file inside the cache root"
+    ),
+    capability!(
+        "analysis",
+        "invalidate_artifact_revision",
+        "destructive",
+        false,
+        "Mark an artifact revision as stale/wrong and clear it from being Active; the file and row are kept, unlike delete"
+    ),
+    capability!(
+        "analysis",
+        "compare_artifact_revisions",
+        "read",
+        true,
+        "Diff two artifact revisions of the same song and kind (content, config, algorithm version, producer, size)"
+    ),
+    capability!(
+        "analysis",
+        "get_song_analysis_profile",
+        "read",
+        true,
+        "Load a song's saved analysis parameter override, if one exists"
+    ),
+    capability!(
+        "analysis",
+        "set_song_analysis_profile",
+        "mutation",
+        false,
+        "Save a per-song override of analysis model/algorithm/device parameters"
+    ),
+    capability!(
+        "analysis",
+        "reset_song_analysis_profile",
+        "mutation",
+        false,
+        "Remove a song's parameter override, falling back to global defaults"
+    ),
+    capability!(
+        "authoring",
+        "replace_authored_chart_with_fresh_analysis",
+        "destructive",
+        false,
+        "Explicitly discard the authored chart so it rebuilds from the latest analyzer output"
+    ),
+    capability!(
+        "analysis",
+        "cached_artifact_presence_for_song",
+        "read",
+        true,
+        "Check which analysis artifacts actually exist on disk for a song"
+    ),
+    capability!(
+        "library",
+        "resolve_song_authoring_state",
+        "read",
+        true,
+        "Resolve which single primary action a song's detail page should surface"
+    ),
+    capability!(
+        "analysis",
+        "preview_full_analysis_plan",
+        "read",
+        true,
+        "Preview which DAG nodes a full chart-build run would run, reuse, or block for a song"
+    ),
+    capability!(
         "authoring",
         "shift_key",
         "mutation",
@@ -281,6 +484,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "mutation",
         false,
         "Render a tempo variant"
+    ),
+    capability!(
+        "authoring",
+        "migrate_analyzer_chart",
+        "read",
+        true,
+        "Convert a legacy transcript + pitch notes pair into a VocalChartV1 document, without touching disk"
     ),
     capability!("lyrics", "load_lyrics", "read", true, "Load local lyrics"),
     capability!(

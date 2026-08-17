@@ -256,6 +256,18 @@ mod linux {
             player
                 .set_state(gst::State::Paused)
                 .map_err(|error| format!("Could not prepare chart audio: {error:?}"))?;
+            // `set_state` only requests the transition; PAUSED needs a preroll
+            // sample before it's actually reached, which happens
+            // asynchronously. A `seek`/`play` issued immediately after
+            // `load()` returns (as switching the audition source to the
+            // vocal stem does) can race that preroll — occasionally failing
+            // outright, and even when it doesn't, landing on a pipeline that
+            // isn't ready to report its position reliably yet (more of the
+            // same "query too soon" symptom `seek`'s `pending_seek` grace
+            // period exists for, just triggered from the other end). Block
+            // briefly for the real state instead of guessing.
+            let (result, _current, _pending) = player.state(gst::ClockTime::from_seconds(5));
+            result.map_err(|error| format!("Chart audio did not become ready: {error:?}"))?;
             self.player = Some(player);
             self.path = Some(path.to_path_buf());
             self.ended = false;
@@ -281,6 +293,16 @@ mod linux {
             player
                 .set_state(gst::State::Playing)
                 .map_err(|error| format!("Could not play chart audio: {error:?}"))?;
+            // `set_state` only requests the transition, same as `load`'s own
+            // PAUSED request -- and the same race applies: switching the
+            // audition source (`PlayNoteVocal`) calls `load` then `play` back
+            // to back, and issuing `play` before the sink has actually
+            // finished (re)starting could silently produce no audible sound
+            // even though this call itself returns `Ok`. `load` already
+            // blocks for its own state change; do the same here instead of
+            // assuming the request lands the instant it's made.
+            let (result, _current, _pending) = player.state(gst::ClockTime::from_seconds(5));
+            result.map_err(|error| format!("Chart audio did not start playing: {error:?}"))?;
             Ok(self.status())
         }
 
@@ -370,16 +392,35 @@ mod linux {
                 .unwrap_or(0.0);
 
             if let Some((target, requested_at)) = self.pending_seek {
-                const SETTLE_TOLERANCE_SECS: f64 = 0.05;
+                const SETTLE_TOLERANCE_SECS: f64 = 0.15;
                 const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
-                if (position_secs - target).abs() <= SETTLE_TOLERANCE_SECS {
+                // Compare the live query against where we'd *expect* to be
+                // by now rather than the bare seek target: a seek immediately
+                // followed by play (as switching the audition source to the
+                // vocal stem does) means real playback keeps advancing past
+                // the target within milliseconds, so checking closeness to a
+                // frozen target — even "at or after" it — only holds for an
+                // instant before the next poll sees "too far past" and
+                // slams the reported position back down, over and over for
+                // the whole grace period: the reported position visibly
+                // oscillating instead of the one-time flicker this exists
+                // to fix. A backward seek has the opposite problem: a stale
+                // pre-seek query reads *ahead* of the target, which a bare
+                // "at or after" check would wrongly accept as settled.
+                // Predicting elapsed playback time handles both.
+                let expected = if effective_state == gst::State::Playing {
+                    target + requested_at.elapsed().as_secs_f64()
+                } else {
+                    target
+                };
+                if (position_secs - expected).abs() <= SETTLE_TOLERANCE_SECS {
                     self.pending_seek = None;
                 } else if requested_at.elapsed() < GRACE_PERIOD {
-                    position_secs = target;
+                    position_secs = expected;
                 } else {
-                    // The pipeline never reported landing at the commanded
-                    // position within the grace period; trust the live
-                    // query rather than freezing the UI on a stale target.
+                    // The pipeline never reported landing near the
+                    // commanded position within the grace period; trust the
+                    // live query rather than freezing the UI on a guess.
                     self.pending_seek = None;
                 }
             }

@@ -33,6 +33,38 @@ def progress(pct: int, msg: str, **metadata):
     _progress_sink(pct, msg, metadata)
 
 
+def progress_node(node_id: str, event: str, pct: int, msg: str, **metadata):
+    """Structured node-level progress event (analysis DAG redesign Phase 3,
+    see docs/analysis-dag-redesign.md §Phase 3 and
+    uta-studio-analysis-dag-phases.md §3.1).
+
+    Additive on top of `progress()`: `node_id`/`event` ride through the same
+    `metadata` dict `_progress_payload` (server.py) already forwards, so
+    every existing field (`stage`, `stage_progress`, `implementation`, ...)
+    keeps working unchanged for callers that don't look at `node_id`. This
+    is what lets Rust key node state off `node_id` instead of regexing
+    `msg` through `_classify_progress` -- that classifier remains only as
+    the Legacy Adapter for events that don't set `node_id` (phase plan
+    §3.3).
+
+    `event` is one of: node_started, node_progress, node_completed,
+    node_failed, node_skipped, artifact_reused. `node_skipped` is distinct
+    from `artifact_reused`: a skipped node produced no output *at all* this
+    run (e.g. Phase 4 §4.5 Bypass -- routed around with a substitute input),
+    where `artifact_reused` means an existing output was validated and kept.
+    """
+    progress(pct, msg, node_id=node_id, event=event, **metadata)
+
+
+def artifact_reused(node_id: str, pct: int, msg: str, reason: str = "cache_hit", **metadata):
+    """Explicit cache-hit signal for a node, replacing the old convention of
+    inferring a cache hit from `actual_device == "cache"` in prose. Phase 3
+    §3.5: a cache hit must never be sent to the UI disguised as a normal
+    100%-progress run.
+    """
+    progress_node(node_id, "artifact_reused", pct, msg, reason=reason, **metadata)
+
+
 _align_backend = "whisperx"
 
 

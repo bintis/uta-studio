@@ -381,7 +381,10 @@ const EDITOR_SHORTCUTS: &[(&str, &str)] = &[
     ("Double-click canvas", "Add a note at the pointer"),
     ("Hold B, click note then lyric", "Bind them together"),
     ("Hold C, click a bound note", "Unbind it"),
-    ("Right-click note / lyric / waveform", "Open its context menu"),
+    (
+        "Right-click note / lyric / waveform",
+        "Open its context menu",
+    ),
     ("Ctrl + wheel", "Zoom the timeline"),
     ("Alt + wheel", "Zoom the pitch range"),
     ("Shift + wheel", "Pan the pitch range"),
@@ -708,7 +711,11 @@ pub(crate) fn update_editor_shortcuts_panel_visibility(
         .any(|interaction| *interaction != Interaction::None);
     for (interaction, mut node) in &mut panels {
         let visible = pinned || trigger_hovered || *interaction != Interaction::None;
-        node.display = if visible { Display::Flex } else { Display::None };
+        node.display = if visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
 }
 
@@ -941,13 +948,19 @@ pub(crate) fn spawn_all_lyrics_panel(
 
 /// Applies a retyped line back onto the notes it belongs to.
 pub(crate) fn sync_editor_phrase_input(
-    inputs: Query<(&EditableText, &EditorPhraseInput), Changed<EditableText>>,
+    inputs: Query<(Ref<EditableText>, &EditorPhraseInput)>,
     mut session: ResMut<StudioSession>,
 ) {
     let Some(editor) = session.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {
+        // See `sync_editor_word_input`: `Changed<EditableText>` also fires on
+        // spawn, which would wrongly treat this widget respawning for a
+        // different line as the user having retyped it.
+        if input.is_added() || !input.is_changed() {
+            continue;
+        }
         let text = input.value().to_string();
         if text == editor.document.phrase_token_text(marker.0) {
             continue;

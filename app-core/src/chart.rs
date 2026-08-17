@@ -204,7 +204,10 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
         chart
     } else {
         // A song that has never been edited still carries only analyzer output.
-        let mut transcript = read_json(&cache.transcript_path(file_hash), "transcript")?;
+        let mut transcript = read_json(
+            &cache.resolve_timed_transcript_path(file_hash),
+            "transcript",
+        )?;
         let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes")?;
         let repaired_timings = normalize_transcript_timings(&mut transcript);
         if repaired_timings > 0 {
@@ -437,6 +440,197 @@ pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<()
     Ok(())
 }
 
+/// Explicit, user-confirmed discard of the Authored Chart: the next load
+/// rebuilds it from the latest analyzer output (transcript + pitch notes)
+/// instead of the edits this deletes. Reanalysis paths never call this
+/// automatically (docs/analysis-dag-redesign.md §6/Phase 5) -- it exists
+/// only for a user who explicitly wants to throw away their edits and
+/// start over from fresh analysis. Callers must gate this behind a
+/// confirmation UI; it performs no confirmation of its own.
+pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(), UtaStudioError> {
+    let cache = CacheDir::new();
+    cache.invalidate_authored_chart(file_hash);
+    Ok(())
+}
+
+/// Phase 5 §5.1: how a fresh analysis result should reconcile with an
+/// existing Authored Chart. `CreateCandidate` (leave the Authored Chart on
+/// disk untouched, let the user explicitly compare/replace through
+/// `candidate_chart_status`/`replace_authored_chart_with_fresh_analysis`) is
+/// the only policy any analysis path actually implements today --
+/// `run_pipeline`/`process_song` never touch `vocal_chart.json` regardless
+/// of what triggered the run, and nothing currently constructs the other
+/// two variants. This enum exists to name that already-true default and the
+/// two escape hatches (skip a rerun entirely; or explicitly discard edits
+/// and replace) rather than to select between three different code paths
+/// today -- see `docs/analysis-dag-redesign.md` §6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub enum ChartUpdatePolicy {
+    KeepAuthoredChart,
+    CreateCandidate,
+    ReplaceAfterConfirmation,
+}
+
+impl Default for ChartUpdatePolicy {
+    fn default() -> Self {
+        Self::CreateCandidate
+    }
+}
+
+/// Phase 5 §5.4 "查看 Candidate 与 Authored Chart 的摘要差异": counts, not a
+/// full field-by-field diff -- `VocalChartV1` carries no detected key/BPM of
+/// its own (that lives in `music_analysis.json`, outside the chart), so a
+/// deep semantic diff isn't meaningful at this layer. Phrase/note counts and
+/// which analyzer inputs actually changed since the chart was last saved are
+/// real, useful signals without pretending to be a merge tool.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct CandidateChartSummary {
+    pub authored_phrase_count: usize,
+    pub authored_note_count: usize,
+    pub candidate_phrase_count: usize,
+    pub candidate_note_count: usize,
+    /// `transcript.json` was rewritten after the Authored Chart was last
+    /// saved (a transcription/alignment/timed-lyrics rerun happened since).
+    pub lyrics_changed: bool,
+    /// `pitch_track.json`/`pitch_notes.json` were rewritten after the
+    /// Authored Chart was last saved (a pitch rerun happened since).
+    pub pitch_evidence_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind", content = "summary")]
+pub enum CandidateChartStatus {
+    /// No `vocal_chart.json` exists yet -- there is nothing "authored" to
+    /// compare a candidate against. `chart_readiness` already covers
+    /// first-time editing; this isn't a staleness signal.
+    NotAuthoredYet,
+    /// An Authored Chart exists and no analyzer output has changed since it
+    /// was last saved.
+    UpToDate,
+    /// An Authored Chart exists, and at least one analyzer output
+    /// (transcript or pitch evidence) was rewritten after it was last
+    /// saved -- §5.5's "New candidate analysis is available".
+    CandidateAvailable(CandidateChartSummary),
+}
+
+fn vocal_chart_counts(chart: &VocalChartV1) -> (usize, usize) {
+    let phrase_count = chart.tracks.iter().map(|track| track.phrases.len()).sum();
+    let note_count = chart
+        .tracks
+        .iter()
+        .flat_map(|track| track.phrases.iter())
+        .map(|phrase| phrase.notes.len())
+        .sum();
+    (phrase_count, note_count)
+}
+
+fn modified_after(path: &Path, reference: std::time::SystemTime) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map(|mtime| mtime > reference)
+        .unwrap_or(false)
+}
+
+/// Phase 5 §5.5 "Stale Evidence" staleness check: compares the Authored
+/// Chart's own mtime against the analyzer output files it could be rebuilt
+/// from. Deliberately mtime-based rather than a versioned `candidate_chart`
+/// artifact table (Phase 2's `ArtifactRevision` model doesn't cover
+/// `vocal_chart.json` -- it's authored, not analyzer-produced) -- simple,
+/// real, and matches what the Authored Chart protection guarantee actually
+/// is: "did analysis write something new since I last saved my edits."
+pub fn candidate_chart_status(file_hash: &str) -> CandidateChartStatus {
+    candidate_chart_status_for(&CacheDir::new(), file_hash)
+}
+
+/// Phase 8 §8.2 "Chart 问题计数行" -- deliberately *not* built on
+/// `load_chart`: that function resolves `ChartAudio` too
+/// (`playable_audio`, which can transcode a non-browser-native source),
+/// which is what made a per-render problem count look expensive. Counting
+/// problems only ever needs the chart's own structure --
+/// `EditorDocument::problems()` takes a bare `VocalChartV1`, nothing about
+/// audio -- so this skips that resolution entirely and is cheap enough to
+/// call on every render, same as `candidate_chart_status`/
+/// `cached_artifact_presence_for_song`. `None` means there is no chart data
+/// to count problems in yet (nothing analyzed, or the pieces needed to
+/// synthesize a candidate are missing) -- not zero problems.
+pub fn chart_problem_count(file_hash: &str) -> Option<usize> {
+    chart_problem_count_for(&CacheDir::new(), file_hash)
+}
+
+fn chart_problem_count_for(cache: &CacheDir, file_hash: &str) -> Option<usize> {
+    let vocal_chart_path = cache.vocal_chart_path(file_hash);
+    let vocal_chart: VocalChartV1 = if vocal_chart_path.is_file() {
+        serde_json::from_str(&std::fs::read_to_string(&vocal_chart_path).ok()?).ok()?
+    } else {
+        let mut transcript = read_json(
+            &cache.resolve_timed_transcript_path(file_hash),
+            "transcript",
+        )
+        .ok()?;
+        let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes").ok()?;
+        normalize_transcript_timings(&mut transcript);
+        normalize_pitch_note_timings(&mut pitch_notes);
+        migrate_analyzer_chart(&transcript, &pitch_notes).ok()?
+    };
+    Some(
+        crate::editor::EditorDocument::new(vocal_chart)
+            .problems()
+            .total(),
+    )
+}
+
+/// Testable core of `candidate_chart_status`, taking `&CacheDir` so tests
+/// can point it at a temp directory instead of the real (and possibly
+/// absent) data directory.
+fn candidate_chart_status_for(cache: &CacheDir, file_hash: &str) -> CandidateChartStatus {
+    let authored_path = cache.vocal_chart_path(file_hash);
+    let Ok(authored_mtime) = std::fs::metadata(&authored_path).and_then(|meta| meta.modified())
+    else {
+        return CandidateChartStatus::NotAuthoredYet;
+    };
+
+    let transcript_path = cache.resolve_timed_transcript_path(file_hash);
+    let pitch_notes_path = cache.pitch_notes_path(file_hash);
+    let pitch_track_path = cache.pitch_track_path(file_hash);
+
+    let lyrics_changed = modified_after(&transcript_path, authored_mtime);
+    let pitch_evidence_changed = modified_after(&pitch_notes_path, authored_mtime)
+        || modified_after(&pitch_track_path, authored_mtime);
+
+    if !lyrics_changed && !pitch_evidence_changed {
+        return CandidateChartStatus::UpToDate;
+    }
+
+    let (candidate_phrase_count, candidate_note_count) = (|| -> Option<(usize, usize)> {
+        let mut transcript = read_json(&transcript_path, "transcript").ok()?;
+        let mut pitch_notes = read_json(&pitch_notes_path, "pitch notes").ok()?;
+        normalize_transcript_timings(&mut transcript);
+        normalize_pitch_note_timings(&mut pitch_notes);
+        let candidate = migrate_analyzer_chart(&transcript, &pitch_notes).ok()?;
+        Some(vocal_chart_counts(&candidate))
+    })()
+    .unwrap_or((0, 0));
+
+    let (authored_phrase_count, authored_note_count) = std::fs::read_to_string(&authored_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<VocalChartV1>(&text).ok())
+        .as_ref()
+        .map(vocal_chart_counts)
+        .unwrap_or((0, 0));
+
+    CandidateChartStatus::CandidateAvailable(CandidateChartSummary {
+        authored_phrase_count,
+        authored_note_count,
+        candidate_phrase_count,
+        candidate_note_count,
+        lyrics_changed,
+        pitch_evidence_changed,
+    })
+}
+
 fn read_json(path: &Path, label: &str) -> Result<serde_json::Value, UtaStudioError> {
     if !path.is_file() {
         return Err(UtaStudioError::Other(format!("{label} is not ready")));
@@ -599,6 +793,329 @@ fn validate_range(start: f64, end: f64, label: &str, index: usize) -> Result<(),
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod candidate_chart_status_tests {
+    use super::{CandidateChartStatus, candidate_chart_status_for};
+    use crate::cache::CacheDir;
+    use crate::vocal_chart::migrate_analyzer_chart;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn temp_cache_dir(label: &str) -> CacheDir {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-candidate-chart-test-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        CacheDir { path }
+    }
+
+    fn sample_transcript() -> serde_json::Value {
+        serde_json::json!({
+            "language": "en",
+            "segments": [{
+                "text": "hello",
+                "start": 1.0,
+                "end": 1.5,
+                "words": [{"word": "hello", "start": 1.0, "end": 1.5}]
+            }]
+        })
+    }
+
+    fn sample_pitch_notes() -> serde_json::Value {
+        serde_json::json!({
+            "format_version": 1,
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9}]
+        })
+    }
+
+    /// Writes `value` as JSON and pins its mtime explicitly, so ordering
+    /// between files doesn't depend on real wall-clock sleeps (flaky on
+    /// coarse-resolution filesystems).
+    fn write_json_at(path: &std::path::Path, value: &serde_json::Value, mtime: SystemTime) {
+        std::fs::write(path, serde_json::to_string(value).unwrap()).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(mtime).unwrap();
+    }
+
+    #[test]
+    fn no_authored_chart_is_not_authored_yet() {
+        let cache = temp_cache_dir("no-authored");
+        assert!(matches!(
+            candidate_chart_status_for(&cache, "songA"),
+            CandidateChartStatus::NotAuthoredYet
+        ));
+        cache.clear_all();
+    }
+
+    #[test]
+    fn authored_chart_newer_than_everything_is_up_to_date() {
+        let cache = temp_cache_dir("up-to-date");
+        let base = SystemTime::now();
+        write_json_at(&cache.transcript_path("songA"), &sample_transcript(), base);
+        write_json_at(
+            &cache.pitch_notes_path("songA"),
+            &sample_pitch_notes(),
+            base,
+        );
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        write_json_at(
+            &cache.vocal_chart_path("songA"),
+            &serde_json::to_value(&chart).unwrap(),
+            base + Duration::from_secs(10),
+        );
+
+        assert!(matches!(
+            candidate_chart_status_for(&cache, "songA"),
+            CandidateChartStatus::UpToDate
+        ));
+        cache.clear_all();
+    }
+
+    #[test]
+    fn transcript_rewritten_after_the_authored_chart_reports_a_candidate() {
+        let cache = temp_cache_dir("stale-lyrics");
+        let base = SystemTime::now();
+        write_json_at(
+            &cache.pitch_notes_path("songA"),
+            &sample_pitch_notes(),
+            base,
+        );
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        write_json_at(
+            &cache.vocal_chart_path("songA"),
+            &serde_json::to_value(&chart).unwrap(),
+            base + Duration::from_secs(10),
+        );
+        write_json_at(
+            &cache.transcript_path("songA"),
+            &sample_transcript(),
+            base + Duration::from_secs(20),
+        );
+
+        match candidate_chart_status_for(&cache, "songA") {
+            CandidateChartStatus::CandidateAvailable(summary) => {
+                assert!(summary.lyrics_changed);
+                assert!(!summary.pitch_evidence_changed);
+                assert_eq!(summary.authored_note_count, 1);
+                assert_eq!(summary.candidate_note_count, 1);
+            }
+            other => panic!("expected CandidateAvailable, got {other:?}"),
+        }
+        cache.clear_all();
+    }
+
+    #[test]
+    fn pitch_rewritten_after_the_authored_chart_reports_a_candidate() {
+        let cache = temp_cache_dir("stale-pitch");
+        let base = SystemTime::now();
+        write_json_at(&cache.transcript_path("songA"), &sample_transcript(), base);
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        write_json_at(
+            &cache.vocal_chart_path("songA"),
+            &serde_json::to_value(&chart).unwrap(),
+            base + Duration::from_secs(10),
+        );
+        write_json_at(
+            &cache.pitch_notes_path("songA"),
+            &sample_pitch_notes(),
+            base + Duration::from_secs(20),
+        );
+
+        match candidate_chart_status_for(&cache, "songA") {
+            CandidateChartStatus::CandidateAvailable(summary) => {
+                assert!(!summary.lyrics_changed);
+                assert!(summary.pitch_evidence_changed);
+            }
+            other => panic!("expected CandidateAvailable, got {other:?}"),
+        }
+        cache.clear_all();
+    }
+
+    #[test]
+    fn a_different_song_hash_is_unaffected() {
+        let cache = temp_cache_dir("cross-song");
+        let base = SystemTime::now();
+        write_json_at(&cache.transcript_path("songA"), &sample_transcript(), base);
+        write_json_at(
+            &cache.pitch_notes_path("songA"),
+            &sample_pitch_notes(),
+            base,
+        );
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        write_json_at(
+            &cache.vocal_chart_path("songA"),
+            &serde_json::to_value(&chart).unwrap(),
+            base + Duration::from_secs(10),
+        );
+
+        assert!(matches!(
+            candidate_chart_status_for(&cache, "songB"),
+            CandidateChartStatus::NotAuthoredYet
+        ));
+        cache.clear_all();
+    }
+
+    #[test]
+    fn freshness_is_judged_against_the_dedicated_timed_transcript_file_when_present() {
+        // §4.4: a stale compatibility `transcript.json` mtime must not mask
+        // a fresh `timed_transcript.json` -- the dedicated file is the real
+        // source of truth going forward.
+        let cache = temp_cache_dir("dedicated-freshness");
+        let base = SystemTime::now();
+        // Old compatibility file, written long before the chart.
+        write_json_at(&cache.transcript_path("songA"), &sample_transcript(), base);
+        write_json_at(
+            &cache.pitch_notes_path("songA"),
+            &sample_pitch_notes(),
+            base,
+        );
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        write_json_at(
+            &cache.vocal_chart_path("songA"),
+            &serde_json::to_value(&chart).unwrap(),
+            base + Duration::from_secs(10),
+        );
+        // Dedicated file written fresh, after the chart -- must be what
+        // freshness is actually judged against.
+        write_json_at(
+            &cache.timed_transcript_path("songA"),
+            &sample_transcript(),
+            base + Duration::from_secs(20),
+        );
+
+        match candidate_chart_status_for(&cache, "songA") {
+            CandidateChartStatus::CandidateAvailable(summary) => {
+                assert!(summary.lyrics_changed);
+            }
+            other => panic!("expected CandidateAvailable, got {other:?}"),
+        }
+        cache.clear_all();
+    }
+}
+
+#[cfg(test)]
+mod chart_problem_count_tests {
+    use super::chart_problem_count_for;
+    use crate::cache::CacheDir;
+    use crate::vocal_chart::migrate_analyzer_chart;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_cache_dir(label: &str) -> CacheDir {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-chart-problem-count-test-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        CacheDir { path }
+    }
+
+    fn sample_transcript() -> serde_json::Value {
+        serde_json::json!({
+            "language": "en",
+            "segments": [{
+                "text": "hello",
+                "start": 1.0,
+                "end": 1.5,
+                "words": [{"word": "hello", "start": 1.0, "end": 1.5}]
+            }]
+        })
+    }
+
+    fn sample_pitch_notes() -> serde_json::Value {
+        serde_json::json!({
+            "format_version": 1,
+            "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9}]
+        })
+    }
+
+    #[test]
+    fn no_data_at_all_returns_none() {
+        let cache = temp_cache_dir("no-data");
+        assert_eq!(chart_problem_count_for(&cache, "songA"), None);
+        cache.clear_all();
+    }
+
+    #[test]
+    fn synthesizes_a_count_from_analyzer_output_when_not_yet_authored() {
+        let cache = temp_cache_dir("synthesized");
+        std::fs::write(
+            cache.transcript_path("songA"),
+            serde_json::to_string(&sample_transcript()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            cache.pitch_notes_path("songA"),
+            serde_json::to_string(&sample_pitch_notes()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(chart_problem_count_for(&cache, "songA"), Some(0));
+        cache.clear_all();
+    }
+
+    #[test]
+    fn reads_the_authored_chart_directly_when_present() {
+        let cache = temp_cache_dir("authored");
+        let chart = migrate_analyzer_chart(&sample_transcript(), &sample_pitch_notes()).unwrap();
+        std::fs::write(
+            cache.vocal_chart_path("songA"),
+            serde_json::to_string(&chart).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(chart_problem_count_for(&cache, "songA"), Some(0));
+        cache.clear_all();
+    }
+
+    #[test]
+    fn a_different_song_hash_is_isolated() {
+        let cache = temp_cache_dir("isolated");
+        std::fs::write(
+            cache.transcript_path("songA"),
+            serde_json::to_string(&sample_transcript()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            cache.pitch_notes_path("songA"),
+            serde_json::to_string(&sample_pitch_notes()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(chart_problem_count_for(&cache, "songB"), None);
+        cache.clear_all();
+    }
+
+    #[test]
+    fn prefers_the_dedicated_timed_transcript_file_over_the_compatibility_one() {
+        // §4.4: when both files exist, the dedicated one must win -- a
+        // broken/empty compatibility file must not shadow good data in the
+        // real source of truth going forward.
+        let cache = temp_cache_dir("prefers-dedicated");
+        std::fs::write(cache.transcript_path("songA"), b"not valid json").unwrap();
+        std::fs::write(
+            cache.timed_transcript_path("songA"),
+            serde_json::to_string(&sample_transcript()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            cache.pitch_notes_path("songA"),
+            serde_json::to_string(&sample_pitch_notes()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(chart_problem_count_for(&cache, "songA"), Some(0));
+        cache.clear_all();
+    }
 }
 
 #[cfg(test)]

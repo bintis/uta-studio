@@ -30,6 +30,8 @@ use bevy::{
 
 use crate::theme::StudioTheme;
 mod analysis;
+mod analysis_layout;
+mod analysis_model;
 mod editor;
 mod folders;
 mod library;
@@ -38,7 +40,10 @@ mod song_detail;
 mod song_settings;
 mod widgets;
 
-pub(crate) use analysis::*;
+use self::analysis::*;
+
+pub(crate) use analysis_layout::*;
+pub(crate) use analysis_model::*;
 pub(crate) use editor::*;
 pub(crate) use folders::*;
 pub(crate) use library::*;
@@ -50,6 +55,36 @@ pub(crate) use widgets::*;
 const FONT_PATH: &str = "desktop/assets/fonts/NotoSansCJKsc-Regular.otf";
 
 const LOGO_PATH: &str = "icon.png";
+
+/// Baked into the binary (see `setup`'s `BrandImages`) rather than loaded
+/// via `AssetServer` like `LOGO_PATH` -- neither needs to be user-replaceable
+/// at runtime, and embedding means one less file the packaged build has to
+/// carry and locate correctly.
+const LOGO_BYTES: &[u8] = include_bytes!("../../../icon.png");
+
+const BANNER_BYTES: &[u8] = include_bytes!("../../../Banner.png");
+
+/// Decoded once in `setup` from `LOGO_BYTES`/`BANNER_BYTES` and reused by
+/// every `rebuild_ui` pass after that, the same "decode once, hand out
+/// cheap `Handle` clones" shape `LocalImages` already uses for cover art.
+#[derive(Resource, Clone)]
+struct BrandImages {
+    logo: Handle<Image>,
+    banner: Handle<Image>,
+}
+
+fn decode_embedded_png(bytes: &[u8], images: &mut Assets<Image>) -> Handle<Image> {
+    let image = Image::from_buffer(
+        bytes,
+        ImageType::Extension("png"),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::Default,
+        RenderAssetUsages::default(),
+    )
+    .expect("brand PNGs embedded at compile time are always well-formed");
+    images.add(image)
+}
 
 const SIDEBAR_WIDTH: f32 = 265.0;
 
@@ -82,12 +117,34 @@ pub(crate) struct StudioSession {
     editor: Option<NativeEditor>,
     folder_browser: FolderBrowser,
     song_context: Option<SongContextMenu>,
+    analysis_node_context: Option<AnalysisNodeContextMenu>,
     pending_setup: Option<SetupRequest>,
     diagnostic_report: Option<uta_studio_diagnostics::DiagnosticReport>,
     lyrics_editor: Option<NativeLyricsEditor>,
     pending_cache_delete: Option<String>,
+    pending_artifact_delete: Option<app_core::ArtifactRevision>,
+    /// Phase 6 `invalidate_artifact_revision` / Phase 7 §7.6 "Invalidate":
+    /// destructive-classified, so it goes through the same
+    /// request/cancel/confirm flow as `pending_artifact_delete` even though
+    /// (unlike Delete) it never removes the file.
+    pending_artifact_invalidate: Option<app_core::ArtifactRevision>,
+    /// Phase 5 §5.4 "Replace 必须经过确认": file_hash of the song whose
+    /// Authored Chart the user has asked (but not yet confirmed) to discard
+    /// in favor of the current candidate analysis output.
+    pending_chart_replace: Option<String>,
     authoring_busy: bool,
     language_editor: Option<NativeLanguageEditor>,
+    /// Phase 8 "Configure for this run…" -- a draft one-run override for a
+    /// single node's profile-controlled field, committed via
+    /// `app_core::configure_analysis_node_for_run`.
+    node_config_dialog: Option<NativeNodeConfigDialog>,
+    /// Phase 7/8 Plan Preview panel: a staged, not-yet-committed
+    /// disabled-node combination, previewed live via
+    /// `app_core::preview_analysis_plan_for_selection` and committed via
+    /// `run_analysis_plan` only when the user explicitly runs it.
+    plan_preview_draft: Option<PlanPreviewDraft>,
+    /// §7.5 "View logs" -- which node's context menu it was opened from.
+    app_log_viewer: Option<AppLogViewerState>,
     song_settings: Option<NativeSongSettings>,
     pending_cache_clear: Option<CacheClearScope>,
     pending_leave: Option<PendingLeave>,
@@ -96,6 +153,14 @@ pub(crate) struct StudioSession {
     settings_scroll_offsets: [f32; 4],
     library_scroll_offset: f32,
     analysis_graph_scroll_offset: f32,
+    /// DAG canvas zoom (§7.8/§9.3 "DAG 支持 Pan、Zoom、Fit"). 1.0 is
+    /// unscaled; clamped to `ANALYSIS_GRAPH_ZOOM_RANGE`. Applied by scaling
+    /// the already-computed layout rects before spawning node/edge boxes
+    /// (`spawn_analysis_session_overview`), not via a visual-only UI
+    /// transform, so the scroll viewport's real content size -- and
+    /// therefore panning and click hit-testing -- stays correct at any
+    /// zoom level instead of drifting out of sync with what's drawn.
+    analysis_graph_zoom: f32,
     open_library_select: Option<LibrarySelectKind>,
     export_all_open: bool,
     open_editor_select: Option<EditorDockSelectKind>,
@@ -106,6 +171,20 @@ pub(crate) struct StudioSession {
     analysis_history: Vec<app_core::AnalysisRunHistory>,
     selected_analysis_history: Option<i64>,
     selected_analysis_stage: Option<String>,
+    /// §7.3 "Music Analysis 支持展开": which compound nodes currently show
+    /// their children as separate boxes instead of one collapsed box with a
+    /// "N sub-checks not shown" note. Toggled from the Node Context Menu
+    /// (`UiAction::ToggleAnalysisCompoundNode`) -- `analysis_model.rs`'s
+    /// `build_graph_view_model` has taken this set as a parameter since
+    /// Phase 7 landed, it just always got an empty one until this field
+    /// existed to feed it something real.
+    expanded_compound_nodes: std::collections::BTreeSet<app_core::AnalysisNodeId>,
+    /// Mutually exclusive with the full DAG canvas -- toggled by the "VIEW"
+    /// row's MINI/Full button (`UiAction::ToggleAnalysisMiniView`). While on,
+    /// the graph is built as if `expanded_compound_nodes` were empty, so
+    /// only the top-level, model-backed nodes render regardless of what's
+    /// individually expanded in the full view.
+    analysis_mini_view: bool,
     pending_analysis_history_clear: bool,
     request_cache_stats_refresh: bool,
     search_open: bool,
@@ -139,12 +218,19 @@ impl StudioSession {
             editor: None,
             folder_browser,
             song_context: None,
+            analysis_node_context: None,
             pending_setup: None,
             diagnostic_report: None,
             lyrics_editor: None,
             pending_cache_delete: None,
+            pending_artifact_delete: None,
+            pending_artifact_invalidate: None,
+            pending_chart_replace: None,
             authoring_busy: false,
             language_editor: None,
+            node_config_dialog: None,
+            plan_preview_draft: None,
+            app_log_viewer: None,
             song_settings: None,
             pending_cache_clear: None,
             pending_leave: None,
@@ -153,6 +239,7 @@ impl StudioSession {
             settings_scroll_offsets: [0.0; 4],
             library_scroll_offset: 0.0,
             analysis_graph_scroll_offset: 0.0,
+            analysis_graph_zoom: 1.0,
             open_library_select: None,
             export_all_open: false,
             open_editor_select: None,
@@ -161,6 +248,8 @@ impl StudioSession {
             analysis_history: app_core::load_analysis_history(100),
             selected_analysis_history: None,
             selected_analysis_stage: None,
+            expanded_compound_nodes: std::collections::BTreeSet::new(),
+            analysis_mini_view: false,
             pending_analysis_history_clear: false,
             request_cache_stats_refresh: false,
             search_open: false,
@@ -171,6 +260,150 @@ impl StudioSession {
             editor_load_job: NativeEditorLoadJob::default(),
             lyrics_search_job: NativeLyricsSearchJob::default(),
         }
+        .with_debug_navigation()
+    }
+
+    /// Dev-only startup navigation for visually verifying UI changes with a
+    /// real screenshot tool instead of guessing from source. Inert unless
+    /// one of these env vars is explicitly set, so it can never affect a
+    /// real user's session. `UTA_STUDIO_DEBUG_OPEN_SONG=<file_hash>` opens
+    /// Song Detail for that song; `UTA_STUDIO_DEBUG_OPEN_ACTIVITY=1` opens
+    /// the Activity Center (the DAG canvas panel) on top of whatever route
+    /// that resolves to.
+    fn with_debug_navigation(mut self) -> Self {
+        if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_OPEN_SONG") {
+            self.selected_song = Some(hash);
+            self.route = StudioRoute::SongDetail;
+        }
+        if std::env::var("UTA_STUDIO_DEBUG_OPEN_ACTIVITY").is_ok() {
+            self.activity_open = true;
+        }
+        if let Ok(id) = std::env::var("UTA_STUDIO_DEBUG_OPEN_HISTORY")
+            && let Ok(id) = id.parse::<i64>()
+        {
+            // The DAG canvas (`spawn_analysis_session_overview`) only
+            // renders on the Analysis Queue library view
+            // (`library.rs`'s `LibraryView::Queue` branch) -- it is not
+            // part of the Activity slide-over panel, which only ever
+            // lists queued jobs.
+            self.selected_analysis_history = Some(id);
+            self.route = StudioRoute::Library;
+            self.library_view = LibraryView::Queue;
+        }
+        // §7.6 "Artifact Context Menu": the artifact-revision rows this
+        // renders (and whatever button gating depends on `ArtifactKind`,
+        // e.g. "Play audio artifact") are otherwise empty for any song
+        // that has never had `import_legacy_artifacts`/"Sync from disk" run
+        // for it -- this drives that same real, already-shipped action on
+        // startup so the resulting UI can be screenshotted without a real
+        // click.
+        if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_SYNC_ARTIFACTS") {
+            let _ = app_core::import_legacy_artifacts(&app_core::CacheDir::new(), &hash);
+        }
+        // No Wayland input-synthesis tool is available in this sandbox to
+        // drive a real node click or canvas drag (confirmed by actually
+        // trying `ydotool`/`ydotoold`: it starts but cannot create its
+        // virtual uinput device here, a sandbox/namespace restriction, not
+        // a permissions gap -- the ACL on /dev/uinput is fine). These two
+        // env vars set the same session state a click/drag would produce,
+        // so the inspector panel for a non-default node and a panned
+        // canvas can still be screenshotted and checked for real.
+        if let Ok(stage) = std::env::var("UTA_STUDIO_DEBUG_SELECT_STAGE") {
+            self.selected_analysis_stage = Some(stage);
+        }
+        if let Ok(offset) = std::env::var("UTA_STUDIO_DEBUG_SCROLL_OFFSET")
+            && let Ok(offset) = offset.parse::<f32>()
+        {
+            self.analysis_graph_scroll_offset = offset;
+        }
+        if let Ok(zoom) = std::env::var("UTA_STUDIO_DEBUG_GRAPH_ZOOM")
+            && let Ok(zoom) = zoom.parse::<f32>()
+        {
+            self.analysis_graph_zoom = zoom;
+        }
+        // §7.3 "Music Analysis 支持展开" -- same substitute-for-a-real-click
+        // purpose as the other debug vars above: forces a compound node's
+        // children to render as separate boxes so that can be screenshotted
+        // without a real click on its context-menu toggle.
+        if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_EXPAND_COMPOUND") {
+            self.expanded_compound_nodes
+                .insert(app_core::AnalysisNodeId::new(node_id));
+        }
+        // §7.5's Node Context Menu opens on a real secondary-click
+        // (`open_analysis_node_from_click`), but no Wayland input-synthesis
+        // tool in this sandbox can produce one -- see the ydotool note
+        // above. This forces it open at a fixed on-screen position so it
+        // can still be screenshotted and checked for real, same purpose as
+        // the other `UTA_STUDIO_DEBUG_*` vars.
+        if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT")
+            && let Some(history) = self
+                .selected_analysis_history
+                .and_then(|id| self.analysis_history.iter().find(|h| h.id == id))
+        {
+            let stage_id =
+                bucket_stage_id(analysis_node_stage_index(&node_id).unwrap_or(0)).to_string();
+            self.analysis_node_context = Some(AnalysisNodeContextMenu {
+                node_id: node_id.clone(),
+                stage_id,
+                label: node_id.clone(),
+                retry_action: analysis_node_retry_action(&node_id, &history.file_hash),
+                run_node_only_action: UiAction::RunAnalysisNodeOnly(
+                    history.file_hash.clone(),
+                    node_id.clone(),
+                ),
+                run_downstream_action: UiAction::RunAnalysisNodeDownstream(
+                    history.file_hash.clone(),
+                    node_id.clone(),
+                ),
+                disable_node_action: app_core::node_can_be_disabled_for_run(&node_id).then(|| {
+                    UiAction::DisableAnalysisNodeForRun(history.file_hash.clone(), node_id.clone())
+                }),
+                freeze_node_action: app_core::node_can_be_frozen_for_run(
+                    &history.file_hash,
+                    &node_id,
+                )
+                .then(|| {
+                    UiAction::FreezeAnalysisNodeOutputs(history.file_hash.clone(), node_id.clone())
+                }),
+                bypass_node_action: app_core::node_can_be_bypassed_for_run(&node_id).then(|| {
+                    UiAction::BypassAnalysisNodeWithOriginalMix(
+                        history.file_hash.clone(),
+                        node_id.clone(),
+                    )
+                }),
+                compare_node_action: Some(UiAction::CompareNodeAttemptWithPrevious(
+                    history.file_hash.clone(),
+                    node_id.clone(),
+                    history.id,
+                )),
+                save_as_song_profile_action: app_core::node_can_be_configured_for_run(&node_id)
+                    .then(|| {
+                        UiAction::SaveNodeConfigAsSongProfile(
+                            history.file_hash.clone(),
+                            node_id.clone(),
+                        )
+                    }),
+                open_configure_dialog_action: app_core::node_can_be_configured_for_run(&node_id)
+                    .then(|| {
+                        UiAction::OpenNodeConfigDialog(history.file_hash.clone(), node_id.clone())
+                    }),
+                force_transcribe_action: node_can_force_transcribe(&node_id)
+                    .then(|| UiAction::ForceTranscribe(history.file_hash.clone())),
+                refetch_align_action: node_can_refetch_and_align(&node_id)
+                    .then(|| UiAction::ReanalyzeTranscript(history.file_hash.clone())),
+                view_logs_action: Some(UiAction::OpenAppLogViewer(
+                    history.file_hash.clone(),
+                    node_id.clone(),
+                )),
+                compound_toggle: analysis_node_compound_toggle_action(
+                    &node_id,
+                    self.expanded_compound_nodes
+                        .contains(&app_core::AnalysisNodeId::new(node_id.clone())),
+                ),
+                position: Vec2::new(420.0, 340.0),
+            });
+        }
+        self
     }
 
     fn refresh_library(&mut self) {
@@ -275,6 +508,22 @@ pub(crate) enum UiAction {
     CloseActivity,
     SelectAnalysisHistory(Option<i64>),
     SelectAnalysisStage(String),
+    /// Percent-point delta (e.g. +15/-15), clamped in the handler --
+    /// `UiAction` derives `Eq` so this carries an integer, not the session's
+    /// underlying `f32` zoom.
+    AdjustAnalysisGraphZoom(i32),
+    /// Mutually exclusive with the full DAG canvas -- see
+    /// `StudioSession::analysis_mini_view`.
+    ToggleAnalysisMiniView,
+    /// Payload is the *unscaled* canvas width in px, computed fresh each
+    /// render pass, so the handler can size zoom to the real current
+    /// viewport without duplicating the layout algorithm.
+    FitAnalysisGraph(i32),
+    /// (scroll offset px, inspector stage id) for a §7.8 "Focus
+    /// Current/Failed/Stale" button, computed at render time in
+    /// `spawn_analysis_session_overview` from the real layout and plan.
+    FocusAnalysisGraphNode(i32, String),
+    DismissAnalysisNodeContext,
     RequestClearAnalysisHistory,
     CancelClearAnalysisHistory,
     ConfirmClearAnalysisHistory,
@@ -353,14 +602,116 @@ pub(crate) enum UiAction {
     ForceTranscribe(String),
     ReanalyzePitch(String),
     ReanalyzeFull(String),
+    /// §7.5 "Run this node only": file_hash, node_id. Phase 4's generic
+    /// `app_core::run_analysis_node` executor, not another special-cased
+    /// command.
+    RunAnalysisNodeOnly(String, String),
+    /// §7.5 "Run this node and downstream": file_hash, node_id.
+    /// `app_core::run_analysis_node_downstream`.
+    RunAnalysisNodeDownstream(String, String),
+    /// §7.5 "Disable for this run": file_hash, node_id.
+    /// `app_core::disable_analysis_node_for_run`.
+    DisableAnalysisNodeForRun(String, String),
+    /// §7.5 "Freeze current outputs": file_hash, node_id. Phase 4 §4.5's
+    /// Freeze consumer, `app_core::freeze_analysis_node_outputs_for_run`.
+    FreezeAnalysisNodeOutputs(String, String),
+    /// §7.5 "Choose bypass": file_hash, node_id. Phase 4 §4.5's Bypass
+    /// consumer, `app_core::bypass_analysis_node_with_original_mix_for_run`.
+    /// Not actually a chooser -- Original Mix is the only real bypass
+    /// choice any node in the graph has today (only `stems.separate`
+    /// qualifies at all), so there's nothing to pick between yet.
+    BypassAnalysisNodeWithOriginalMix(String, String),
+    /// §7.5 "Compare with previous attempt": file_hash, node_id,
+    /// current_run_id. `app_core::compare_node_attempt_with_previous_run`.
+    CompareNodeAttemptWithPrevious(String, String, i64),
+    /// §7.5 "Save as song profile": file_hash, node_id. Fires immediately
+    /// (no dialog) -- persists whatever value is currently in effect for
+    /// this node's field. `app_core::save_node_config_as_song_profile`.
+    SaveNodeConfigAsSongProfile(String, String),
+    /// §7.5 "Configure for this run…": file_hash, node_id. Opens
+    /// `NativeNodeConfigDialog` since a new value has to be picked first.
+    OpenNodeConfigDialog(String, String),
+    CloseNodeConfigDialog,
+    ToggleNodeConfigPicker,
+    SelectNodeConfigValue(String),
+    /// Commits the dialog's draft value via
+    /// `app_core::configure_analysis_node_for_run` and queues the run.
+    RunNodeConfigDialog,
+    /// Phase 7/8 Plan Preview panel: file_hash. Seeds an empty staged
+    /// disabled-node set.
+    OpenPlanPreview(String),
+    ClosePlanPreview,
+    /// node_id: flips it in/out of the draft's staged `disabled_nodes`.
+    TogglePlanPreviewDisabledNode(String),
+    /// Commits the draft via `app_core::run_analysis_plan` (empty targets,
+    /// the default-full-run convention) and closes the panel.
+    RunPlanPreviewDraft,
+    /// §7.5's "View logs": file_hash, node_id.
+    OpenAppLogViewer(String, String),
+    CloseAppLogViewer,
+    /// Opens `app_core::get_log_path()` with the OS default program. No
+    /// path payload -- the target is always the one real app log file, an
+    /// internally-computed path rather than anything user/library-derived,
+    /// so this doesn't need `validate_cache_path`/`validate_source_path`'s
+    /// boundary check the way an artifact/library path does.
+    OpenAppLogFile,
+    /// §7.3 "Music Analysis 支持展开": toggles whether a compound node's
+    /// children render as separate boxes. node_id (always a real compound
+    /// node's id, e.g. `music.analysis`).
+    ToggleAnalysisCompoundNode(String),
     RequestDeleteSongCache(String),
+    /// Phase 6 `app_core::cancel_analysis_run`: file_hash. Only offered for
+    /// a job that's still `Queued` (not yet started) -- see that
+    /// function's doc comment for why a running job can't be cancelled
+    /// mid-run yet.
+    CancelAnalysisRun(String),
     CancelDeleteSongCache,
+    /// Phase 5 §5.4 "Compare / Merge / Replace": file_hash. Opens the
+    /// confirmation modal; the actual discard only happens on
+    /// `ConfirmReplaceAuthoredChart`.
+    RequestReplaceAuthoredChart(String),
+    CancelReplaceAuthoredChart,
+    /// `app_core::replace_authored_chart_with_fresh_analysis` -- discards
+    /// the Authored Chart so the next load rebuilds it from the latest
+    /// analyzer output. Never called except from here, after confirmation.
+    ConfirmReplaceAuthoredChart,
     ConfirmDeleteSongCache,
+    /// Imports every existing cached file for a song into the Phase 2
+    /// artifact revision table (read-only toward the files themselves).
+    /// Explicit and user-triggered rather than run on every render, since
+    /// it hashes file contents.
+    SyncArtifactRevisions(String),
+    SetActiveArtifactRevision(app_core::ArtifactRevision),
+    OpenArtifactRevision(PathBuf),
+    /// §7.6 "Preview": bounded in-app text preview, for JSON/text artifacts
+    /// only (see `artifact_kind_is_playable` for the audio ones, which use
+    /// "Play" instead).
+    PreviewArtifactRevision(PathBuf),
+    RevealArtifactRevision(PathBuf),
+    RequestDeleteArtifactRevision(app_core::ArtifactRevision),
+    CancelDeleteArtifactRevision,
+    ConfirmDeleteArtifactRevision,
+    /// Phase 6 `invalidate_artifact_revision` / Phase 7 §7.6 "Invalidate".
+    RequestInvalidateArtifactRevision(app_core::ArtifactRevision),
+    CancelInvalidateArtifactRevision,
+    ConfirmInvalidateArtifactRevision,
+    /// §7.6 "Inspect provenance": read-only, no confirmation needed --
+    /// every field it shows is already on `ArtifactRevision`, this just
+    /// surfaces it.
+    InspectArtifactProvenance(app_core::ArtifactRevision),
+    /// §7.6 "Compare revisions": revision, active_revision_id. Compares a
+    /// non-active revision against whichever revision is currently Active
+    /// for its song+kind -- the real, common comparison ("how does this
+    /// differ from what's in use now"), not a free-form two-picker (no
+    /// multi-select UI exists for artifact revisions yet).
+    CompareArtifactRevisions(app_core::ArtifactRevision, String),
     CancelLeave,
     ConfirmLeave,
     ShiftSongKey(String, i8),
     ShiftSongTempo(String, i8),
     PlayLibrarySong(String),
+    /// §7.6 "Play audio artifact": path to the artifact revision file.
+    PlayArtifactRevision(PathBuf),
     ToggleLibraryPlayback,
     SeekLibraryRelative(i8),
     PreviousLibrarySong,
@@ -381,6 +732,7 @@ pub(crate) enum UiAction {
     SelectEditorWord(usize, usize, u64),
     SelectEditorTrack(usize),
     MoveSelectionToTrack(usize),
+    SetNoteKind(app_core::NoteKind),
     DismissLyricContext,
     DismissNoteContext,
     SelectWaveformSource(WaveformSource),
@@ -442,6 +794,7 @@ pub fn run() {
                     // per CJK text node; keep real ICU errors while avoiding that
                     // misleading warning storm in the native shell.
                     filter: studio_log_filter(),
+                    custom_layer: app_log_custom_layer,
                     ..default()
                 })
                 .set(AssetPlugin {
@@ -483,11 +836,13 @@ pub fn run() {
         .add_systems(Update, poll_lyrics_search_job)
         .add_systems(Update, sync_numeric_settings)
         .add_systems(Update, handle_tap_release)
-        .add_systems(Update, sync_editor_word_input)
+        .add_systems(Update, sync_editor_word_input.after(rebuild_ui))
         .add_systems(Update, sync_editor_phrase_input)
         .add_systems(Update, sync_editor_singer_input)
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
+        .add_systems(Update, handle_plan_preview_keyboard)
+        .add_systems(Update, handle_app_log_viewer_scroll)
         .add_systems(
             Update,
             refresh_editor_problems_cache
@@ -527,6 +882,45 @@ fn studio_log_filter() -> String {
     format!("{DEFAULT_FILTER},icu_provider=error")
 }
 
+/// Real app-log capture (Node Context Menu "View logs" -- previously the
+/// last declined Phase 7 §7.5 item, since nothing captured log output
+/// anywhere before this). Writes go through `tracing_subscriber::fmt`'s own
+/// event formatting (reused, not reimplemented) into
+/// `app_core::record_log_text`'s bounded ring buffer + best-effort log
+/// file. Composes *alongside* Bevy's own default stdout layer via
+/// `LogPlugin.custom_layer` -- stdout output is unaffected.
+#[derive(Clone, Copy)]
+struct AppLogWriter;
+
+impl std::io::Write for AppLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(text) = std::str::from_utf8(buf) {
+            app_core::record_log_text(text);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for AppLogWriter {
+    type Writer = AppLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        *self
+    }
+}
+
+fn app_log_custom_layer(_app: &mut App) -> Option<bevy::log::BoxedLayer> {
+    Some(Box::new(
+        tracing_subscriber::fmt::layer()
+            .with_writer(AppLogWriter)
+            .with_ansi(false),
+    ))
+}
+
 fn asset_root() -> String {
     if let Some(path) = std::env::var_os("UTA_STUDIO_ASSET_PATH") {
         return path.to_string_lossy().into_owned();
@@ -548,15 +942,37 @@ fn asset_root() -> String {
         .into_owned()
 }
 
+/// Dev-only: `WIDTHxHEIGHT`, e.g. `560x900`, for a narrow-window screenshot
+/// pass (§9.3 "窄窗口无严重重叠"). Forces windowed mode at that exact size,
+/// taking priority over the other debug env vars' fullscreen branch, since
+/// there is no way to interactively resize a Wayland-native window in this
+/// sandbox without input synthesis -- see the ydotool note in
+/// docs/analysis-dag-redesign.md.
+fn debug_window_size() -> Option<(u32, u32)> {
+    let value = std::env::var("UTA_STUDIO_DEBUG_WINDOW_SIZE").ok()?;
+    let (width, height) = value.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
 fn studio_window(config: &AppConfig, dark: bool) -> Window {
     Window {
         title: "Uta Studio".to_string(),
         name: Some("com.uta-studio.desktop".to_string()),
-        resolution: (1280, 720).into(),
+        resolution: debug_window_size().unwrap_or((1280, 720)).into(),
         decorations: true,
         transparent: false,
         resizable: true,
-        mode: if config.fullscreen.unwrap_or(false) {
+        mode: if debug_window_size().is_some() {
+            WindowMode::Windowed
+        } else if std::env::var("UTA_STUDIO_DEBUG_OPEN_SONG").is_ok()
+            || std::env::var("UTA_STUDIO_DEBUG_OPEN_ACTIVITY").is_ok()
+            || std::env::var("UTA_STUDIO_DEBUG_OPEN_HISTORY").is_ok()
+        {
+            // Dev-only: land on the monitor the user set aside for visual
+            // verification screenshots (DP-2, marked Xwayland-primary),
+            // not wherever COSMIC's tiler happens to place a new window.
+            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+        } else if config.fullscreen.unwrap_or(false) {
             WindowMode::BorderlessFullscreen(MonitorSelection::Current)
         } else {
             WindowMode::Windowed
@@ -581,6 +997,10 @@ fn setup(
     theme: Res<StudioTheme>,
 ) {
     commands.spawn(Camera2d);
+    let brand = BrandImages {
+        logo: decode_embedded_png(LOGO_BYTES, &mut images),
+        banner: decode_embedded_png(BANNER_BYTES, &mut images),
+    };
     // The very first frame, before the window (and any editor route that
     // could have a context menu open) exists — the configured default
     // resolution is a fine stand-in.
@@ -588,6 +1008,7 @@ fn setup(
         &mut commands,
         &asset_server,
         &mut images,
+        &brand,
         &mut local_images,
         &session,
         &native_setup,
@@ -595,6 +1016,7 @@ fn setup(
         &theme,
         Vec2::new(1280.0, 720.0),
     );
+    commands.insert_resource(brand);
 }
 
 // Bevy systems expose each independently tracked resource/query as a parameter.
@@ -603,6 +1025,7 @@ fn rebuild_ui(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut images: ResMut<Assets<Image>>,
+    brand: Res<BrandImages>,
     mut local_images: ResMut<LocalImages>,
     session: Res<StudioSession>,
     native_setup: Res<NativeSetup>,
@@ -626,6 +1049,7 @@ fn rebuild_ui(
         &mut commands,
         &asset_server,
         &mut images,
+        &brand,
         &mut local_images,
         &session,
         &native_setup,
@@ -641,6 +1065,7 @@ fn render_ui(
     commands: &mut Commands,
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
+    brand: &BrandImages,
     local_images: &mut LocalImages,
     session: &StudioSession,
     native_setup: &NativeSetup,
@@ -664,7 +1089,14 @@ fn render_ui(
         ))
         .with_children(|root| {
             if session.route == StudioRoute::Editor {
-                spawn_editor(root, font.clone(), icons.clone(), session, theme, window_size);
+                spawn_editor(
+                    root,
+                    font.clone(),
+                    icons.clone(),
+                    session,
+                    theme,
+                    window_size,
+                );
             } else {
                 root.spawn(Node {
                     min_height: px(0),
@@ -677,7 +1109,7 @@ fn render_ui(
                         body,
                         font.clone(),
                         icons.clone(),
-                        asset_server,
+                        brand.banner.clone(),
                         session,
                         theme,
                     );
@@ -698,8 +1130,14 @@ fn render_ui(
             if session.activity_open {
                 spawn_activity_center(root, font.clone(), icons.clone(), session, theme);
             }
+            if let Some(revision) = session.pending_artifact_delete.as_ref() {
+                spawn_artifact_delete_confirmation(root, font.clone(), theme, revision);
+            }
+            if let Some(revision) = session.pending_artifact_invalidate.as_ref() {
+                spawn_artifact_invalidate_confirmation(root, font.clone(), theme, revision);
+            }
             if session.about_open {
-                spawn_about_dialog(root, font.clone(), asset_server, theme);
+                spawn_about_dialog(root, font.clone(), brand.logo.clone(), theme);
             }
             if let Some(panel) = session.song_settings.as_ref() {
                 spawn_song_settings_panel(root, font.clone(), theme, panel);
@@ -812,7 +1250,7 @@ fn spawn_sidebar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    asset_server: &AssetServer,
+    banner: Handle<Image>,
     session: &StudioSession,
     theme: &StudioTheme,
 ) {
@@ -845,27 +1283,22 @@ fn spawn_sidebar(
                             Node {
                                 height: px(68),
                                 align_items: AlignItems::Center,
+                                // Lines the wordmark's left edge up with
+                                // "BROWSE"/"MY LIBRARY" below it
+                                // (`spawn_section_label`'s own `left: px(8)`
+                                // margin), not the sidebar's raw padding
+                                // edge.
+                                margin: UiRect::left(px(8)),
                                 padding: UiRect::right(px(8)),
                                 column_gap: px(10),
                                 ..default()
                             },
                         ))
                         .with_children(|brand| {
-                            brand.spawn((
-                                Node {
-                                    width: px(66),
-                                    height: px(66),
-                                    flex_shrink: 0.0,
-                                    overflow: Overflow::clip(),
-                                    border_radius: BorderRadius::all(px(12)),
-                                    ..default()
-                                },
-                                ImageNode::new(asset_server.load(LOGO_PATH)),
-                            ));
                             spawn_text(
                                 brand,
                                 font.clone(),
-                                "Uta Studio",
+                                "Uta! Studio",
                                 18.0,
                                 theme.sidebar_foreground,
                             );
@@ -908,7 +1341,7 @@ fn spawn_sidebar(
                 (
                     LibraryView::Queue,
                     UiIcon::Queue,
-                    "Analysis Queue",
+                    "Analysis",
                     analysis_count,
                 ),
                 (
@@ -920,7 +1353,7 @@ fn spawn_sidebar(
                 (
                     LibraryView::Videos,
                     UiIcon::Video,
-                    "Video Library",
+                    "Video",
                     session.meta.videos_count,
                 ),
             ] {
@@ -1000,21 +1433,29 @@ fn spawn_sidebar(
                 UiAction::Folders,
                 session.route == StudioRoute::Folders,
             );
-            spawn_sidebar_nav_item(
-                sidebar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                UiIcon::Settings,
-                "Settings",
-                UiAction::Settings,
-                session.route == StudioRoute::Settings,
-            );
             sidebar.spawn(Node {
                 min_height: px(14),
                 flex_grow: 1.0,
                 ..default()
             });
+            sidebar.spawn((
+                Button,
+                UiAction::OpenAbout,
+                Node {
+                    width: percent(100),
+                    // Banner.png is a fixed 4:3 image (1448x1086) -- sized
+                    // from the sidebar's own inner width (minus its
+                    // `padding: UiRect::axes(px(10), ..)`) so it fills the
+                    // sidebar edge-to-edge without stretching or
+                    // letterboxing.
+                    height: px((SIDEBAR_WIDTH - 20.0) * 3.0 / 4.0),
+                    flex_shrink: 0.0,
+                    overflow: Overflow::clip(),
+                    border_radius: BorderRadius::all(px(8)),
+                    ..default()
+                },
+                ImageNode::new(banner),
+            ));
         });
 }
 
@@ -1473,7 +1914,7 @@ fn spawn_top_bar(
 fn spawn_about_dialog(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    asset_server: &AssetServer,
+    logo: Handle<Image>,
     theme: &StudioTheme,
 ) {
     parent.spawn((
@@ -1528,7 +1969,7 @@ fn spawn_about_dialog(
                             border_radius: BorderRadius::all(px(16)),
                             ..default()
                         },
-                        ImageNode::new(asset_server.load(LOGO_PATH)),
+                        ImageNode::new(logo),
                     ));
                     identity
                         .spawn(Node {
@@ -1538,7 +1979,7 @@ fn spawn_about_dialog(
                             ..default()
                         })
                         .with_children(|copy| {
-                            spawn_text(copy, font.clone(), "Uta Studio", 24.0, theme.foreground);
+                            spawn_text(copy, font.clone(), "Uta! Studio", 24.0, theme.foreground);
                             spawn_wrapped_text(
                                 copy,
                                 font.clone(),
@@ -1667,6 +2108,9 @@ pub(crate) fn action_is_navigation_target(action: &UiAction) -> bool {
             | UiAction::DismissWaveformContext
             | UiAction::DismissProblemsPanel
             | UiAction::DismissShortcutsPanel
+            | UiAction::DismissAnalysisNodeContext
+            | UiAction::ClosePlanPreview
+            | UiAction::CloseAppLogViewer
     )
 }
 
@@ -1705,6 +2149,15 @@ fn navigation_back_action(session: &StudioSession) -> Option<UiAction> {
     if session.pending_cache_delete.is_some() {
         return Some(UiAction::CancelDeleteSongCache);
     }
+    if session.pending_artifact_delete.is_some() {
+        return Some(UiAction::CancelDeleteArtifactRevision);
+    }
+    if session.pending_artifact_invalidate.is_some() {
+        return Some(UiAction::CancelInvalidateArtifactRevision);
+    }
+    if session.pending_chart_replace.is_some() {
+        return Some(UiAction::CancelReplaceAuthoredChart);
+    }
     if session.pending_analysis_history_clear {
         return Some(UiAction::CancelClearAnalysisHistory);
     }
@@ -1728,6 +2181,9 @@ fn navigation_back_action(session: &StudioSession) -> Option<UiAction> {
     }
     if session.song_context.is_some() {
         return Some(UiAction::DismissSongContext);
+    }
+    if session.analysis_node_context.is_some() {
+        return Some(UiAction::DismissAnalysisNodeContext);
     }
     if session.folder_browser.context_menu.is_some() {
         return Some(UiAction::DismissFolderContext);
@@ -1887,6 +2343,15 @@ struct EditorTextInputs<'w, 's> {
     song_settings_bpm: Query<'w, 's, &'static EditableText, With<SongSettingsBpmInput>>,
 }
 
+// Bevy's `IntoSystem` impls top out at 16 function params -- this groups the
+// primary window query with the (newly added) DAG canvas viewport query so
+// `handle_actions` doesn't cross that ceiling.
+#[derive(SystemParam)]
+struct PrimaryWindowAndAnalysisViewport<'w, 's> {
+    windows: Query<'w, 's, (Entity, &'static mut Window), With<PrimaryWindow>>,
+    analysis_graph_viewport: Query<'w, 's, &'static ComputedNode, With<AnalysisGraphViewport>>,
+}
+
 // Keeping these as separate Bevy system parameters preserves change detection.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_actions(
@@ -1902,7 +2367,7 @@ fn handle_actions(
             Without<LanguageEditorInput>,
         ),
     >,
-    mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
+    mut windows: PrimaryWindowAndAnalysisViewport,
     audio: Res<NativeAudio>,
     library_audio: Res<NativeLibraryAudio>,
     pitch_audition: Res<NativePitchAudition>,
@@ -1918,7 +2383,7 @@ fn handle_actions(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let Ok((window_entity, mut window)) = windows.single_mut() else {
+        let Ok((window_entity, mut window)) = windows.windows.single_mut() else {
             continue;
         };
         match action {
@@ -1946,7 +2411,49 @@ fn handle_actions(
                 invalidated.0 = true;
             }
             UiAction::SelectAnalysisStage(stage) => {
+                // The only caller is the node context menu's "View in
+                // inspector" button -- without closing the menu here (the
+                // way a direct primary-click on a node already does, in
+                // `open_analysis_node_from_click`), the inspector panel
+                // *did* update, just invisibly, underneath the still-open
+                // menu, which looked like the button did nothing.
                 session.selected_analysis_stage = Some(stage.clone());
+                session.analysis_node_context = None;
+                invalidated.0 = true;
+            }
+            UiAction::AdjustAnalysisGraphZoom(delta_percent) => {
+                session.analysis_graph_zoom = clamp_analysis_graph_zoom(
+                    session.analysis_graph_zoom + (*delta_percent as f32) / 100.0,
+                );
+                invalidated.0 = true;
+            }
+            UiAction::ToggleAnalysisMiniView => {
+                session.analysis_mini_view = !session.analysis_mini_view;
+                invalidated.0 = true;
+            }
+            UiAction::FitAnalysisGraph(canvas_width_px) => {
+                let viewport_width = windows
+                    .analysis_graph_viewport
+                    .iter()
+                    .next()
+                    .map(|computed| computed.size().x * computed.inverse_scale_factor())
+                    .unwrap_or(*canvas_width_px as f32);
+                let fit = if *canvas_width_px > 0 {
+                    viewport_width / *canvas_width_px as f32
+                } else {
+                    1.0
+                };
+                session.analysis_graph_zoom = clamp_analysis_graph_zoom(fit);
+                session.analysis_graph_scroll_offset = 0.0;
+                invalidated.0 = true;
+            }
+            UiAction::FocusAnalysisGraphNode(scroll, stage_id) => {
+                session.analysis_graph_scroll_offset = (*scroll).max(0) as f32;
+                session.selected_analysis_stage = Some(stage_id.clone());
+                invalidated.0 = true;
+            }
+            UiAction::DismissAnalysisNodeContext => {
+                session.analysis_node_context = None;
                 invalidated.0 = true;
             }
             UiAction::RequestClearAnalysisHistory => {
@@ -2962,6 +3469,140 @@ fn handle_actions(
                     invalidated.0 = true;
                 }
             }
+            UiAction::SaveNodeConfigAsSongProfile(file_hash, node_id) => {
+                // Same immediacy as Freeze/Disable/Bypass above -- fires
+                // right away and leaves the context menu open, rather than
+                // dismissing it, matching that established pattern.
+                session.notice = Some(
+                    match app_core::save_node_config_as_song_profile(file_hash, node_id) {
+                        Ok(()) => format!(
+                            "Saved {node_id}'s current configuration as this song's profile."
+                        ),
+                        Err(error) => format!("Could not save song profile: {error}"),
+                    },
+                );
+                invalidated.0 = true;
+            }
+            UiAction::OpenNodeConfigDialog(file_hash, node_id) => {
+                if let Some(field) = node_config_profile_field(node_id) {
+                    let global = app_core::AnalysisProfileSnapshot::from_app_config(
+                        &AppConfig::load(),
+                        file_hash,
+                    );
+                    let song = app_core::get_song_analysis_profile(file_hash);
+                    let run_override = app_core::pending_run_override_for(file_hash, node_id);
+                    let value = app_core::resolve_profile_field(
+                        field,
+                        &global,
+                        song.as_ref(),
+                        run_override.as_deref(),
+                    )
+                    .value;
+                    session.node_config_dialog = Some(NativeNodeConfigDialog {
+                        file_hash: file_hash.clone(),
+                        node_id: node_id.clone(),
+                        field,
+                        value,
+                        picker_open: false,
+                    });
+                } else {
+                    session.notice = Some(format!(
+                        "{node_id} has no parameter to configure for a single run."
+                    ));
+                }
+                session.analysis_node_context = None;
+                invalidated.0 = true;
+            }
+            UiAction::CloseNodeConfigDialog => {
+                session.node_config_dialog = None;
+                invalidated.0 = true;
+            }
+            UiAction::ToggleNodeConfigPicker => {
+                if let Some(dialog) = session.node_config_dialog.as_mut() {
+                    dialog.picker_open = !dialog.picker_open;
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::SelectNodeConfigValue(value) => {
+                if let Some(dialog) = session.node_config_dialog.as_mut() {
+                    dialog.value = value.clone();
+                    dialog.picker_open = false;
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::RunNodeConfigDialog => {
+                if let Some(dialog) = session.node_config_dialog.take() {
+                    session.notice = Some(
+                        match app_core::configure_analysis_node_for_run(
+                            &dialog.file_hash,
+                            &dialog.node_id,
+                            dialog.value.clone(),
+                        ) {
+                            Ok(()) => format!(
+                                "Running {} with {} for this run only.",
+                                dialog.node_id, dialog.value
+                            ),
+                            Err(error) => format!("Could not configure this run: {error}"),
+                        },
+                    );
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::OpenPlanPreview(file_hash) => {
+                session.plan_preview_draft = Some(PlanPreviewDraft {
+                    file_hash: file_hash.clone(),
+                    disabled_nodes: std::collections::BTreeSet::new(),
+                });
+                session.notice = None;
+                invalidated.0 = true;
+            }
+            UiAction::ClosePlanPreview => {
+                session.plan_preview_draft = None;
+                invalidated.0 = true;
+            }
+            UiAction::TogglePlanPreviewDisabledNode(node_id) => {
+                if let Some(draft) = session.plan_preview_draft.as_mut() {
+                    let id = app_core::AnalysisNodeId::new(node_id.clone());
+                    if !draft.disabled_nodes.remove(&id) {
+                        draft.disabled_nodes.insert(id);
+                    }
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::RunPlanPreviewDraft => {
+                if let Some(draft) = session.plan_preview_draft.take() {
+                    session.notice = Some(run_analysis_action_checked(&draft.file_hash, || {
+                        app_core::run_analysis_plan(
+                            &draft.file_hash,
+                            std::collections::BTreeSet::new(),
+                            draft.disabled_nodes.clone(),
+                        )
+                    }));
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::OpenAppLogViewer(file_hash, node_id) => {
+                session.app_log_viewer = Some(AppLogViewerState {
+                    file_hash: file_hash.clone(),
+                    node_id: node_id.clone(),
+                });
+                session.analysis_node_context = None;
+                invalidated.0 = true;
+            }
+            UiAction::CloseAppLogViewer => {
+                session.app_log_viewer = None;
+                invalidated.0 = true;
+            }
+            UiAction::OpenAppLogFile => {
+                session.notice = Some(match app_core::get_log_path() {
+                    Some(path) => match open::that_detached(&path) {
+                        Ok(()) => format!("Opened {}", path.display()),
+                        Err(error) => format!("Could not open {}: {error}", path.display()),
+                    },
+                    None => "The app log is not available in this environment.".to_string(),
+                });
+                invalidated.0 = true;
+            }
             UiAction::OpenSongSettings(file_hash) => {
                 session.song_settings = open_song_settings(file_hash);
                 if session.song_settings.is_none() {
@@ -3013,8 +3654,9 @@ fn handle_actions(
                         match bpm_text.parse::<f64>() {
                             Ok(value) if value.is_finite() && value > 0.0 => Some(value),
                             _ => {
-                                session.notice =
-                                    Some("BPM must be a positive number, or left blank.".to_string());
+                                session.notice = Some(
+                                    "BPM must be a positive number, or left blank.".to_string(),
+                                );
                                 session.song_settings = Some(panel);
                                 invalidated.0 = true;
                                 continue;
@@ -3069,12 +3711,70 @@ fn handle_actions(
                 }));
                 invalidated.0 = true;
             }
+            UiAction::RunAnalysisNodeOnly(file_hash, node_id) => {
+                session.notice = Some(run_analysis_action_checked(file_hash, || {
+                    app_core::run_analysis_node(file_hash, node_id)
+                }));
+                invalidated.0 = true;
+            }
+            UiAction::RunAnalysisNodeDownstream(file_hash, node_id) => {
+                session.notice = Some(run_analysis_action_checked(file_hash, || {
+                    app_core::run_analysis_node_downstream(file_hash, node_id)
+                }));
+                invalidated.0 = true;
+            }
+            UiAction::DisableAnalysisNodeForRun(file_hash, node_id) => {
+                session.notice = Some(run_analysis_action_checked(file_hash, || {
+                    app_core::disable_analysis_node_for_run(file_hash, node_id)
+                }));
+                invalidated.0 = true;
+            }
+            UiAction::FreezeAnalysisNodeOutputs(file_hash, node_id) => {
+                session.notice = Some(run_analysis_action_checked(file_hash, || {
+                    app_core::freeze_analysis_node_outputs_for_run(file_hash, node_id)
+                }));
+                invalidated.0 = true;
+            }
+            UiAction::BypassAnalysisNodeWithOriginalMix(file_hash, node_id) => {
+                session.notice = Some(run_analysis_action_checked(file_hash, || {
+                    app_core::bypass_analysis_node_with_original_mix_for_run(file_hash, node_id)
+                }));
+                invalidated.0 = true;
+            }
+            UiAction::CompareNodeAttemptWithPrevious(file_hash, node_id, current_run_id) => {
+                session.notice = Some(
+                    match app_core::compare_node_attempt_with_previous_run(
+                        file_hash,
+                        node_id,
+                        *current_run_id,
+                    ) {
+                        Ok(comparison) => format_node_attempt_comparison(&comparison),
+                        Err(error) => format!("Could not compare attempts: {error}"),
+                    },
+                );
+                invalidated.0 = true;
+            }
+            UiAction::ToggleAnalysisCompoundNode(node_id) => {
+                let id = app_core::AnalysisNodeId::new(node_id.clone());
+                if !session.expanded_compound_nodes.remove(&id) {
+                    session.expanded_compound_nodes.insert(id);
+                }
+                session.analysis_node_context = None;
+                invalidated.0 = true;
+            }
             UiAction::RequestDeleteSongCache(file_hash) => {
                 session.pending_cache_delete = Some(file_hash.clone());
                 invalidated.0 = true;
             }
             UiAction::CancelDeleteSongCache => {
                 session.pending_cache_delete = None;
+                invalidated.0 = true;
+            }
+            UiAction::CancelAnalysisRun(file_hash) => {
+                session.notice = Some(match app_core::cancel_analysis_run(file_hash) {
+                    Ok(()) => "Removed from the analysis queue.".to_string(),
+                    Err(error) => format!("Could not cancel: {error}"),
+                });
                 invalidated.0 = true;
             }
             UiAction::ConfirmDeleteSongCache => {
@@ -3086,6 +3786,132 @@ fn handle_actions(
                     );
                     invalidated.0 = true;
                 }
+            }
+            UiAction::RequestReplaceAuthoredChart(file_hash) => {
+                session.pending_chart_replace = Some(file_hash.clone());
+                invalidated.0 = true;
+            }
+            UiAction::CancelReplaceAuthoredChart => {
+                session.pending_chart_replace = None;
+                invalidated.0 = true;
+            }
+            UiAction::ConfirmReplaceAuthoredChart => {
+                if let Some(file_hash) = session.pending_chart_replace.take() {
+                    session.notice = Some(
+                        match app_core::replace_authored_chart_with_fresh_analysis(&file_hash) {
+                            Ok(()) => {
+                                "Authored chart discarded. It will be rebuilt from the latest analysis the next time you open the editor.".to_string()
+                            }
+                            Err(error) => format!("Could not replace the chart: {error}"),
+                        },
+                    );
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::SyncArtifactRevisions(file_hash) => {
+                let imported =
+                    app_core::import_legacy_artifacts(&app_core::CacheDir::new(), file_hash);
+                session.notice = Some(if imported.is_empty() {
+                    "No new artifact revisions found on disk.".to_string()
+                } else {
+                    format!(
+                        "Recorded {} artifact revision(s) from disk.",
+                        imported.len()
+                    )
+                });
+                invalidated.0 = true;
+            }
+            UiAction::SetActiveArtifactRevision(revision) => {
+                let cache_root = app_core::CacheDir::new().path;
+                session.notice = Some(
+                    match app_core::set_active_artifact_revision(
+                        &cache_root,
+                        &revision.file_hash,
+                        revision.kind,
+                        &revision.id,
+                    ) {
+                        Ok(()) => "Active artifact revision updated.".to_string(),
+                        Err(error) => format!("Could not set active artifact revision: {error}"),
+                    },
+                );
+                invalidated.0 = true;
+            }
+            UiAction::OpenArtifactRevision(path) => {
+                session.notice = Some(open_artifact_entry(path));
+                invalidated.0 = true;
+            }
+            UiAction::PreviewArtifactRevision(path) => {
+                session.notice = Some(preview_artifact_entry(path));
+                invalidated.0 = true;
+            }
+            UiAction::RevealArtifactRevision(path) => {
+                session.notice = Some(reveal_artifact_entry(path));
+                invalidated.0 = true;
+            }
+            UiAction::RequestDeleteArtifactRevision(revision) => {
+                session.pending_artifact_delete = Some(revision.clone());
+                invalidated.0 = true;
+            }
+            UiAction::CancelDeleteArtifactRevision => {
+                session.pending_artifact_delete = None;
+                invalidated.0 = true;
+            }
+            UiAction::ConfirmDeleteArtifactRevision => {
+                if let Some(revision) = session.pending_artifact_delete.take() {
+                    let cache_root = app_core::CacheDir::new().path;
+                    session.notice = Some(
+                        match app_core::delete_artifact_revision(&cache_root, &revision) {
+                            Ok(()) => "Artifact revision deleted.".to_string(),
+                            Err(error) => format!("Could not delete artifact revision: {error}"),
+                        },
+                    );
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::RequestInvalidateArtifactRevision(revision) => {
+                session.pending_artifact_invalidate = Some(revision.clone());
+                invalidated.0 = true;
+            }
+            UiAction::CancelInvalidateArtifactRevision => {
+                session.pending_artifact_invalidate = None;
+                invalidated.0 = true;
+            }
+            UiAction::ConfirmInvalidateArtifactRevision => {
+                if let Some(revision) = session.pending_artifact_invalidate.take() {
+                    let cache_root = app_core::CacheDir::new().path;
+                    session.notice = Some(
+                        match app_core::invalidate_artifact_revision(
+                            &cache_root,
+                            &revision.file_hash,
+                            revision.kind,
+                            &revision.id,
+                        ) {
+                            Ok(()) => {
+                                "Artifact revision invalidated. It's no longer Active but the file is kept.".to_string()
+                            }
+                            Err(error) => format!("Could not invalidate artifact revision: {error}"),
+                        },
+                    );
+                    invalidated.0 = true;
+                }
+            }
+            UiAction::InspectArtifactProvenance(revision) => {
+                session.notice = Some(format_artifact_provenance(revision));
+                invalidated.0 = true;
+            }
+            UiAction::CompareArtifactRevisions(revision, active_revision_id) => {
+                session.notice = Some(
+                    match app_core::compare_artifact_revisions(
+                        &revision.file_hash,
+                        revision.kind,
+                        &revision.id,
+                        active_revision_id,
+                    ) {
+                        Ok(comparison) => format_artifact_revision_comparison(&comparison),
+                        Err(error) => format!("Could not compare revisions: {error}"),
+                    },
+                );
+                invalidated.0 = true;
             }
             UiAction::ShiftSongKey(file_hash, delta) => {
                 session.notice = Some(start_key_shift(
@@ -3110,6 +3936,12 @@ fn handle_actions(
                 prepare_library_queue(&queue, file_hash, &mut session.library_playback);
                 session.notice =
                     play_library_song(&library_audio.0, file_hash, &mut session.library_playback)
+                        .err();
+                invalidated.0 = true;
+            }
+            UiAction::PlayArtifactRevision(path) => {
+                session.notice =
+                    play_artifact_revision(&library_audio.0, path, &mut session.library_playback)
                         .err();
                 invalidated.0 = true;
             }
@@ -3294,7 +4126,8 @@ fn handle_actions(
             | UiAction::SelectEditorValue(..)
             | UiAction::SelectEditorWord(..)
             | UiAction::SelectEditorTrack(_)
-            | UiAction::MoveSelectionToTrack(_) => {
+            | UiAction::MoveSelectionToTrack(_)
+            | UiAction::SetNoteKind(_) => {
                 handle_editor_ui_action(
                     action,
                     &keys,
@@ -3541,6 +4374,11 @@ mod tests {
         assert!(root.join(LOGO_PATH).is_file());
         assert!(root.join(FONT_PATH).is_file());
         assert!(root.join(ICON_ATLAS_PATH).is_file());
+        // Baked in via `include_bytes!`, not loaded from `asset_root()` --
+        // a missing file would already be a compile error, but a real PNG
+        // signature is worth confirming rather than assuming.
+        assert!(LOGO_BYTES.starts_with(b"\x89PNG"));
+        assert!(BANNER_BYTES.starts_with(b"\x89PNG"));
         assert!(root.join("desktop/assets/icons/ui-icons.svg").is_file());
     }
 

@@ -68,42 +68,34 @@ cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 
 ## Acknowledgements
 
-Special thanks to [moriwx](https://github.com/moriwx), creator of
-[FA-Kara](https://github.com/moriwx/FA-Kara). Its Japanese karaoke alignment
-workflow, pronunciation mapping, silence-aware timing, and use of the
-karaoke-tuned MMS forced-alignment model directly informed Uta Studio's
-optional MMS Karaoke backend. FA-Kara is Copyright (c) 2025 moriwx and is
-available under the MIT License.
+Uta Studio thanks the following projects for technical and interface references:
 
-The editor interaction model was informed by open-source karaoke chart tools,
-especially [USKMaker](https://github.com/walterfr/UltraStarKaraokeMaker), with
-[Yass](https://github.com/SarutaSan72/Yass) and
-[UltraStar Play](https://github.com/UltraStar-Deluxe/Play) used as format and
-workflow references. USKMaker and UltraStar Play are MIT-licensed; Yass is
-GPL-3.0-or-later. Their interaction patterns and algorithms were studied, while
-Uta Studio's native Rust implementation was written for this codebase. Uta
-Studio keeps seconds and MIDI as its internal source model; target-specific beat
-quantization happens only during export.
-
-The backend uses the
-[NextFire karaoke-tuned MMS model](https://huggingface.co/NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn),
-a separately installed AGPL-3.0 artifact. Uta Studio does not bundle the
-weights and downloads them only after explicit confirmation in **Settings >
-Models & runtime**.
-
-To use it, choose **MMS Karaoke (Japanese)** under **Settings > Analysis > Word
-timing & alignment**, then install the model under **Models & runtime > Word
-timing & alignment**. Plain Japanese lyric lines are converted to acoustic
-pronunciations automatically; ambiguous readings can be overridden with
-`{表示|かな}` or `[表示|romaji]`.
-
-The interface uses a cover-first, information-dense music-library layout
-informed by Roon's public product UI: persistent navigation, a command area,
-right-side metadata inspector, and a bottom authoring dock. It is an adaptation
-for chart production rather than a copy of Roon branding or playback behavior.
-
-The root `icon.png` is the canonical brand artwork. Packaged desktop icons and
-the optimized square derivative are generated from that artwork.
+- **[FA-Kara](https://github.com/moriwx/FA-Kara)** by
+  [moriwx](https://github.com/moriwx). FA-Kara's Japanese karaoke alignment
+  workflow, pronunciation mapping, and silence-aware timing directly informed the
+  optional MMS Karaoke backend. It is Copyright (c) 2025 moriwx and licensed
+  under MIT.
+- **[USKMaker](https://github.com/walterfr/UltraStarKaraokeMaker)**,
+  **[Yass](https://github.com/SarutaSan72/Yass)**, and
+  **[UltraStar Play](https://github.com/UltraStar-Deluxe/Play)** for editor
+  interaction patterns, karaoke workflow references, and format conventions.
+  USKMaker and UltraStar Play are MIT-licensed; Yass is GPL-3.0-or-later.
+  Uta Studio keeps a seconds/MIDI internal source model and applies export-time
+  quantization only when writing targets.
+- **[NextFire MMS karaoke-tuned model](https://huggingface.co/NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn)**.
+  This AGPL-3.0 model is not shipped by Uta Studio; users install it explicitly
+  in **Settings > Models & runtime**. For aligned timing, use
+  **Settings > Analysis > Word timing & alignment** to enable **MMS Karaoke
+  (Japanese)**, then configure it in **Models & runtime > Word timing &
+  alignment**.
+- **Roon's public product UI** as an interaction-direction reference for the
+  cover-first information layout and command-area flow in this application's
+  music-library and charting environment.
+- **Root `icon.png`** in this repository is the canonical brand artwork.
+  Packaged desktop icons and the square derivative are generated from this file.
+- **[Nightingale](https://github.com/rzru/nightingale/)** for additional
+  inspiration around lightweight audio-centric tooling and charting workflow
+  patterns.
 
 ## License
 

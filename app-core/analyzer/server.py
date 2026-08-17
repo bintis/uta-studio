@@ -25,6 +25,7 @@ import os
 import secrets
 import socket
 import sys
+import time
 
 if os.name == "nt":
     import huggingface_hub.file_download as _hf_dl
@@ -105,7 +106,14 @@ def _classify_progress(pct, message):
     if (
         "vocal region" in text
         or "loading lyrics" in text
-        or "loading audio" in text
+        # Specifically transcribe.py:43's `f"Loading audio ({vocals_path})..."`
+        # -- narrowed to the "(" that always follows in that message,
+        # because the bare substring "loading audio" also matches
+        # stems.py:85's `"Loading audio file..."` (pct 10, meant to classify
+        # as "separation" per STAGE_RANGES and locked by
+        # test_pipeline_cache.py's ClassifyProgressStageBaselineTests), a
+        # real misclassification confirmed against both real call sites.
+        or "loading audio (" in text
         or "detecting vocal" in text
     ):
         return "audio_preprocessing", "Vocal-region preprocessing"
@@ -221,9 +229,39 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     if backend_fallback_reason:
         runtime_state["backend_fallback_reason"] = str(backend_fallback_reason)
 
+    # Keyed by the real node id when the call site has migrated to
+    # `progress_node`/`artifact_reused` (analysis DAG redesign Phase 3),
+    # falling back to the coarse bucket `stage` text for call sites that
+    # haven't. Keying by node id (not just `stage`) matters for a compound
+    # node's children -- e.g. music.key/music.rhythm/music.descriptors all
+    # share the "preparing" bucket, and used to overwrite one shared dict
+    # entry, silently losing all but the last child's route. Each real node
+    # id now keeps its own entry regardless of how many nodes share a
+    # bucket.
+    node_id = metadata.get("node_id")
+    node_event = metadata.get("event")
     stage_routes = runtime_state.setdefault("stage_routes", {})
-    stage_routes[stage] = {
+    # Phase 3 gap closed: per-node Start/Finish timestamps. The route dict
+    # is fully replaced (not merged) on every call, so `started_at_ms` has
+    # to be read back from whatever was already recorded or it would reset
+    # on every single progress update for the node, not just its first one.
+    # Wall-clock time here (not something threaded from Rust) because this
+    # runs in the same process as the actual node work -- it measures real
+    # execution time, not socket/IPC latency. `artifact_reused` has no
+    # `node_started` before it (a cache hit never "starts"), so its own
+    # single event stamps both fields at once.
+    existing_route = stage_routes.get(node_id or stage, {})
+    event_at_ms = int(time.time() * 1000)
+    started_at_ms = existing_route.get("started_at_ms")
+    if started_at_ms is None or node_event in ("node_started", "artifact_reused"):
+        started_at_ms = event_at_ms
+    finished_at_ms = existing_route.get("finished_at_ms")
+    if node_event in ("node_completed", "node_failed", "artifact_reused"):
+        finished_at_ms = event_at_ms
+    stage_routes[node_id or stage] = {
         "stage": stage,
+        "node_id": node_id,
+        "node_event": node_event,
         "operation": operation,
         "implementation": implementation,
         "model": model,
@@ -234,9 +272,11 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
         "fallback_reason": str(fallback_reason) if fallback_reason else None,
         "backend_fallback_from": str(backend_fallback_from) if backend_fallback_from else None,
         "backend_fallback_reason": str(backend_fallback_reason) if backend_fallback_reason else None,
+        "started_at_ms": started_at_ms,
+        "finished_at_ms": finished_at_ms,
     }
 
-    return {
+    payload = {
         "type": "progress",
         "pct": int(pct),
         "msg": str(message),
@@ -252,7 +292,17 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
         "backend_fallback_from": str(backend_fallback_from) if backend_fallback_from else None,
         "backend_fallback_reason": str(backend_fallback_reason) if backend_fallback_reason else None,
         "stage_routes": list(stage_routes.values()),
+        # Structured Node event fields (analysis DAG redesign Phase 3).
+        # `None` unless the emitter used `progress_node`/`artifact_reused`
+        # (whisper_compat.py) -- everything above is the pre-Phase-3 Legacy
+        # Adapter contract and is computed identically whether or not these
+        # are present, so old consumers (today's desktop UI) are unaffected.
+        "node_id": node_id,
+        "event": node_event,
     }
+    if node_event == "artifact_reused":
+        payload["artifact_reused_reason"] = metadata.get("reason")
+    return payload
 
 
 def process_song(cmd, device):
@@ -269,6 +319,12 @@ def process_song(cmd, device):
     language_override = _normalize_language(cmd.get("language"))
     skip_transcription = bool(cmd.get("skip_transcription", False))
     skip_separation = bool(cmd.get("skip_separation", False))
+    skip_pitch = bool(cmd.get("skip_pitch", False))
+    freeze_separation = bool(cmd.get("freeze_separation", False))
+    freeze_pitch = bool(cmd.get("freeze_pitch", False))
+    bypass_separation_with_original_mix = bool(
+        cmd.get("bypass_separation_with_original_mix", False)
+    )
 
     set_align_backend(cmd.get("align_backend", "whisperx"))
     set_vocal_threshold_pct(cmd.get("vocal_detection_threshold_pct"))
@@ -291,6 +347,10 @@ def process_song(cmd, device):
             free_gpu_fn=hard_free_gpu,
             skip_transcription=skip_transcription,
             skip_separation=skip_separation,
+            skip_pitch=skip_pitch,
+            freeze_separation=freeze_separation,
+            freeze_pitch=freeze_pitch,
+            bypass_separation_with_original_mix=bypass_separation_with_original_mix,
         )
     finally:
         end_of_song_cleanup()

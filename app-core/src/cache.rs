@@ -30,8 +30,59 @@ impl CacheDir {
         Self { path }
     }
 
+    /// Non-panicking alternative to `new()`, for a best-effort caller that
+    /// would rather silently do without cache-backed data than crash
+    /// outright (docs/plan.md §9.4's `nix build` checkPhase note: `$HOME`
+    /// is unwritable inside the Nix build sandbox, and the eager `.expect`
+    /// in `new()` used to be reachable from a purely cosmetic read path --
+    /// `desktop/src/studio/editor/state.rs::load_editor_beats` -- that had
+    /// no real need to panic just because the beat grid couldn't load).
+    pub fn try_new() -> Option<Self> {
+        let path = songs_cache_dir();
+        std::fs::create_dir_all(&path).ok()?;
+        Some(Self { path })
+    }
+
     pub fn transcript_path(&self, hash: &str) -> PathBuf {
         self.path.join(format!("{hash}_transcript.json"))
+    }
+
+    /// §4.4 split artifacts (docs/plan.md §4.4 /
+    /// app-core/src/analysis_graph.rs's `ArtifactKind::RecognizedText` /
+    /// `AsrSegments` / `TimedTranscript`). `transcript_path` above keeps
+    /// being written unchanged as a permanent compatibility file -- these
+    /// are additive, not a rename.
+    pub fn recognized_text_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_recognized_text.json"))
+    }
+
+    /// The `lyrics.transcribe` node's own final output (word/segment-timed,
+    /// pre chart-build patching). Only written for ASR routes -- absent for
+    /// known-lyrics/Timed-LRC songs, matching the DAG (`lyrics.align`/
+    /// `lyrics.import_timed` never produce this kind).
+    pub fn asr_segments_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_asr_segments.json"))
+    }
+
+    /// The chart-ready transcript `chart.build_candidate` consumes,
+    /// regardless of lyrics route -- written alongside (byte-identical to)
+    /// `transcript_path` by every producer. Use `resolve_timed_transcript_path`
+    /// to read one that works for songs analyzed before this file existed.
+    pub fn timed_transcript_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_timed_transcript.json"))
+    }
+
+    /// Prefers the dedicated `timed_transcript.json`; falls back to the
+    /// combined compatibility `transcript.json` for songs analyzed before
+    /// the §4.4 split existed. Chart-building/freshness readers should use
+    /// this instead of `transcript_path` directly.
+    pub fn resolve_timed_transcript_path(&self, hash: &str) -> PathBuf {
+        let dedicated = self.timed_transcript_path(hash);
+        if dedicated.is_file() {
+            dedicated
+        } else {
+            self.transcript_path(hash)
+        }
     }
 
     /// Authoritative UTZ 0.2 authoring document. Transcript and analyzer note
@@ -184,15 +235,46 @@ impl CacheDir {
         self.stems_exist(hash) || transcript_marks_no_stems(&transcript)
     }
 
+    /// Explicit, user-confirmed full wipe (the "Delete cache" action) --
+    /// includes the Authored Chart. Automatic reanalysis resets must use
+    /// `delete_analysis_outputs_keep_chart` instead; see that method's docs.
     pub fn delete_song_cache(&self, hash: &str) {
+        self.delete_analysis_outputs_keep_chart(hash);
+        self.invalidate_authored_chart(hash);
+    }
+
+    /// Same file set as `delete_song_cache`, minus the Authored Chart.
+    /// The "Reanalyze all" action regenerates every analysis artifact but
+    /// must not discard chart edits by default
+    /// (docs/analysis-dag-redesign.md §6/Phase 5) -- callers that really do
+    /// want the chart gone too (the explicit, confirmed "Delete cache"
+    /// action) keep using `delete_song_cache` directly.
+    pub fn delete_analysis_outputs_keep_chart(&self, hash: &str) {
+        for path in self.analysis_output_paths_keep_chart(hash) {
+            if path.is_file() {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// Enumerates (without touching) exactly the paths
+    /// `delete_analysis_outputs_keep_chart` would remove -- a real,
+    /// filesystem-backed "what would this delete" query, not a guess,
+    /// so a caller can back each one up first instead of deleting blind
+    /// (docs/analysis-dag-redesign.md Phase 5 status note on
+    /// `realign`/`reanalyze_full`'s eager-delete gap). Only paths that
+    /// currently exist are returned.
+    pub fn analysis_output_paths_keep_chart(&self, hash: &str) -> Vec<PathBuf> {
         let direct_audio = ["instrumental", "vocals"].into_iter().flat_map(|stem| {
             ["flac", "mp3"]
                 .into_iter()
                 .map(move |extension| self.path.join(format!("{hash}_{stem}.{extension}")))
         });
-        for path in [
-            self.vocal_chart_path(hash),
+        let mut paths: Vec<PathBuf> = [
             self.transcript_path(hash),
+            self.recognized_text_path(hash),
+            self.asr_segments_path(hash),
+            self.timed_transcript_path(hash),
             self.lyrics_path(hash),
             self.pitch_track_path(hash),
             self.pitch_notes_path(hash),
@@ -200,11 +282,8 @@ impl CacheDir {
         ]
         .into_iter()
         .chain(direct_audio)
-        {
-            if path.is_file() {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        .filter(|path| path.is_file())
+        .collect();
 
         if let Ok(entries) = std::fs::read_dir(&self.path) {
             for entry in entries.flatten() {
@@ -217,10 +296,11 @@ impl CacheDir {
                     || name.starts_with(&format!("{hash}_editor_"))
                     || is_variant_transcript_file(name, hash)
                 {
-                    let _ = std::fs::remove_file(&path);
+                    paths.push(path);
                 }
             }
         }
+        paths
     }
 
     pub fn editor_preview_path(&self, hash: &str, source: &str, extension: &str) -> PathBuf {
@@ -240,6 +320,16 @@ impl CacheDir {
     }
 
     pub fn delete_transcript_variants(&self, hash: &str) {
+        for path in self.transcript_variant_paths(hash) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Enumerates (without touching) exactly the paths
+    /// `delete_transcript_variants` would remove. See
+    /// `analysis_output_paths_keep_chart`'s doc comment for why this exists.
+    pub fn transcript_variant_paths(&self, hash: &str) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&self.path) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -247,10 +337,11 @@ impl CacheDir {
                     continue;
                 };
                 if is_variant_transcript_file(name, hash) {
-                    let _ = std::fs::remove_file(&path);
+                    paths.push(path);
                 }
             }
         }
+        paths
     }
 
     pub fn clear_all(&self) {
@@ -258,6 +349,263 @@ impl CacheDir {
             let _ = std::fs::remove_dir_all(&self.path);
             let _ = std::fs::create_dir_all(&self.path);
         }
+    }
+}
+
+// Phase 0 regression baseline for the analysis DAG redesign
+// (docs/analysis-dag-redesign.md §13). These lock down current,
+// intentional cache-invalidation behavior so later phases can be verified
+// against a known-good baseline instead of guessing what "still works"
+// means from the UI.
+#[cfg(test)]
+mod invalidation_tests {
+    use super::CacheDir;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_cache_dir() -> CacheDir {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-cache-invalidation-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        CacheDir { path }
+    }
+
+    #[test]
+    fn try_new_never_panics_and_matches_new_when_it_succeeds() {
+        // The real regression this guards: `try_new` must not panic where
+        // `new` might -- only the failure mode differs (`None` instead of a
+        // panic when the directory truly can't be created, e.g. `$HOME`
+        // unwritable inside a `nix build` sandbox -- docs/plan.md §9.4).
+        // Whether it *can* succeed depends on the ambient environment this
+        // test doesn't control (a previous version of this test asserted
+        // unconditional success and broke exactly the sandboxed case the
+        // fix exists for -- `nix build`'s checkPhase runs with an
+        // unwritable `$HOME`, so `try_new()` correctly returns `None`
+        // there), so this asserts the implication, not "always `Some`".
+        if let Some(via_try_new) = CacheDir::try_new() {
+            assert_eq!(via_try_new.path, CacheDir::new().path);
+        }
+    }
+
+    fn touch(path: &std::path::Path) {
+        std::fs::write(path, b"{}").expect("write fixture file");
+    }
+
+    /// Every artifact file for `hash` that a fully-analyzed song would have,
+    /// so tests can assert exactly which ones a given operation removes.
+    fn seed_full_song(cache: &CacheDir, hash: &str) {
+        touch(&cache.vocal_chart_path(hash));
+        touch(&cache.transcript_path(hash));
+        touch(&cache.variant_transcript_path(hash, 1.2));
+        touch(&cache.lyrics_path(hash));
+        touch(&cache.pitch_track_path(hash));
+        touch(&cache.pitch_notes_path(hash));
+        touch(&cache.music_analysis_path(hash));
+        touch(&cache.vocals_path(hash));
+        touch(&cache.instrumental_path(hash));
+    }
+
+    #[test]
+    fn invalidate_authored_chart_only_removes_the_chart() {
+        // Baseline for docs/analysis-dag-redesign.md §6: today this call is
+        // unconditional and is the *only* file it touches. Phase 5 changes
+        // when this gets called (via ChartUpdatePolicy), not what it deletes
+        // when it is called — so this narrow-scope guarantee must hold
+        // before and after that phase.
+        let cache = temp_cache_dir();
+        let hash = "songA";
+        seed_full_song(&cache, hash);
+
+        cache.invalidate_authored_chart(hash);
+
+        assert!(!cache.vocal_chart_path(hash).is_file());
+        assert!(cache.transcript_path(hash).is_file());
+        assert!(cache.variant_transcript_path(hash, 1.2).is_file());
+        assert!(cache.lyrics_path(hash).is_file());
+        assert!(cache.pitch_track_path(hash).is_file());
+        assert!(cache.pitch_notes_path(hash).is_file());
+        assert!(cache.music_analysis_path(hash).is_file());
+        assert!(cache.vocals_path(hash).is_file());
+        assert!(cache.instrumental_path(hash).is_file());
+
+        cache.clear_all();
+    }
+
+    #[test]
+    fn invalidate_authored_chart_is_unconditional_today() {
+        // Named baseline documenting current behavior explicitly (see
+        // docs/analysis-dag-redesign.md §6 and §13): there is no "was this
+        // chart actually stale" check. Calling this on an up-to-date,
+        // freshly-authored chart still deletes it. When Phase 5 introduces
+        // ChartUpdatePolicy::CreateCandidate, this test's assertion should
+        // flip in the same PR that changes the call sites, making the
+        // policy change visible in the diff instead of silent.
+        let cache = temp_cache_dir();
+        let hash = "songB";
+        touch(&cache.vocal_chart_path(hash));
+
+        cache.invalidate_authored_chart(hash);
+
+        assert!(!cache.vocal_chart_path(hash).is_file());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn resolve_timed_transcript_path_falls_back_to_the_compatibility_file_when_absent() {
+        let cache = temp_cache_dir();
+        let hash = "songResolveFallback";
+        touch(&cache.transcript_path(hash));
+
+        assert_eq!(
+            cache.resolve_timed_transcript_path(hash),
+            cache.transcript_path(hash)
+        );
+        cache.clear_all();
+    }
+
+    #[test]
+    fn resolve_timed_transcript_path_prefers_the_dedicated_file_when_present() {
+        let cache = temp_cache_dir();
+        let hash = "songResolveDedicated";
+        touch(&cache.transcript_path(hash));
+        touch(&cache.timed_transcript_path(hash));
+
+        assert_eq!(
+            cache.resolve_timed_transcript_path(hash),
+            cache.timed_transcript_path(hash)
+        );
+        cache.clear_all();
+    }
+
+    #[test]
+    fn analysis_output_paths_keep_chart_includes_the_split_transcript_files_when_present() {
+        let cache = temp_cache_dir();
+        let hash = "songSplitEnum";
+        seed_full_song(&cache, hash);
+        touch(&cache.recognized_text_path(hash));
+        touch(&cache.asr_segments_path(hash));
+        touch(&cache.timed_transcript_path(hash));
+
+        let enumerated = cache.analysis_output_paths_keep_chart(hash);
+        assert!(enumerated.contains(&cache.recognized_text_path(hash)));
+        assert!(enumerated.contains(&cache.asr_segments_path(hash)));
+        assert!(enumerated.contains(&cache.timed_transcript_path(hash)));
+        assert!(!enumerated.contains(&cache.vocal_chart_path(hash)));
+
+        cache.delete_analysis_outputs_keep_chart(hash);
+        assert!(!cache.recognized_text_path(hash).is_file());
+        assert!(!cache.asr_segments_path(hash).is_file());
+        assert!(!cache.timed_transcript_path(hash).is_file());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn delete_transcript_variants_leaves_base_transcript_and_other_artifacts() {
+        let cache = temp_cache_dir();
+        let hash = "songC";
+        seed_full_song(&cache, hash);
+
+        cache.delete_transcript_variants(hash);
+
+        assert!(!cache.variant_transcript_path(hash, 1.2).is_file());
+        assert!(cache.transcript_path(hash).is_file());
+        assert!(cache.vocal_chart_path(hash).is_file());
+        assert!(cache.music_analysis_path(hash).is_file());
+        assert!(cache.vocals_path(hash).is_file());
+        assert!(cache.instrumental_path(hash).is_file());
+
+        cache.clear_all();
+    }
+
+    // Phase 5 status note (docs/analysis-dag-redesign.md, `realign`/
+    // `reanalyze_full`'s eager-delete gap): these two enumerators exist so
+    // `app-core/src/analyzer.rs` can back a file up *before* deleting it
+    // instead of deleting blind. Real regression protection for that use
+    // case is "the enumerator returns exactly what the matching delete
+    // removes" -- checked directly here rather than trusted by construction.
+
+    #[test]
+    fn transcript_variant_paths_matches_what_delete_transcript_variants_removes() {
+        let cache = temp_cache_dir();
+        let hash = "songVariantEnum";
+        seed_full_song(&cache, hash);
+
+        let enumerated = cache.transcript_variant_paths(hash);
+        assert_eq!(enumerated, vec![cache.variant_transcript_path(hash, 1.2)]);
+
+        cache.delete_transcript_variants(hash);
+        for path in &enumerated {
+            assert!(!path.is_file());
+        }
+        cache.clear_all();
+    }
+
+    #[test]
+    fn analysis_output_paths_keep_chart_matches_what_the_delete_removes_and_excludes_the_chart() {
+        let cache = temp_cache_dir();
+        let hash = "songAnalysisOutputEnum";
+        seed_full_song(&cache, hash);
+
+        let enumerated = cache.analysis_output_paths_keep_chart(hash);
+        assert!(!enumerated.contains(&cache.vocal_chart_path(hash)));
+        assert!(enumerated.contains(&cache.transcript_path(hash)));
+        assert!(enumerated.contains(&cache.variant_transcript_path(hash, 1.2)));
+        assert!(enumerated.contains(&cache.lyrics_path(hash)));
+        assert!(enumerated.contains(&cache.pitch_track_path(hash)));
+        assert!(enumerated.contains(&cache.pitch_notes_path(hash)));
+        assert!(enumerated.contains(&cache.music_analysis_path(hash)));
+        assert!(enumerated.contains(&cache.vocals_path(hash)));
+        assert!(enumerated.contains(&cache.instrumental_path(hash)));
+
+        cache.delete_analysis_outputs_keep_chart(hash);
+        for path in &enumerated {
+            assert!(!path.is_file());
+        }
+        assert!(cache.vocal_chart_path(hash).is_file());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn analysis_output_paths_keep_chart_only_returns_files_that_exist() {
+        let cache = temp_cache_dir();
+        let hash = "songAnalysisOutputEnumEmpty";
+        assert!(cache.analysis_output_paths_keep_chart(hash).is_empty());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn delete_song_cache_does_not_touch_a_different_song_in_the_same_directory() {
+        // Dependency-isolation guarantee behind docs/analysis-dag-redesign.md
+        // §5's claim that stems.separate and music.analysis are independent
+        // per-song: a delete for one hash must never reach into another
+        // hash's files even though they share one flat cache directory.
+        let cache = temp_cache_dir();
+        let target = "songD";
+        let other = "songE";
+        seed_full_song(&cache, target);
+        seed_full_song(&cache, other);
+
+        cache.delete_song_cache(target);
+
+        assert!(!cache.vocal_chart_path(target).is_file());
+        assert!(!cache.transcript_path(target).is_file());
+        assert!(!cache.music_analysis_path(target).is_file());
+        assert!(!cache.vocals_path(target).is_file());
+        assert!(!cache.instrumental_path(target).is_file());
+
+        assert!(cache.vocal_chart_path(other).is_file());
+        assert!(cache.transcript_path(other).is_file());
+        assert!(cache.variant_transcript_path(other, 1.2).is_file());
+        assert!(cache.music_analysis_path(other).is_file());
+        assert!(cache.vocals_path(other).is_file());
+        assert!(cache.instrumental_path(other).is_file());
+
+        cache.clear_all();
     }
 }
 

@@ -1561,8 +1561,7 @@ mod tests {
     fn case_insensitive_duplicate_paths_are_rejected() {
         let (mut manifest, mut files) = sample_v02();
         files.insert("Audio/Instrumental.mp3".into(), b"copy".to_vec());
-        manifest.audio.original =
-            Some(AssetRef::pending("Audio/Instrumental.mp3", "audio/mpeg"));
+        manifest.audio.original = Some(AssetRef::pending("Audio/Instrumental.mp3", "audio/mpeg"));
         assert!(UtzPackage::build(manifest, files).is_err());
     }
 

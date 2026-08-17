@@ -16,6 +16,9 @@ pub struct AnalysisHistoryRow {
     pub error_message: Option<String>,
 }
 
+/// Returns the new row's id -- needed so a caller can attach
+/// `analysis_node_attempts` rows (phase plan §2.3) to the run that
+/// produced them.
 pub fn analysis_history_insert(
     file_hash: &str,
     title: &str,
@@ -25,7 +28,7 @@ pub fn analysis_history_insert(
     finished_at_ms: i64,
     snapshot_json: &str,
     error_message: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<i64> {
     with_conn_mut(|connection| {
         connection.execute(
             "INSERT INTO analysis_history (
@@ -43,7 +46,7 @@ pub fn analysis_history_insert(
                 error_message,
             ],
         )?;
-        Ok(())
+        Ok(connection.last_insert_rowid())
     })
 }
 

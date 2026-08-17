@@ -126,14 +126,14 @@ fn resolve_transcript_path(cache: &CacheDir, file_hash: &str) -> PathBuf {
         && let Some((_key, tempo)) = resolve_effective_key_tempo(&song)
     {
         if normalize_tempo(tempo) == 1.0 {
-            return cache.transcript_path(file_hash);
+            return cache.resolve_timed_transcript_path(file_hash);
         }
         let variant = cache.variant_transcript_path(file_hash, tempo);
         if variant.is_file() {
             return variant;
         }
     }
-    cache.transcript_path(file_hash)
+    cache.resolve_timed_transcript_path(file_hash)
 }
 
 /// Resolve the on-disk original media used by authoring and export.
