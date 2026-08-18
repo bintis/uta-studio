@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i32 = 6;
+pub(crate) const SCHEMA_VERSION: i32 = 10;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -106,7 +106,8 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             byte_size INTEGER NOT NULL,
             active INTEGER NOT NULL,
             legacy INTEGER NOT NULL,
-            invalidated INTEGER NOT NULL DEFAULT 0
+            invalidated INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_song_kind
             ON analysis_artifacts(file_hash, kind);
@@ -153,6 +154,31 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON analysis_node_attempts(run_id);
         CREATE INDEX IF NOT EXISTS idx_analysis_node_attempts_song_node
             ON analysis_node_attempts(file_hash, node_id);
+
+        CREATE TABLE IF NOT EXISTS analysis_node_artifacts (
+            run_id INTEGER NOT NULL REFERENCES analysis_history(id) ON DELETE CASCADE,
+            attempt_id INTEGER REFERENCES analysis_node_attempts(id) ON DELETE CASCADE,
+            node_id TEXT NOT NULL,
+            direction TEXT NOT NULL CHECK (direction IN ('input', 'output')),
+            slot TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            revision_id TEXT,
+            binding_kind TEXT NOT NULL,
+            PRIMARY KEY (run_id, node_id, direction, slot)
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_node_artifacts_revision
+            ON analysis_node_artifacts(revision_id);
+        CREATE INDEX IF NOT EXISTS idx_analysis_node_artifacts_run_node
+            ON analysis_node_artifacts(run_id, node_id);
+
+        CREATE TABLE IF NOT EXISTS analysis_capture_requests (
+            file_hash TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            persistent INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (file_hash, node_id, artifact_kind)
+        );
         ",
     )?;
     // SCHEMA_VERSION 4 -> 5: Phase 6 `invalidate_analysis_artifact` /
@@ -178,6 +204,20 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "ALTER TABLE analysis_node_attempts ADD COLUMN started_at_ms INTEGER;
              ALTER TABLE analysis_node_attempts ADD COLUMN finished_at_ms INTEGER;",
+        )?;
+    }
+    // SCHEMA_VERSION 6 -> 7/8: pin protection plus exact node I/O bindings.
+    if !column_exists(conn, "analysis_artifacts", "pinned")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    // SCHEMA_VERSION 8 -> 9: bind every new node I/O row to the concrete
+    // attempt that consumed or produced it. Nullable preserves old history,
+    // which remains explicitly LegacyUntracked rather than fabricated.
+    if !column_exists(conn, "analysis_node_artifacts", "attempt_id")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_node_artifacts ADD COLUMN attempt_id INTEGER REFERENCES analysis_node_attempts(id) ON DELETE CASCADE;",
         )?;
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
@@ -330,5 +370,27 @@ mod tests {
             started_at_ms, None,
             "a pre-existing row has no timing data to backfill"
         );
+    }
+
+    #[test]
+    fn ensure_schema_adds_attempt_id_to_schema_v8_bindings_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE analysis_node_artifacts (
+                run_id INTEGER NOT NULL,
+                node_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                artifact_kind TEXT NOT NULL,
+                revision_id TEXT,
+                binding_kind TEXT NOT NULL,
+                PRIMARY KEY (run_id, node_id, direction, slot)
+            );",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "analysis_node_artifacts", "attempt_id").unwrap());
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "analysis_node_artifacts", "attempt_id").unwrap());
     }
 }

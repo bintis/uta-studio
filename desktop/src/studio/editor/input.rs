@@ -106,7 +106,6 @@ pub(crate) fn handle_editor_wheel(
             .as_ref()
             .is_some_and(|editor| editor.problems_panel_open || editor.shortcuts_panel_open)
     {
-        wheel.clear();
         return;
     }
     let delta = wheel.read().map(|event| event.y + event.x).sum::<f32>();

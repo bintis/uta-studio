@@ -82,3 +82,13 @@ pub fn analysis_history_clear() -> rusqlite::Result<()> {
         Ok(())
     })
 }
+
+pub fn analysis_history_set_error(run_id: i64, message: &str) -> rusqlite::Result<()> {
+    with_conn_mut(|connection| {
+        connection.execute(
+            "UPDATE analysis_history SET error_message = ?1 WHERE id = ?2",
+            params![message, run_id],
+        )?;
+        Ok(())
+    })
+}

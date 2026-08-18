@@ -5,8 +5,11 @@ use crate::studio::*;
 #[derive(Resource)]
 pub(crate) struct AnalysisRefreshTimer(pub(crate) Timer);
 
-#[derive(Component)]
-pub(crate) struct AnalysisGraphViewport;
+#[derive(Component, Clone, Copy)]
+pub(crate) struct AnalysisGraphViewport {
+    pub(crate) unscaled_width: f32,
+    pub(crate) unscaled_height: f32,
+}
 
 #[derive(Component)]
 pub(crate) struct AppLogViewerScroll;
@@ -92,6 +95,9 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// the existing `UiAction::ReanalyzeTranscript`/
     /// `app_core::reanalyze_transcript` Song Detail already calls.
     pub(crate) refetch_align_action: Option<UiAction>,
+    /// PreprocessedAudio is ephemeral unless the user explicitly requests
+    /// retention. Only the real `lyrics.preprocess` boundary offers this.
+    pub(crate) capture_intermediate_action: Option<UiAction>,
     /// §7.5's last item, "View logs": always offered (unlike the
     /// profile-controlled-field actions above, a log view is meaningful for
     /// every node, same as "Run this node only"). Opens `AppLogViewerState`
@@ -646,7 +652,6 @@ pub(crate) fn handle_app_log_viewer_scroll(
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AppLogViewerScroll>>,
 ) {
     if session.app_log_viewer.is_none() {
-        wheel.clear();
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
@@ -1073,6 +1078,8 @@ pub(crate) fn open_analysis_node_from_click(
                     .then(|| UiAction::ForceTranscribe(file_hash.to_string())),
                 refetch_align_action: node_can_refetch_and_align(node_id)
                     .then(|| UiAction::ReanalyzeTranscript(file_hash.to_string())),
+                capture_intermediate_action: (node_id == "lyrics.preprocess")
+                    .then(|| UiAction::RequestCaptureIntermediate(file_hash.to_string())),
                 view_logs_action: Some(UiAction::OpenAppLogViewer(
                     file_hash.to_string(),
                     node_id.to_string(),
@@ -1122,6 +1129,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(8)),
                 row_gap: px(2),
+                align_items: AlignItems::Stretch,
                 border: UiRect::all(px(1)),
                 border_radius: BorderRadius::all(px(6)),
                 ..default()
@@ -1149,15 +1157,15 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 height: px(5),
                 ..default()
             });
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
-                "View in inspector",
+                "Inspect view",
                 11.0,
-                UiAction::SelectAnalysisStage(context.stage_id.clone()),
+                UiAction::OpenAnalysisInspect(context.stage_id.clone()),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -1165,7 +1173,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 11.0,
                 context.retry_action.clone(),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -1173,7 +1181,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 11.0,
                 context.run_node_only_action.clone(),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -1182,7 +1190,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 context.run_downstream_action.clone(),
             );
             if let Some(disable_action) = context.disable_node_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1192,7 +1200,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(freeze_action) = context.freeze_node_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1202,7 +1210,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(bypass_action) = context.bypass_node_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1212,7 +1220,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(compare_action) = context.compare_node_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1222,7 +1230,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(configure_action) = context.open_configure_dialog_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1232,7 +1240,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(save_profile_action) = context.save_as_song_profile_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1242,7 +1250,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(force_transcribe_action) = context.force_transcribe_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1252,7 +1260,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some(refetch_align_action) = context.refetch_align_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -1261,11 +1269,31 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     refetch_align_action,
                 );
             }
-            if let Some((toggle_label, toggle_action)) = context.compound_toggle.clone() {
-                spawn_text_button(menu, font.clone(), theme, toggle_label, 11.0, toggle_action);
+            if let Some(capture_action) = context.capture_intermediate_action.clone() {
+                spawn_menu_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    "Capture intermediate output on next run…",
+                    11.0,
+                    capture_action,
+                );
             }
+            if let Some((toggle_label, toggle_action)) = context.compound_toggle.clone() {
+                spawn_menu_text_button(menu, font.clone(), theme, toggle_label, 11.0, toggle_action);
+            }
+            spawn_menu_text_button(
+                menu,
+                font.clone(),
+                theme,
+                "Open node documentation",
+                11.0,
+                UiAction::OpenDocumentation(Some(
+                    documentation_anchor_for_node(&context.node_id).to_string(),
+                )),
+            );
             if let Some(view_logs_action) = context.view_logs_action.clone() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,

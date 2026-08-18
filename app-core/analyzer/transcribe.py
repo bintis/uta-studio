@@ -1,9 +1,11 @@
 """WhisperX / Parakeet transcription: full-audio transcription of vocals with forced alignment."""
 
+import os
+
 import re
 
 import cjk
-from audio import detect_vocal_region, highpass_filter, normalize_rms
+from audio import detect_vocal_region, highpass_filter, normalize_rms, write_capture_flac_atomic
 from gpu import gpu_model, hard_free_gpu
 from hallucination import is_hallucination, remove_hallucinated_words
 from language import detect_language_multiwindow
@@ -21,6 +23,7 @@ def transcribe_vocals(
     language_override: str | None = None,
     whisper_model=None,
     pre_align_cleanup=None,
+    capture_preprocessed_path: str | None = None,
 ) -> dict:
     """Transcribe vocals to get word-level timestamps.
 
@@ -56,7 +59,21 @@ def transcribe_vocals(
     audio = highpass_filter(audio)
     audio = normalize_rms(audio)
     print(f"[uta-studio:LOG] Settings: engine={engine}, model={model_name}, beam_size={beam_size}, batch_size={batch_size}", flush=True)
-    progress_node("lyrics.preprocess", "node_completed", 57, "Vocal-region preprocessing complete")
+    artifacts = None
+    if capture_preprocessed_path:
+        write_capture_flac_atomic(capture_preprocessed_path, audio)
+        artifacts = [{
+            "slot": "output:0",
+            "artifact_kind": "PreprocessedAudio",
+            "path": os.path.abspath(capture_preprocessed_path),
+            "binding_kind": "produced",
+            "config_hash": "",
+            "algorithm_version": "1",
+        }]
+    progress_node(
+        "lyrics.preprocess", "node_completed", 57,
+        "Vocal-region preprocessing complete", artifacts=artifacts,
+    )
 
     if engine == "parakeet":
         payload, language, engine_used = _transcribe_parakeet_or_fallback(

@@ -171,10 +171,38 @@ fn translate_dynamic(locale: UiLocale, source: &str) -> Option<String> {
             "No application log exists yet at {value}",
         ),
         ("Opened ", "Opened {value}"),
+        (
+            "Could not preview transcript audio: ",
+            "Could not preview transcript audio: {value}",
+        ),
+        (
+            "Could not load transcript audio: ",
+            "Could not load transcript audio: {value}",
+        ),
+        (
+            "Could not load transcript waveform: ",
+            "Could not load transcript waveform: {value}",
+        ),
+        ("AUDIO WAVEFORM · ", "AUDIO WAVEFORM · {value}"),
     ] {
         if let Some(value) = source.strip_prefix(prefix) {
             return render_template(locale, key, &[("{value}", value)]);
         }
+    }
+
+    if let Some(value) = source
+        .strip_prefix("Previewing transcript at ")
+        .and_then(|value| value.strip_suffix('.'))
+    {
+        return render_template(
+            locale,
+            "Previewing transcript at {value}.",
+            &[("{value}", value)],
+        );
+    }
+
+    if let Some(value) = source.strip_suffix(" is not numeric") {
+        return render_template(locale, "{value} is not numeric", &[("{value}", value)]);
     }
 
     if let Some(value) = source
@@ -217,6 +245,17 @@ fn translate_dynamic(locale: UiLocale, source: &str) -> Option<String> {
         return render_template(
             locale,
             "Acceleration set to {value}. Reconfigure the runtime to apply it.",
+            &[("{value}", value)],
+        );
+    }
+
+    if let Some(value) = source
+        .strip_prefix("Estimated upper bound before FLAC compression: ")
+        .and_then(|value| value.strip_suffix(" MiB."))
+    {
+        return render_template(
+            locale,
+            "Estimated upper bound before FLAC compression: {value} MiB.",
             &[("{value}", value)],
         );
     }
@@ -266,7 +305,14 @@ pub(crate) fn translate_ui(locale: UiLocale, source: &str) -> Option<String> {
 
 pub(crate) fn localize_ui_text(
     session: Res<StudioSession>,
-    mut texts: Query<&mut Text, (Changed<Text>, Without<EditableText>)>,
+    mut texts: Query<
+        &mut Text,
+        (
+            Changed<Text>,
+            Without<EditableText>,
+            Without<NoRuntimeLocalization>,
+        ),
+    >,
 ) {
     let locale = effective_ui_locale(&session.config);
     if locale == UiLocale::English {

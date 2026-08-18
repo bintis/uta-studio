@@ -1,5 +1,6 @@
 use crate::studio::*;
 
+#[allow(dead_code)]
 pub(crate) fn spawn_analysis_history_list(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -183,36 +184,23 @@ pub(crate) fn handle_analysis_graph_scroll(
     >,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Library {
-        wheel.clear();
+    if session.route != StudioRoute::Library || session.library_view != LibraryView::Queue {
         return;
     }
     let Ok(window) = windows.single() else {
-        wheel.clear();
         return;
     };
     let Some(pointer) = window.cursor_position() else {
-        wheel.clear();
         return;
     };
     let Ok((computed, transform, mut position)) = viewports.single_mut() else {
-        wheel.clear();
         return;
     };
     if !ui_node_contains_pointer(computed, transform, pointer) {
-        wheel.clear();
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     if !ctrl {
-        // The graph canvas isn't the only thing a bare wheel scrolls here --
-        // the surrounding page reacts to the same wheel too, so consuming it
-        // in this system as well (to pan or zoom) produced two conflicting
-        // motions at once for an ordinary scroll gesture. Requiring Ctrl,
-        // the same modifier the note editor's own canvas uses for zoom
-        // (`handle_editor_wheel`), means this system only ever touches the
-        // wheel when the user has clearly opted into graph-local pan/zoom.
-        wheel.clear();
         return;
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -262,8 +250,95 @@ pub(crate) fn refresh_analysis_activity(
     }
     session.analysis_tasks = tasks;
     session.analysis_history = history;
-    if session.route == StudioRoute::Library && session.library_view == LibraryView::Queue {
+    if (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
+        || session.route == StudioRoute::AnalysisInspect
+    {
         session.refresh_library();
     }
     invalidated.0 = true;
+}
+
+fn analysis_page_is_open(session: &StudioSession) -> bool {
+    (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
+        || session.route == StudioRoute::AnalysisInspect
+}
+
+/// Keeps the live DAG node in the middle of the canvas while a run is
+/// walking the graph. Recenters only when the running `node_id` changes so
+/// a manual pan is not yanked back on every refresh tick.
+pub(crate) fn follow_live_analysis_node(
+    mut session: ResMut<StudioSession>,
+    mut invalidated: ResMut<UiInvalidated>,
+    viewports: Query<&ComputedNode, With<AnalysisGraphViewport>>,
+) {
+    if !analysis_page_is_open(&session) {
+        if session.analysis_graph_follow_node.take().is_some() {
+            // Leaving the page drops the follow so reopening recenters.
+        }
+        return;
+    }
+    if session.analysis_graph_needs_fit {
+        return;
+    }
+    let live_id = session
+        .analysis_tasks
+        .iter()
+        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+        .and_then(|task| task.live.as_ref())
+        .and_then(|live| live.node_id.clone());
+    let Some(live_id) = live_id else {
+        session.analysis_graph_follow_node = None;
+        return;
+    };
+    if session.analysis_graph_follow_node.as_deref() == Some(live_id.as_str()) {
+        return;
+    }
+    let viewport_width = viewports
+        .iter()
+        .next()
+        .map(|computed| computed.size().x * computed.inverse_scale_factor())
+        .unwrap_or(0.0);
+    session.analysis_graph_scroll_offset = estimated_analysis_graph_center_scroll(
+        &live_id,
+        clamp_analysis_graph_zoom(session.analysis_graph_zoom),
+        viewport_width,
+    );
+    session.analysis_graph_follow_node = Some(live_id);
+    invalidated.0 = true;
+}
+
+/// Scales the DAG so the full flow fits the current viewport, then leaves
+/// zoom alone until the user clicks Fit or switches MINI/Full. Needs a
+/// laid-out `AnalysisGraphViewport` so it waits a frame after spawn.
+pub(crate) fn fit_analysis_graph_to_viewport(
+    mut session: ResMut<StudioSession>,
+    mut invalidated: ResMut<UiInvalidated>,
+    viewports: Query<(&ComputedNode, &AnalysisGraphViewport)>,
+) {
+    if !session.analysis_graph_needs_fit || !analysis_page_is_open(&session) {
+        return;
+    }
+    let Ok((computed, canvas)) = viewports.single() else {
+        return;
+    };
+    let viewport = computed.size() * computed.inverse_scale_factor();
+    if viewport.x < 16.0
+        || viewport.y < 16.0
+        || canvas.unscaled_width < 8.0
+        || canvas.unscaled_height < 8.0
+    {
+        return;
+    }
+    let fitted = analysis_graph_fit_zoom(
+        canvas.unscaled_width,
+        canvas.unscaled_height,
+        viewport.x,
+        viewport.y,
+    );
+    session.analysis_graph_needs_fit = false;
+    session.analysis_graph_scroll_offset = 0.0;
+    if (fitted - session.analysis_graph_zoom).abs() > 0.01 {
+        session.analysis_graph_zoom = fitted;
+        invalidated.0 = true;
+    }
 }

@@ -1,12 +1,12 @@
 # Uta Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta Studio 0.5.x  
-**Document revision:** 2026-08-17  
+**Applies to:** Uta Studio 0.5.0
+**Document revision:** 2026-08-18
 **License:** Documentation distributed with the GPL-3.0 project.
 
 [English](#english) · [简体中文](#简体中文) · [日本語](#日本語)
 
-> Uta Studio is a local desktop authoring application. It reads source media from folders you choose, creates generated working data separately, and exports karaoke charts as UTZ or UltraStar packages. Model downloads begin only after explicit confirmation.
+> This file is generated from `docs/user-guide/*.md`. Do not edit it directly.
 
 ---
 
@@ -27,11 +27,11 @@ Uta Studio does not move or delete source media. Generated stems, models, previe
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.4.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release 0.5.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
 
 #### Windows
 
-1. Download `uta-studio-0.4.0-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-0.5.0-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
 3. Start `uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -39,20 +39,20 @@ Download the package for your system from the project’s GitHub Releases page. 
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.4.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.4.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.4.0-x86_64-linux.bin
-./uta-studio-0.4.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.0-x86_64-linux.bin
+./uta-studio-0.5.0-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -62,7 +62,7 @@ The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayla
 Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
 
 ```sh
-sha256sum -c uta-studio-0.4.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.0-linux-deb.sha256
 ```
 
 Use the checksum file matching the package type you downloaded.
@@ -116,6 +116,10 @@ Open **Settings → Models & runtime**.
 
 Uta Studio may reuse compatible local `ffmpeg`, `uv`, Python, and existing model files. It does not download models merely because the application was launched.
 
+#### 3.5 Open the Documentation Center
+
+The user guide is also available inside the application. Open **Settings → General → Open user guide**, choose **Documentation** in Settings navigation, or press **F1**. See [Documentation Center](guide:documentation). Analysis outputs are inspected from the song’s analysis graph; see [Analysis artifacts](guide:artifacts).
+
 ### 4. Quick-start workflow
 
 1. Add a watched folder.
@@ -147,7 +151,7 @@ Library playback includes previous/next, pause/play, repeat modes, shuffle, mute
 
 ### 6. Analysis pipeline
 
-Uta Studio uses four explicit stages.
+Uta Studio uses four explicit stages. Generated files from these stages are typed **analysis artifacts**; inspect revisions, lineage, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
 
 #### 01 · Vocal separation
 
@@ -309,6 +313,119 @@ Analysis runs locally with the configured runtime. LRCLIB search is an explicit 
 
 Uta Studio is GPL-3.0. Optional third-party models and tools retain their own licenses. Review the confirmation shown before downloading separately licensed artifacts.
 
+### 14. Documentation Center
+
+The Documentation Center is an offline, native page. It does not open a browser, fetch remote pages, or run scripts.
+
+Open it from:
+
+- **Settings → General → Open user guide**;
+- **Documentation** in the Settings navigation;
+- **F1**, which opens context help for the current page or selected analysis node;
+- a DAG node **Help** action, or an artifact menu **About this artifact** action.
+
+The document language follows **Settings → General → Interface language**. The article body is not re-translated at runtime; Uta Studio selects the matching English, Simplified Chinese, or Japanese source first. Viewer chrome still uses the interface catalogue.
+
+#### Browse and search the guide
+
+Search is local to the embedded guide. Headings rank higher than body lines. CJK search uses character substring matching, so no extra tokenizer is required. A result jumps to the matching section.
+
+On a wide window the page uses a contents column, the article, and search or history. On a narrow window those columns stack. Back and Forward remember the sections you opened.
+
+If **F1** is pressed from the chart editor while the chart has unsaved changes, Uta Studio asks before leaving the editor.
+
+#### Context help and safe links
+
+Stable deep links include `guide:getting-started`, `guide:analysis`, `guide:lyrics`, `guide:editor`, `guide:export`, `guide:documentation`, and `guide:artifacts`. Node help (`node:lyrics.align`) opens the matching workflow chapter. Artifact help (`artifact:TimedTranscript`) opens this Artifact Workbench chapter.
+
+Only in-guide, `guide:`, `node:`, `artifact:`, `problem:`, and `https://` links are followed. Remote images, `file://` links, and scripts are not executed.
+
+### 15. Analysis artifacts
+
+Analysis writes generated files into Uta Studio’s cache, not over your source media. The Artifact Workbench inspects those files as typed revisions from the song’s analysis graph.
+
+#### Revisions, Active, and Pin
+
+- A **revision** is one immutable snapshot. A later analysis creates another revision; it does not rewrite the old bytes.
+- **Active** is the revision later actions use by default.
+- **Pin** protects a revision from delete and cache cleanup. Unpin it first if you really want it removed.
+- Older runs that predate exact binding records are labelled **Legacy / untracked**. Uta Studio does not invent missing lineage from a filename or modification time.
+- Temporary preprocess audio is labelled **Ephemeral** unless you explicitly capture it.
+
+#### Inspect Node I/O
+
+Open a song, open its analysis graph, and select a node. The Node I/O workbench has **Overview**, **Inputs**, **Outputs**, **Attempts**, **Logs**, and **Help**.
+
+The banner says **Exact run bindings** when the selected history record stored attempt-specific input and output rows. Otherwise it says the inspector is using the current inventory as a fallback, and that exact run lineage was not recorded.
+
+Inputs and outputs distinguish the node’s declared slots from the concrete files bound to the selected run.
+
+#### Artifact menu actions
+
+Right-click an artifact node for the actions that are valid for that kind and state:
+
+- Preview or Play;
+- Open in a compatible editor, when the kind supports it;
+- Set Active;
+- Compare with Active, or Compare a candidate chart with the authored chart;
+- Pin or Unpin;
+- Lineage;
+- Impact;
+- Inspect provenance;
+- Reveal in the file manager;
+- About this artifact;
+- Invalidate;
+- Delete, unless the revision is pinned.
+
+Actions that cannot succeed are hidden instead of shown as errors. Graph export boxes show readiness, the last recorded destination when one exists, and a menu to validate, re-export, or reveal that file. Export packages are not analysis Artifact revisions.
+
+#### Edit without overwriting analysis output
+
+- **LyricsInput** and **RecognizedText** can open the lyrics editor. Saving writes a new user revision. Analyzer output is not overwritten in place.
+- **TimedTranscript** opens a timing surface that keeps word-level times and unknown JSON fields. Historical transcript bytes stay unchanged.
+- **CandidateChart** can be compared with **AuthoredChart**. Merge actions can replace the working copy, take candidate lyrics timing, take candidate pitch, replace the selected phrase, or replace the selected note range. Phrase and range merges use the current chart-editor selection. Save the authored chart first if it has unsaved edits.
+- **AuthoredChart** opens the selected revision, not a silent substitute for “whatever is current”. Saving creates a new authored revision. **Replace Authored** asks for confirmation. **Keep Authored** leaves the saved chart unchanged. A pinned authored chart cannot be replaced until it is unpinned.
+- **PitchTrack** and **PitchNoteCandidates** are evidence. They can provide context in the chart editor; the evidence file itself is not rewritten.
+
+**Save Only** writes the new revision and does not queue analysis. **Save and Run Downstream** shows an impact preview first. Confirming that preview is what queues work.
+
+#### Lineage panel and impact preview
+
+**Lineage** can stay on the main analysis graph. Turn it on from the VIEW row or from an artifact menu. Upstream, downstream, and full scope highlight the matching nodes and edges and fade the rest. MINI view keeps only compute nodes; lineage then highlights those producers and consumers. Missing legacy links appear as explicit gaps. Edge labels show the artifact kind and a short revision id. Selecting a revision opens that revision.
+
+**Impact** is a read-only preview built from one frozen analysis plan. It includes the current song profile, staged Freeze / Bypass / Disable intents, and Pin. Groups are will run, will reuse, will become stale, will be blocked, will remain preserved, and exports that need regeneration. **Queue this plan** submits that same request. Cancel leaves the library unchanged.
+
+#### Capture preprocessed audio
+
+Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or artifact menu you can request a one-shot or persistent capture of the real preprocessed FLAC on the next run. The confirmation states storage and privacy implications. A successful one-shot request clears itself. Failed capture leaves the request armed.
+
+#### Analysis node reference
+
+- `preflight` — checks that the local source and runtime are usable before work starts.
+- `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
+- `stems.separate` — vocal and instrumental stems.
+- `pitch.extract` — pitch curve and note-candidate evidence.
+- `lyrics.preprocess` — audio prepared for recognition; ephemeral unless captured.
+- `lyrics.transcribe` — recognized text.
+- `lyrics.align` — word-timed transcript.
+- `lyrics.import_timed` — imported timed lyrics.
+- `chart.build_candidate` — builds a **CandidateChart** without replacing the authored chart.
+
+#### Artifact kind reference
+
+- **SourceMedia** — the read-only local song or video. Never moved or deleted by analysis.
+- **MusicAnalysis**, **KeyAnalysis**, **RhythmAnalysis**, **AudioDescriptors** — music-analysis JSON used by later nodes.
+- **VocalStem** and **InstrumentalStem** — separated audio.
+- **PreprocessedAudio** — ephemeral recognition input unless you capture it as FLAC.
+- **RecognizedText** and **AsrSegments** — transcription evidence.
+- **LyricsInput** — user-supplied or promoted lyrics.
+- **TimedTranscript** — word-timed lyrics used by alignment and charting.
+- **PitchTrack** and **PitchNoteCandidates** — pitch evidence.
+- **CandidateChart** — analyzer-proposed chart. Distinct from the authored chart.
+- **AuthoredChart** — the chart you edit and export.
+
+---
+
 ---
 
 ## 简体中文
@@ -328,11 +445,11 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.4.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.5.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
 
 #### Windows
 
-1. 下载 `uta-studio-0.4.0-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-0.5.0-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -340,20 +457,20 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.4.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.4.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.4.0-x86_64-linux.bin
-./uta-studio-0.4.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.0-x86_64-linux.bin
+./uta-studio-0.5.0-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -363,7 +480,7 @@ Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWa
 从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
 
 ```sh
-sha256sum -c uta-studio-0.4.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.0-linux-deb.sha256
 ```
 
 校验文件必须与下载的包类型一致。
@@ -417,6 +534,10 @@ Music/
 
 Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模型文件。应用启动本身不会自动下载模型。
 
+#### 3.5 打开文档中心
+
+用户说明书也可以在应用内阅读。打开**设置 → 常规 → 打开用户指南**，在设置导航中选择**文档**，或按 **F1**。详见[文档中心](guide:documentation)。分析产物在歌曲的分析图中查看，详见[分析产物](guide:artifacts)。
+
 ### 4. 快速上手
 
 1. 添加监视文件夹。
@@ -448,7 +569,7 @@ Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模�
 
 ### 6. 分析流水线
 
-Uta Studio 使用四个明确阶段。
+Uta Studio 使用四个明确阶段。这些阶段生成的文件是带类型的**分析产物**；可在歌曲的分析图中查看修订、来源和编辑器入口。详见[分析产物](guide:artifacts)。
 
 #### 01 · 人声分离
 
@@ -610,6 +731,119 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
 
+### 14. 文档中心
+
+文档中心是离线的原生页面。它不会打开浏览器、下载远程页面或执行脚本。
+
+打开方式：
+
+- **设置 → 常规 → 打开用户指南**；
+- 设置导航中的**文档**；
+- **F1**，按当前页面或已选分析节点打开上下文帮助；
+- 分析图节点的**帮助**，或产物菜单中的**关于此产物**。
+
+文档语言跟随**设置 → 常规 → 界面语言**。正文不会在运行时再翻译一遍；应用会先选定对应的英语、简体中文或日语源文。界面框架仍使用界面文案目录。
+
+#### 浏览与搜索说明书
+
+搜索只针对内嵌说明书。标题的排序高于正文。中日韩搜索按字符子串匹配，不需要额外分词。结果会跳到对应章节。
+
+宽窗口使用目录、正文和搜索/历史三列；窄窗口会改为纵向堆叠。前进和后退会记住你打开过的章节。
+
+如果在谱面编辑器里有未保存更改时按下 **F1**，离开编辑器前会先询问。
+
+#### 上下文帮助与安全链接
+
+稳定深链接包括 `guide:getting-started`、`guide:analysis`、`guide:lyrics`、`guide:editor`、`guide:export`、`guide:documentation` 和 `guide:artifacts`。节点帮助（如 `node:lyrics.align`）打开对应的工作流章节。产物帮助（如 `artifact:TimedTranscript`）打开“分析产物”这一章。
+
+只会跟随说明书内部、`guide:`、`node:`、`artifact:`、`problem:` 和 `https://` 链接。远程图片、`file://` 链接和脚本都不会执行。
+
+### 15. 分析产物
+
+分析会把生成文件写入 Uta Studio 缓存，而不会改写源媒体。产物工作台从歌曲的分析图中，按类型查看这些修订。
+
+#### 修订、当前选用与固定
+
+- **修订**是一份不可变快照。之后的分析会生成新修订，而不会改写旧字节。
+- **当前选用（Active）**是后续操作默认使用的修订。
+- **固定（Pin）**保护修订不被删除和缓存清理。真正要删除时，需要先取消固定。
+- 早于精确绑定记录的旧运行会标为**旧版/未跟踪**。Uta Studio 不会根据文件名或修改时间编造缺失的来源。
+- 临时预处理音频标为**临时（Ephemeral）**，除非你明确捕获它。
+
+#### 查看节点输入输出
+
+打开歌曲及其分析图，选中一个节点。节点 I/O 工作台包含**概览**、**输入**、**输出**、**尝试**、**日志**和**帮助**。
+
+当所选历史记录保存了按尝试区分的输入输出行时，横幅会显示**精确运行绑定**。否则会说明检查器正在使用当前清单作为回退，且没有记录精确运行来源。
+
+输入和输出会区分节点声明的槽位，以及绑定到所选运行的具体文件。
+
+#### 产物菜单操作
+
+右键产物节点，只显示对该类型和状态有效的操作：
+
+- 预览或播放；
+- 在兼容编辑器中打开（若该类型支持）；
+- 设为当前选用；
+- 与当前选用比较，或将候选谱面与已制作谱面比较；
+- 固定或取消固定；
+- 来源关系；
+- 影响预览；
+- 查看出处；
+- 在文件管理器中显示；
+- 关于此产物；
+- 作废；
+- 删除（已固定的修订不会出现此项）。
+
+不会成功的操作会被隐藏，而不是点进去再报错。图上的导出框会显示就绪状态、上次记录的目标（若有），并提供校验、重新导出和显示该文件的菜单。导出包不是分析产物修订。
+
+#### 编辑时不覆盖分析输出
+
+- **LyricsInput** 和 **RecognizedText** 可打开歌词编辑器。保存会写入新的用户修订，不会就地覆盖分析器输出。
+- **TimedTranscript** 打开时间轴界面，保留词级时间和未知 JSON 字段。历史转录字节保持不变。
+- **CandidateChart** 可与 **AuthoredChart** 比较。合并操作可以替换工作副本、采用候选歌词时间、只采用候选音高、替换所选乐句，或替换所选音符范围。乐句和范围合并使用谱面编辑器里的当前选择。若已制作谱面有未保存修改，请先保存。
+- **AuthoredChart** 打开所选修订，而不会悄悄换成“当前文件”。保存会创建新的已制作修订。**用候选替换**会先确认。**保留已制作谱面**不会改动已保存谱面。已固定的已制作谱面在取消固定前不能被替换。
+- **PitchTrack** 和 **PitchNoteCandidates** 是证据。它们可以在谱面编辑器里提供上下文，证据文件本身不会被改写。
+
+**仅保存**写入新修订，不会排队分析。**保存并运行下游**会先显示影响预览；确认预览后才会真正入队。
+
+#### 来源面板与影响预览
+
+**来源关系**可以显示在主分析图上。从 VIEW 行或产物菜单打开。上游、下游和完整范围会高亮对应节点和边，并淡化其余部分。MINI 视图只保留计算节点，来源高亮仍落在这些生产者和消费者上。缺失的旧版链接显示为明确缺口。边标签显示产物类型和修订短号。选中修订会打开该修订。
+
+**影响**是只读预览，来自一份冻结的分析计划。它包含当前歌曲配置、已暂存的冻结 / 旁路 / 禁用意图，以及固定状态。分组包括将运行、将复用、将变旧、将被阻塞、将保持保留，以及需要重新生成的导出。**排队此计划**提交同一份请求。取消不会改动曲库。
+
+#### 捕获预处理音频
+
+普通运行不会保留预处理音频。可从相关节点或产物菜单请求在下一次运行时一次性或持续捕获真实的预处理 FLAC。确认信息会说明存储和隐私影响。一次性请求成功后会自动清除；失败则保持待捕获。
+
+#### 分析节点参考
+
+- `preflight` — 在开始工作前检查本地源文件和运行环境是否可用。
+- `music.analysis` — 调性、节奏和描述符分析，供后续时间和谱面使用。
+- `stems.separate` — 人声与伴奏分轨。
+- `pitch.extract` — 音高曲线和音符候选证据。
+- `lyrics.preprocess` — 供识别使用的音频；除非捕获，否则为临时文件。
+- `lyrics.transcribe` — 识别文本。
+- `lyrics.align` — 带词级时间的转录。
+- `lyrics.import_timed` — 导入的带时间歌词。
+- `chart.build_candidate` — 生成 **CandidateChart**，不会替换已制作谱面。
+
+#### 产物类型参考
+
+- **SourceMedia** — 只读的本地歌曲或视频。分析不会移动或删除它。
+- **MusicAnalysis**、**KeyAnalysis**、**RhythmAnalysis**、**AudioDescriptors** — 供后续节点使用的音乐分析 JSON。
+- **VocalStem** 和 **InstrumentalStem** — 分离后的音频。
+- **PreprocessedAudio** — 识别用输入；除非捕获为 FLAC，否则为临时文件。
+- **RecognizedText** 和 **AsrSegments** — 转录证据。
+- **LyricsInput** — 用户提供或提升后的歌词。
+- **TimedTranscript** — 供对齐和谱面使用的词级时间歌词。
+- **PitchTrack** 和 **PitchNoteCandidates** — 音高证据。
+- **CandidateChart** — 分析器提出的谱面，与已制作谱面不同。
+- **AuthoredChart** — 你编辑并导出的谱面。
+
+---
+
 ---
 
 ## 日本語
@@ -629,11 +863,11 @@ Uta Studio が元メディアを移動・削除することはありません。
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.4.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.5.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
 
 #### Windows
 
-1. `uta-studio-0.4.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-0.5.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -641,20 +875,20 @@ Uta Studio が元メディアを移動・削除することはありません。
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.4.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.4.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.4.0-x86_64-linux.bin
-./uta-studio-0.4.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.0-x86_64-linux.bin
+./uta-studio-0.5.0-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -664,7 +898,7 @@ Linux デスクトップ版は Wayland ネイティブです。X11 バックエ�
 ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
 
 ```sh
-sha256sum -c uta-studio-0.4.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.0-linux-deb.sha256
 ```
 
 ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
@@ -718,6 +952,10 @@ Music/
 
 Uta Studio は互換性のあるローカルの `ffmpeg`、`uv`、Python、既存モデルを再利用できます。アプリを起動しただけでモデルを自動ダウンロードすることはありません。
 
+#### 3.5 ドキュメントセンターを開く
+
+ユーザーガイドはアプリ内でも読めます。**設定 → 一般 → ユーザーガイドを開く**、設定ナビゲーションの**ドキュメント**、または **F1** を使います。詳細は[ドキュメントセンター](guide:documentation)を参照してください。解析の生成物は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
+
 ### 4. クイックスタート
 
 1. 監視フォルダーを追加します。
@@ -749,7 +987,7 @@ Uta Studio は互換性のあるローカルの `ffmpeg`、`uv`、Python、既�
 
 ### 6. 解析パイプライン
 
-Uta Studio は4つの明示的な段階を使用します。
+Uta Studio は4つの明示的な段階を使用します。各段階の生成ファイルは型付きの**解析成果物**です。版、由来、エディターへの導線は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
 
 #### 01 · ボーカル分離
 
@@ -910,3 +1148,116 @@ X11 専用ではなく Wayland セッションであること、グラフィッ�
 解析は設定済みのローカルランタイムで実行されます。LRCLIB 検索は明示的に実行するネットワーク歌詞検索です。モデルセットアップは確認後にモデルホストへ接続する場合があります。
 
 Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそれぞれのライセンスが適用されます。別ライセンスの成果物をダウンロードする前に確認内容を読んでください。
+
+### 14. ドキュメントセンター
+
+ドキュメントセンターはオフラインのネイティブ画面です。ブラウザを開いたり、遠隔ページを取得したり、スクリプトを実行したりしません。
+
+開き方:
+
+- **設定 → 一般 → ユーザーガイドを開く**
+- 設定ナビゲーションの**ドキュメント**
+- **F1**（現在の画面または選択中の解析ノード向けの文脈ヘルプ）
+- DAG ノードの**ヘルプ**、または成果物メニューの**この成果物について**
+
+文書の言語は**設定 → 一般 → 表示言語**に従います。本文は実行時に再翻訳されません。先に英語・簡体字中国語・日本語のいずれかの原文が選ばれます。画面枠は従来の UI カタログを使います。
+
+#### ガイドの閲覧と検索
+
+検索は埋め込みガイドの中だけで行われます。見出しは本文より高く順位付けされます。CJK は文字単位の部分一致なので、追加のトークナイザは不要です。結果を選ぶと該当節へ移動します。
+
+広いウィンドウでは目次、本文、検索/履歴の列を使います。狭いウィンドウでは縦に積みます。戻る/進むは開いた節を記憶します。
+
+譜面エディターに未保存の変更がある状態で **F1** を押すと、エディターを離れる前に確認します。
+
+#### 文脈ヘルプと安全なリンク
+
+安定したディープリンクには `guide:getting-started`、`guide:analysis`、`guide:lyrics`、`guide:editor`、`guide:export`、`guide:documentation`、`guide:artifacts` があります。ノードヘルプ（`node:lyrics.align`）は対応する作業章を開きます。成果物ヘルプ（`artifact:TimedTranscript`）はこの解析成果物の章を開きます。
+
+ガイド内、`guide:`、`node:`、`artifact:`、`problem:`、`https://` のリンクだけが辿られます。遠隔画像、`file://` リンク、スクリプトは実行されません。
+
+### 15. 解析成果物
+
+解析は生成ファイルを Uta Studio のキャッシュへ書き、ソースメディアは上書きしません。成果物ワークベンチは、楽曲の解析グラフからそれらのファイルを型付きリビジョンとして検査します。
+
+#### リビジョン、Active、Pin
+
+- **リビジョン**は不変のスナップショットです。後の解析は別リビジョンを作り、古いバイトは書き換えません。
+- **Active** は後続操作が既定で使うリビジョンです。
+- **Pin** は削除とキャッシュ掃除から守ります。本当に消すときは先に解除します。
+- 正確なバインド記録より前の実行は **Legacy / untracked** と表示されます。ファイル名や更新時刻から欠けた由来を捏造しません。
+- 一時的な前処理音声は、明示的にキャプチャしない限り **Ephemeral** です。
+
+#### ノード入出力の確認
+
+楽曲とその解析グラフを開き、ノードを選びます。ノード I/O ワークベンチには **Overview**、**Inputs**、**Outputs**、**Attempts**、**Logs**、**Help** があります。
+
+選択した履歴に試行単位の入出力行があるときは、見出しが **Exact run bindings** になります。そうでなければ、現在のインベントリをフォールバックとして使っており、正確な実行由来が記録されていないと表示します。
+
+入力と出力は、ノードが宣言したスロットと、選択した実行に束縛された実ファイルを区別します。
+
+#### 成果物メニューの操作
+
+成果物ノードを右クリックすると、その種類と状態で有効な操作だけが出ます。
+
+- プレビューまたは再生
+- 対応するエディターで開く（種類が対応している場合）
+- Active にする
+- Active と比較、または候補譜面をオーサリング譜面と比較
+- Pin / Unpin
+- 由来（Lineage）
+- 影響（Impact）
+- 出所を調べる
+- ファイルマネージャーで表示
+- この成果物について
+- 無効化
+- 削除（Pin 済みなら出ません）
+
+必ず失敗する操作はエラーとして出さず、隠します。グラフ上の書き出し枠は準備状態と、記録があれば前回の出力先を示し、検証・再書き出し・そのファイルの表示ができます。書き出しパッケージは解析成果物のリビジョンではありません。
+
+#### 解析出力を上書きせずに編集する
+
+- **LyricsInput** と **RecognizedText** は歌詞エディターを開けます。保存は新しいユーザーリビジョンを作り、解析器出力をその場で上書きしません。
+- **TimedTranscript** は単語タイミングと未知の JSON フィールドを保つタイミング画面を開きます。過去の転写バイトは変わりません。
+- **CandidateChart** は **AuthoredChart** と比較できます。マージは作業コピーの置換、候補の歌詞タイミング、候補ピッチのみ、選択中フレーズの置換、選択ノート範囲の置換ができます。フレーズと範囲のマージは譜面エディターの現在の選択を使います。制作済み譜面に未保存の変更があるときは先に保存します。
+- **AuthoredChart** は選んだリビジョンを開きます。「今のファイル」へ黙って差し替えません。保存は新しいオーサリングリビジョンを作ります。**Replace Authored** は確認します。**Keep Authored** は保存済み譜面を変えません。Pin 済みのオーサリング譜面は、解除するまで置換できません。
+- **PitchTrack** と **PitchNoteCandidates** は証拠です。譜面エディターで文脈には使えますが、証拠ファイル自体は書き換えません。
+
+**Save Only** は新しいリビジョンを書き、解析をキューしません。**Save and Run Downstream** は先に影響プレビューを出します。プレビューを確認したときだけ作業がキューされます。
+
+#### 由来パネルと影響プレビュー
+
+**Lineage** はメインの解析グラフ上でも使えます。VIEW 行または成果物メニューからオンにします。上流・下流・全体の範囲で該当ノードとエッジを強調し、それ以外を薄くします。MINI ビューは計算ノードだけを残し、由来ハイライトもその生産者・消費者に載ります。欠けた旧リンクは隙間として明示されます。エッジラベルは成果物の種類と短いリビジョン ID を示します。リビジョンを選ぶとそのリビジョンが開きます。
+
+**Impact** は 1 つの凍結済み解析計画から作る読み取り専用プレビューです。現在の楽曲プロファイル、staged された Freeze / Bypass / Disable、Pin を含みます。グループは実行予定、再利用、陳腐化、ブロック、保全、再生成が必要な書き出しです。**Queue this plan** はその同じリクエストを投入します。キャンセルしてもライブラリは変わりません。
+
+#### 前処理音声のキャプチャ
+
+通常の実行では前処理音声は一時的なままです。関連ノードまたは成果物メニューから、次回実行で実際の前処理 FLAC を一度だけ、または継続的に残すよう依頼できます。確認画面は容量とプライバシーの影響を示します。ワンショットが成功すると依頼は消えます。失敗した依頼は残ります。
+
+#### 解析ノード一覧
+
+- `preflight` — 作業開始前にローカルソースとランタイムが使えるか確認します。
+- `music.analysis` — 後のタイミングと譜面に使うキー、リズム、記述子解析です。
+- `stems.separate` — ボーカルと伴奏ステムです。
+- `pitch.extract` — ピッチ曲線とノート候補の証拠です。
+- `lyrics.preprocess` — 認識用に整えた音声です。キャプチャしない限り一時的です。
+- `lyrics.transcribe` — 認識テキストです。
+- `lyrics.align` — 単語タイミング付き転写です。
+- `lyrics.import_timed` — 取り込み済みのタイミング付き歌詞です。
+- `chart.build_candidate` — **CandidateChart** を作り、オーサリング譜面は置き換えません。
+
+#### 成果物の種類
+
+- **SourceMedia** — 読み取り専用のローカル楽曲または動画です。解析は移動も削除もしません。
+- **MusicAnalysis**、**KeyAnalysis**、**RhythmAnalysis**、**AudioDescriptors** — 後続ノードが使う音楽解析 JSON です。
+- **VocalStem** と **InstrumentalStem** — 分離後の音声です。
+- **PreprocessedAudio** — 認識入力です。FLAC としてキャプチャしない限り一時的です。
+- **RecognizedText** と **AsrSegments** — 文字起こしの証拠です。
+- **LyricsInput** — ユーザーが渡した、または昇格した歌詞です。
+- **TimedTranscript** — アラインメントと譜面が使う単語タイミング付き歌詞です。
+- **PitchTrack** と **PitchNoteCandidates** — ピッチ証拠です。
+- **CandidateChart** — 解析器が提案する譜面で、オーサリング譜面とは別です。
+- **AuthoredChart** — 編集して書き出す譜面です。
+
+---

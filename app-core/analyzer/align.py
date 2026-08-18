@@ -1,10 +1,11 @@
 """Lyrics alignment: align pre-fetched lyrics text to vocals audio using WhisperX."""
 
 import json
+import os
 import re
 
 import cjk
-from audio import detect_vocal_region
+from audio import detect_vocal_region, write_capture_flac_atomic
 from gpu import gpu_model
 from language import detect_language_multiwindow
 from whisper_compat import progress, progress_node, align_device_for, compute_type_for, align_with_fallback, get_align_backend
@@ -18,6 +19,7 @@ def align_lyrics(
     language_override: str | None = None,
     whisper_model=None,
     pre_align_cleanup=None,
+    capture_preprocessed_path: str | None = None,
 ) -> dict:
     """Align pre-existing lyrics to vocals audio using WhisperX.
 
@@ -51,7 +53,21 @@ def align_lyrics(
 
     progress_node("lyrics.preprocess", "node_progress", 56, "Detecting vocal regions...")
     vocal_start, vocal_end = detect_vocal_region(audio)
-    progress_node("lyrics.preprocess", "node_completed", 57, "Vocal-region preprocessing complete")
+    artifacts = None
+    if capture_preprocessed_path:
+        write_capture_flac_atomic(capture_preprocessed_path, audio)
+        artifacts = [{
+            "slot": "output:0",
+            "artifact_kind": "PreprocessedAudio",
+            "path": os.path.abspath(capture_preprocessed_path),
+            "binding_kind": "produced",
+            "config_hash": "",
+            "algorithm_version": "1",
+        }]
+    progress_node(
+        "lyrics.preprocess", "node_completed", 57,
+        "Vocal-region preprocessing complete", artifacts=artifacts,
+    )
 
     a_device = align_device_for(device)
     c_type = compute_type_for(device)

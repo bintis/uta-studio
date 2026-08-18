@@ -163,7 +163,13 @@ pub fn export_ultrastar(
         let _ = std::fs::remove_file(output);
         return Err(error);
     }
-    Ok(output.to_path_buf())
+    let published = output.to_path_buf();
+    let _ = crate::export_destination::record_last_export(
+        file_hash,
+        crate::export_destination::ExportPackageKind::UltraStar,
+        &published,
+    );
+    Ok(published)
 }
 
 /// Parse and validate a completed UltraStar chart. Diagnostics use this after

@@ -1,0 +1,865 @@
+use super::*;
+
+pub(crate) fn spawn_worker() {
+    std::thread::spawn(|| {
+        let cache = CacheDir::new();
+
+        loop {
+            let file_hash = {
+                let mut state = ANALYZER.lock().unwrap();
+                match state.queue.pop_front() {
+                    Some(hash) => {
+                        state.active_hash = Some(hash.clone());
+                        hash
+                    }
+                    None => {
+                        state.worker_running = false;
+                        state.active_hash = None;
+                        return;
+                    }
+                }
+            };
+
+            process_song(&file_hash, &cache);
+
+            let mut state = ANALYZER.lock().unwrap();
+            state.active_hash = None;
+        }
+    });
+}
+
+pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
+    ANALYSIS_STARTED
+        .lock()
+        .unwrap()
+        .insert(initial_hash.to_string(), unix_time_ms());
+    update_queue_status(initial_hash, QueuedStatus::Analyzing(0));
+    update_live_analysis(
+        initial_hash,
+        AnalysisProgressSnapshot {
+            stage: "preparing".into(),
+            stage_progress: 0,
+            operation: "Validating source media".into(),
+            detail: "Checking the source before the analysis runtime starts.".into(),
+            implementation: "Uta Studio native preflight".into(),
+            model: "Source validation".into(),
+            device: "CPU".into(),
+            requested_device: "CPU".into(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            stage_routes: Vec::new(),
+            node_id: Some("preflight".to_string()),
+            node_event: Some("node_started".to_string()),
+            artifact_reused_reason: None,
+        },
+    );
+    // Note: a `reanalyze_pitch`-style backup recorded into
+    // `PENDING_NODE_INTENTS` (see `resolve_backups` further down) isn't
+    // drained or resolved by either early return below -- the song record
+    // vanishing from the DB, or the source file failing to prepare, between
+    // enqueue and this point. Both require the song to already have had a
+    // successful prior analysis (for there to be anything to back up) and
+    // then fail in this specific narrow window, which is rare; the residual
+    // risk is an orphaned `.bak` file next to the original cache entry, not
+    // silent data loss -- strictly better than the pre-fix behavior, even
+    // though it isn't auto-restored here.
+    let Some(song) = library_db::load_song_by_hash(initial_hash).ok().flatten() else {
+        warn!("[analyzer] Song with hash {initial_hash} not found in store, skipping");
+        return;
+    };
+
+    let (song, local_path, file_hash_owned) = match prepare_audio_for_analysis(&song, cache) {
+        Ok(out) => out,
+        Err(e) => {
+            warn!("[analyzer] Failed to prepare audio for analysis: {e}");
+            update_queue_status(
+                initial_hash,
+                QueuedStatus::Failed(format!("audio prep failed: {e}")),
+            );
+            return;
+        }
+    };
+    let file_hash = file_hash_owned.as_str();
+
+    if file_hash != initial_hash {
+        let snapshot = LIVE_ANALYSIS.lock().unwrap().remove(initial_hash);
+        if let Some(snapshot) = snapshot {
+            LIVE_ANALYSIS
+                .lock()
+                .unwrap()
+                .insert(file_hash.to_string(), snapshot);
+        }
+        let started = ANALYSIS_STARTED.lock().unwrap().remove(initial_hash);
+        if let Some(started) = started {
+            ANALYSIS_STARTED
+                .lock()
+                .unwrap()
+                .insert(file_hash.to_string(), started);
+        }
+    }
+
+    info!(
+        "[analyzer] Starting analysis: {} (hash={})",
+        local_path.display(),
+        file_hash
+    );
+
+    update_queue_status(file_hash, QueuedStatus::Analyzing(0));
+
+    // Node targeting for this run. The intent may have been keyed by the
+    // pre-rekey hash for remote songs, so both are drained and merged.
+    let intent = {
+        let mut intents = PENDING_NODE_INTENTS.lock().unwrap();
+        let current = intents.remove(file_hash);
+        let initial = if file_hash != initial_hash {
+            intents.remove(initial_hash)
+        } else {
+            None
+        };
+        match (current, initial) {
+            (Some(mut a), Some(b)) => {
+                a.targets.extend(b.targets);
+                a.force_transcribe |= b.force_transcribe;
+                a.backup_paths.extend(b.backup_paths);
+                a.disabled_nodes.extend(b.disabled_nodes);
+                a.frozen_artifacts.extend(b.frozen_artifacts);
+                a.bypassed_nodes.extend(b.bypassed_nodes);
+                a.run_override = a.run_override.or(b.run_override);
+                Some(a)
+            }
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    };
+    let node_targets = intent
+        .as_ref()
+        .map(|i| i.targets.clone())
+        .unwrap_or_default();
+    let disabled_nodes = intent
+        .as_ref()
+        .map(|i| i.disabled_nodes.clone())
+        .unwrap_or_default();
+    let frozen_artifacts = intent
+        .as_ref()
+        .map(|i| i.frozen_artifacts.clone())
+        .unwrap_or_default();
+    let bypassed_nodes = intent
+        .as_ref()
+        .map(|i| i.bypassed_nodes.clone())
+        .unwrap_or_default();
+    let run_override = intent.as_ref().and_then(|i| i.run_override.clone());
+    let capture_intermediate = intent
+        .as_ref()
+        .and_then(|intent| intent.capture_intermediate.clone());
+    if let Some(request) = capture_intermediate.clone() {
+        ACTIVE_CAPTURE_REQUESTS
+            .lock()
+            .unwrap()
+            .insert(file_hash.to_string(), request);
+    }
+    let force_transcribe = intent.as_ref().map(|i| i.force_transcribe).unwrap_or(false);
+    // Resolved (committed or restored) at every exit point below,
+    // regardless of outcome -- see `restore_or_commit_backup`.
+    let backup_paths = intent
+        .as_ref()
+        .map(|i| i.backup_paths.clone())
+        .unwrap_or_default();
+    let resolve_backups = || {
+        for (original, backup) in &backup_paths {
+            restore_or_commit_backup(original, backup);
+        }
+        ACTIVE_CAPTURE_REQUESTS.lock().unwrap().remove(file_hash);
+    };
+
+    if !node_targets.is_empty() && file_hash != initial_hash {
+        // Move the pre-written transcript to the rekeyed hash so the pass can
+        // patch it in place.
+        let _ = std::fs::rename(
+            cache.transcript_path(initial_hash),
+            cache.transcript_path(file_hash),
+        );
+    }
+
+    // Phase 4: real disabled_nodes are threaded through here now, not just
+    // targets -- `run_analysis_plan`/`disable_analysis_node_for_run` are the
+    // only callers that ever populate `disabled_nodes` for a legacy
+    // special-case function (empty set, so this is behavior-preserving for
+    // them). The `Err` fallback mirrors `pipeline_flags_for_targets`'s own
+    // fail-open: `run_analysis_plan` already rejects an unhonorable disable
+    // before it's ever queued, so this should be unreachable in practice.
+    let (
+        skip_transcription,
+        skip_separation,
+        skip_pitch,
+        freeze_separation,
+        freeze_pitch,
+        bypass_separation,
+    ) = pipeline_flags_for_request(
+        &node_targets,
+        &disabled_nodes,
+        &frozen_artifacts,
+        &bypassed_nodes,
+    )
+    .unwrap_or((false, false, false, false, false, false));
+
+    // Phase 4 §4.1: the config this job actually runs with is the snapshot
+    // frozen at enqueue time (`enqueue_one`/`enqueue_all`), not whatever
+    // the user has changed global settings to since then.
+    let config = resolve_frozen_config(file_hash, initial_hash, AppConfig::load);
+
+    // Phase 8: the three profile-controlled knobs (separator/asr engine/
+    // align backend) now actually resolve through the Global Defaults ->
+    // Song Profile -> Run Override chain, instead of reading `config`
+    // directly -- `get_song_analysis_profile`/`run_override` used to be
+    // decorative (preview-only, see `preview_full_analysis_plan`); this is
+    // the one place real execution honors them.
+    let profile_global =
+        crate::analysis_profile::AnalysisProfileSnapshot::from_app_config(&config, file_hash);
+    let song_profile = crate::analysis_profile::get_song_analysis_profile(file_hash);
+    let run_override_for = |field: crate::analysis_profile::ProfileField| {
+        run_override
+            .as_ref()
+            .filter(|(f, _)| *f == field)
+            .map(|(_, value)| value.as_str())
+    };
+    let effective_separator = crate::analysis_profile::resolve_profile_field(
+        crate::analysis_profile::ProfileField::Separator,
+        &profile_global,
+        song_profile.as_ref(),
+        run_override_for(crate::analysis_profile::ProfileField::Separator),
+    )
+    .value;
+    let effective_asr_engine = crate::analysis_profile::resolve_profile_field(
+        crate::analysis_profile::ProfileField::AsrEngine,
+        &profile_global,
+        song_profile.as_ref(),
+        run_override_for(crate::analysis_profile::ProfileField::AsrEngine),
+    )
+    .value;
+    let effective_align_backend = crate::analysis_profile::resolve_profile_field(
+        crate::analysis_profile::ProfileField::AlignmentBackend,
+        &profile_global,
+        song_profile.as_ref(),
+        run_override_for(crate::analysis_profile::ProfileField::AlignmentBackend),
+    )
+    .value;
+
+    let skip_lrclib = skip_transcription || force_transcribe;
+    let lyrics_path = if skip_lrclib {
+        None
+    } else {
+        fetch_lrclib_lyrics(&song, cache)
+    };
+
+    let audio_settings = config.audio_processing.clone().unwrap_or_else(|| {
+        crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
+            &effective_separator,
+        )
+    });
+    let audio_processing =
+        crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&audio_settings);
+    let mut cmd_json = serde_json::json!({
+        "type": "analyze",
+        "audio_path": local_path.to_string_lossy(),
+        "cache_path": cache.path.to_string_lossy(),
+        "hash": file_hash,
+        "model": config.whisper_model(),
+        "beam_size": config.beam_size(),
+        "batch_size": config.batch_size(),
+        "separator": effective_separator,
+        "separator_options": {
+            "segment_size": config.separator_segment_size,
+            "overlap": config.separator_overlap(),
+            "batch_size": config.separator_batch_size(),
+            "normalization_pct": config.separator_normalization_pct(),
+            "demucs_shifts": config.demucs_shifts(),
+            "demucs_overlap_pct": config.demucs_overlap_pct(),
+        },
+        "audio_processing": audio_processing,
+        "engine": effective_asr_engine,
+        "align_backend": effective_align_backend,
+        "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
+    });
+
+    if skip_transcription {
+        cmd_json["skip_transcription"] = serde_json::json!(true);
+    }
+    if skip_separation {
+        cmd_json["skip_separation"] = serde_json::json!(true);
+    }
+    if skip_pitch {
+        cmd_json["skip_pitch"] = serde_json::json!(true);
+    }
+    if freeze_separation {
+        cmd_json["freeze_separation"] = serde_json::json!(true);
+    }
+    if freeze_pitch {
+        cmd_json["freeze_pitch"] = serde_json::json!(true);
+    }
+    if bypass_separation {
+        cmd_json["bypass_separation_with_original_mix"] = serde_json::json!(true);
+    }
+    if capture_intermediate.is_some() {
+        cmd_json["capture_preprocessed_audio"] = serde_json::json!(true);
+    }
+
+    if let Some(ref lp) = lyrics_path {
+        cmd_json["lyrics"] = serde_json::json!(lp.to_string_lossy());
+    }
+    let language_hint = config
+        .language_override(file_hash)
+        .map(str::to_string)
+        .or_else(|| lyrics_path.as_ref().and_then(|_| song.language.clone()))
+        .map(|language| normalize_analysis_language(&language))
+        .filter(|lang| {
+            // "unknown"/empty is not a real language: passing it as a forced
+            // alignment language crashes whisperx, so let the worker detect it.
+            let normalized = lang.trim().to_ascii_lowercase();
+            !normalized.is_empty() && normalized != "unknown" && normalized != "und"
+        });
+    if let Some(lang) = language_hint {
+        cmd_json["language"] = serde_json::json!(lang);
+    }
+
+    let json_str = serde_json::to_string(&cmd_json).unwrap();
+    let mut retried = false;
+
+    loop {
+        let mut guard = ANALYZER_SERVER.lock().unwrap();
+
+        if let Err(e) = ensure_server(&mut guard) {
+            warn!("[analyzer] Failed to start server: {e}");
+            update_queue_status(file_hash, QueuedStatus::Failed(e.to_string()));
+            resolve_backups();
+            return;
+        }
+
+        let server = guard.as_mut().unwrap();
+        match send_and_monitor(server, &json_str, Some(file_hash)) {
+            Ok(SongResult::Done) => {
+                finalize_song(file_hash, cache);
+                resolve_backups();
+                return;
+            }
+            Ok(SongResult::Oom) => {
+                warn!("[analyzer] CUDA OOM, killing server to free GPU memory");
+                *guard = None;
+
+                if !retried {
+                    retried = true;
+                    info!("[analyzer] Respawning server and retrying with clean GPU");
+                    update_queue_status(file_hash, QueuedStatus::Analyzing(0));
+                    continue;
+                }
+                update_queue_status(file_hash, QueuedStatus::Failed("CUDA out of memory".into()));
+                resolve_backups();
+                return;
+            }
+            Ok(SongResult::Error(msg)) => {
+                update_queue_status(file_hash, QueuedStatus::Failed(msg));
+                resolve_backups();
+                return;
+            }
+            Err(e) => {
+                warn!("[analyzer] Server crashed: {e}");
+                *guard = None;
+
+                if !retried {
+                    retried = true;
+                    info!("[analyzer] Respawning server and retrying");
+                    update_queue_status(file_hash, QueuedStatus::Analyzing(0));
+                    continue;
+                }
+                update_queue_status(
+                    file_hash,
+                    QueuedStatus::Failed(format!("Server crashed: {e}")),
+                );
+                resolve_backups();
+                return;
+            }
+        }
+    }
+}
+
+pub(crate) fn finalize_song(file_hash: &str, cache: &CacheDir) {
+    if cache.transcript_exists(file_hash) {
+        let meta = read_transcript_meta(cache, file_hash);
+        update_song_analyzed(
+            file_hash,
+            true,
+            meta.language,
+            Some(meta.source),
+            meta.key,
+            meta.bpm,
+            Some(meta.tempo),
+        );
+        if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
+            snapshot.stage = "complete".into();
+            snapshot.stage_progress = 100;
+            snapshot.operation = "Analysis complete".into();
+            snapshot.detail = "All requested analysis stages completed successfully.".into();
+            if let Some(route) = snapshot
+                .stage_routes
+                .iter_mut()
+                .find(|route| route.stage == "finalizing")
+            {
+                route.stage_progress = 100;
+                route.operation = "Analysis complete".into();
+            }
+        }
+        finish_analysis_history(file_hash, "completed", None);
+        remove_from_queue(file_hash);
+        LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
+        info!("[analyzer] Analysis complete for {file_hash}");
+    } else {
+        update_queue_status(
+            file_hash,
+            QueuedStatus::Failed("Transcript file not found after analysis".into()),
+        );
+    }
+}
+
+// ─── LRC (original-mix) preparation ─────────────────────────────────
+
+/// Prepare an LRC-provided song authored over its original mix, without
+/// routing it through the analysis status queue.
+///
+/// The analyzer-free work runs synchronously so the song is immediately
+/// editable: resolve the local audio, ensure its content hash is current, and
+/// mark the song ready (source=Lrc, no_stems). None of this touches the
+/// analyzer server, so it never stalls behind a running analysis.
+///
+/// The musical key is then detected on a background thread (which contends on
+/// the analyzer server) and patched in once it lands, so the key/tempo controls
+/// unlock later without blocking authoring.
+pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
+    let cache = CacheDir::new();
+    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
+        return Err(UtaStudioError::Other("Song not found".into()));
+    };
+
+    // Resolve the local audio and rekey the row if its content hash changed so
+    // all downstream cache files follow the usual layout.
+    let (mut song, local_path, real_hash) = prepare_audio_for_analysis(&song, &cache)?;
+    let real_hash = real_hash.to_string();
+
+    // A rekey moves the row — carry the transcript we wrote under the original
+    // hash across so the key pass can patch it in place.
+    if real_hash != file_hash {
+        let _ = std::fs::rename(
+            cache.transcript_path(file_hash),
+            cache.transcript_path(&real_hash),
+        );
+    }
+
+    // Mark ready right away (key still unknown) so the original-mix chart is
+    // available immediately, before key detection runs.
+    song.is_analyzed = true;
+    song.transcript_source = Some(TranscriptSource::Lrc);
+    song.key = None;
+    song.override_key = None;
+    song.bpm = None;
+    song.tempo = 1.0;
+    song.key_offset = 0;
+    song.no_stems = true;
+    library_db::update_song_fields(&real_hash, &song)
+        .map_err(|e| UtaStudioError::Other(e.to_string()))?;
+    // Detect the key (and tempo) off-queue in the background; patch them onto
+    // the row once they land so key/tempo export variants unlock without
+    // blocking authoring.
+    std::thread::spawn(move || {
+        let cache = CacheDir::new();
+        if let Err(e) = run_key_pass(&cache, &local_path, &real_hash) {
+            warn!("[analyzer] LRC key detection failed for {real_hash}: {e}");
+            return;
+        }
+        let meta = read_transcript_meta(&cache, &real_hash);
+        if let Some(mut updated) = library_db::load_song_by_hash(&real_hash).ok().flatten() {
+            updated.key = meta.key;
+            updated.bpm = meta.bpm;
+            let _ = library_db::update_song_fields(&real_hash, &updated);
+        }
+        info!("[analyzer] LRC key detection complete for {real_hash}");
+    });
+    Ok(())
+}
+
+/// Run a key-only analysis pass (no transcription, no stem separation) against
+/// the running analyzer server, keeping it off the status queue. On success the
+/// detected key is patched into the existing transcript by the pipeline.
+pub(crate) fn run_key_pass(
+    cache: &CacheDir,
+    local_path: &Path,
+    file_hash: &str,
+) -> Result<(), UtaStudioError> {
+    let config = AppConfig::load();
+    let cmd_json = serde_json::json!({
+        "type": "analyze",
+        "audio_path": local_path.to_string_lossy(),
+        "cache_path": cache.path.to_string_lossy(),
+        "hash": file_hash,
+        "model": config.whisper_model(),
+        "beam_size": config.beam_size(),
+        "batch_size": config.batch_size(),
+        "separator": config.separator(),
+        "separator_options": {
+            "segment_size": config.separator_segment_size,
+            "overlap": config.separator_overlap(),
+            "batch_size": config.separator_batch_size(),
+            "normalization_pct": config.separator_normalization_pct(),
+            "demucs_shifts": config.demucs_shifts(),
+            "demucs_overlap_pct": config.demucs_overlap_pct(),
+        },
+        "engine": config.asr_engine(),
+        "align_backend": config.align_backend(),
+        "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
+        // Key only: keep the provided LRC transcript and the original mix.
+        "skip_transcription": true,
+        "skip_separation": true,
+    });
+    let json_str = serde_json::to_string(&cmd_json).unwrap();
+
+    let mut retried = false;
+    loop {
+        let mut guard = ANALYZER_SERVER.lock().unwrap();
+        ensure_server(&mut guard)?;
+        let server = guard.as_mut().unwrap();
+        // `None` progress hash keeps this off the status pipe (no queue rows).
+        match send_and_monitor(server, &json_str, None) {
+            Ok(SongResult::Done) => return Ok(()),
+            Ok(SongResult::Oom) | Err(_) => {
+                *guard = None;
+                if !retried {
+                    retried = true;
+                    continue;
+                }
+                return Err(UtaStudioError::Other("key detection failed".into()));
+            }
+            Ok(SongResult::Error(msg)) => {
+                return Err(UtaStudioError::Other(msg));
+            }
+        }
+    }
+}
+
+// ─── Local audio preparation ─────────────────────────────────────────
+
+pub(crate) fn validate_analysis_source(path: &Path) -> Result<(), UtaStudioError> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(UtaStudioError::Other(format!(
+            "source media is not a file: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() == 0 {
+        return Err(UtaStudioError::Other(format!(
+            "source media is empty: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_audio_for_analysis(
+    song: &Song,
+    _cache: &CacheDir,
+) -> Result<(Song, PathBuf, String), UtaStudioError> {
+    validate_analysis_source(&song.path)?;
+    Ok((song.clone(), song.path.clone(), song.file_hash.clone()))
+}
+
+// ─── Server communication ────────────────────────────────────────────
+
+pub(crate) enum SongResult {
+    Done,
+    Oom,
+    Error(String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ServerEvent {
+    Progress {
+        pct: u32,
+        #[serde(default)]
+        msg: String,
+        #[serde(default)]
+        stage: String,
+        #[serde(default)]
+        stage_progress: usize,
+        #[serde(default)]
+        operation: String,
+        #[serde(default)]
+        implementation: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        device: String,
+        #[serde(default)]
+        requested_device: String,
+        #[serde(default)]
+        fallback_from: Option<String>,
+        #[serde(default)]
+        fallback_reason: Option<String>,
+        #[serde(default)]
+        backend_fallback_from: Option<String>,
+        #[serde(default)]
+        backend_fallback_reason: Option<String>,
+        #[serde(default)]
+        stage_routes: Vec<AnalysisStageRoute>,
+        #[serde(default)]
+        node_id: Option<String>,
+        #[serde(default)]
+        event: Option<String>,
+        #[serde(default)]
+        artifact_reused_reason: Option<String>,
+    },
+    Done,
+    Error {
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        msg: String,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[cfg(test)]
+mod node_event_tests {
+    use super::*;
+
+    #[test]
+    fn progress_event_without_node_fields_still_deserializes() {
+        // Legacy Adapter contract (phase plan §3.3): an event from a
+        // pipeline call site that hasn't migrated to progress_node must
+        // still parse -- node_id/event/artifact_reused_reason all default
+        // to None rather than failing the whole event.
+        let json = r#"{"type":"progress","pct":4,"msg":"Inspecting source codec..."}"#;
+        let event: ServerEvent = serde_json::from_str(json).expect("legacy event must parse");
+        match event {
+            ServerEvent::Progress {
+                node_id,
+                event,
+                artifact_reused_reason,
+                ..
+            } => {
+                assert_eq!(node_id, None);
+                assert_eq!(event, None);
+                assert_eq!(artifact_reused_reason, None);
+            }
+            _ => panic!("expected Progress event"),
+        }
+    }
+
+    #[test]
+    fn progress_event_with_node_fields_parses_them() {
+        let json = r#"{"type":"progress","pct":52,"msg":"Extracting reference pitch...",
+            "node_id":"pitch.extract","event":"node_started"}"#;
+        let event: ServerEvent = serde_json::from_str(json).expect("structured event must parse");
+        match event {
+            ServerEvent::Progress { node_id, event, .. } => {
+                assert_eq!(node_id.as_deref(), Some("pitch.extract"));
+                assert_eq!(event.as_deref(), Some("node_started"));
+            }
+            _ => panic!("expected Progress event"),
+        }
+    }
+
+    #[test]
+    fn artifact_reused_event_carries_its_reason() {
+        let json = r#"{"type":"progress","pct":50,"msg":"Stems already cached",
+            "node_id":"stems.separate","event":"artifact_reused","artifact_reused_reason":"cache_hit"}"#;
+        let event: ServerEvent = serde_json::from_str(json).expect("event must parse");
+        match event {
+            ServerEvent::Progress {
+                artifact_reused_reason,
+                ..
+            } => {
+                assert_eq!(artifact_reused_reason.as_deref(), Some("cache_hit"));
+            }
+            _ => panic!("expected Progress event"),
+        }
+    }
+
+    #[test]
+    fn committed_output_event_is_captured_before_canonical_overwrite() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-boundary-capture-{}-{}",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _guard = crate::library_db::reconnect_for_test(&root.join("db"));
+        let canonical = root.join("song_timed_transcript.json");
+        std::fs::write(&canonical, br#"{"segments":[]}"#).unwrap();
+        let mut route: AnalysisStageRoute = serde_json::from_value(serde_json::json!({
+            "stage": "finalizing",
+            "node_id": "lyrics.align",
+            "node_event": "node_completed",
+            "committed_outputs": [{
+                "slot": "output:0",
+                "artifact_kind": "TimedTranscript",
+                "path": canonical,
+                "binding_kind": "produced",
+                "algorithm_version": "1"
+            }],
+            "operation": "Alignment",
+            "implementation": "test",
+            "model": "test",
+            "stage_progress": 100,
+            "requested_device": "cpu",
+            "actual_device": "cpu",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null
+        }))
+        .unwrap();
+        capture_committed_outputs_in(
+            &CacheDir { path: root.clone() },
+            "song-boundary",
+            std::slice::from_mut(&mut route),
+        );
+        let output = &route.committed_outputs[0];
+        let immutable = output.immutable_path.as_ref().unwrap();
+        assert_eq!(std::fs::read(immutable).unwrap(), br#"{"segments":[]}"#);
+        std::fs::write(&canonical, br#"{"segments":[{"text":"later"}]}"#).unwrap();
+        assert_eq!(std::fs::read(immutable).unwrap(), br#"{"segments":[]}"#);
+        assert!(output.capture_error.is_none());
+        drop(_guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_history_snapshot_json_without_node_fields_still_deserializes() {
+        // Simulates a snapshot_json blob written by a pre-Phase-3 build and
+        // stored in analysis_history.snapshot_json. load_analysis_history
+        // silently drops any row that fails to deserialize (`.ok()?`), so
+        // this must keep working or old runs vanish from history.
+        let old_snapshot_json = r#"{
+            "stage": "pitch",
+            "stage_progress": 40,
+            "operation": "Reference pitch extraction",
+            "detail": "Extracting reference pitch...",
+            "implementation": "RMVPE",
+            "model": "RMVPE singing pitch model",
+            "device": "cuda",
+            "requested_device": "cuda",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null,
+            "stage_routes": []
+        }"#;
+        let snapshot: AnalysisProgressSnapshot =
+            serde_json::from_str(old_snapshot_json).expect("old snapshot json must still parse");
+        assert_eq!(snapshot.node_id, None);
+        assert_eq!(snapshot.node_event, None);
+        assert_eq!(snapshot.artifact_reused_reason, None);
+        assert_eq!(snapshot.stage, "pitch");
+    }
+}
+
+pub(crate) fn send_and_monitor(
+    server: &mut ServerProcess,
+    json_cmd: &str,
+    progress_hash: Option<&str>,
+) -> Result<SongResult, UtaStudioError> {
+    server.writer.write_all(json_cmd.as_bytes())?;
+    server.writer.write_all(b"\n")?;
+    server.writer.flush()?;
+
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        let bytes = server.reader.read_line(&mut line_buf)?;
+
+        if bytes == 0 {
+            return Err("Server closed connection unexpectedly".into());
+        }
+
+        let line = line_buf.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let event: ServerEvent = match serde_json::from_str(line) {
+            Ok(ev) => ev,
+            Err(e) => {
+                warn!("[analyzer] Skipping unparseable event: {e}; line={line:?}");
+                continue;
+            }
+        };
+
+        match event {
+            ServerEvent::Progress {
+                pct,
+                msg,
+                stage,
+                stage_progress,
+                operation,
+                implementation,
+                model,
+                device,
+                requested_device,
+                fallback_from,
+                fallback_reason,
+                backend_fallback_from,
+                backend_fallback_reason,
+                mut stage_routes,
+                node_id,
+                event,
+                artifact_reused_reason,
+            } => {
+                if !msg.is_empty() {
+                    info!("[analyzer] progress {pct}% {msg}");
+                }
+                if let Some(hash) = progress_hash {
+                    capture_committed_outputs(hash, &mut stage_routes);
+                    update_live_analysis(
+                        hash,
+                        AnalysisProgressSnapshot {
+                            stage,
+                            stage_progress,
+                            operation,
+                            detail: msg,
+                            implementation,
+                            model,
+                            device,
+                            requested_device,
+                            fallback_from,
+                            fallback_reason,
+                            backend_fallback_from,
+                            backend_fallback_reason,
+                            stage_routes,
+                            node_id,
+                            node_event: event,
+                            artifact_reused_reason,
+                        },
+                    );
+                    update_queue_status(hash, QueuedStatus::Analyzing(pct as usize));
+                }
+            }
+            ServerEvent::Done => return Ok(SongResult::Done),
+            ServerEvent::Error { kind, msg } => {
+                let kind_s = kind.as_deref().unwrap_or("generic");
+                if kind_s == "oom" {
+                    return Ok(SongResult::Oom);
+                }
+                let msg = if msg.is_empty() {
+                    "Unknown error".to_string()
+                } else {
+                    msg
+                };
+                return Ok(SongResult::Error(msg));
+            }
+            ServerEvent::Unknown => {
+                warn!("[analyzer] Ignoring unknown event: {line}");
+            }
+        }
+    }
+}

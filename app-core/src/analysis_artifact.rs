@@ -6,8 +6,9 @@
 //! never deletes or rewrites a source file as a side effect of importing it
 //! — legacy files are read-only inputs.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,10 @@ pub fn cached_artifact_presence(cache: &CacheDir, file_hash: &str) -> Vec<Artifa
                 || cache.transcript_path(file_hash).is_file(),
         },
         ArtifactSummary {
+            kind: ArtifactKind::CandidateChart,
+            present: cache.candidate_chart_path(file_hash).is_file(),
+        },
+        ArtifactSummary {
             kind: ArtifactKind::AuthoredChart,
             present: cache.vocal_chart_path(file_hash).is_file(),
         },
@@ -153,6 +158,159 @@ pub fn hash_file_contents(path: &Path) -> std::io::Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_hex()[..32].to_string())
+}
+
+/// Revision-specific, content-addressed storage below an authorized cache
+/// root. Canonical analyzer files are mutable working materializations; a
+/// revision always points at the copy committed by this store.
+#[derive(Debug, Clone)]
+pub struct ArtifactStore {
+    cache_root: PathBuf,
+    store_root: PathBuf,
+}
+
+static ARTIFACT_STORE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+impl ArtifactStore {
+    pub const STORAGE_VERSION: i32 = 1;
+
+    pub fn new(cache_root: impl Into<PathBuf>) -> Result<Self, String> {
+        let cache_root = cache_root.into();
+        std::fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
+        let cache_root = cache_root.canonicalize().map_err(|e| e.to_string())?;
+        let store_root = cache_root.join("artifact-store");
+        std::fs::create_dir_all(&store_root).map_err(|e| e.to_string())?;
+        Ok(Self {
+            cache_root,
+            store_root,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.store_root
+    }
+
+    /// Copies mutable cache output into an immutable destination. A hard
+    /// link is intentionally not used: overwriting a canonical file in
+    /// place could otherwise mutate every revision sharing its inode.
+    pub fn capture(
+        &self,
+        file_hash: &str,
+        kind: ArtifactKind,
+        source: &Path,
+    ) -> Result<(PathBuf, String, u64), String> {
+        ensure_within_root(&self.cache_root, source)?;
+        if !source.is_file() {
+            return Err(format!(
+                "artifact source is not a file: {}",
+                source.display()
+            ));
+        }
+        let content_hash = hash_file_contents(source).map_err(|e| e.to_string())?;
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("bin");
+        let kind_dir = artifact_kind_to_str(kind).trim_matches('"').replace(
+            |ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_',
+            "_",
+        );
+        let destination_dir = self.store_root.join(file_hash).join(kind_dir);
+        std::fs::create_dir_all(&destination_dir).map_err(|e| e.to_string())?;
+        let destination = destination_dir.join(format!("{content_hash}.{extension}"));
+        if destination.is_file() {
+            let existing_hash = hash_file_contents(&destination).map_err(|e| e.to_string())?;
+            if existing_hash != content_hash {
+                return Err(format!(
+                    "artifact store corruption at {}: expected {}, found {}",
+                    destination.display(),
+                    content_hash,
+                    existing_hash
+                ));
+            }
+            let byte_size = destination.metadata().map_err(|e| e.to_string())?.len();
+            return Ok((destination, content_hash, byte_size));
+        }
+
+        let temp = destination_dir.join(format!(
+            ".{content_hash}.{}.{}.tmp",
+            std::process::id(),
+            ARTIFACT_STORE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let result = (|| -> Result<(), String> {
+            let mut input = std::fs::File::open(source).map_err(|e| e.to_string())?;
+            let mut output = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)
+                .map_err(|e| e.to_string())?;
+            std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+            output.flush().map_err(|e| e.to_string())?;
+            output.sync_all().map_err(|e| e.to_string())?;
+            let copied_hash = hash_file_contents(&temp).map_err(|e| e.to_string())?;
+            if copied_hash != content_hash {
+                return Err(format!(
+                    "artifact changed while being captured: expected {content_hash}, copied {copied_hash}"
+                ));
+            }
+            match std::fs::rename(&temp, &destination) {
+                Ok(()) => Ok(()),
+                Err(error) if destination.is_file() => {
+                    let existing_hash =
+                        hash_file_contents(&destination).map_err(|e| e.to_string())?;
+                    if existing_hash == content_hash {
+                        Ok(())
+                    } else {
+                        Err(format!("could not atomically commit artifact: {error}"))
+                    }
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        })();
+        if temp.exists() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result?;
+        let stored_hash = hash_file_contents(&destination).map_err(|e| e.to_string())?;
+        if stored_hash != content_hash {
+            return Err(format!(
+                "artifact store verification failed at {}",
+                destination.display()
+            ));
+        }
+        let byte_size = destination.metadata().map_err(|e| e.to_string())?.len();
+        Ok((destination, content_hash, byte_size))
+    }
+
+    pub fn verify_revision(&self, revision: &ArtifactRevision) -> Result<(), String> {
+        ensure_within_root(&self.store_root, &revision.path)?;
+        let actual = hash_file_contents(&revision.path).map_err(|e| e.to_string())?;
+        if actual == revision.content_hash {
+            Ok(())
+        } else {
+            Err(format!(
+                "artifact revision {} is corrupt: expected {}, found {}",
+                revision.id, revision.content_hash, actual
+            ))
+        }
+    }
+
+    /// Repairs only from a byte-identical authorized canonical file. It
+    /// never substitutes a newer file merely because its name matches.
+    pub fn repair_revision(
+        &self,
+        revision: &ArtifactRevision,
+        canonical: &Path,
+    ) -> Result<PathBuf, String> {
+        ensure_within_root(&self.cache_root, canonical)?;
+        let hash = hash_file_contents(canonical).map_err(|e| e.to_string())?;
+        if hash != revision.content_hash {
+            return Err("canonical file does not match the missing revision hash".to_string());
+        }
+        let (path, _, _) = self.capture(&revision.file_hash, revision.kind, canonical)?;
+        Ok(path)
+    }
 }
 
 /// Generalizes the stem-separation signature pattern
@@ -213,7 +371,7 @@ fn revision_from_row(row: library_db::AnalysisArtifactRow) -> Option<ArtifactRev
     })
 }
 
-fn revision_to_row(revision: &ArtifactRevision) -> library_db::AnalysisArtifactRow {
+pub(crate) fn revision_to_row(revision: &ArtifactRevision) -> library_db::AnalysisArtifactRow {
     library_db::AnalysisArtifactRow {
         id: revision.id.clone(),
         file_hash: revision.file_hash.clone(),
@@ -263,6 +421,37 @@ pub fn load_active_artifact(file_hash: &str, kind: ArtifactKind) -> Option<Artif
         .ok()
         .flatten()
         .and_then(revision_from_row)
+}
+
+/// Moves pre-store inventory rows onto immutable backing files without
+/// deleting their canonical compatibility files. Safe to call repeatedly.
+pub fn migrate_artifact_revisions_to_store(
+    cache: &CacheDir,
+    file_hash: &str,
+) -> Result<usize, String> {
+    let store = ArtifactStore::new(&cache.path)?;
+    let mut migrated = 0;
+    for mut revision in load_analysis_artifacts(file_hash) {
+        if store.verify_revision(&revision).is_ok() {
+            continue;
+        }
+        ensure_within_root(&cache.path, &revision.path)?;
+        let source_hash = hash_file_contents(&revision.path).map_err(|e| e.to_string())?;
+        if source_hash != revision.content_hash {
+            return Err(format!(
+                "cannot migrate revision {}: backing file hash no longer matches",
+                revision.id
+            ));
+        }
+        let (immutable_path, content_hash, byte_size) =
+            store.capture(file_hash, revision.kind, &revision.path)?;
+        revision.path = immutable_path;
+        revision.content_hash = content_hash;
+        revision.byte_size = byte_size;
+        record_artifact_revision(&revision)?;
+        migrated += 1;
+    }
+    Ok(migrated)
 }
 
 /// §7.6 "Compare revisions": which fields differ between two revisions of
@@ -358,8 +547,180 @@ pub fn set_active_artifact_revision(
         );
     }
     ensure_within_root(cache_root, &target.path)?;
-    library_db::analysis_artifact_set_active(file_hash, &artifact_kind_to_str(kind), revision_id)
-        .map_err(|e| e.to_string())
+    let cache = CacheDir {
+        path: cache_root.to_path_buf(),
+    };
+    let staged = stage_compatibility_materializations(&cache, target)?;
+    let previous = load_active_artifact(file_hash, kind).map(|revision| revision.id);
+    if let Err(error) = library_db::analysis_artifact_set_active(
+        file_hash,
+        &artifact_kind_to_str(kind),
+        revision_id,
+    ) {
+        for (temporary, _) in staged {
+            let _ = std::fs::remove_file(temporary);
+        }
+        return Err(error.to_string());
+    }
+    for (temporary, destination) in staged {
+        if let Err(error) = atomic_replace_file(&temporary, &destination) {
+            if let Some(previous) = previous.as_deref() {
+                let _ = library_db::analysis_artifact_set_active(
+                    file_hash,
+                    &artifact_kind_to_str(kind),
+                    previous,
+                );
+            } else {
+                let _ = library_db::analysis_artifact_clear_active(
+                    file_hash,
+                    &artifact_kind_to_str(kind),
+                );
+            }
+            let _ = std::fs::remove_file(temporary);
+            return Err(format!(
+                "Active selection was rolled back because the compatibility file could not be updated: {error}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compatibility_paths(cache: &CacheDir, revision: &ArtifactRevision) -> Vec<PathBuf> {
+    let hash = &revision.file_hash;
+    match revision.kind {
+        ArtifactKind::MusicAnalysis => vec![cache.music_analysis_path(hash)],
+        ArtifactKind::VocalStem
+        | ArtifactKind::InstrumentalStem
+        | ArtifactKind::RawVocalStem
+        | ArtifactKind::DenoisedVocalStem
+        | ArtifactKind::DereverbedVocalStem
+        | ArtifactKind::AnalysisVocalStem
+        | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::KaraokeInstrumentalStem
+        | ArtifactKind::DrumStem
+        | ArtifactKind::BassStem
+        | ArtifactKind::GuitarStem
+        | ArtifactKind::PianoStem
+        | ArtifactKind::OtherStem => {
+            let role = match revision.kind {
+                ArtifactKind::VocalStem | ArtifactKind::AnalysisVocalStem => "vocals",
+                ArtifactKind::RawVocalStem => "vocals_raw",
+                ArtifactKind::DenoisedVocalStem => "vocals_denoised",
+                ArtifactKind::DereverbedVocalStem => "vocals_dry",
+                ArtifactKind::HighQualityInstrumentalStem => "instrumental_hq",
+                ArtifactKind::KaraokeInstrumentalStem => "instrumental_karaoke",
+                ArtifactKind::DrumStem => "drums",
+                ArtifactKind::BassStem => "bass",
+                ArtifactKind::GuitarStem => "guitar",
+                ArtifactKind::PianoStem => "piano",
+                ArtifactKind::OtherStem => "other",
+                _ => "instrumental",
+            };
+            let extension = revision
+                .path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("bin");
+            vec![cache.path.join(format!("{hash}_{role}.{extension}"))]
+        }
+        ArtifactKind::PitchTrack => vec![cache.pitch_track_path(hash)],
+        ArtifactKind::PitchNoteCandidates => vec![cache.pitch_notes_path(hash)],
+        ArtifactKind::LyricsInput => vec![cache.lyrics_path(hash)],
+        ArtifactKind::RecognizedText => vec![cache.recognized_text_path(hash)],
+        ArtifactKind::AsrSegments => vec![cache.asr_segments_path(hash)],
+        ArtifactKind::TimedTranscript => vec![
+            cache.timed_transcript_path(hash),
+            cache.transcript_path(hash),
+        ],
+        ArtifactKind::CandidateChart => vec![cache.candidate_chart_path(hash)],
+        ArtifactKind::AuthoredChart => vec![cache.vocal_chart_path(hash)],
+        ArtifactKind::SourceMedia
+        | ArtifactKind::KeyAnalysis
+        | ArtifactKind::RhythmAnalysis
+        | ArtifactKind::AudioDescriptors
+        | ArtifactKind::PreprocessedAudio => Vec::new(),
+    }
+}
+
+fn stage_compatibility_materializations(
+    cache: &CacheDir,
+    revision: &ArtifactRevision,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut staged = Vec::new();
+    for destination in compatibility_paths(cache, revision) {
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "compatibility path has no parent".to_string())?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let temporary = parent.join(format!(
+            ".active-{}-{}.tmp",
+            std::process::id(),
+            ARTIFACT_STORE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let result = (|| -> Result<(), String> {
+            let mut source = std::fs::File::open(&revision.path).map_err(|e| e.to_string())?;
+            let mut output = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|e| e.to_string())?;
+            std::io::copy(&mut source, &mut output).map_err(|e| e.to_string())?;
+            output.flush().map_err(|e| e.to_string())?;
+            output.sync_all().map_err(|e| e.to_string())?;
+            let hash = hash_file_contents(&temporary).map_err(|e| e.to_string())?;
+            if hash != revision.content_hash {
+                return Err("staged Active materialization failed hash verification".to_string());
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&temporary);
+            for (temporary, _) in staged {
+                let _ = std::fs::remove_file(temporary);
+            }
+            return Err(error);
+        }
+        staged.push((temporary, destination));
+    }
+    Ok(staged)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(target_os = "windows")]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Phase 6 `invalidate_analysis_artifact` / Phase 7 §7.6 "Invalidate": a
@@ -409,10 +770,37 @@ pub fn delete_artifact_revision(
     revision: &ArtifactRevision,
 ) -> Result<(), String> {
     ensure_within_root(cache_root, &revision.path)?;
-    if revision.path.is_file() {
-        std::fs::remove_file(&revision.path).map_err(|e| e.to_string())?;
+    if library_db::analysis_artifact_is_pinned(&revision.id).map_err(|e| e.to_string())? {
+        return Err("pinned artifact revisions must be unpinned before deletion".to_string());
     }
-    library_db::analysis_artifact_delete(&revision.id).map_err(|e| e.to_string())
+    if revision.active {
+        return Err("the Active revision must be replaced before deletion".to_string());
+    }
+    let uses = library_db::analysis_artifact_usage_count(&revision.id)
+        .map_err(|error| error.to_string())?;
+    if uses > 0 {
+        return Err(format!(
+            "this revision is consumed by {uses} recorded run binding(s) and cannot be deleted"
+        ));
+    }
+    let staged = revision.path.with_extension(format!(
+        "delete-pending-{}-{}",
+        std::process::id(),
+        ARTIFACT_STORE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    if revision.path.is_file() {
+        std::fs::rename(&revision.path, &staged).map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = library_db::analysis_artifact_delete(&revision.id) {
+        if staged.is_file() {
+            let _ = std::fs::rename(&staged, &revision.path);
+        }
+        return Err(error.to_string());
+    }
+    if staged.is_file() {
+        std::fs::remove_file(&staged).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 struct LegacyCandidate {
@@ -482,11 +870,17 @@ fn legacy_candidates(cache: &CacheDir, hash: &str) -> Vec<LegacyCandidate> {
 /// legacy guess. Phase plan §2.4.
 pub fn import_legacy_artifacts(cache: &CacheDir, file_hash: &str) -> Vec<ArtifactRevision> {
     let mut imported = Vec::new();
+    let Ok(store) = ArtifactStore::new(&cache.path) else {
+        return imported;
+    };
     for candidate in legacy_candidates(cache, file_hash) {
         if !candidate.path.is_file() {
             continue;
         }
-        let Ok(content_hash) = hash_file_contents(&candidate.path) else {
+        let source_path = candidate.path;
+        let Ok((immutable_path, content_hash, byte_size)) =
+            store.capture(file_hash, candidate.kind, &source_path)
+        else {
             continue;
         };
         let id = format!(
@@ -499,15 +893,12 @@ pub fn import_legacy_artifacts(cache: &CacheDir, file_hash: &str) -> Vec<Artifac
         {
             continue;
         }
-        let byte_size = std::fs::metadata(&candidate.path)
-            .map(|m| m.len())
-            .unwrap_or(0);
         let has_active = load_active_artifact(file_hash, candidate.kind).is_some();
         let revision = ArtifactRevision {
             id,
             file_hash: file_hash.to_string(),
             kind: candidate.kind,
-            path: candidate.path,
+            path: immutable_path,
             content_hash,
             producer_node: AnalysisNodeId::new("legacy.import"),
             input_revisions: Vec::new(),
@@ -536,8 +927,12 @@ mod tests {
 
     fn temp_dir(label: &str) -> PathBuf {
         let nonce = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "uta-studio-artifact-test-{label}-{}-{nonce}",
+            "uta-studio-artifact-test-{label}-{}-{started_at}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("create temp dir");
@@ -645,6 +1040,119 @@ mod tests {
         let a = compute_config_hash(&node, "1", r#"{"separator":"karaoke"}"#, &["abc123"], None);
         let b = compute_config_hash(&node, "1", r#"{"separator":"demucs"}"#, &["abc123"], None);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn artifact_store_keeps_earlier_revision_bytes_after_canonical_overwrite() {
+        let dir = temp_dir("immutable-store");
+        let canonical = dir.join("pitch_track.json");
+        std::fs::write(&canonical, b"revision-a").unwrap();
+        let store = ArtifactStore::new(&dir).unwrap();
+        let (path_a, hash_a, _) = store
+            .capture("songImmutable", ArtifactKind::PitchTrack, &canonical)
+            .unwrap();
+
+        std::fs::write(&canonical, b"revision-b").unwrap();
+        let (path_b, hash_b, _) = store
+            .capture("songImmutable", ArtifactKind::PitchTrack, &canonical)
+            .unwrap();
+
+        assert_ne!(path_a, path_b);
+        assert_ne!(hash_a, hash_b);
+        assert_eq!(std::fs::read(&path_a).unwrap(), b"revision-a");
+        assert_eq!(hash_file_contents(&path_a).unwrap(), hash_a);
+        assert_eq!(std::fs::read(&path_b).unwrap(), b"revision-b");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn artifact_store_reuses_identical_content_and_rejects_path_escape() {
+        let dir = temp_dir("store-deduplicate");
+        let canonical = dir.join("timed_transcript.json");
+        std::fs::write(&canonical, b"same").unwrap();
+        let store = ArtifactStore::new(&dir).unwrap();
+        let first = store
+            .capture("songSame", ArtifactKind::TimedTranscript, &canonical)
+            .unwrap();
+        let second = store
+            .capture("songSame", ArtifactKind::TimedTranscript, &canonical)
+            .unwrap();
+        assert_eq!(first.0, second.0);
+
+        let outside = temp_dir("store-outside").join("outside.json");
+        std::fs::write(&outside, b"outside").unwrap();
+        assert!(
+            store
+                .capture("songSame", ArtifactKind::TimedTranscript, &outside)
+                .unwrap_err()
+                .contains("escapes authorized cache root")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(outside.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn setting_active_atomically_updates_compatibility_bytes_without_mutating_history() {
+        let _guard = isolated_test_db("active-materialization");
+        let dir = temp_dir("active-materialization");
+        let cache = CacheDir { path: dir };
+        let canonical = cache.pitch_track_path("songActiveMaterialize");
+        std::fs::write(&canonical, b"revision-a").unwrap();
+        let store = ArtifactStore::new(&cache.path).unwrap();
+        let (path_a, hash_a, size_a) = store
+            .capture(
+                "songActiveMaterialize",
+                ArtifactKind::PitchTrack,
+                &canonical,
+            )
+            .unwrap();
+        std::fs::write(&canonical, b"revision-b").unwrap();
+        let (path_b, hash_b, size_b) = store
+            .capture(
+                "songActiveMaterialize",
+                ArtifactKind::PitchTrack,
+                &canonical,
+            )
+            .unwrap();
+        let make_revision =
+            |id: &str, path: PathBuf, hash: String, size, active| ArtifactRevision {
+                id: id.to_string(),
+                file_hash: "songActiveMaterialize".to_string(),
+                kind: ArtifactKind::PitchTrack,
+                path,
+                content_hash: hash,
+                producer_node: AnalysisNodeId::new("pitch.extract"),
+                input_revisions: Vec::new(),
+                config_hash: "test".to_string(),
+                algorithm_version: "1".to_string(),
+                created_at_ms: now_ms(),
+                byte_size: size,
+                active,
+                legacy: false,
+                invalidated: false,
+            };
+        let revision_a = make_revision("revision-a", path_a.clone(), hash_a, size_a, true);
+        let revision_b = make_revision("revision-b", path_b, hash_b, size_b, false);
+        record_artifact_revision(&revision_a).unwrap();
+        record_artifact_revision(&revision_b).unwrap();
+
+        set_active_artifact_revision(
+            &cache.path,
+            "songActiveMaterialize",
+            ArtifactKind::PitchTrack,
+            &revision_b.id,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&canonical).unwrap(), b"revision-b");
+        assert_eq!(std::fs::read(path_a).unwrap(), b"revision-a");
+        assert_eq!(
+            load_active_artifact("songActiveMaterialize", ArtifactKind::PitchTrack)
+                .unwrap()
+                .id,
+            revision_b.id
+        );
+        cache.clear_all();
     }
 
     #[test]
@@ -771,18 +1279,24 @@ mod tests {
             .unwrap();
         assert!(old_active.active);
 
+        let new_source = cache.path.join("new-pitch-track.json");
+        std::fs::write(&new_source, b"new").unwrap();
+        let (new_path, new_content_hash, new_byte_size) = ArtifactStore::new(&cache.path)
+            .unwrap()
+            .capture(hash, ArtifactKind::PitchTrack, &new_source)
+            .unwrap();
         let new_revision = ArtifactRevision {
             id: "songActiveProtect:new".to_string(),
             file_hash: hash.to_string(),
             kind: ArtifactKind::PitchTrack,
-            path: cache.pitch_track_path(hash),
-            content_hash: "newcontenthash".to_string(),
+            path: new_path,
+            content_hash: new_content_hash,
             producer_node: AnalysisNodeId::new("pitch.extract"),
             input_revisions: vec![],
             config_hash: "cfg".to_string(),
             algorithm_version: "1".to_string(),
             created_at_ms: now_ms(),
-            byte_size: 3,
+            byte_size: new_byte_size,
             active: false,
             legacy: false,
             invalidated: false,

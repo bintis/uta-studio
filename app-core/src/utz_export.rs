@@ -346,7 +346,17 @@ where
         completed_bytes: 0,
         total_bytes: 0,
     });
-    Ok(output.to_path_buf())
+    let published = output.to_path_buf();
+    let _ = crate::export_destination::record_last_export(
+        file_hash,
+        crate::export_destination::ExportPackageKind::Utz,
+        &published,
+    );
+    Ok(published)
+}
+
+pub(crate) fn missing_export_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
+    missing_assets(cache, file_hash)
 }
 
 fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {

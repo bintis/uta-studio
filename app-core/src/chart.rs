@@ -8,6 +8,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -15,6 +16,12 @@ use ts_rs::TS;
 use utz::VocalChartV1;
 
 use crate::{
+    analysis_artifact::{
+        ArtifactRevision, ArtifactStore, load_active_artifact, record_artifact_revision,
+        set_active_artifact_revision,
+    },
+    analysis_graph::{AnalysisNodeId, ArtifactKind},
+    artifact_workbench::ArtifactRef,
     audio_format::{browser_can_decode, export_extension, transcode_audio},
     authoring::get_audio_paths,
     cache::{CacheDir, normalize_tempo},
@@ -420,6 +427,17 @@ fn normalize_pitch_note_timings(value: &mut serde_json::Value) -> usize {
 }
 
 pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<(), UtaStudioError> {
+    save_vocal_chart_from_revision(file_hash, vocal_chart, None)
+}
+
+/// Save a chart working copy derived from a specific immutable revision.
+/// The source is recorded in provenance even when it is not the current
+/// Active Candidate/Authored revision.
+pub fn save_vocal_chart_from_revision(
+    file_hash: &str,
+    vocal_chart: VocalChartV1,
+    source: Option<&ArtifactRef>,
+) -> Result<(), UtaStudioError> {
     let song = library_db::load_song_by_hash(file_hash)
         .map_err(|error| UtaStudioError::Other(error.to_string()))?
         .ok_or_else(|| UtaStudioError::Other(format!("song not found: {file_hash}")))?;
@@ -432,11 +450,72 @@ pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<()
         .validate()
         .map_err(|error| UtaStudioError::Other(error.to_string()))?;
 
-    // The chart is the only thing an edit writes. Analyzer output stays as the
-    // untouched record of what the models produced.
+    // Build the revision away from the compatibility path. The immutable
+    // bytes and DB row must exist before `set_active_artifact_revision`
+    // atomically updates the canonical editor materialization; a failed
+    // save therefore leaves the previous Active chart usable.
     let cache = CacheDir::new();
     let vocal_json = serde_json::to_value(&vocal_chart)?;
-    atomic_write_json(&cache.vocal_chart_path(file_hash), &vocal_json)?;
+    let draft_path = cache.path.join(".artifact-drafts").join(format!(
+        "chart-{}-{}.json",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    atomic_write_json(&draft_path, &vocal_json)?;
+    let captured = ArtifactStore::new(&cache.path)
+        .and_then(|store| store.capture(file_hash, ArtifactKind::AuthoredChart, &draft_path));
+    let _ = std::fs::remove_file(&draft_path);
+    let (path, content_hash, byte_size) = captured.map_err(UtaStudioError::Other)?;
+    let mut input_revisions = source
+        .map(|source| vec![source.revision_id.clone()])
+        .unwrap_or_default();
+    let active_inputs = [
+        ArtifactKind::CandidateChart,
+        ArtifactKind::TimedTranscript,
+        ArtifactKind::PitchNoteCandidates,
+    ]
+    .into_iter()
+    .filter_map(|kind| load_active_artifact(file_hash, kind).map(|revision| revision.id))
+    .collect::<Vec<_>>();
+    for revision_id in active_inputs {
+        if !input_revisions.contains(&revision_id) {
+            input_revisions.push(revision_id);
+        }
+    }
+    let revision = ArtifactRevision {
+        id: format!(
+            "{file_hash}:{}:{content_hash}",
+            serde_json::to_string(&ArtifactKind::AuthoredChart)
+                .unwrap_or_else(|_| "AuthoredChart".to_string())
+        ),
+        file_hash: file_hash.to_string(),
+        kind: ArtifactKind::AuthoredChart,
+        path,
+        content_hash,
+        producer_node: AnalysisNodeId::new("user.chart_editor"),
+        input_revisions,
+        config_hash: "user-edit".to_string(),
+        algorithm_version: format!("chart-editor-v1/app-{}", env!("CARGO_PKG_VERSION")),
+        created_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+        byte_size,
+        active: false,
+        legacy: false,
+        invalidated: false,
+    };
+    record_artifact_revision(&revision).map_err(UtaStudioError::Other)?;
+    set_active_artifact_revision(
+        &cache.path,
+        file_hash,
+        ArtifactKind::AuthoredChart,
+        &revision.id,
+    )
+    .map_err(UtaStudioError::Other)?;
     Ok(())
 }
 
@@ -449,6 +528,17 @@ pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<()
 /// confirmation UI; it performs no confirmation of its own.
 pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(), UtaStudioError> {
     let cache = CacheDir::new();
+    let chart_path = cache.vocal_chart_path(file_hash);
+    let active_is_pinned = load_active_artifact(file_hash, ArtifactKind::AuthoredChart)
+        .and_then(|revision| crate::library_db::analysis_artifact_is_pinned(&revision.id).ok())
+        .unwrap_or(false);
+    if active_is_pinned
+        || crate::library_db::analysis_artifact_path_is_pinned(&chart_path).unwrap_or(false)
+    {
+        return Err(UtaStudioError::Other(
+            "the authored chart is pinned; unpin its artifact revision before replacing it".into(),
+        ));
+    }
     cache.invalidate_authored_chart(file_hash);
     Ok(())
 }
@@ -527,6 +617,7 @@ fn vocal_chart_counts(chart: &VocalChartV1) -> (usize, usize) {
     (phrase_count, note_count)
 }
 
+#[cfg(test)]
 fn modified_after(path: &Path, reference: std::time::SystemTime) -> bool {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -542,7 +633,54 @@ fn modified_after(path: &Path, reference: std::time::SystemTime) -> bool {
 /// real, and matches what the Authored Chart protection guarantee actually
 /// is: "did analysis write something new since I last saved my edits."
 pub fn candidate_chart_status(file_hash: &str) -> CandidateChartStatus {
-    candidate_chart_status_for(&CacheDir::new(), file_hash)
+    let authored = load_active_artifact(file_hash, ArtifactKind::AuthoredChart).or_else(|| {
+        crate::analysis_artifact::load_artifact_revisions(file_hash, ArtifactKind::AuthoredChart)
+            .into_iter()
+            .filter(|revision| !revision.invalidated)
+            .max_by_key(|revision| revision.created_at_ms)
+    });
+    let Some(authored) = authored else {
+        return CandidateChartStatus::NotAuthoredYet;
+    };
+    let candidate =
+        crate::analysis_artifact::load_artifact_revisions(file_hash, ArtifactKind::CandidateChart)
+            .into_iter()
+            .filter(|revision| !revision.invalidated)
+            .max_by_key(|revision| revision.created_at_ms);
+    let Some(candidate) = candidate else {
+        return CandidateChartStatus::UpToDate;
+    };
+    if authored.input_revisions.contains(&candidate.id) {
+        return CandidateChartStatus::UpToDate;
+    }
+
+    let read_counts = |path: &Path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<VocalChartV1>(&bytes).ok())
+            .as_ref()
+            .map(vocal_chart_counts)
+            .unwrap_or((0, 0))
+    };
+    let (authored_phrase_count, authored_note_count) = read_counts(&authored.path);
+    let (candidate_phrase_count, candidate_note_count) = read_counts(&candidate.path);
+    let candidate_inputs = candidate
+        .input_revisions
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    let authored_inputs = authored
+        .input_revisions
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    let changed = candidate_inputs != authored_inputs;
+    CandidateChartStatus::CandidateAvailable(CandidateChartSummary {
+        authored_phrase_count,
+        authored_note_count,
+        candidate_phrase_count,
+        candidate_note_count,
+        lyrics_changed: changed,
+        pitch_evidence_changed: changed,
+    })
 }
 
 /// Phase 8 §8.2 "Chart 问题计数行" -- deliberately *not* built on
@@ -585,6 +723,7 @@ fn chart_problem_count_for(cache: &CacheDir, file_hash: &str) -> Option<usize> {
 /// Testable core of `candidate_chart_status`, taking `&CacheDir` so tests
 /// can point it at a temp directory instead of the real (and possibly
 /// absent) data directory.
+#[cfg(test)]
 fn candidate_chart_status_for(cache: &CacheDir, file_hash: &str) -> CandidateChartStatus {
     let authored_path = cache.vocal_chart_path(file_hash);
     let Ok(authored_mtime) = std::fs::metadata(&authored_path).and_then(|meta| meta.modified())
@@ -665,6 +804,28 @@ fn atomic_write_json(destination: &Path, value: &serde_json::Value) -> Result<()
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Build the versioned analyzer chart proposal at the Rust schema boundary.
+/// Python produces the exact timed transcript; Rust combines it with the
+/// pitch-note evidence into the same validated UTZ chart type used by the
+/// editor. This prevents transcript JSON from masquerading as a chart.
+pub(crate) fn materialize_candidate_chart(
+    cache: &CacheDir,
+    file_hash: &str,
+    transcript_path: &Path,
+) -> Result<PathBuf, UtaStudioError> {
+    let mut transcript = read_json(transcript_path, "timed transcript")?;
+    let mut pitch_notes = read_json(&cache.pitch_notes_path(file_hash), "pitch notes")?;
+    normalize_transcript_timings(&mut transcript);
+    normalize_pitch_note_timings(&mut pitch_notes);
+    let candidate = migrate_analyzer_chart(&transcript, &pitch_notes)?;
+    candidate
+        .validate()
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+    let destination = cache.candidate_chart_path(file_hash);
+    atomic_write_json(&destination, &serde_json::to_value(candidate)?)?;
+    Ok(destination)
 }
 
 fn validate_transcript(value: &serde_json::Value) -> Result<(), UtaStudioError> {
@@ -797,7 +958,7 @@ fn validate_range(start: f64, end: f64, label: &str, index: usize) -> Result<(),
 
 #[cfg(test)]
 mod candidate_chart_status_tests {
-    use super::{CandidateChartStatus, candidate_chart_status_for};
+    use super::{CandidateChartStatus, candidate_chart_status_for, materialize_candidate_chart};
     use crate::cache::CacheDir;
     use crate::vocal_chart::migrate_analyzer_chart;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -832,6 +993,32 @@ mod candidate_chart_status_tests {
             "format_version": 1,
             "notes": [{"start": 1.0, "end": 1.5, "midi": 60, "confidence": 0.9}]
         })
+    }
+
+    #[test]
+    fn candidate_materialization_writes_a_valid_distinct_chart() {
+        let cache = temp_cache_dir("materialize");
+        let hash = "songCandidate";
+        let transcript_path = cache.timed_transcript_path(hash);
+        std::fs::write(
+            &transcript_path,
+            serde_json::to_vec(&sample_transcript()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            cache.pitch_notes_path(hash),
+            serde_json::to_vec(&sample_pitch_notes()).unwrap(),
+        )
+        .unwrap();
+
+        let path = materialize_candidate_chart(&cache, hash, &transcript_path).unwrap();
+        assert_eq!(path, cache.candidate_chart_path(hash));
+        assert_ne!(path, transcript_path);
+        let chart: utz::VocalChartV1 =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        chart.validate().unwrap();
+
+        cache.clear_all();
     }
 
     /// Writes `value` as JSON and pins its mtime explicitly, so ordering

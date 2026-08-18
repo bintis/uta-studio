@@ -258,10 +258,21 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     finished_at_ms = existing_route.get("finished_at_ms")
     if node_event in ("node_completed", "node_failed", "artifact_reused"):
         finished_at_ms = event_at_ms
+    committed_outputs = metadata.get("artifacts")
+    if committed_outputs is None:
+        committed_outputs = existing_route.get("committed_outputs", [])
+    if not isinstance(committed_outputs, list):
+        committed_outputs = []
     stage_routes[node_id or stage] = {
         "stage": stage,
         "node_id": node_id,
         "node_event": node_event,
+        "binding_kind": (
+            metadata.get("reason")
+            if node_event == "artifact_reused"
+            else "bypassed" if node_event == "node_skipped" else None
+        ),
+        "committed_outputs": committed_outputs,
         "operation": operation,
         "implementation": implementation,
         "model": model,
@@ -314,6 +325,7 @@ def process_song(cmd, device):
     batch_size = cmd.get("batch_size", 8)
     separator = cmd.get("separator", "karaoke")
     separator_options = cmd.get("separator_options") or {}
+    audio_processing = cmd.get("audio_processing")
     engine = cmd.get("engine", "whisper")
     lyrics_path = cmd.get("lyrics")
     language_override = _normalize_language(cmd.get("language"))
@@ -325,6 +337,7 @@ def process_song(cmd, device):
     bypass_separation_with_original_mix = bool(
         cmd.get("bypass_separation_with_original_mix", False)
     )
+    capture_preprocessed_audio = bool(cmd.get("capture_preprocessed_audio", False))
 
     set_align_backend(cmd.get("align_backend", "whisperx"))
     set_vocal_threshold_pct(cmd.get("vocal_detection_threshold_pct"))
@@ -339,6 +352,7 @@ def process_song(cmd, device):
             batch_size=batch_size,
             separator=separator,
             separator_options=separator_options,
+            audio_processing=audio_processing,
             engine=engine,
             lyrics_path=lyrics_path,
             language_override=language_override,
@@ -351,6 +365,7 @@ def process_song(cmd, device):
             freeze_separation=freeze_separation,
             freeze_pitch=freeze_pitch,
             bypass_separation_with_original_mix=bypass_separation_with_original_mix,
+            capture_preprocessed_audio=capture_preprocessed_audio,
         )
     finally:
         end_of_song_cleanup()

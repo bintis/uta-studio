@@ -176,8 +176,10 @@ mod graph_render_bridge_tests {
 #[cfg(test)]
 mod graph_view_polish_tests {
     use super::{
-        analysis_graph_focus_target, clamp_analysis_graph_zoom, format_epoch_ms,
-        selected_stage_parameter, zoomed_box,
+        ANALYSIS_GRAPH_ZOOM_DEFAULT, analysis_graph_center_target, analysis_graph_fit_zoom,
+        analysis_graph_focus_target, clamp_analysis_graph_zoom,
+        estimated_analysis_graph_center_scroll, format_epoch_ms, selected_stage_parameter,
+        zoomed_box,
     };
     use crate::studio::LayoutRect;
     use app_core::AnalysisProfileSnapshot;
@@ -193,6 +195,48 @@ mod graph_view_polish_tests {
             super::ANALYSIS_GRAPH_ZOOM_MAX
         );
         assert_eq!(clamp_analysis_graph_zoom(1.0), 1.0);
+        assert_eq!(
+            clamp_analysis_graph_zoom(ANALYSIS_GRAPH_ZOOM_DEFAULT),
+            ANALYSIS_GRAPH_ZOOM_DEFAULT
+        );
+    }
+
+    #[test]
+    fn fit_zoom_uses_the_tighter_axis_so_the_graph_stays_on_one_page() {
+        let fitted = analysis_graph_fit_zoom(2000.0, 400.0, 1000.0, 600.0);
+        assert!(fitted < 1.0);
+        assert!((fitted - (980.0 / 2000.0)).abs() < 0.02);
+        let tall = analysis_graph_fit_zoom(800.0, 800.0, 1000.0, 400.0);
+        assert!(tall < 0.6);
+    }
+
+    #[test]
+    fn live_follow_centers_the_running_node_in_the_viewport() {
+        let mut layout = crate::studio::GraphLayout {
+            rects: Default::default(),
+            canvas_width: 800.0,
+            canvas_height: 200.0,
+        };
+        layout.rects.insert(
+            app_core::AnalysisNodeId::new("pitch.extract"),
+            crate::studio::LayoutRect {
+                x: 400.0,
+                y: 16.0,
+                width: 128.0,
+                height: 70.0,
+            },
+        );
+        let (scroll, stage) = analysis_graph_center_target(
+            Some(&layout),
+            &app_core::AnalysisNodeId::new("pitch.extract"),
+            1.6,
+            800.0,
+        )
+        .expect("laid-out node has a focus target");
+        assert_eq!(stage, "pitch");
+        // Node center is (400 + 64) * 1.6 = 742.4; minus half the 800px viewport.
+        assert_eq!(scroll, 342);
+        assert!(estimated_analysis_graph_center_scroll("pitch.extract", 1.6, 800.0) > 0.0);
     }
 
     #[test]
@@ -867,6 +911,9 @@ mod node_duration_copy_tests {
             fallback_reason: None,
             backend_fallback_from: None,
             backend_fallback_reason: None,
+            binding_kind: None,
+            committed_outputs: Vec::new(),
+            input_revision_ids: Vec::new(),
             started_at_ms,
             finished_at_ms,
         }
@@ -1167,6 +1214,9 @@ mod node_id_wire_protocol_tests {
             fallback_reason: None,
             backend_fallback_from: None,
             backend_fallback_reason: None,
+            binding_kind: None,
+            committed_outputs: Vec::new(),
+            input_revision_ids: Vec::new(),
             started_at_ms: None,
             finished_at_ms: None,
         }

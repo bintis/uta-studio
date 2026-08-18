@@ -98,7 +98,7 @@ class FreezeFlagTests(unittest.TestCase):
                     "run_music_analysis",
                     return_value={"key": {"tonic": "C", "scale": "major"}, "rhythm": {"bpm": 120.0}},
                 ),
-                mock.patch.object(pipeline, "separate_stems_uvr") as mocked_separator,
+                mock.patch.object(pipeline, "_try_execute_audio_plan") as mocked_separator,
                 mock.patch.object(pipeline, "analyze_pitch"),
             ):
                 pipeline.run_pipeline(
@@ -125,7 +125,7 @@ class FreezeFlagTests(unittest.TestCase):
                     "run_music_analysis",
                     return_value={"key": {"tonic": "C", "scale": "major"}, "rhythm": {"bpm": 120.0}},
                 ),
-                mock.patch.object(pipeline, "separate_stems_uvr") as mocked_separator,
+                mock.patch.object(pipeline, "_try_execute_audio_plan") as mocked_separator,
             ):
                 with self.assertRaises(RuntimeError):
                     pipeline.run_pipeline(

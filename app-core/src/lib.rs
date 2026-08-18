@@ -5,13 +5,17 @@ mod analysis_profile;
 mod analyzer;
 mod api;
 mod applog;
+mod artifact_workbench;
 mod audio_format;
+mod audio_model;
+mod audio_processing;
 mod authoring;
 mod cache;
 mod chart;
 mod config;
 mod editor;
 mod error;
+mod export_destination;
 mod library_db;
 mod library_menu;
 mod library_model;
@@ -28,11 +32,12 @@ mod vendor_scripts;
 mod vocal_chart;
 
 pub use analysis_artifact::{
-    ArtifactRevision, ArtifactRevisionComparison, ArtifactSummary, artifact_present,
+    ArtifactRevision, ArtifactRevisionComparison, ArtifactStore, ArtifactSummary, artifact_present,
     cached_artifact_presence, cached_artifact_presence_for_song, compare_artifact_revisions,
     compute_config_hash, delete_artifact_revision, hash_file_contents, import_legacy_artifacts,
     invalidate_artifact_revision, load_active_artifact, load_analysis_artifacts,
-    load_artifact_revisions, record_artifact_revision, set_active_artifact_revision,
+    load_artifact_revisions, migrate_artifact_revisions_to_store, record_artifact_revision,
+    set_active_artifact_revision,
 };
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
@@ -49,20 +54,50 @@ pub use analysis_profile::{
 };
 pub use analyzer::{
     AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison, AnalysisRunHistory,
-    AnalysisStageRoute, AnalysisTask, NodeAttempt, NodeAttemptComparison, QueuedStatus,
-    SongAuthoringState, bypass_analysis_node_with_original_mix_for_run, cancel_analysis_run,
-    clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
-    configure_analysis_node_for_run, delete_cache, disable_analysis_node_for_run, enqueue_all,
-    enqueue_one, freeze_analysis_node_outputs_for_run, load_analysis_history,
+    AnalysisStageRoute, AnalysisTask, NodeAttempt, NodeAttemptComparison, PendingAnalysisIntent,
+    QueuedStatus, SongAuthoringState, bypass_analysis_node_with_original_mix_for_run,
+    cancel_analysis_run, clear_analysis_history, compare_analysis_runs,
+    compare_node_attempt_with_previous_run, configure_analysis_node_for_run, delete_cache,
+    disable_analysis_node_for_run, downstream_node_ids, enqueue_all, enqueue_one,
+    freeze_analysis_node_outputs_for_run, frozen_artifact_kinds_for_node_id, load_analysis_history,
     load_analysis_node_attempts, load_analysis_tasks, node_can_be_bypassed_for_run,
     node_can_be_configured_for_run, node_can_be_disabled_for_run, node_can_be_frozen_for_run,
-    pending_run_override_for, preview_analysis_plan_for_selection, preview_full_analysis_plan,
-    realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
-    resolve_song_authoring_state, run_analysis_node, run_analysis_node_downstream,
-    run_analysis_plan, save_node_config_as_song_profile, shutdown_server,
+    pending_analysis_intent, pending_run_override_for, preview_analysis_plan_for_selection,
+    preview_full_analysis_plan, realign, reanalyze_force_transcribe, reanalyze_full,
+    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, run_analysis_node,
+    run_analysis_node_downstream, run_analysis_plan, run_analysis_request,
+    save_node_config_as_song_profile, shutdown_server,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
+pub use artifact_workbench::{
+    ArtifactBinding, ArtifactBindingState, ArtifactCapability, ArtifactDirection,
+    ArtifactDraftCommit, ArtifactDraftContent, ArtifactDraftKind, ArtifactEditDraft,
+    ArtifactHealth, ArtifactHealthStatus, ArtifactInspection, ArtifactLineage, ArtifactLineageNode,
+    ArtifactMediaType, ArtifactPreview, ArtifactRef, ArtifactSaveMode, ArtifactSaveOptions,
+    ArtifactTypedDiff, CaptureIntermediateRequest, ChartRevisionMergeMode, DownstreamImpact,
+    ImpactTrigger, NodeIoInspection, analysis_request_from_impact,
+    apply_artifact_revision_to_chart, artifact_capabilities, artifact_editor_text, artifact_health,
+    artifact_lineage, authored_chart_is_pinned, begin_artifact_edit,
+    capture_analysis_run_artifacts, commit_artifact_edit, compare_artifacts_typed,
+    inspect_analysis_node_io, inspect_artifact, intermediate_capture_request,
+    merge_chart_revisions, preview_artifact, preview_artifact_downstream_impact,
+    preview_artifact_edit_impact, preview_frozen_downstream_impact, preview_node_downstream_impact,
+    queued_request_matches_preview, resolve_artifact_for_run, resolve_graph_edge_binding,
+    set_artifact_pinned, set_intermediate_capture_request,
+};
+pub use audio_model::{
+    AudioModelCatalogSummary, AudioModelFileStatus, AudioModelLicense, AudioModelStatus,
+    AudioParameterMap, AudioParameterSpec, AudioParameterValue, DEFAULT_LEGACY_KARAOKE_MODEL_ID,
+    REQUIRED_AUDIO_MODEL_IDS, audio_model_dir, audio_processing_root,
+};
+pub use audio_processing::{
+    AudioInputReference, AudioOutputBinding, AudioProcessingPlanSnapshot, AudioProcessingSettings,
+    AudioProcessingStep, AudioRuntimeRequest, ResolvedAudioParameter, get_audio_model_status,
+    install_audio_model, list_audio_models, list_audio_models_from_python,
+    preview_effective_audio_params, reinstall_audio_model, remove_audio_model,
+    validate_audio_processing_profile,
+};
 pub use authoring::{
     AudioPaths, ShiftDone, ShiftResult, get_audio_paths, load_pitch_guide, load_transcript,
     shift_key, shift_key_done_payload, shift_tempo, shift_tempo_done_payload,
@@ -75,7 +110,7 @@ pub use chart::{
     CandidateChartStatus, CandidateChartSummary, ChartAudio, ChartDocument, ChartReadiness,
     ChartUpdatePolicy, ChartWaveform, candidate_chart_status, chart_problem_count, chart_readiness,
     decode_chart_waveform, load_chart, replace_authored_chart_with_fresh_analysis,
-    save_vocal_chart,
+    save_vocal_chart, save_vocal_chart_from_revision,
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{
@@ -83,6 +118,10 @@ pub use editor::{
     EditorActionDef, EditorActionGroup, EditorDocument, KeyChord, LyricAddress, MIN_NOTE_SECONDS,
     NoteKind, ProblemKind, ProblemReport, Severity, Syllable, TrackRole, TrackSummary,
     editor_action, editor_action_for_chord, editor_actions, kana_morae, syllables,
+};
+pub use export_destination::{
+    ExportNodeInspection, ExportPackageKind, inspect_export_node, last_export_destination,
+    record_last_export, validate_export_node, validate_export_package,
 };
 pub use library_db::{init_library, library_db_path, load_song_by_hash};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};

@@ -19,7 +19,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::uta_studio_dir;
 
 mod analysis_artifacts;
+mod analysis_capture_requests;
 mod analysis_history;
+mod analysis_node_artifacts;
 mod analysis_node_attempts;
 mod analysis_queue;
 mod connection;
@@ -31,12 +33,24 @@ mod song_analysis_profiles;
 mod songs;
 
 pub use analysis_artifacts::{
-    AnalysisArtifactRow, analysis_active_artifact, analysis_artifact_delete,
-    analysis_artifact_set_active, analysis_artifact_set_invalidated, analysis_artifact_upsert,
+    AnalysisArtifactRow, analysis_active_artifact, analysis_artifact_clear_active,
+    analysis_artifact_delete, analysis_artifact_is_pinned, analysis_artifact_path_is_pinned,
+    analysis_artifact_pinned_paths, analysis_artifact_set_active,
+    analysis_artifact_set_invalidated, analysis_artifact_set_pinned, analysis_artifact_upsert,
     analysis_artifacts_for_kind, analysis_artifacts_for_song,
+};
+pub use analysis_capture_requests::{
+    AnalysisCaptureRequestRow, analysis_capture_request_delete, analysis_capture_request_get,
+    analysis_capture_request_upsert,
 };
 pub use analysis_history::{
     analysis_history_clear, analysis_history_insert, analysis_history_load,
+    analysis_history_set_error,
+};
+pub use analysis_node_artifacts::{
+    AnalysisNodeArtifactRow, analysis_artifact_and_node_binding_upsert,
+    analysis_artifact_usage_count, analysis_node_artifact_upsert,
+    analysis_node_artifacts_for_revision, analysis_node_artifacts_load,
 };
 pub use analysis_node_attempts::{
     NewAnalysisNodeAttempt, analysis_node_attempts_insert_batch, analysis_node_attempts_load,

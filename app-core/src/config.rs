@@ -52,6 +52,10 @@ pub struct AppConfig {
     pub demucs_shifts: Option<u32>,
     #[serde(default)]
     pub demucs_overlap_pct: Option<u32>,
+    /// Purpose-oriented audio-processing settings. Legacy `separator*` fields
+    /// stay on disk for one release so older clients keep loading.
+    #[serde(default)]
+    pub audio_processing: Option<crate::audio_processing::AudioProcessingSettings>,
     pub asr_engine: Option<String>,
     pub align_backend: Option<String>,
     /// Pitch/frequency-analysis model. Kept explicit even while RMVPE is the
@@ -94,6 +98,7 @@ impl Default for AppConfig {
             separator_normalization_pct: None,
             demucs_shifts: None,
             demucs_overlap_pct: None,
+            audio_processing: None,
             asr_engine: None,
             align_backend: None,
             pitch_model: None,
@@ -127,6 +132,13 @@ impl AppConfig {
             None | Some("karaoke" | "demucs" | "openvino_demucs")
         ) {
             self.separator = Some("karaoke".to_string());
+        }
+        if self.audio_processing.is_none() {
+            self.audio_processing = Some(
+                crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
+                    self.separator(),
+                ),
+            );
         }
         if !matches!(self.pitch_model.as_deref(), None | Some("rmvpe")) {
             self.pitch_model = Some("rmvpe".to_string());
@@ -175,7 +187,11 @@ impl AppConfig {
         let Ok(marker) = std::fs::read_to_string(candidate.join("vendor/.ready")) else {
             return (self, false);
         };
-        let Some(backend) = marker.trim().strip_prefix("runtime-v4:") else {
+        let backend = marker
+            .trim()
+            .strip_prefix("runtime-v5:")
+            .or_else(|| marker.trim().strip_prefix("runtime-v4:"));
+        let Some(backend) = backend else {
             return (self, false);
         };
         if !matches!(backend, "cpu" | "cuda" | "intel") {

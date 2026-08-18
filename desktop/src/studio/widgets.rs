@@ -495,6 +495,37 @@ pub(crate) fn ui_text_font(font: Handle<Font>, size: f32) -> TextFont {
     TextFont::from(font).with_font_size(ui_font_size(size))
 }
 
+pub(crate) fn spawn_menu_text_button(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    size: f32,
+    action: UiAction,
+) {
+    let label = label.into();
+    parent.spawn((
+        Button,
+        action,
+        Node {
+            width: percent(100),
+            min_height: px(28),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
+            padding: UiRect::axes(px(8), px(4)),
+            border_radius: BorderRadius::all(px(4)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        children![(
+            Text::new(label),
+            ui_text_font(font, size),
+            TextColor(theme.sidebar_foreground),
+            TextLayout::no_wrap(),
+        )],
+    ));
+}
+
 pub(crate) fn spawn_text_button(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,

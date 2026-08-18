@@ -834,7 +834,6 @@ pub(crate) fn handle_folder_scroll(
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<FolderEntryList>>,
 ) {
     if session.route != StudioRoute::Folders {
-        wheel.clear();
         return;
     }
     let Ok((computed, mut position)) = lists.single_mut() else {

@@ -1,13 +1,27 @@
+mod docs;
+
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    if args.first().map(String::as_str) == Some("docs") {
+        return match docs::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     let (cmd, desktop_args) = match args.first().map(|s| s.as_str()) {
         Some("dev") => ("run", &args[1..]),
         Some("build") => ("build", &args[1..]),
         _ => {
-            eprintln!("Usage: cargo desktop <dev|build> [extra cargo args...]");
+            eprintln!(
+                "Usage: cargo desktop <dev|build> [extra cargo args...]\n       cargo xtask docs <build|check>"
+            );
             return ExitCode::FAILURE;
         }
     };

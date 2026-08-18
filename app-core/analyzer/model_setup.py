@@ -65,18 +65,16 @@ def download_selected_models(
         download_huggingface(whisper_repository("tiny"))
 
     if target in ("all", "separator") and separator == "karaoke":
-        directory = models_dir / "audio_separator"
-        directory.mkdir(parents=True, exist_ok=True)
-        if (directory / KARAOKE_MODEL).is_file():
-            print("Using existing UVR Karaoke separator", flush=True)
-        else:
-            from audio_separator.separator import Separator
+        from audio_models.catalog import DEFAULT_LEGACY_KARAOKE_MODEL_ID
+        from audio_models.install import install_audio_model
 
-            print("Preparing UVR Karaoke separator...", flush=True)
-            model = Separator(model_file_dir=str(directory), output_dir=str(directory))
-            model.load_model(KARAOKE_MODEL)
-            del model
-            gc.collect()
+        print("Preparing catalog karaoke separator...", flush=True)
+        install_audio_model(
+            models_dir,
+            DEFAULT_LEGACY_KARAOKE_MODEL_ID,
+            allow_network=True,
+            on_progress=lambda message: print(message, flush=True),
+        )
     elif target in ("all", "separator") and separator == "demucs":
         from demucs.pretrained import get_model
 
@@ -112,11 +110,27 @@ def main() -> None:
             "parakeet",
             "separator",
             "alignment",
+            "audio_model",
         ),
         default="all",
         help="Download one selected model family instead of the complete set",
     )
+    parser.add_argument("--audio-model-id", default="")
+    parser.add_argument("--audio-model-action", choices=("install", "remove"), default="install")
     args = parser.parse_args()
+    if args.target == "audio_model":
+        from audio_models.install import install_audio_model, remove_audio_model
+
+        models_dir = Path(args.models_dir).expanduser().resolve()
+        if args.audio_model_action == "remove":
+            remove_audio_model(models_dir, args.audio_model_id)
+        else:
+            install_audio_model(
+                models_dir,
+                args.audio_model_id,
+                allow_network=True,
+            )
+        return
     download_selected_models(
         Path(args.models_dir).expanduser().resolve(),
         args.backend,

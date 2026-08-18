@@ -1,0 +1,811 @@
+{
+  "contractVersion": 1,
+  "categories": [
+    {
+      "id": "gameplay_hud",
+      "labelKey": "settings.category.gameplay_hud",
+      "icon": "microphone-lines"
+    },
+    {
+      "id": "video_visuals",
+      "labelKey": "settings.category.video_visuals",
+      "icon": "film"
+    },
+    {
+      "id": "audio_microphone",
+      "labelKey": "settings.category.audio_microphone",
+      "icon": "waveform"
+    },
+    {
+      "id": "practice_controls",
+      "labelKey": "settings.category.practice_controls",
+      "icon": "repeat"
+    },
+    {
+      "id": "accessibility",
+      "labelKey": "settings.category.accessibility",
+      "icon": "universal-access"
+    },
+    {
+      "id": "diagnostics_storage",
+      "labelKey": "settings.category.diagnostics_storage",
+      "icon": "stethoscope"
+    }
+  ],
+  "descriptorRequirements": [
+    "labelKey",
+    "descriptionKey",
+    "searchTerms",
+    "defaultValue",
+    "resetBehaviour",
+    "availabilityPredicate",
+    "disabledReasonKey",
+    "accessibilityNameKey",
+    "quickPanelEligibility"
+  ],
+  "settings": [
+    {
+      "id": "lyrics.position",
+      "category": "gameplay_hud",
+      "type": "enum",
+      "default": "Bottom",
+      "range": null,
+      "labelKey": "settings.lyrics.position.label",
+      "descriptionKey": "settings.lyrics.position.description",
+      "disabledReasonKey": "settings.lyrics.position.disabled",
+      "searchTerms": [
+        "lyrics",
+        "字幕",
+        "歌词",
+        "歌詞",
+        "position"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "lyrics.size",
+      "category": "gameplay_hud",
+      "type": "enum",
+      "default": "Normal",
+      "range": null,
+      "labelKey": "settings.lyrics.size.label",
+      "descriptionKey": "settings.lyrics.size.description",
+      "disabledReasonKey": "settings.lyrics.size.disabled",
+      "searchTerms": [
+        "lyrics",
+        "size",
+        "字号",
+        "文字サイズ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "lyrics.typeface",
+      "category": "gameplay_hud",
+      "type": "enum",
+      "default": "Torus",
+      "range": null,
+      "labelKey": "settings.lyrics.typeface.label",
+      "descriptionKey": "settings.lyrics.typeface.description",
+      "disabledReasonKey": "settings.lyrics.typeface.disabled",
+      "searchTerms": [
+        "font",
+        "typeface",
+        "字体",
+        "フォント"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "pitch.curves",
+      "category": "gameplay_hud",
+      "type": "enum",
+      "default": "Both",
+      "range": null,
+      "labelKey": "settings.pitch.curves.label",
+      "descriptionKey": "settings.pitch.curves.description",
+      "disabledReasonKey": "settings.pitch.curves.disabled",
+      "searchTerms": [
+        "pitch",
+        "curve",
+        "音高",
+        "ピッチ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "pitch.guideTrail",
+      "category": "gameplay_hud",
+      "type": "bool",
+      "default": false,
+      "range": null,
+      "labelKey": "settings.pitch.guide_trail.label",
+      "descriptionKey": "settings.pitch.guide_trail.description",
+      "disabledReasonKey": "settings.pitch.guide_trail.disabled",
+      "searchTerms": [
+        "trail",
+        "guide",
+        "轨迹",
+        "ガイド"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "hud.scorePosition",
+      "category": "gameplay_hud",
+      "type": "enum",
+      "default": "TopRight",
+      "range": null,
+      "labelKey": "settings.hud.score_position.label",
+      "descriptionKey": "settings.hud.score_position.description",
+      "disabledReasonKey": "settings.hud.score_position.disabled",
+      "searchTerms": [
+        "score",
+        "HUD",
+        "位置",
+        "スコア"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "hud.scale",
+      "category": "gameplay_hud",
+      "type": "float",
+      "default": 1.0,
+      "range": {
+        "min": 0.75,
+        "max": 1.35,
+        "step": 0.05
+      },
+      "labelKey": "settings.hud.scale.label",
+      "descriptionKey": "settings.hud.scale.description",
+      "disabledReasonKey": "settings.hud.scale.disabled",
+      "searchTerms": [
+        "HUD",
+        "scale",
+        "缩放",
+        "サイズ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.visibility",
+      "category": "video_visuals",
+      "type": "enum",
+      "default": "Auto",
+      "range": null,
+      "labelKey": "settings.video.visibility.label",
+      "descriptionKey": "settings.video.visibility.description",
+      "disabledReasonKey": "settings.video.visibility.disabled",
+      "searchTerms": [
+        "video",
+        "MV",
+        "背景视频",
+        "ビデオ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.dim",
+      "category": "video_visuals",
+      "type": "float",
+      "default": 0.35,
+      "range": {
+        "min": 0,
+        "max": 0.9,
+        "step": 0.05
+      },
+      "labelKey": "settings.video.dim.label",
+      "descriptionKey": "settings.video.dim.description",
+      "disabledReasonKey": "settings.video.dim.disabled",
+      "searchTerms": [
+        "video",
+        "dim",
+        "变暗",
+        "暗さ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.blur",
+      "category": "video_visuals",
+      "type": "float",
+      "default": 0.0,
+      "range": {
+        "min": 0,
+        "max": 30,
+        "step": 1
+      },
+      "labelKey": "settings.video.blur.label",
+      "descriptionKey": "settings.video.blur.description",
+      "disabledReasonKey": "settings.video.blur.disabled",
+      "searchTerms": [
+        "video",
+        "blur",
+        "模糊",
+        "ぼかし"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.offsetMs",
+      "category": "video_visuals",
+      "type": "float",
+      "default": 0,
+      "range": {
+        "min": -5000,
+        "max": 5000,
+        "step": 10
+      },
+      "labelKey": "settings.video.offset.label",
+      "descriptionKey": "settings.video.offset.description",
+      "disabledReasonKey": "settings.video.offset.disabled",
+      "searchTerms": [
+        "video",
+        "offset",
+        "sync",
+        "偏移",
+        "同期"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.fitMode",
+      "category": "video_visuals",
+      "type": "enum",
+      "default": "Crop",
+      "range": null,
+      "labelKey": "settings.video.fit_mode.label",
+      "descriptionKey": "settings.video.fit_mode.description",
+      "disabledReasonKey": "settings.video.fit_mode.disabled",
+      "searchTerms": [
+        "video",
+        "fit",
+        "crop",
+        "contain",
+        "画面"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "video.controls",
+      "category": "video_visuals",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.video.controls.label",
+      "descriptionKey": "settings.video.controls.description",
+      "disabledReasonKey": "settings.video.controls.disabled",
+      "searchTerms": [
+        "video",
+        "controls",
+        "seek",
+        "pause",
+        "控制",
+        "操作"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "visual.animationIntensity",
+      "category": "video_visuals",
+      "type": "float",
+      "default": 0.65,
+      "range": {
+        "min": 0,
+        "max": 1.5,
+        "step": 0.05
+      },
+      "labelKey": "settings.visual.animation_intensity.label",
+      "descriptionKey": "settings.visual.animation_intensity.description",
+      "disabledReasonKey": "settings.visual.animation_intensity.disabled",
+      "searchTerms": [
+        "animation",
+        "motion",
+        "动画",
+        "モーション"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "visual.singingParticles",
+      "category": "video_visuals",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.visual.singing_particles.label",
+      "descriptionKey": "settings.visual.singing_particles.description",
+      "disabledReasonKey": "settings.visual.singing_particles.disabled",
+      "searchTerms": [
+        "particle",
+        "sing",
+        "粒子",
+        "パーティクル"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "visual.scoringParticles",
+      "category": "video_visuals",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.visual.scoring_particles.label",
+      "descriptionKey": "settings.visual.scoring_particles.description",
+      "disabledReasonKey": "settings.visual.scoring_particles.disabled",
+      "searchTerms": [
+        "particle",
+        "score",
+        "评分反馈",
+        "採点"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "visual.particleDensity",
+      "category": "video_visuals",
+      "type": "float",
+      "default": 0.7,
+      "range": {
+        "min": 0.1,
+        "max": 1.0,
+        "step": 0.1
+      },
+      "labelKey": "settings.visual.particle_density.label",
+      "descriptionKey": "settings.visual.particle_density.description",
+      "disabledReasonKey": "settings.visual.particle_density.disabled",
+      "searchTerms": [
+        "particle",
+        "density",
+        "粒子密度",
+        "密度"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "audio.bgmOutput",
+      "category": "audio_microphone",
+      "type": "device",
+      "default": "",
+      "range": null,
+      "labelKey": "settings.audio.bgm_output.label",
+      "descriptionKey": "settings.audio.bgm_output.description",
+      "disabledReasonKey": "settings.audio.bgm_output.disabled",
+      "searchTerms": [
+        "BGM",
+        "output",
+        "输出",
+        "出力"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "audio.vocalsOutput",
+      "category": "audio_microphone",
+      "type": "device",
+      "default": "",
+      "range": null,
+      "labelKey": "settings.audio.vocals_output.label",
+      "descriptionKey": "settings.audio.vocals_output.description",
+      "disabledReasonKey": "settings.audio.vocals_output.disabled",
+      "searchTerms": [
+        "vocals",
+        "output",
+        "人声",
+        "ボーカル"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "audio.bgmVolume",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 1.0,
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 0.05
+      },
+      "labelKey": "settings.audio.bgm_volume.label",
+      "descriptionKey": "settings.audio.bgm_volume.description",
+      "disabledReasonKey": "settings.audio.bgm_volume.disabled",
+      "searchTerms": [
+        "BGM",
+        "volume",
+        "音量"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "audio.vocalsVolume",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 0.55,
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 0.05
+      },
+      "labelKey": "settings.audio.vocals_volume.label",
+      "descriptionKey": "settings.audio.vocals_volume.description",
+      "disabledReasonKey": "settings.audio.vocals_volume.disabled",
+      "searchTerms": [
+        "vocals",
+        "volume",
+        "人声",
+        "音量"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.device",
+      "category": "audio_microphone",
+      "type": "device",
+      "default": "",
+      "range": null,
+      "labelKey": "settings.microphone.device.label",
+      "descriptionKey": "settings.microphone.device.description",
+      "disabledReasonKey": "settings.microphone.device.disabled",
+      "searchTerms": [
+        "microphone",
+        "mic",
+        "麦克风",
+        "マイク"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.monitorOutput",
+      "category": "audio_microphone",
+      "type": "device",
+      "default": "",
+      "range": null,
+      "labelKey": "settings.microphone.monitor_output.label",
+      "descriptionKey": "settings.microphone.monitor_output.description",
+      "disabledReasonKey": "settings.microphone.monitor_output.disabled",
+      "searchTerms": [
+        "monitor",
+        "output",
+        "监听",
+        "モニター"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.inputGain",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 1.5,
+      "range": {
+        "min": 0.5,
+        "max": 3,
+        "step": 0.05
+      },
+      "labelKey": "settings.microphone.input_gain.label",
+      "descriptionKey": "settings.microphone.input_gain.description",
+      "disabledReasonKey": "settings.microphone.input_gain.disabled",
+      "searchTerms": [
+        "gain",
+        "增益",
+        "ゲイン"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.monitorVolume",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 0.35,
+      "range": {
+        "min": 0,
+        "max": 1,
+        "step": 0.05
+      },
+      "labelKey": "settings.microphone.monitor_volume.label",
+      "descriptionKey": "settings.microphone.monitor_volume.description",
+      "disabledReasonKey": "settings.microphone.monitor_volume.disabled",
+      "searchTerms": [
+        "monitor",
+        "volume",
+        "监听",
+        "モニター"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.latencyMs",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 0,
+      "range": {
+        "min": -500,
+        "max": 1000,
+        "step": 1
+      },
+      "labelKey": "settings.microphone.latency.label",
+      "descriptionKey": "settings.microphone.latency.description",
+      "disabledReasonKey": "settings.microphone.latency.disabled",
+      "searchTerms": [
+        "latency",
+        "delay",
+        "延迟",
+        "レイテンシ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.samplingMs",
+      "category": "audio_microphone",
+      "type": "float",
+      "default": 10,
+      "range": {
+        "min": 10,
+        "max": 40,
+        "step": 1
+      },
+      "labelKey": "settings.microphone.sampling.label",
+      "descriptionKey": "settings.microphone.sampling.description",
+      "disabledReasonKey": "settings.microphone.sampling.disabled",
+      "searchTerms": [
+        "sampling",
+        "pitch",
+        "CPU",
+        "采样",
+        "サンプリング"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "microphone.autoMeasure",
+      "category": "audio_microphone",
+      "type": "action",
+      "default": null,
+      "range": null,
+      "labelKey": "settings.microphone.auto_measure.label",
+      "descriptionKey": "settings.microphone.auto_measure.description",
+      "disabledReasonKey": "settings.microphone.auto_measure.disabled",
+      "searchTerms": [
+        "calibrate",
+        "latency",
+        "校准",
+        "測定"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "practice.defaultSpeed",
+      "category": "practice_controls",
+      "type": "float",
+      "default": 1.0,
+      "range": {
+        "min": 0.5,
+        "max": 1.5,
+        "step": 0.05
+      },
+      "labelKey": "settings.practice.default_speed.label",
+      "descriptionKey": "settings.practice.default_speed.description",
+      "disabledReasonKey": "settings.practice.default_speed.disabled",
+      "searchTerms": [
+        "practice",
+        "speed",
+        "练习速度",
+        "練習速度"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "practice.loopLeadInMs",
+      "category": "practice_controls",
+      "type": "float",
+      "default": 750,
+      "range": {
+        "min": 500,
+        "max": 1000,
+        "step": 50
+      },
+      "labelKey": "settings.practice.loop_lead_in.label",
+      "descriptionKey": "settings.practice.loop_lead_in.description",
+      "disabledReasonKey": "settings.practice.loop_lead_in.disabled",
+      "searchTerms": [
+        "loop",
+        "lead-in",
+        "循环",
+        "ループ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "practice.showControls",
+      "category": "practice_controls",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.practice.show_controls.label",
+      "descriptionKey": "settings.practice.show_controls.description",
+      "disabledReasonKey": "settings.practice.show_controls.disabled",
+      "searchTerms": [
+        "practice",
+        "controls",
+        "练习面板",
+        "練習パネル"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "controls.controllerHints",
+      "category": "practice_controls",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.controls.controller_hints.label",
+      "descriptionKey": "settings.controls.controller_hints.description",
+      "disabledReasonKey": "settings.controls.controller_hints.disabled",
+      "searchTerms": [
+        "controller",
+        "gamepad",
+        "手柄",
+        "コントローラー"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "accessibility.reducedMotion",
+      "category": "accessibility",
+      "type": "bool",
+      "default": false,
+      "range": null,
+      "labelKey": "settings.accessibility.reduced_motion.label",
+      "descriptionKey": "settings.accessibility.reduced_motion.description",
+      "disabledReasonKey": "settings.accessibility.reduced_motion.disabled",
+      "searchTerms": [
+        "reduced motion",
+        "motion",
+        "减少动态",
+        "視差効果"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "accessibility.highContrastOutline",
+      "category": "accessibility",
+      "type": "bool",
+      "default": true,
+      "range": null,
+      "labelKey": "settings.accessibility.high_contrast_outline.label",
+      "descriptionKey": "settings.accessibility.high_contrast_outline.description",
+      "disabledReasonKey": "settings.accessibility.high_contrast_outline.disabled",
+      "searchTerms": [
+        "contrast",
+        "outline",
+        "高对比",
+        "コントラスト"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "accessibility.largeTouchTargets",
+      "category": "accessibility",
+      "type": "bool",
+      "default": false,
+      "range": null,
+      "labelKey": "settings.accessibility.large_touch_targets.label",
+      "descriptionKey": "settings.accessibility.large_touch_targets.description",
+      "disabledReasonKey": "settings.accessibility.large_touch_targets.disabled",
+      "searchTerms": [
+        "touch",
+        "target",
+        "触控",
+        "タッチ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "accessibility.alwaysShowLabels",
+      "category": "accessibility",
+      "type": "bool",
+      "default": false,
+      "range": null,
+      "labelKey": "settings.accessibility.always_show_labels.label",
+      "descriptionKey": "settings.accessibility.always_show_labels.description",
+      "disabledReasonKey": "settings.accessibility.always_show_labels.disabled",
+      "searchTerms": [
+        "labels",
+        "icons",
+        "标签",
+        "ラベル"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": true
+    },
+    {
+      "id": "diagnostics.debugLogging",
+      "category": "diagnostics_storage",
+      "type": "bool",
+      "default": false,
+      "range": null,
+      "labelKey": "settings.diagnostics.debug_logging.label",
+      "descriptionKey": "settings.diagnostics.debug_logging.description",
+      "disabledReasonKey": "settings.diagnostics.debug_logging.disabled",
+      "searchTerms": [
+        "debug",
+        "log",
+        "调试",
+        "デバッグ"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": false
+    },
+    {
+      "id": "diagnostics.importHistory",
+      "category": "diagnostics_storage",
+      "type": "action",
+      "default": null,
+      "range": null,
+      "labelKey": "settings.diagnostics.import_history.label",
+      "descriptionKey": "settings.diagnostics.import_history.description",
+      "disabledReasonKey": "settings.diagnostics.import_history.disabled",
+      "searchTerms": [
+        "import",
+        "UTZ",
+        "diagnostics",
+        "导入",
+        "診断"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": false
+    },
+    {
+      "id": "storage.performanceRoot",
+      "category": "diagnostics_storage",
+      "type": "path",
+      "default": "",
+      "range": null,
+      "labelKey": "settings.storage.performance_root.label",
+      "descriptionKey": "settings.storage.performance_root.description",
+      "disabledReasonKey": "settings.storage.performance_root.disabled",
+      "searchTerms": [
+        "recording",
+        "storage",
+        "路径",
+        "保存先"
+      ],
+      "resetBehaviour": "reset-current-setting",
+      "quickPanelEligibility": false
+    }
+  ]
+}

@@ -79,6 +79,55 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Persist settings"
     ),
     capability!(
+        "models",
+        "list_audio_models",
+        "read",
+        true,
+        "List the offline audio-processing catalog and local install state"
+    ),
+    capability!(
+        "models",
+        "get_audio_model_status",
+        "read",
+        true,
+        "Read one catalog model's files, backends, license, and integrity"
+    ),
+    capability!(
+        "models",
+        "install_audio_model",
+        "external",
+        false,
+        "Download and verify one catalog audio model after explicit user confirmation"
+    ),
+    capability!(
+        "models",
+        "reinstall_audio_model",
+        "external",
+        false,
+        "Replace one catalog audio model after explicit user confirmation"
+    ),
+    capability!(
+        "models",
+        "remove_audio_model",
+        "destructive",
+        false,
+        "Remove one installed catalog audio model without touching songs or cache"
+    ),
+    capability!(
+        "analysis",
+        "validate_audio_processing_profile",
+        "read",
+        true,
+        "Validate purpose-oriented audio-processing settings and preview the frozen plan"
+    ),
+    capability!(
+        "analysis",
+        "preview_effective_audio_params",
+        "read",
+        true,
+        "Resolve global, song, and run audio parameters with explicit sources"
+    ),
+    capability!(
         "storage",
         "calculate_cache_stats",
         "read",
@@ -396,6 +445,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
+        "intermediate_capture_request",
+        "read",
+        true,
+        "Load the explicit PreprocessedAudio retention request for a song"
+    ),
+    capability!(
+        "analysis",
+        "set_intermediate_capture_request",
+        "mutation",
+        false,
+        "Enable or disable one-shot or persistent PreprocessedAudio capture for future runs"
+    ),
+    capability!(
+        "analysis",
         "set_active_artifact_revision",
         "mutation",
         false,
@@ -684,6 +747,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "editor",
+        "save_vocal_chart_from_revision",
+        "mutation",
+        false,
+        "Persist an authored chart derived from one exact immutable Candidate/Authored revision"
+    ),
+    capability!(
+        "editor",
         "editor_actions",
         "read",
         true,
@@ -709,6 +779,146 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "external",
         false,
         "Install the shared runtime or one explicitly confirmed model family"
+    ),
+    capability!(
+        "analysis",
+        "inspect_analysis_node_io",
+        "read",
+        true,
+        "Resolve declared and concrete inputs/outputs for a DAG node, using exact per-run bindings when recorded"
+    ),
+    capability!(
+        "analysis",
+        "inspect_artifact",
+        "read",
+        true,
+        "Inspect an artifact revision, capabilities, pin state, media type, and validation health"
+    ),
+    capability!(
+        "analysis",
+        "preview_artifact",
+        "read",
+        true,
+        "Return a bounded typed preview of a text/JSON artifact or metadata for binary/audio artifacts"
+    ),
+    capability!(
+        "analysis",
+        "artifact_lineage",
+        "read",
+        true,
+        "Walk content-addressed input revision lineage without inventing missing legacy edges"
+    ),
+    capability!(
+        "analysis",
+        "preview_artifact_downstream_impact",
+        "read",
+        true,
+        "Preview downstream DAG impact while preserving the authored chart"
+    ),
+    capability!(
+        "analysis",
+        "preview_node_downstream_impact",
+        "read",
+        true,
+        "Preview transitive consumers of one DAG node"
+    ),
+    capability!(
+        "analysis",
+        "compare_artifacts_typed",
+        "read",
+        true,
+        "Compare same-kind revisions using JSON/text-aware summaries when possible"
+    ),
+    capability!(
+        "analysis",
+        "set_artifact_pinned",
+        "mutation",
+        false,
+        "Pin or unpin an artifact revision; pinned revisions cannot be deleted"
+    ),
+    capability!(
+        "analysis",
+        "capture_analysis_run_artifacts",
+        "mutation",
+        false,
+        "Content-address persisted outputs and record run/node input-output bindings after a run"
+    ),
+    capability!(
+        "analysis",
+        "resolve_artifact_for_run",
+        "read",
+        true,
+        "Resolve only the immutable revision bound to a historical run, without falling back to today's Active revision"
+    ),
+    capability!(
+        "analysis",
+        "begin_artifact_edit",
+        "read",
+        true,
+        "Open a revision-specific lossless editing draft and retain its source and Active-selection concurrency token"
+    ),
+    capability!(
+        "analysis",
+        "preview_artifact_edit_impact",
+        "read",
+        true,
+        "Preview the downstream plan and explicit Authored Chart preservation for an artifact draft"
+    ),
+    capability!(
+        "analysis",
+        "preview_frozen_downstream_impact",
+        "read",
+        true,
+        "Preview run/reuse/stale/blocked groups from one frozen AnalysisPlan including profile, Pin, Freeze, and Bypass"
+    ),
+    capability!(
+        "analysis",
+        "run_analysis_request",
+        "mutation",
+        false,
+        "Queue the exact AnalysisRequest shown in a confirmed impact preview"
+    ),
+    capability!(
+        "analysis",
+        "resolve_graph_edge_binding",
+        "read",
+        true,
+        "Resolve the selected-run Artifact binding carried by a DAG edge"
+    ),
+    capability!(
+        "analysis",
+        "inspect_export_node",
+        "read",
+        true,
+        "Report export-node readiness and the last recorded destination without treating the package as an Artifact revision"
+    ),
+    capability!(
+        "analysis",
+        "validate_export_node",
+        "read",
+        true,
+        "Validate the last recorded UTZ or UltraStar export, or report chart readiness when none is tracked"
+    ),
+    capability!(
+        "analysis",
+        "record_last_export",
+        "mutation",
+        false,
+        "Remember the user-chosen destination of a successful UTZ or UltraStar export"
+    ),
+    capability!(
+        "analysis",
+        "commit_artifact_edit",
+        "mutation",
+        false,
+        "Validate and commit a user-authored immutable revision; downstream execution remains separately confirmed"
+    ),
+    capability!(
+        "analysis",
+        "merge_chart_revisions",
+        "read",
+        true,
+        "Build a validated in-memory Authored working copy from exact Candidate and Authored revisions without mutating either source"
     ),
     capability!(
         "diagnostics",

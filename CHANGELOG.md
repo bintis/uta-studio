@@ -2,6 +2,48 @@
 
 This changelog is generated from git history.
 
+## 0.5.0 — 2026-08-18
+
+### Audio model catalog
+
+- Added a fixed, offline UVR/Demucs audio Model Catalog with stable model IDs, full SHA-256 integrity, and recorded licenses.
+- Added typed public/architecture/device parameters with units. Bare `overlap` is no longer a shared setting.
+- Frozen an immutable audio-processing plan when analysis is queued so later Settings changes cannot rewrite an in-flight job.
+- Added semantic runner contracts for MDXC/RoFormer, Demucs, and MDX ONNX. Outputs bind by metadata, not `"(Vocals)"` filenames.
+- Added whole-model XPU/OpenVINO-to-CPU fallback with requested/actual backend telemetry. Intermediate audio stays lossless WAV/float.
+- Added Settings controls to choose vocal, accompaniment, karaoke, independent denoise/dereverb (with order), and compute backends, plus per-model install/remove in Models & runtime.
+- Routed the existing default karaoke RoFormer through an in-repo offline adapter around [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 0.44.5. Production separation no longer matches `"(Vocals)"` filenames.
+- Catalogued the production karaoke checkpoint as `melband_roformer_karaoke_aufr33_viperx` and import existing `models/audio_separator` weights instead of downloading them again.
+- Pinned `audio-separator==0.44.5` and bumped the managed runtime marker to `runtime-v5`. Older `runtime-v4` markers still discover the user data directory but require an explicit rebuild.
+- Wired stem DAG children (`stems.vocals`, denoise, dereverb, accompaniment, karaoke, multistem, bind) and recorded requested/actual backend on each step.
+- Kept legacy `karaoke` / `demucs` / `openvino_demucs` configuration and stem cache readable.
+- Clarified Models & runtime status: a usable older runtime stays ready to analyze; an outdated contract is shown as optional rebuild, not as a missing component.
+
+### Analysis page
+
+- Dedicated the Analysis page to the live DAG: the song title sits in the header, progress is a hairline on the top-bar boundary, and Inspect opens as its own page from the node context menu.
+- Default DAG zoom now fits the window and centers the graph. During a run the current node stays in view. Source labels on edges appear only while Source is on.
+- Node context-menu items are left-aligned. The inspect page can be scrolled with the mouse wheel.
+- Models & runtime no longer rebuilds the settings page on every setup log line, so scrolling stays usable during an upgrade.
+
+### Documentation and artifacts
+
+- Added an embedded, generated three-language Documentation Center with native Markdown rendering, search, history, semantic links, and responsive navigation.
+- Documented the Documentation Center and Artifact Workbench in the English, Simplified Chinese, and Japanese user guides.
+- Added content-addressed immutable Artifact revisions and migration of legacy cache inventory without removing compatibility files.
+- Added structured analyzer output-commit events, exact attempt/input/output bindings, explicit produced/reused/frozen/bypassed states, and transactional revision/relation persistence.
+- Expanded the Artifact Workbench with run-specific resolution, functional inspector tabs, health validation, provenance, pinning, impact previews, and bounded semantic revision diff panels.
+- Added revision-specific LyricsInput and lossless TimedTranscript drafts with validation, concurrency detection, explicit Active policy, Save Only, and confirmed downstream execution.
+- Added a bounded segment/word timing surface with native-audio jumps and fine boundary adjustment while retaining the complete lossless JSON working copy.
+- Made CandidateChart a distinct validated UTZ chart Artifact and added exact Candidate/Authored comparison, revision-specific editor loading, and phrase/range/lyrics-timing/pitch merge primitives.
+- Open PitchTrack and PitchNoteCandidates from the selected immutable revision, merge a candidate into the current editor phrase or note selection, and confirm Replace/Keep Authored with Pin refusal.
+- Kept source media read-only and added guarded deletion for Active, pinned, or historically consumed revisions.
+- Made chart editor saves immutable revisions before atomically updating the Active compatibility file.
+- Added explicit one-shot or persistent capture of real preprocessed audio as lossless FLAC; ordinary runs retain no additional intermediate audio.
+- Made analysis-graph edges first-class: click selects the selected-run Artifact binding, and edge color shows produced, reused, frozen, bypassed, missing, or invalidated.
+- Wired export-graph nodes to validate, re-export, and reveal the last recorded destination without treating packages as Artifact revisions.
+- Highlighted lineage on the main analysis DAG, including MINI compute-only view, and built impact groups from one frozen analysis plan that confirmation queues unchanged.
+
 ## 0.4.0 — 2026-08-17 (unreleased)
 
 - Workspace crate versions were bumped to `0.4.0` for the desktop/app-core/native-audio/studio-diagnostics/utz-export/xtask packages in this branch.

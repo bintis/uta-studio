@@ -1,0 +1,639 @@
+use crate::studio::*;
+
+pub fn run() {
+    let session = StudioSession::load();
+    let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
+    let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
+    let theme = StudioTheme::new(session.config.dark_mode.unwrap_or(false));
+    set_ui_font_scale(session.config.font_scale());
+    let mut window = studio_window(&session.config, theme.dark);
+    let restore_window_mode = window.mode;
+    if !matches!(restore_window_mode, WindowMode::Windowed) {
+        window.mode = WindowMode::Windowed;
+    }
+
+    App::new()
+        .insert_resource(ClearColor(theme.background))
+        .insert_resource(theme)
+        .insert_resource(session)
+        .insert_resource(NativeAudio(native_audio))
+        .insert_resource(NativePitchAudition(Arc::new(
+            uta_studio_audio::PitchAudition::new(),
+        )))
+        .insert_resource(NativeLibraryAudio(native_library_audio))
+        .insert_resource(LocalImages::default())
+        .insert_resource(EditorPointerCapture::default())
+        .insert_resource(UiInvalidated::default())
+        .insert_resource(NavigationInputState::default())
+        .insert_resource(LibraryRefreshTimer(Timer::from_seconds(
+            1.0,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(AnalysisRefreshTimer(Timer::from_seconds(
+            0.75,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(EditorAudioSyncTimer(Timer::from_seconds(
+            0.1,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(LibraryAudioSyncTimer(Timer::from_seconds(
+            0.1,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(NativeSetup::default())
+        .insert_resource(NativeDiagnostics::default())
+        .insert_resource(NativeAuthoringJob::default())
+        .insert_resource(CacheStatsJob::default())
+        .insert_resource(StartupBannerState::for_launch(restore_window_mode))
+        .add_plugins(
+            DefaultPlugins
+                .set(LogPlugin {
+                    // Parley 0.9 asks ICU for non-complex word segmentation even
+                    // for no-wrap labels. ICU 2.2 logs that expected fallback once
+                    // per CJK text node; keep real ICU errors while avoiding that
+                    // misleading warning storm in the native shell.
+                    filter: studio_log_filter(),
+                    custom_layer: app_log_custom_layer,
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    // During the transition, use the canonical repository logo
+                    // and the same bundled CJK font as the current desktop UI.
+                    // Keeping the source paths explicit also makes the later
+                    // package asset-copy step auditable.
+                    file_path: asset_root(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(window),
+                    close_when_requested: false,
+                    ..default()
+                }),
+        )
+        .add_plugins(TabNavigationPlugin)
+        .add_systems(Startup, setup)
+        .add_systems(Update, update_startup_banner)
+        .add_systems(
+            Update,
+            (
+                register_navigation_targets,
+                handle_accessible_navigation,
+                handle_actions,
+            )
+                .chain(),
+        )
+        .add_systems(Update, handle_cache_stats_request)
+        .add_systems(Update, handle_window_close_requests)
+        .add_systems(Update, handle_fullscreen_shortcut)
+        .add_systems(Update, handle_documentation_shortcuts)
+        .add_systems(Update, sync_documentation_search)
+        .add_systems(Update, refresh_library_while_scanning)
+        .add_systems(Update, refresh_analysis_activity)
+        .add_systems(
+            Update,
+            follow_live_analysis_node.after(refresh_analysis_activity),
+        )
+        .add_systems(Update, poll_native_setup)
+        .add_systems(Update, poll_native_diagnostics)
+        .add_systems(Update, poll_cache_stats)
+        .add_systems(Update, poll_authoring_job)
+        .add_systems(Update, poll_export_job)
+        .add_systems(Update, poll_editor_load_job)
+        .add_systems(Update, poll_lyrics_search_job)
+        .add_systems(Update, poll_lyrics_waveform_job)
+        .add_systems(Update, sync_numeric_settings)
+        .add_systems(Update, handle_tap_release)
+        .add_systems(Update, sync_editor_word_input.after(rebuild_ui))
+        .add_systems(Update, sync_editor_phrase_input)
+        .add_systems(Update, sync_editor_singer_input)
+        .add_systems(Update, finish_inline_lyric_edit)
+        .add_systems(Update, handle_library_search_keyboard)
+        .add_systems(Update, handle_plan_preview_keyboard)
+        .add_systems(Update, handle_app_log_viewer_scroll)
+        .add_systems(
+            Update,
+            refresh_editor_problems_cache
+                .after(handle_actions)
+                .after(handle_editor_pointer_capture)
+                .before(rebuild_ui),
+        )
+        .add_systems(Update, rebuild_ui.after(handle_actions))
+        .add_systems(Update, localize_ui_text.after(rebuild_ui))
+        .add_systems(Update, update_button_visuals.after(rebuild_ui))
+        .add_systems(
+            Update,
+            update_navigation_focus_visuals
+                .after(register_navigation_targets)
+                .after(rebuild_ui),
+        )
+        .add_systems(Update, handle_editor_keyboard)
+        .add_systems(Update, handle_editor_wheel)
+        .add_systems(Update, handle_editor_pointer_capture)
+        .add_systems(Update, handle_folder_scroll)
+        .add_systems(Update, handle_problems_panel_scroll)
+        .add_systems(Update, handle_shortcuts_panel_scroll)
+        .add_systems(Update, handle_analysis_graph_scroll)
+        .add_systems(Update, handle_analysis_inspect_scroll)
+        .add_systems(Update, handle_library_scroll)
+        .add_systems(Update, handle_song_detail_scroll)
+        .add_systems(Update, handle_settings_scroll.after(rebuild_ui))
+        .add_systems(Update, fit_analysis_graph_to_viewport.after(rebuild_ui))
+        .add_systems(Update, sync_editor_audio)
+        .add_systems(Update, sync_library_audio)
+        .add_systems(Update, update_editor_geometry)
+        .add_systems(Update, update_editor_playhead)
+        .add_systems(Update, update_editor_binding_guides)
+        .add_systems(Update, update_editor_shortcuts_panel_visibility)
+        .add_systems(Update, update_library_player_ui)
+        .run();
+}
+
+pub(crate) fn studio_log_filter() -> String {
+    format!("{DEFAULT_FILTER},icu_provider=error")
+}
+
+/// Real app-log capture (Node Context Menu "View logs" -- previously the
+/// last declined Phase 7 §7.5 item, since nothing captured log output
+/// anywhere before this). Writes go through `tracing_subscriber::fmt`'s own
+/// event formatting (reused, not reimplemented) into
+/// `app_core::record_log_text`'s bounded ring buffer + best-effort log
+/// file. Composes *alongside* Bevy's own default stdout layer via
+/// `LogPlugin.custom_layer` -- stdout output is unaffected.
+#[derive(Clone, Copy)]
+pub(crate) struct AppLogWriter;
+
+impl std::io::Write for AppLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(text) = std::str::from_utf8(buf) {
+            app_core::record_log_text(text);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for AppLogWriter {
+    type Writer = AppLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        *self
+    }
+}
+
+pub(crate) fn app_log_custom_layer(_app: &mut App) -> Option<bevy::log::BoxedLayer> {
+    Some(Box::new(
+        tracing_subscriber::fmt::layer()
+            .with_writer(AppLogWriter)
+            .with_ansi(false),
+    ))
+}
+
+pub(crate) fn asset_root() -> String {
+    if let Some(path) = std::env::var_os("UTA_STUDIO_ASSET_PATH") {
+        return path.to_string_lossy().into_owned();
+    }
+
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(prefix) = executable.parent().and_then(std::path::Path::parent)
+    {
+        let packaged = prefix.join("share/uta-studio");
+        if packaged.join(LOGO_PATH).is_file() && packaged.join(FONT_PATH).is_file() {
+            return packaged.to_string_lossy().into_owned();
+        }
+    }
+
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("desktop crate must remain inside the Uta Studio workspace")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Dev-only: `WIDTHxHEIGHT`, e.g. `560x900`, for a narrow-window screenshot
+/// pass (§9.3 "窄窗口无严重重叠"). Forces windowed mode at that exact size,
+/// taking priority over the other debug env vars' fullscreen branch, since
+/// there is no way to interactively resize a Wayland-native window in this
+/// sandbox without input synthesis -- see the ydotool note in
+/// docs/analysis-dag-redesign.md.
+pub(crate) fn debug_window_size() -> Option<(u32, u32)> {
+    let value = std::env::var("UTA_STUDIO_DEBUG_WINDOW_SIZE").ok()?;
+    let (width, height) = value.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
+pub(crate) fn studio_window(config: &AppConfig, dark: bool) -> Window {
+    Window {
+        title: "Uta Studio".to_string(),
+        name: Some("com.uta-studio.desktop".to_string()),
+        resolution: debug_window_size().unwrap_or((1280, 720)).into(),
+        decorations: false,
+        transparent: false,
+        resizable: true,
+        mode: if debug_window_size().is_some() {
+            WindowMode::Windowed
+        } else if std::env::var("UTA_STUDIO_DEBUG_OPEN_SONG").is_ok()
+            || std::env::var("UTA_STUDIO_DEBUG_OPEN_ACTIVITY").is_ok()
+            || std::env::var("UTA_STUDIO_DEBUG_OPEN_HISTORY").is_ok()
+        {
+            // Dev-only: land on the monitor the user set aside for visual
+            // verification screenshots (DP-2, marked Xwayland-primary),
+            // not wherever COSMIC's tiler happens to place a new window.
+            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+        } else if config.fullscreen.unwrap_or(false) {
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        } else {
+            WindowMode::Windowed
+        },
+        window_theme: Some(if dark {
+            WindowTheme::Dark
+        } else {
+            WindowTheme::Light
+        }),
+        enabled_buttons: EnabledButtons {
+            minimize: false,
+            maximize: false,
+            close: false,
+        },
+        ..default()
+    }
+}
+
+pub(crate) fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    mut local_images: ResMut<LocalImages>,
+    startup_banner: Res<StartupBannerState>,
+    session: Res<StudioSession>,
+    native_setup: Res<NativeSetup>,
+    cache_stats: Res<CacheStatsJob>,
+    theme: Res<StudioTheme>,
+) {
+    commands.spawn(Camera2d);
+    let brand = BrandImages {
+        logo: decode_embedded_png(LOGO_BYTES, &mut images),
+        banner: decode_embedded_png(BANNER_BYTES, &mut images),
+        startup_banner: decode_embedded_png(STARTUP_BANNER_BYTES, &mut images),
+    };
+    // The very first frame, before the window (and any editor route that
+    // could have a context menu open) exists — the configured default
+    // resolution is a fine stand-in.
+    render_ui(
+        &mut commands,
+        &asset_server,
+        &mut images,
+        &brand,
+        &mut local_images,
+        &session,
+        &native_setup,
+        &cache_stats,
+        &theme,
+        Vec2::new(1280.0, 720.0),
+    );
+    if !startup_banner.done {
+        spawn_startup_banner(
+            &mut commands,
+            &startup_banner,
+            &brand.startup_banner,
+            &theme,
+        );
+    }
+    commands.insert_resource(brand);
+}
+
+pub(crate) fn spawn_startup_banner(
+    commands: &mut Commands,
+    state: &StartupBannerState,
+    startup_banner: &Handle<Image>,
+    theme: &StudioTheme,
+) {
+    commands
+        .spawn((
+            StartupBannerRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                top: px(0),
+                bottom: px(0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.background),
+            ZIndex(800),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                StartupBannerImage,
+                Node {
+                    width: px(STARTUP_BANNER_WIDTH),
+                    height: px(STARTUP_BANNER_HEIGHT),
+                    ..default()
+                },
+                ImageNode::new(startup_banner.clone())
+                    .with_color(Color::WHITE.with_alpha(state.alpha())),
+            ));
+        });
+}
+
+pub(crate) fn update_startup_banner(
+    mut state: ResMut<StartupBannerState>,
+    time: Res<Time>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut banner: Query<&mut ImageNode, With<StartupBannerImage>>,
+    splash: Query<Entity, With<StartupBannerRoot>>,
+    banner_image: Query<Entity, With<StartupBannerImage>>,
+    mut commands: Commands,
+) {
+    if state.done {
+        return;
+    }
+
+    state.timer.tick(time.delta());
+    if let Ok(mut window) = windows.single_mut() {
+        if matches!(window.mode, WindowMode::Windowed) {
+            window.enabled_buttons = EnabledButtons {
+                minimize: false,
+                maximize: false,
+                close: false,
+            };
+            window.decorations = !state.timer.is_finished();
+        }
+    }
+    if let Ok(mut image) = banner.single_mut() {
+        image.color = Color::WHITE.with_alpha(state.alpha());
+    }
+
+    if state.timer.is_finished() {
+        state.done = true;
+        if let Ok(mut window) = windows.single_mut() {
+            window.mode = state.restore_window_mode;
+            if matches!(window.mode, WindowMode::Windowed) {
+                window.decorations = true;
+                window.enabled_buttons = EnabledButtons {
+                    minimize: true,
+                    maximize: true,
+                    close: true,
+                };
+            }
+        }
+        for image_entity in banner_image.iter() {
+            commands.entity(image_entity).despawn();
+        }
+        for entity in splash.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+// Bevy systems expose each independently tracked resource/query as a parameter.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebuild_ui(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    brand: Res<BrandImages>,
+    mut local_images: ResMut<LocalImages>,
+    session: Res<StudioSession>,
+    native_setup: Res<NativeSetup>,
+    cache_stats: Res<CacheStatsJob>,
+    theme: Res<StudioTheme>,
+    mut invalidated: ResMut<UiInvalidated>,
+    roots: Query<Entity, With<StudioUiRoot>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    if !invalidated.0 {
+        return;
+    }
+    for entity in &roots {
+        commands.entity(entity).despawn();
+    }
+    let window_size = windows
+        .single()
+        .map(|window| Vec2::new(window.width(), window.height()))
+        .unwrap_or(Vec2::new(1280.0, 800.0));
+    render_ui(
+        &mut commands,
+        &asset_server,
+        &mut images,
+        &brand,
+        &mut local_images,
+        &session,
+        &native_setup,
+        &cache_stats,
+        &theme,
+        window_size,
+    );
+    invalidated.0 = false;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_ui(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    brand: &BrandImages,
+    local_images: &mut LocalImages,
+    session: &StudioSession,
+    native_setup: &NativeSetup,
+    cache_stats: &CacheStatsJob,
+    theme: &StudioTheme,
+    window_size: Vec2,
+) {
+    let font = asset_server.load(FONT_PATH);
+    let icons = asset_server.load(ICON_ATLAS_PATH);
+    commands
+        .spawn((
+            StudioUiRoot,
+            TabGroup::new(0),
+            Node {
+                width: percent(100),
+                height: percent(100),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(theme.background),
+        ))
+        .with_children(|root| {
+            if session.route == StudioRoute::Editor {
+                spawn_editor(
+                    root,
+                    font.clone(),
+                    icons.clone(),
+                    session,
+                    theme,
+                    window_size,
+                );
+            } else {
+                root.spawn(Node {
+                    min_height: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Row,
+                    ..default()
+                })
+                .with_children(|body| {
+                    spawn_sidebar(
+                        body,
+                        font.clone(),
+                        icons.clone(),
+                        brand.banner.clone(),
+                        session,
+                        theme,
+                    );
+                    spawn_workspace(
+                        body,
+                        font.clone(),
+                        asset_server,
+                        images,
+                        local_images,
+                        session,
+                        native_setup,
+                        cache_stats,
+                        icons.clone(),
+                        theme,
+                    );
+                });
+            }
+            if session.activity_open {
+                spawn_activity_center(root, font.clone(), icons.clone(), session, theme);
+            }
+            if let Some(revision) = session.pending_artifact_delete.as_ref() {
+                spawn_artifact_delete_confirmation(root, font.clone(), theme, revision);
+            }
+            if let Some(revision) = session.pending_artifact_invalidate.as_ref() {
+                spawn_artifact_invalidate_confirmation(root, font.clone(), theme, revision);
+            }
+            if let Some(revision) = session.pending_artifact_active.as_ref() {
+                spawn_artifact_active_confirmation(root, font.clone(), theme, revision);
+            }
+            if let Some(file_hash) = session.pending_intermediate_capture.as_deref() {
+                spawn_intermediate_capture_confirmation(root, font.clone(), theme, file_hash);
+            }
+            if let Some(file_hash) = session.pending_chart_replace.as_deref() {
+                spawn_chart_replace_confirmation(root, font.clone(), theme, file_hash);
+            }
+            if let Some(diff) = session.artifact_diff.as_ref() {
+                spawn_artifact_diff_panel(root, font.clone(), theme, diff);
+            }
+            if let Some(lineage) = session.artifact_lineage.as_ref() {
+                spawn_artifact_lineage_panel(root, font.clone(), theme, lineage);
+            }
+            if let Some(impact) = session.artifact_impact.as_ref() {
+                spawn_artifact_impact_panel(root, font.clone(), theme, impact);
+            }
+            if session.about_open {
+                spawn_about_dialog(root, font.clone(), brand.logo.clone(), theme);
+            }
+            if let Some(panel) = session.song_settings.as_ref() {
+                spawn_song_settings_panel(root, font.clone(), theme, panel);
+            }
+            if let Some(destination) = session.pending_leave {
+                spawn_leave_confirmation(root, font, theme, session, destination);
+            }
+        });
+}
+
+pub(crate) fn spawn_leave_confirmation(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSession,
+    destination: PendingLeave,
+) {
+    let dirty = session.editor.as_ref().is_some_and(|editor| editor.dirty);
+    let (title, action) = match destination {
+        PendingLeave::Exit => ("Close Uta Studio?", "Close"),
+        PendingLeave::Back | PendingLeave::Home | PendingLeave::Documentation => {
+            ("Leave the editor?", "Leave")
+        }
+    };
+    let description = if dirty {
+        "This chart has unsaved edits. Leaving now discards those edits. Source media is never changed."
+    } else {
+        "A scan, setup, diagnostic, or rendering task is still active. Closing now interrupts that work. Source media is never changed."
+    };
+    parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            right: px(0),
+            top: px(0),
+            bottom: px(0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(theme.background.with_alpha(0.8)),
+        ZIndex(120),
+        children![(
+            Node {
+                width: px(470),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(24)),
+                row_gap: px(12),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                ..default()
+            },
+            BackgroundColor(theme.card),
+            BorderColor::all(theme.border),
+            children![
+                (
+                    Text::new(title),
+                    ui_text_font(font.clone(), 17.0),
+                    TextColor(theme.foreground),
+                ),
+                (
+                    Text::new(description),
+                    ui_text_font(font.clone(), 10.0),
+                    TextColor(theme.muted_foreground),
+                    TextLayout::default(),
+                ),
+                (
+                    Node {
+                        width: percent(100),
+                        justify_content: JustifyContent::FlexEnd,
+                        column_gap: px(8),
+                        ..default()
+                    },
+                    children![
+                        (
+                            Button,
+                            UiAction::CancelLeave,
+                            Node {
+                                padding: UiRect::axes(px(13), px(8)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::NONE),
+                            children![(
+                                Text::new("Stay"),
+                                ui_text_font(font.clone(), 10.0),
+                                TextColor(theme.muted_foreground),
+                            )],
+                        ),
+                        (
+                            Button,
+                            UiAction::ConfirmLeave,
+                            Node {
+                                padding: UiRect::axes(px(13), px(8)),
+                                border_radius: BorderRadius::all(px(5)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.destructive.with_alpha(0.18)),
+                            children![(
+                                Text::new(action),
+                                ui_text_font(font, 10.0),
+                                TextColor(theme.destructive),
+                            )],
+                        )
+                    ],
+                )
+            ],
+        )],
+    ));
+}

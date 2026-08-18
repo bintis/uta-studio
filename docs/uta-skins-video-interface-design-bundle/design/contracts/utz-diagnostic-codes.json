@@ -1,0 +1,136 @@
+{
+  "contractVersion": 1,
+  "privacyRules": [
+    "Never show stack traces, exception type names, absolute filesystem paths or user home directories.",
+    "Display only normalised package-relative paths, stable codes and localised remediation.",
+    "The Copy report action omits raw exception messages and hashes local paths before inclusion."
+  ],
+  "codes": [
+    {
+      "code": "UTZ0001",
+      "severity": "error",
+      "messageKey": "import.archive_unreadable",
+      "englishSummary": "The package is not a readable ZIP/UTZ archive."
+    },
+    {
+      "code": "UTZ0002",
+      "severity": "error",
+      "messageKey": "import.too_many_files",
+      "englishSummary": "The archive contains more than the supported file-count limit."
+    },
+    {
+      "code": "UTZ0003",
+      "severity": "error",
+      "messageKey": "import.file_too_large",
+      "englishSummary": "An individual asset exceeds the safety limit."
+    },
+    {
+      "code": "UTZ0004",
+      "severity": "error",
+      "messageKey": "import.package_too_large",
+      "englishSummary": "The total uncompressed package size exceeds the safety limit."
+    },
+    {
+      "code": "UTZ0010",
+      "severity": "error",
+      "messageKey": "import.manifest_missing",
+      "englishSummary": "manifest.json is missing from the archive root."
+    },
+    {
+      "code": "UTZ0011",
+      "severity": "error",
+      "messageKey": "import.manifest_json_invalid",
+      "englishSummary": "manifest.json is not valid JSON."
+    },
+    {
+      "code": "UTZ0012",
+      "severity": "error",
+      "messageKey": "import.format_unsupported",
+      "englishSummary": "The manifest format identifier is unsupported."
+    },
+    {
+      "code": "UTZ0013",
+      "severity": "error",
+      "messageKey": "import.version_unsupported",
+      "englishSummary": "The UTZ format version is unsupported."
+    },
+    {
+      "code": "UTZ0014",
+      "severity": "error",
+      "messageKey": "import.required_field_missing",
+      "englishSummary": "A required manifest field is missing or empty."
+    },
+    {
+      "code": "UTZ0015",
+      "severity": "error",
+      "messageKey": "import.required_feature_unsupported",
+      "englishSummary": "The package requires a feature this ruleset cannot provide."
+    },
+    {
+      "code": "UTZ0020",
+      "severity": "error",
+      "messageKey": "import.asset_missing",
+      "englishSummary": "A manifest-declared asset is absent from the archive."
+    },
+    {
+      "code": "UTZ0021",
+      "severity": "error",
+      "messageKey": "import.asset_size_mismatch",
+      "englishSummary": "An asset byte count does not match the manifest."
+    },
+    {
+      "code": "UTZ0022",
+      "severity": "error",
+      "messageKey": "import.asset_hash_mismatch",
+      "englishSummary": "An asset SHA-256 does not match the manifest."
+    },
+    {
+      "code": "UTZ0023",
+      "severity": "error",
+      "messageKey": "import.asset_path_invalid",
+      "englishSummary": "An archive path is unsafe or invalid."
+    },
+    {
+      "code": "UTZ0030",
+      "severity": "error",
+      "messageKey": "import.chart_invalid",
+      "englishSummary": "The vocal chart or legacy chart data is invalid."
+    },
+    {
+      "code": "UTZ0031",
+      "severity": "error",
+      "messageKey": "import.notes_unordered",
+      "englishSummary": "Target notes overlap or are not time ordered."
+    },
+    {
+      "code": "UTZ0032",
+      "severity": "error",
+      "messageKey": "import.note_interval_invalid",
+      "englishSummary": "A note has an invalid start, end, duration or MIDI value."
+    },
+    {
+      "code": "UTZ0033",
+      "severity": "error",
+      "messageKey": "import.lyrics_interval_invalid",
+      "englishSummary": "A lyric segment has an invalid time interval."
+    },
+    {
+      "code": "UTZ0040",
+      "severity": "warning",
+      "messageKey": "import.video_unsupported",
+      "englishSummary": "The video cannot be decoded on this device; audio gameplay can continue."
+    },
+    {
+      "code": "UTZ0041",
+      "severity": "warning",
+      "messageKey": "import.reference_pitch_invalid",
+      "englishSummary": "Reference pitch evidence is invalid; Auto falls back to target-note centres."
+    },
+    {
+      "code": "UTZ0099",
+      "severity": "error",
+      "messageKey": "import.internal_failure",
+      "englishSummary": "The importer failed unexpectedly. A sanitised incident ID is shown; details remain only in the application log."
+    }
+  ]
+}

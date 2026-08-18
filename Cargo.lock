@@ -5546,6 +5546,7 @@ dependencies = [
  "icu_provider",
  "open",
  "rfd",
+ "serde",
  "serde_json",
  "tracing-subscriber",
  "uta-studio-audio",

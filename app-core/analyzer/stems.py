@@ -10,9 +10,6 @@ import torch
 from gpu import gpu_model
 from whisper_compat import progress
 
-KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
-
-
 def _ensure_wav(audio_path: str, work_dir: str) -> str:
     """Convert input audio to WAV so plain `soundfile` can decode it.
 
@@ -114,82 +111,6 @@ def separate_stems(
 
     progress(50, "Stem separation complete")
     return vocals_path, instrumental_path
-
-
-def _resolve_separator_output(output_files: list[str], work_dir: str, stem_tag: str) -> str | None:
-    """Find an output file matching the given stem tag (e.g. '(Vocals)')."""
-    for f in output_files:
-        full = f if os.path.isabs(f) else os.path.join(work_dir, f)
-        if os.path.isfile(full) and stem_tag in f:
-            return full
-    return None
-
-
-def separate_stems_uvr(
-    audio_path: str,
-    work_dir: str,
-    models_dir: str,
-    device: str,
-    options: dict | None = None,
-) -> tuple[str, str]:
-    """Separate lead vocals from everything else using the UVR karaoke model.
-
-    The karaoke model isolates lead vocals, leaving backing vocals in the
-    instrumental stem — ideal for karaoke playback and cleaner alignment.
-
-    Returns (vocals_path, instrumental_path).
-    """
-    from audio_separator.separator import Separator
-
-    options = options or {}
-    segment_size = options.get("segment_size")
-    overlap = int(options.get("overlap", 8))
-    batch_size = int(options.get("batch_size", 1))
-    normalization_threshold = float(options.get("normalization_pct", 90)) / 100.0
-    with gpu_model("uvr-karaoke") as held:
-        actual_device = "cpu" if device == "xpu" else device
-        progress(
-            5,
-            "Loading karaoke separation model...",
-            requested_device=device,
-            actual_device=actual_device,
-            fallback_from=device if actual_device != device else None,
-            fallback_reason="UVR does not provide a PyTorch XPU backend"
-            if actual_device != device else None,
-        )
-        separator = Separator(
-            model_file_dir=models_dir,
-            output_dir=work_dir,
-            normalization_threshold=normalization_threshold,
-            mdxc_params={
-                "segment_size": segment_size or 256,
-                "override_model_segment_size": segment_size is not None,
-                "batch_size": batch_size,
-                "overlap": overlap,
-                "pitch_shift": 0,
-            },
-        )
-        held.append(separator)
-        separator.load_model(KARAOKE_MODEL)
-
-        load_path = _ensure_wav(audio_path, work_dir)
-        segment_label = segment_size if segment_size is not None else "model default"
-        progress(
-            15,
-            f"Separating vocals (segment={segment_label}, overlap={overlap}, batch={batch_size})...",
-        )
-        output_files = separator.separate(load_path)
-
-    print(f"[uta-studio:LOG] Separator outputs: {output_files}", flush=True)
-
-    vocals = _resolve_separator_output(output_files, work_dir, "(Vocals)")
-    instrumental = _resolve_separator_output(output_files, work_dir, "(Instrumental)")
-
-    if not vocals or not instrumental:
-        raise RuntimeError(f"Expected Vocals and Instrumental stems, got: {output_files}")
-
-    progress(50, "Stem separation complete")
-    return vocals, instrumental
 
 
 def separate_stems_openvino_demucs(audio_path: str, work_dir: str, models_dir: str) -> tuple[str, str]:

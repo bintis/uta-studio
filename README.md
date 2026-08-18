@@ -34,7 +34,8 @@ repository-level [`AGENTS.md`](AGENTS.md).
 
 ## Documentation and localization
 
-- **[User guide / 用户说明书 / ユーザーガイド](docs/USER_GUIDE.md)** — installation, first-run setup, analysis, editing, export, backup, and troubleshooting in English, Simplified Chinese, and Japanese.
+- **[User guide / 用户说明书 / ユーザーガイド](docs/USER_GUIDE.md)** — installation, first-run setup, analysis, the offline Documentation Center, analysis artifacts, editing, export, backup, and troubleshooting in English, Simplified Chinese, and Japanese.
+- **[Documentation Center & Artifact Workbench design](docs/DESIGN_DOCUMENTATION_ARTIFACT_WORKBENCH.md)** — current design plus honest implementation status. Remaining work is listed in [`docs/UTA_STUDIO_REMAINING_DEVELOPMENT_AGENT_GUIDE.md`](docs/UTA_STUDIO_REMAINING_DEVELOPMENT_AGENT_GUIDE.md).
 - **[Internationalization guide](docs/I18N.md)** — locale resolution, catalog maintenance, dynamic messages, tests, and migration guidance.
 
 The native interface supports English, Simplified Chinese, and Japanese. Select the language in **Settings > General > Interface language**; English remains the fallback for untranslated copy.
@@ -42,7 +43,9 @@ The native interface supports English, Simplified Chinese, and Japanese. Select 
 ## Build
 
 ```sh
-cargo test -p uta-studio-core --lib
+nix develop path:.
+cargo xtask docs check
+cargo test --workspace
 cargo check --workspace
 ```
 
@@ -51,6 +54,10 @@ Run the desktop app with:
 ```sh
 cargo desktop dev
 ```
+
+Release packages are built with `nix build path:.#uta-studio`. The generated
+offline documentation bundle is embedded in the desktop executable; runtime
+source Markdown files are not required.
 
 The Linux desktop uses Wayland directly. Uta Studio does not enable an X11
 backend and does not fall back to XWayland.
@@ -77,6 +84,11 @@ cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 
 Uta Studio thanks the following projects for technical and interface references:
 
+- **[audio-separator](https://github.com/nomadkaraoke/python-audio-separator)**
+  by [nomadkaraoke](https://github.com/nomadkaraoke). Uta Studio's offline
+  vocal-separation adapter is based on audio-separator 0.44.5 (MIT). Analysis
+  loads already-installed catalog files only and does not use that project's
+  download directory.
 - **[FA-Kara](https://github.com/moriwx/FA-Kara)** by
   [moriwx](https://github.com/moriwx). FA-Kara's Japanese karaoke alignment
   workflow, pronunciation mapping, and silence-aware timing directly informed the

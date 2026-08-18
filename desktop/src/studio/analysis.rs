@@ -2,7 +2,7 @@
 mod analysis_actions;
 #[path = "analysis_activity.rs"]
 mod analysis_activity;
-#[path = "analysis_render.rs"]
+#[path = "analysis_render/mod.rs"]
 mod analysis_render;
 
 #[cfg(test)]

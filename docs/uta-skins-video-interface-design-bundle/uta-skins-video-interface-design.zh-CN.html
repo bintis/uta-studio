@@ -1,0 +1,441 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
+@page { size: A4; margin: 18mm 16mm 18mm 16mm; @bottom-right { content: counter(page) " / " counter(pages); color: #65708c; font-size: 9pt; } }
+@font-face { font-family: NotoCJK; src: local("Noto Sans CJK SC"); }
+html { font-family: NotoCJK, "Noto Sans CJK SC", "Noto Sans CJK JP", sans-serif; color: #182033; font-size: 10.2pt; line-height: 1.58; }
+body { margin:0; }
+h1 { font-size: 25pt; color: #10182b; line-height: 1.15; margin: 0 0 12pt; border-bottom: 4px solid #9D8CFF; padding-bottom: 9pt; }
+h2 { font-size: 17pt; color: #111a31; margin-top: 20pt; border-left: 5px solid #56B4E9; padding-left: 9pt; page-break-after: avoid; }
+h3 { font-size: 13.2pt; color: #24304b; margin-top: 14pt; page-break-after: avoid; }
+p, li { orphans: 3; widows: 3; }
+code { background:#eef1f8; color:#482c7d; padding:1px 4px; border-radius:3px; font-family:"DejaVu Sans Mono",monospace; font-size:9pt; }
+pre { background:#0B1020; color:#F4F7FF; border-radius:8px; padding:10pt; white-space:pre-wrap; font-size:8.5pt; line-height:1.45; page-break-inside:avoid; }
+pre code { background:transparent; color:inherit; padding:0; }
+blockquote { border-left:4px solid #B899FF; background:#f4f1ff; margin:10pt 0; padding:8pt 12pt; }
+table { border-collapse:collapse; width:100%; margin:8pt 0 12pt; font-size:9pt; page-break-inside:avoid; }
+th { background:#17213a; color:white; text-align:left; } th,td { border:1px solid #cbd3e5; padding:6px 7px; vertical-align:top; }
+img { max-width:100%; border:1px solid #ccd4e5; border-radius:8px; margin:7pt 0 10pt; }
+ul,ol { padding-left:18pt; }
+hr { border:none; border-top:1px solid #ccd4e5; }
+</style></head><body><h1>uta! Skins、Video 与 Interface Polish 详细设计</h1>
+<p><strong>设计版本：</strong> 1.0<br />
+<strong>目标基线：</strong> <code>bintis/uta-ruleset</code> main，commit <code>ce7fd7d0d571c7d1c52f89265209d1d0761cf449</code>，ruleset 0.7.2<br />
+<strong>交付皮肤：</strong> <code>uta! Prism 1.0.0</code><br />
+<strong>核心约束：</strong> 不引入 uta! 独立皮肤包格式；运行时全部通过 lazer 原生 <code>ISkin</code> / <code>SkinTransformer</code> / texture / config lookup 完成。</p>
+<p><img src="design/mockups/architecture.png" alt="总体架构" /></p>
+<h2>1. 设计结论</h2>
+<p>本方案把这组需求拆成五条彼此解耦、但共享数据契约的主线：</p>
+<ol>
+<li><strong>原生皮肤桥接。</strong> <code>UtaSkinTransformer</code> 增加 uta!-specific component lookup；连续曲线仍由 ruleset 自己绘制，皮肤提供画刷、颜色、线宽、虚线模式、间距和动画参数。这样不会为了皮肤把每段曲线变成 Drawable，也不需要新建一种皮肤包。</li>
+<li><strong>单一时间权威。</strong> 视频、歌词、目标音符、Auto reference Pitch 与评分都以 <code>GameplayClockContainer</code> 的 song time 为唯一权威。视频控制不能只操作 decoder；暂停、跳转、循环和速度变化必须先作用于 gameplay clock。</li>
+<li><strong>单一设置目录。</strong> 全局设置页与游戏内 Quick Settings 共用一套 <code>UtaSettingDescriptor</code> 元数据，标签、提示、搜索词、默认值、重置策略、可用条件和禁用原因只定义一次。</li>
+<li><strong>结构化诊断。</strong> <code>.utz</code> 校验不再只抛带自由文本的 <code>InvalidDataException</code>；每个问题产生稳定 code、严重性、包内相对路径、localisation key 和修复建议。UI 永远不显示 stack trace、异常类型或绝对文件路径。</li>
+<li><strong>确定性 Auto。</strong> Auto 优先读取 frame-level reference Pitch，按评分内核相同的 20 ms song-time bin 产生合成输入；缺失或无效时才回退到目标音符中心。该路径绕开麦克风 wall-clock 映射，保证不同帧率、速度和循环下结果一致。</li>
+</ol>
+<h2>2. 当前实现与主要差距</h2>
+<h3>2.1 Skinning</h3>
+<p>当前 <code>Skinning/UtaHudController.cs</code> 的 transformer 只处理 lazer 的全局 HUD 容器，并把 osu! 通用 HUD 项过滤成 uta! 需要的集合。它没有 uta!-specific lookup，也没有读取 uta! 纹理、颜色、线宽、间距或 motion token。</p>
+<p>当前玩法视觉的大多数值直接写在 UI 类中：</p>
+<ul>
+<li><code>UtaPitchGuide</code> 固定面板高度、playhead 位置、grid line weight、target note 高度和评分颜色。</li>
+<li><code>UtaPitchCurveGraph</code> 固定 reference/live 颜色和线宽。</li>
+<li><code>UtaPitchGuideTrail</code> 固定 glow、轨迹宽度和相似度颜色。</li>
+<li><code>UtaLyricsDisplay</code> 固定字体枚举、字号、颜色、位置和行距。</li>
+<li><code>UtaScoringHud</code>、<code>UtaPracticeHud</code> 固定面板尺寸、背景、accent、圆角和文本层级。</li>
+</ul>
+<p>因此第一步不是“加载一套新格式”，而是把硬编码值集中为 <code>UtaVisualStyle</code>，再由 native skin lookup 提供覆盖值。</p>
+<h3>2.2 Video</h3>
+<p>UTZ model 已包含 <code>visuals.video</code> 和 <code>video_offset_seconds</code>，转换器也会把 video asset 复制到 <code>.osz</code> 并写入 video event；但 event 仍从 0 开始，offset 没有进入 <code>UtaBeatmapMetadata</code> 或运行时 controller。当前 Quick Settings 只有通用 background dim/blur，没有 ruleset-aware video visibility、offset、fit 和同步控制。</p>
+<p>osu!framework <code>Video</code> 会跟随其 drawable clock，但其 decoder 自动 hard seek 的容忍窗口较大。对很短的 A-B backward loop，单纯改 <code>PlaybackPosition</code> 不能作为严格同步保证。因此设计引入 <code>IUtaVideoSurface.ForceSeek()</code> 抽象：优先推动 framework 暴露显式 seek；ruleset-only 版本必须在 backward discontinuity 时重建 decoder surface，而不是允许画面等待自然追赶。</p>
+<h3>2.3 Settings 与 localisation</h3>
+<p>当前全局设置通过两个 <code>FillFlowContainer</code> Hide/Show 模拟两级页面；游戏内设置则由固定宽度右侧 overlay 和多种 <code>Settings*</code> / <code>Player*</code> 控件混合构成。很多标签和 tooltip 仍是 C# 里的英文 literal；Score HUD 与 Practice HUD 已有三语表，但其他面板没有统一资源层。</p>
+<h3>2.4 Import diagnostics</h3>
+<p>当前 import handler catch 所有异常后把 <code>ex.Message</code> 直接放进通知，同时完整异常进入 log。<code>UtzPackage</code> 已有良好的安全边界和很多校验点，但所有校验最后都压成同一种 <code>InvalidDataException</code> 文本，无法稳定定位、翻译、聚合或给出结构化修复建议。</p>
+<h3>2.5 Auto</h3>
+<p>当前 Auto 在活动音符期间把目标 MIDI 写入 live HUD bindable；它不读取 <code>charts.pitch_track</code> / <code>analysis.pitch_evidence</code>，也没有把 frame-level synthetic pitch 作为确定性评分输入。新实现必须把“演示曲线”和“回归测试输入”统一成同一个 reference source。</p>
+<h2>3. 原生皮肤架构</h2>
+<h3>3.1 lookup 分层</h3>
+<p>使用三类 lazer 原生能力，职责清晰分离：</p>
+<table>
+<thead>
+<tr>
+  <th>层</th>
+  <th>用途</th>
+  <th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>GetDrawableComponent()</code></td>
+  <td>可替换的完整 UI 或反馈层</td>
+  <td>Lyrics、Score HUD、Practice HUD、Judgement Feedback Layer、Particle Layer</td>
+</tr>
+<tr>
+  <td><code>GetTexture()</code></td>
+  <td>高频 primitive 的纹理/画刷</td>
+  <td>target note、playhead、grid tile、curve brush、particle sprite</td>
+</tr>
+<tr>
+  <td><code>GetConfig()</code></td>
+  <td>颜色、线宽、间距、圆角、动画强度</td>
+  <td><code>UtaSkinColour</code>、<code>UtaSkinMetric</code>、<code>UtaSkinMotion</code></td>
+</tr>
+</tbody>
+</table>
+<p>连续 Pitch curve 不允许每个采样点做 drawable lookup。<code>UtaPitchCurveGraph</code> 继续用 <code>Path</code> 批量绘制，skin 只提供 curve role 的 brush texture、colour、weight 和 dash pattern。</p>
+<h3>3.2 lookup 类型</h3>
+<p>建议新增：</p>
+<pre><code class="language-csharp">UtaSkinComponentLookup(UtaSkinComponents component)
+UtaTargetNoteLookup(UtaScoringNoteKind kind, UtaTargetVisualState state)
+UtaCurveLookup(UtaCurveRole role)
+UtaGridLookup(UtaGridRole role)
+UtaScoringFeedbackLookup(UtaNoteGrade grade, UtaPitchFault faults)
+</code></pre>
+<p>配置使用三个 enum：</p>
+<pre><code class="language-csharp">UtaSkinColour
+UtaSkinMetric
+UtaSkinMotion
+</code></pre>
+<p>解析结果一次性写入 immutable <code>UtaVisualStyle</code>。当前 <code>ISkin.GetConfig()</code> 的 bindable 不应被当成实时更新源；换 skin 时重建 style 和 skinnable host，普通 gameplay update 不再访问 skin store。</p>
+<h3>3.3 lookup 优先级</h3>
+<ol>
+<li>当前 selected skin 明确提供 uta! <code>Drawable</code> component。</li>
+<li>若存在 <code>uta-skin-marker</code>，启用 legacy <code>.osk</code> adapter，并按 <code>uta-*</code> texture 名称构造默认 uta! drawable。</li>
+<li>使用 ruleset 内置 Prism vector fallback。</li>
+</ol>
+<p><code>null</code> 表示“该 skin 没有提供”，继续 fallback。可选 component 若返回 <code>Drawable.Empty()</code>，表示 skin 明确关闭该装饰层。关键 gameplay cue 不允许被完全关闭。</p>
+<h3>3.4 关键与可选组件</h3>
+<p><strong>关键组件：</strong> target notes、live Pitch curve、playhead、current lyrics、scoring fault text。即使 skin 缺失、返回空 drawable 或颜色对比不足，ruleset 仍保留最小高对比 outline、pattern 或文字标签。</p>
+<p><strong>可选组件：</strong> grid、guide trail、singing particles、scoring particles、panel decoration。可安全省略或由 skin 显式关闭。</p>
+<h3>3.5 纹理 fallback</h3>
+<p>目标音符示例：</p>
+<pre><code class="language-text">uta-target-note-{kind}-{state}
+  -&gt; uta-target-note-{kind}
+  -&gt; uta-target-note-normal
+  -&gt; built-in vector capsule
+</code></pre>
+<p>评分反馈示例：</p>
+<pre><code class="language-text">skin drawable UtaScoringFeedbackLookup
+  -&gt; uta-feedback-{grade}
+  -&gt; built-in icon + localised grade/fault text
+</code></pre>
+<p>字体示例：</p>
+<pre><code class="language-text">skin requested bundled alias
+  -&gt; Torus
+  -&gt; framework glyph fallback
+</code></pre>
+<p>不允许从 <code>.osk</code> 动态加载任意字体文件。这样可以避免缺字、平台差异和不可信字体解析问题；本交付包也不包含字体文件。</p>
+<h2>4. 可皮肤化组件规格</h2>
+<h3>4.1 Pitch panel 与 grid</h3>
+<ul>
+<li>panel 高度允许 <code>140-260 px</code>，默认 <code>180 px</code>。</li>
+<li>horizontal margin 允许 <code>12-64 px</code>，narrow window 下自动减小。</li>
+<li>playhead fraction 默认 <code>0.25</code>，安全范围 <code>0.15-0.40</code>。</li>
+<li>major grid <code>0.75-2.5 px</code>，minor grid <code>0.5-1.5 px</code>。</li>
+<li>grid 可省略，但 octave/tonic 辅助标记应由 accessibility layer 在需要时保留。</li>
+</ul>
+<h3>4.2 Target notes</h3>
+<ul>
+<li>形状：Capsule、Rounded Rect、Diamond Cap、Segmented、Dotted；不得只靠颜色区分 note kind。</li>
+<li>高度安全范围 <code>6-18 px</code>；border <code>1-4 px</code>；最小宽度 <code>16 px</code>。</li>
+<li>Normal：实心 capsule。</li>
+<li>Golden：左端 star/diamond cap。</li>
+<li>Freestyle：对角纹理。</li>
+<li>Rap：分段块。</li>
+<li>Spoken：中心点列。</li>
+<li>grade 完成态继续用 icon、outline 和文字反馈，不能仅把 note 改成红/绿。</li>
+</ul>
+<h3>4.3 Reference 与 live Pitch curve</h3>
+<ul>
+<li>reference 默认 <code>2.25 px</code> 蓝色实线。</li>
+<li>live 默认 <code>3.25 px</code>，比 reference 至少粗 <code>1 px</code>。</li>
+<li>accurate：实线 + halo。</li>
+<li>near：长虚线。</li>
+<li>off：点划线 + 高/低方向 tick。</li>
+<li>line weight 安全范围 reference <code>1.5-6 px</code>、live <code>2-8 px</code>。</li>
+<li>未发声时不绘制连续线；可显示低密度 neutral marker，但 reduced motion 下关闭。</li>
+</ul>
+<h3>4.4 Playhead</h3>
+<p>playhead 是关键时间定位 cue：</p>
+<ul>
+<li>主线必须与 panel 背景至少 <code>3:1</code> 非文本对比。</li>
+<li>上下至少一个 diamond/notch，保证在低分辨率和视频背景下可定位。</li>
+<li>skin 可改变颜色、宽度和端点形状，但不能把 alpha 降到不可见。</li>
+</ul>
+<h3>4.5 Lyrics</h3>
+<ul>
+<li>whole component 可通过 <code>UtaSkinComponentLookup(Lyrics)</code> 替换。</li>
+<li>默认 component 暴露 current、reading、upcoming 三种 font role、colour、size、line spacing、position。</li>
+<li>font role 只能指向 lazer bundled alias；未知 alias 回退 Torus。</li>
+<li>每个 word 仍由 ruleset timeline 驱动；skin 不能改变歌词时间。</li>
+<li>当前词必须同时有 brightness/underline/weight 中至少两种编码。</li>
+</ul>
+<h3>4.6 Scoring feedback 与 HUD</h3>
+<ul>
+<li>Score HUD 和 Practice HUD 允许 whole component 替换，也允许默认 component 读取 panel/accent/token。</li>
+<li>feedback grade：Perfect star、Great double-chevron、Good check、Bad warning、Miss cross。</li>
+<li>pitch faults：High arrow-up、Low arrow-down、Unstable wave、Low coverage broken-ring。</li>
+<li>score particle 只作为装饰；grade 文本与 fault icon 始终存在。</li>
+</ul>
+<h3>4.7 Particles 与 reduced motion</h3>
+<p>普通模式：</p>
+<ul>
+<li>singing particles 最大 18；仅在 voiced + clarity 合格时生成。</li>
+<li>scoring particles 最大 24；note complete 时短 burst。</li>
+<li>对象池复用，禁止每帧分配。</li>
+</ul>
+<p>Reduced Motion：</p>
+<ul>
+<li>两类粒子数量强制为 0。</li>
+<li>不做持续漂移、旋转、景深或大幅 scale pulse。</li>
+<li>panel transition 缩短为 80 ms 淡入淡出；scale delta 不超过 2%。</li>
+</ul>
+<h2>5. 色觉与对比保护</h2>
+<p>皮肤颜色先作为“请求色”进入 <code>UtaAccessiblePaletteResolver</code>，再生成实际使用色。保护规则：</p>
+<ol>
+<li>正常文本对 panel 背景至少 <code>4.5:1</code>；大字至少 <code>3:1</code>。</li>
+<li>target note、live curve、playhead 等关键图形至少 <code>3:1</code>。</li>
+<li>若请求色不达标，先在保持 hue 的前提下调 lightness；仍不达标则回退到安全色。</li>
+<li>即使颜色达标，也始终保留 shape、dash、outline 或 icon 冗余编码。</li>
+<li>视频背景不可直接承载关键元素；Pitch panel 与 HUD 使用有最小 alpha 的中性 surface。</li>
+</ol>
+<p>Prism palette 对默认 pitch panel 的主要关键颜色均超过 <code>6.5:1</code>；详细结果在 <code>design/contrast-report.json</code>。</p>
+<p>测试必须覆盖 protanopia、deuteranopia、tritanopia snapshot，并做灰度检查。通过标准不是“颜色看起来不同”，而是关键信息在模拟图中仍能由形状、线型或标签识别。</p>
+<h2>6. Video 详细设计</h2>
+<h3>6.1 Runtime metadata</h3>
+<p>扩展 <code>UtaBeatmapMetadata</code>，保持旧包兼容：</p>
+<pre><code class="language-csharp">string? VideoFile
+double VideoOffsetMilliseconds
+string? ReferencePitchFile
+string? ReferencePitchFormat
+</code></pre>
+<p>转换器把 <code>visuals.video.path</code>、<code>video_offset_seconds</code> 和 reference pitch asset path 写入 metadata。正 offset 定义为：</p>
+<pre><code class="language-text">expectedVideoPosition = gameplaySongTime + packageVideoOffset + userVideoOffset
+</code></pre>
+<p>因此正值表示在相同 song time 播放视频更靠后的帧。</p>
+<h3>6.2 组件</h3>
+<pre><code class="language-text">UtaVideoController
+  -&gt; IUtaVideoSurface
+       PlaybackPosition
+       IsPlaying
+       Buffering
+       ForceSeek(time)
+       ReplaceSource(streamFactory)
+  -&gt; dim overlay
+  -&gt; blur container
+  -&gt; visibility / fit state
+</code></pre>
+<p>Controller 不拥有独立播放时间。它只把 gameplay clock 状态投影到 video surface。</p>
+<h3>6.3 同步状态机</h3>
+<ul>
+<li><strong>Load：</strong> 创建 surface，设置 gameplay clock，<code>ForceSeek(expected)</code>。</li>
+<li><strong>Normal running：</strong> 让 drawable clock 自然推进；不在每帧写 PlaybackPosition。</li>
+<li><strong>Rate change：</strong> gameplay clock rate 是唯一输入；video 与 lyrics/pitch 同步变化。</li>
+<li><strong>Pause：</strong> gameplay clock 停止；surface 保持当前帧。</li>
+<li><strong>Forward seek：</strong> <code>ForceSeek(expected)</code>。</li>
+<li><strong>Backward seek / A-B loop：</strong> 必须显式 decoder seek。若 framework API 无法保证小于内部 lenience 的 backward seek，ruleset-only adapter 重建 surface 并从 expected 开始。</li>
+<li><strong>Source end：</strong> freeze last frame 或隐藏，不能自动 loop，除非 package 明确声明 loop policy。</li>
+<li><strong>Buffering：</strong> 显示非阻塞状态；音频与评分继续。超过阈值后可自动隐藏视频，不暂停 gameplay。</li>
+</ul>
+<h3>6.4 Settings</h3>
+<ul>
+<li>Visibility：Auto / On / Off。</li>
+<li>Dim：<code>0-90%</code>。</li>
+<li>Blur：<code>0-30 px</code>；硬件不支持时禁用并解释原因。</li>
+<li>Offset：<code>-5000..+5000 ms</code>，step 10 ms，单项 reset 回 package offset。</li>
+<li>Fit：Crop / Contain。</li>
+<li>Practice controls：显示 pause、restart、seek；所有 action 委托 gameplay clock。</li>
+</ul>
+<h3>6.5 Video 验收</h3>
+<ul>
+<li>0.5×、1.0×、1.5× 连续 30 分钟无可见累计 drift。</li>
+<li>pause 后画面保持；恢复后 2 帧内继续。</li>
+<li>forward/backward seek、A-B loop 后 2 个 render frame 内显示目标时间附近画面。</li>
+<li>package offset 与 user offset 可独立 reset。</li>
+<li>视频解码失败不影响音频玩法，并产生 <code>UTZ0040</code> warning。</li>
+</ul>
+<h2>7. Native 两级设置导航</h2>
+<p><img src="design/mockups/settings-desktop.png" alt="桌面设置" /></p>
+<h3>7.1 信息架构</h3>
+<p>第一级为六个 category：</p>
+<ol>
+<li>Gameplay &amp; HUD</li>
+<li>Video &amp; visuals</li>
+<li>Audio &amp; microphone</li>
+<li>Practice &amp; controls</li>
+<li>Accessibility</li>
+<li>Diagnostics &amp; storage</li>
+</ol>
+<p>第二级为 category page。Desktop 宽度显示左侧 category rail；中等宽度变为顶部 tab/pill；narrow window 使用横向可滚动 category chip 和全宽 setting row。</p>
+<h3>7.2 统一 descriptor</h3>
+<p>每项设置必须有：</p>
+<pre><code class="language-text">id
+category
+labelKey
+descriptionKey
+searchTerms
+defaultValue
+value formatter
+reset behaviour
+availability predicate
+disabledReasonKey
+accessibilityNameKey
+quickPanelEligibility
+</code></pre>
+<p>Global Settings 与 Quick Settings 仅是两个 renderer，共用同一 descriptor。这样可以消除同一设置在两个页面标签、tooltip、默认值和禁用逻辑不一致的问题。</p>
+<h3>7.3 Reset 与 disabled state</h3>
+<ul>
+<li>每个 row 都有单项 reset；desktop hover/focus 显示，touch 布局长按或 overflow menu 显示。</li>
+<li>category 提供“重置本页”，但需二次确认。</li>
+<li>disabled control 不只变灰：description 下方显示 <code>disabledReasonKey</code>。</li>
+<li>依赖例：无 video asset 时 video settings disabled；Reduced Motion 时 particle 与 animation intensity 显示原因；Relax 时 scoring particle/HUD disabled；Auto 时 microphone-only settings说明不适用。</li>
+</ul>
+<h3>7.4 搜索</h3>
+<p>搜索索引包含 label、description、setting id、英文/中文/日文 keywords、常见简称，如 <code>mic</code>、<code>MV</code>、<code>BGM</code>、<code>latency</code>。结果保留 category breadcrumb，并支持直接 reset。</p>
+<h3>7.5 Narrow、touch、keyboard、controller</h3>
+<p><img src="design/mockups/settings-narrow.png" alt="窄窗口设置" /></p>
+<ul>
+<li><code>&lt;560 px</code>：单列，touch target 默认不小于 48 px；Large Touch Targets 为 56 px。</li>
+<li><code>560-839 px</code>：顶部 category tabs + 单列/双列混合。</li>
+<li><code>&gt;=840 px</code>：左 rail + content。</li>
+<li>Keyboard：Tab 顺序稳定；Enter/Space 激活；Escape 返回上一层；Ctrl+F 聚焦搜索。</li>
+<li>Controller：D-pad 移动，A 确认，B 返回，L/R 切 category；slider 使用左右键并支持加速。</li>
+<li>focus ring 至少 3 px，不能仅改变颜色；scroll 后保持 focused item 可见。</li>
+</ul>
+<h2>8. Localisation</h2>
+<p>资源目录：</p>
+<pre><code class="language-text">Resources/Localisation/en.json
+Resources/Localisation/ja.json
+Resources/Localisation/zh-CN.json
+</code></pre>
+<p>fallback：exact locale -&gt; language family -&gt; English -&gt; key。所有 placeholder 在 build/test 中校验数量和名称一致。</p>
+<p>迁移规则：</p>
+<ul>
+<li>Score HUD、Practice HUD 现有 key 保留兼容 alias。</li>
+<li>Settings、tooltips、Quick Settings、diagnostics、video state、Auto status、recording panels 全部迁移。</li>
+<li><code>Description</code> attribute、button text、diagnostic row、notification text 不得再直接出现 user-facing literal。</li>
+<li>枚举显示名必须走 localisation，不使用 <code>ToString()</code>。</li>
+</ul>
+<p>本交付的 <code>design/localisation/</code> 已给出 English、Simplified Chinese、Japanese 基础覆盖。</p>
+<h2>9. <code>.utz</code> Import Diagnostics</h2>
+<p><img src="design/mockups/import-diagnostics.png" alt="导入诊断" /></p>
+<h3>9.1 数据模型</h3>
+<pre><code class="language-csharp">UtzDiagnostic
+  Code
+  Severity
+  MessageKey
+  PackageRelativePath
+  RemediationKey
+  Arguments
+</code></pre>
+<p>Validation 层抛 <code>UtzValidationException</code> 或返回 <code>UtzValidationResult</code>；UI 不读取原始 exception message。完整异常仍可写 log，但 UI 只显示稳定 code 与 localised message。</p>
+<h3>9.2 安全规则</h3>
+<ul>
+<li>不显示 stack trace、exception type、absolute path、用户名、home directory。</li>
+<li>package path 先 normalize，只允许归档相对路径；控制字符与超长文本被裁剪。</li>
+<li>Copy report 包含 app/ruleset version、UTZ version、diagnostic codes、相对路径和 sanitised context。</li>
+<li>unexpected failure 使用 <code>UTZ0099</code> + incident ID；incident ID 与 log 对应，但 UI 不泄露内部细节。</li>
+</ul>
+<h3>9.3 UX</h3>
+<ul>
+<li>Import notification 简短说明并提供“查看详情”。</li>
+<li>Diagnostics view 顶部显示 error/warning 数与 package version。</li>
+<li>每项显示 code、localised explanation、相对路径、修复建议。</li>
+<li>warning 可允许“继续仅音频导入”；error 阻止导入。</li>
+<li>recent import diagnostics 可从 Settings &gt; Diagnostics &amp; storage 再次打开。</li>
+</ul>
+<h2>10. Auto：Reference Pitch 演示与回归测试</h2>
+<h3>10.1 数据源优先级</h3>
+<ol>
+<li>UTZ 0.2/0.3 <code>analysis.pitch_evidence</code>。</li>
+<li>UTZ 0.1 <code>charts.pitch_track</code>。</li>
+<li>Target-note centre fallback。</li>
+</ol>
+<p>frame-level 数据不应整段 base64 塞入 <code>.osu</code> metadata；metadata 只保存 asset path/format，runtime 从 beatmap storage 异步加载并构建 time-indexed source。</p>
+<h3>10.2 确定性采样</h3>
+<p>评分默认 bin 为 20 ms。Auto 在 song-time 上生成：</p>
+<pre><code class="language-text">for t = lastGeneratedBin + 20ms .. currentSongTime step 20ms
+    sample reference source at t
+    apply transpose
+    submit UtaScoringFrame(t, pitch, clarity, voiced, epoch)
+</code></pre>
+<p>不要把 synthetic frame 伪装成麦克风 wall-clock capture，否则不同 playback rate、render frame rate 和暂停时机会改变 mapper 输出。新增 <code>SubmitSynthetic(UtaScoringFrame)</code>，只在 Auto path 使用，并同时更新 live HUD mailbox。</p>
+<h3>10.3 Seek、loop、pause、speed</h3>
+<ul>
+<li>Pause：不生成新 bin。</li>
+<li>Seek/loop：重置 source cursor，使用 scoring controller 新 timeline epoch。</li>
+<li>Speed change：bin 仍按 song-time 20 ms，结果与速度无关。</li>
+<li>Transpose：对 synthetic pitch 与 target 使用一致偏移。</li>
+<li>Missing reference：切到 note-centre fallback，并在 HUD/diagnostics 显示非错误状态。</li>
+</ul>
+<h3>10.4 Regression tests</h3>
+<ul>
+<li>同一 reference pitch 在 0.5×、1.0×、1.5× 得到完全相同 per-note 与 total score snapshot。</li>
+<li>30/60/144 FPS update cadence 得到相同 frame sequence。</li>
+<li>pause 期间 frame count 不增长。</li>
+<li>forward seek、backward seek、A-B loop 不重复计分，并正确切 epoch。</li>
+<li>Transpose、OCT、HT、DT、NC 组合稳定。</li>
+<li>invalid/missing reference 触发 fallback；fallback 结果可独立 snapshot。</li>
+</ul>
+<h2>11. 实施阶段</h2>
+<h3>Phase 1 - Skin contract 与 fallback</h3>
+<ul>
+<li>新增 lookup enums/records、asset names、<code>UtaVisualStyle</code>。</li>
+<li><code>UtaSkinTransformer</code> 增加 component/config lookup。</li>
+<li>legacy <code>.osk</code> marker/texture adapter。</li>
+<li>将 Pitch Guide、curve、lyrics、HUD 的 hard-coded visual 值迁入 style。</li>
+<li>partial/full/missing skin visual tests。</li>
+</ul>
+<h3>Phase 2 - Accessibility 与 particles</h3>
+<ul>
+<li>contrast resolver、critical outline、pattern coding。</li>
+<li>singing/scoring particle pool。</li>
+<li>Reduced Motion 与 snapshot tests。</li>
+</ul>
+<h3>Phase 3 - Video</h3>
+<ul>
+<li>metadata、<code>IUtaVideoSurface</code>、controller、dim/blur/fit/offset。</li>
+<li>seek/loop/rate/pause matrix tests。</li>
+<li>video warning diagnostics。</li>
+</ul>
+<h3>Phase 4 - Settings 与 localisation</h3>
+<ul>
+<li>descriptor catalogue。</li>
+<li>desktop/mid/narrow renderer。</li>
+<li>search、tooltips、reset、disabled reason。</li>
+<li>EN/JA/ZH migration；build test 禁止 user-facing literal 回归。</li>
+</ul>
+<h3>Phase 5 - Import diagnostics 与 Auto</h3>
+<ul>
+<li>stable diagnostic model/view。</li>
+<li>reference Pitch loader 与 deterministic synthetic submission。</li>
+<li>scoring snapshots 和 demo validation。</li>
+</ul>
+<h2>12. Definition of Done</h2>
+<ul>
+<li>选中完全不含 uta! 元素的 skin：玩法仍清晰、无异常、无缺字。</li>
+<li>选中只覆盖部分元素的 skin：未覆盖元素逐项 fallback，不发生整体降级。</li>
+<li>Prism <code>.osk</code> 导入成功；实现 lookup bridge 后所有命名资产可被命中。</li>
+<li>关键元素在默认、protanopia、deuteranopia、tritanopia、灰度快照中可识别。</li>
+<li>Reduced Motion 下 particle count 为 0，无持续 decorative motion。</li>
+<li>所有 setting descriptor 都有 label、description、keywords、default、reset、disabled reason。</li>
+<li>480 px 窄窗口可完成全部设置操作；keyboard/controller 无 focus trap。</li>
+<li>EN、JA、zh-CN 无缺 key、placeholder 一致、无 raw enum <code>ToString()</code>。</li>
+<li>invalid <code>.utz</code> UI 无 stack trace、exception type 或 absolute path。</li>
+<li>Auto 在不同速度、帧率、seek/loop 组合下产生相同确定性 score snapshot。</li>
+</ul>
+<h2>13. 交付文件说明</h2>
+<ul>
+<li><code>Uta-Prism.osk</code>：标准 osu! skin archive；包含 <code>uta-*</code> 1x/@2x runtime PNG。</li>
+<li><code>Uta-Prism-Skin-Source.zip</code>：PNG、editable asset board、asset map、skin.ini。</li>
+<li><code>design/uta-prism.tokens.json</code>：视觉 token 设计源，不是运行时皮肤格式。</li>
+<li><code>design/contracts/uta-skin-lookups.json</code>：lookup、asset naming 与 fallback 契约。</li>
+<li><code>design/contracts/settings-catalog.json</code>：完整 settings metadata 草案。</li>
+<li><code>design/contracts/utz-diagnostic-codes.json</code>：稳定错误码与隐私规则。</li>
+<li><code>design/localisation/*.json</code>：English、Japanese、Simplified Chinese 文案。</li>
+<li><code>design/mockups/*.svg</code>：可编辑界面设计稿与 PNG 预览。</li>
+<li><code>implementation-scaffold/*.cs</code>：实现对照类型，不是完整可编译 patch。</li>
+</ul>
+<blockquote>
+<p>重要限制：当前 main 分支尚未请求这些 uta-specific texture/component lookups。因此 <code>.osk</code> 可以被 lazer 作为普通 skin 导入，但在 lookup bridge 合入前，uta! gameplay 不会自动使用这些自定义资产。</p>
+</blockquote>
+</body></html>

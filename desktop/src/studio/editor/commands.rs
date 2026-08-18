@@ -285,7 +285,11 @@ pub(crate) fn save_editor_chart(editor: &mut NativeEditor) -> String {
             report.errors()
         );
     }
-    match app_core::save_vocal_chart(&editor.chart.file_hash, editor.document.to_chart()) {
+    match app_core::save_vocal_chart_from_revision(
+        &editor.chart.file_hash,
+        editor.document.to_chart(),
+        editor.artifact_source.as_ref(),
+    ) {
         Ok(()) => {
             editor.dirty = false;
             "Chart saved atomically.".to_string()

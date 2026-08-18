@@ -168,6 +168,60 @@ pub fn analysis_artifact_set_active(
     })
 }
 
+pub fn analysis_artifact_clear_active(file_hash: &str, kind: &str) -> rusqlite::Result<()> {
+    with_conn_mut(|connection| {
+        connection.execute(
+            "UPDATE analysis_artifacts SET active = 0 WHERE file_hash = ?1 AND kind = ?2",
+            params![file_hash, kind],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn analysis_artifact_set_pinned(id: &str, pinned: bool) -> rusqlite::Result<()> {
+    with_conn_mut(|c| {
+        c.execute(
+            "UPDATE analysis_artifacts SET pinned = ?1 WHERE id = ?2",
+            params![pinned as i64, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn analysis_artifact_is_pinned(id: &str) -> rusqlite::Result<bool> {
+    with_conn(|c| {
+        c.query_row(
+            "SELECT pinned FROM analysis_artifacts WHERE id = ?1",
+            [id],
+            |row| Ok(row.get::<_, i64>(0)? != 0),
+        )
+        .optional()
+        .map(|value| value.unwrap_or(false))
+    })
+}
+
+pub fn analysis_artifact_path_is_pinned(path: &std::path::Path) -> rusqlite::Result<bool> {
+    let path = path.to_string_lossy();
+    with_conn(|c| {
+        c.query_row(
+            "SELECT 1 FROM analysis_artifacts WHERE path = ?1 AND pinned = 1 LIMIT 1",
+            [path.as_ref()],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|value| value.unwrap_or(false))
+    })
+}
+
+pub fn analysis_artifact_pinned_paths() -> rusqlite::Result<Vec<std::path::PathBuf>> {
+    with_conn(|c| {
+        let mut stmt =
+            c.prepare("SELECT DISTINCT path FROM analysis_artifacts WHERE pinned = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map(std::path::PathBuf::from)).collect()
+    })
+}
+
 pub fn analysis_artifact_delete(id: &str) -> rusqlite::Result<()> {
     with_conn_mut(|c| {
         c.execute("DELETE FROM analysis_artifacts WHERE id = ?1", [id])?;

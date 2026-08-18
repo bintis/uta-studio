@@ -1,0 +1,374 @@
+schema_version: 1
+catalog_version: "2026.08.1"
+
+sources:
+  trvlvr_public_uvr:
+    page: "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models"
+    attribution: "TRvlvr public UVR model repository"
+  trvlvr_application_data:
+    page: "https://github.com/TRvlvr/application_data"
+    attribution: "TRvlvr UVR application data and model YAML"
+  pcunwa_melband_inst:
+    page: "https://huggingface.co/pcunwa/Mel-Band-Roformer-Inst"
+    attribution: "Unwa MelBand RoFormer Inst V2"
+  anvuew_dereverb:
+    page: "https://huggingface.co/anvuew/dereverb_mel_band_roformer"
+    attribution: "anvuew MelBand RoFormer dereverb"
+  aufr33_denoise:
+    page: "https://huggingface.co/poiqazwsx/melband-roformer-denoise"
+    attribution: "aufr33 MelBand RoFormer denoise"
+  facebook_demucs:
+    page: "https://github.com/facebookresearch/demucs"
+    attribution: "Facebook Research Hybrid Transformer Demucs"
+  aufr33_viperx_karaoke:
+    page: "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models"
+    attribution: "aufr33 + viperx MelBand RoFormer Karaoke (existing Uta Studio default)"
+
+models:
+  - id: bs_roformer_vocals_ep317
+    display_name: "BS-RoFormer Vocals EP317"
+    purpose: "Vocal extraction"
+    family: roformer
+    architecture: mdxc_bs_roformer
+    operation: separate_vocals
+    runner: mdxc_torch
+    estimated_bytes: 639000000
+    input_contract:
+      accepted_roles:
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: model_bs_roformer_ep_317_sdr_12.9755.ckpt
+        installed_name: model.ckpt
+        source_id: trvlvr_public_uvr
+        url: "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+        sha256: 5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa
+      - role: model_config
+        filename: model_bs_roformer_ep_317_sdr_12.9755.yaml
+        installed_name: config.yaml
+        source_id: trvlvr_application_data
+        url: "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/model_bs_roformer_ep_317_sdr_12.9755.yaml"
+        sha256: 2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f
+        size_bytes: 2273
+    model_metadata:
+      target_stem: Vocals
+      expected_stems:
+        - Vocals
+        - Instrumental
+    output_contract:
+      Vocals: extracted_vocal
+      Instrumental: residual_instrumental
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: mdxc_roformer_v1
+    license:
+      status: review_recorded
+      source_attribution: "UVR public model catalog / TRvlvr"
+      source_page: "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models"
+      redistribution: user_download
+      review_date: "2026-08-18"
+      notes: "Weights are not redistributed by Uta Studio. Users download after confirmation."
+
+  - id: melband_roformer_inst_v2
+    display_name: "MelBand-RoFormer Inst V2"
+    purpose: "High-quality accompaniment"
+    family: roformer
+    architecture: mdxc_melband_roformer
+    operation: separate_instrumental
+    runner: mdxc_torch
+    estimated_bytes: 1574477088
+    input_contract:
+      accepted_roles:
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: melband_roformer_inst_v2.ckpt
+        installed_name: model.ckpt
+        source_id: pcunwa_melband_inst
+        url: "https://huggingface.co/pcunwa/Mel-Band-Roformer-Inst/resolve/main/melband_roformer_inst_v2.ckpt"
+        sha256:  bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2
+        size_bytes: 1574477088
+      - role: model_config
+        filename: config_melbandroformer_inst_v2.yaml
+        installed_name: config.yaml
+        source_id: trvlvr_application_data
+        url: "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/config_melbandroformer_inst_v2.yaml"
+        sha256: 4b902a7360a930c178edb4846b30e4e326aa1219d1b2daf660d46a311e0cd50b
+        size_bytes: 921
+    model_metadata:
+      target_stem: Instrumental
+      expected_stems:
+        - Instrumental
+        - Vocals
+    output_contract:
+      Instrumental: instrumental
+      Vocals: residual_vocal
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: mdxc_roformer_v1
+    license:
+      status: review_recorded
+      source_attribution: "Unwa MelBand RoFormer Inst V2"
+      source_page: "https://huggingface.co/pcunwa/Mel-Band-Roformer-Inst"
+      redistribution: user_download
+      review_date: "2026-08-18"
+
+  - id: htdemucs_6s
+    display_name: "HTDemucs 6-stem"
+    purpose: "Six-stem separation"
+    family: demucs
+    architecture: demucs
+    operation: separate_multistem
+    runner: demucs_torch
+    estimated_bytes: 54996327
+    input_contract:
+      accepted_roles:
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: 5c90dfd2-34c22ccb.th
+        installed_name: 5c90dfd2-34c22ccb.th
+        source_id: facebook_demucs
+        url: "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5c90dfd2-34c22ccb.th"
+        sha256: 34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd
+        size_bytes: 54996327
+      - role: model_config
+        filename: htdemucs_6s.yaml
+        installed_name: htdemucs_6s.yaml
+        source_id: trvlvr_public_uvr
+        url: "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/htdemucs_6s.yaml"
+        sha256: 207405151270af8fd81c2373c25d27950916682ac91dca7884a11ce13dad6f58
+        size_bytes: 21
+    model_metadata:
+      expected_stems:
+        - vocals
+        - drums
+        - bass
+        - guitar
+        - piano
+        - other
+    output_contract:
+      vocals: vocals
+      drums: drums
+      bass: bass
+      guitar: guitar
+      piano: piano
+      other: other
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: demucs_v1
+    license:
+      status: review_recorded
+      source_attribution: "Facebook Research Demucs"
+      source_page: "https://github.com/facebookresearch/demucs"
+      redistribution: user_download
+      review_date: "2026-08-18"
+
+  - id: melband_roformer_denoise_aufr33
+    display_name: "MelBand-RoFormer Denoise"
+    purpose: "Vocal denoise"
+    family: roformer
+    architecture: mdxc_melband_roformer
+    operation: denoise
+    runner: mdxc_torch
+    estimated_bytes: 913097300
+    input_contract:
+      accepted_roles:
+        - extracted_vocal
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt
+        installed_name: model.ckpt
+        source_id: aufr33_denoise
+        url: "https://huggingface.co/poiqazwsx/melband-roformer-denoise/resolve/main/denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt"
+        sha256: 7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de
+        size_bytes: 913097300
+      - role: model_config
+        filename: denoise_mel_band_roformer_aufr33_sdr_27.9959_config.yaml
+        installed_name: config.yaml
+        source_id: aufr33_denoise
+        url: "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/denoise_mel_band_roformer_aufr33_sdr_27.9959_config.yaml"
+        sha256: 5d7d83b2e9d232da60941b717b0abdc345155d45cff3f79715cdb2790ba18c36
+        size_bytes: 1621
+    model_metadata:
+      target_stem: Vocals
+      expected_stems:
+        - Vocals
+        - Noise
+    output_contract:
+      Vocals: clean_audio
+      Noise: noise
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: mdxc_roformer_v1
+    license:
+      status: review_recorded
+      source_attribution: "aufr33 MelBand RoFormer denoise"
+      source_page: "https://huggingface.co/poiqazwsx/melband-roformer-denoise"
+      redistribution: user_download
+      review_date: "2026-08-18"
+
+  - id: melband_roformer_dereverb_anvuew
+    display_name: "MelBand-RoFormer Dereverb"
+    purpose: "Vocal dereverb"
+    family: roformer
+    architecture: mdxc_melband_roformer
+    operation: dereverb
+    runner: mdxc_torch
+    estimated_bytes: 913107578
+    input_contract:
+      accepted_roles:
+        - clean_audio
+        - extracted_vocal
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt
+        installed_name: model.ckpt
+        source_id: anvuew_dereverb
+        url: "https://huggingface.co/anvuew/dereverb_mel_band_roformer/resolve/main/dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
+        sha256: 9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970
+        size_bytes: 913107578
+      - role: model_config
+        filename: dereverb_mel_band_roformer_anvuew.yaml
+        installed_name: config.yaml
+        source_id: anvuew_dereverb
+        url: "https://huggingface.co/anvuew/dereverb_mel_band_roformer/resolve/main/dereverb_mel_band_roformer_anvuew.yaml"
+        sha256: 66963a9d60756076506a230b4e503c553a3beb7b4e9a10e6bcc73dee9dbd4866
+        size_bytes: 1846
+    model_metadata:
+      target_stem: Vocals
+      expected_stems:
+        - Vocals
+        - Reverb
+    output_contract:
+      Vocals: dry_audio
+      Reverb: reverb
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: mdxc_roformer_v1
+    license:
+      status: review_recorded
+      source_attribution: "anvuew MelBand RoFormer dereverb"
+      source_page: "https://huggingface.co/anvuew/dereverb_mel_band_roformer"
+      redistribution: user_download
+      review_date: "2026-08-18"
+
+  - id: uvr_mdxnet_karaoke_2
+    display_name: "UVR MDX-NET Karaoke 2"
+    purpose: "Karaoke accompaniment"
+    family: mdx
+    architecture: mdx_onnx
+    operation: separate_karaoke
+    runner: mdx_onnx
+    estimated_bytes: 52786726
+    input_contract:
+      accepted_roles:
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: UVR_MDXNET_KARA_2.onnx
+        installed_name: model.onnx
+        source_id: trvlvr_public_uvr
+        url: "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR_MDXNET_KARA_2.onnx"
+        sha256:  bf32e15105a09c0f7dddd2b67346146334d6f3ecb399ed7638eba2ab07cbf5f4
+        size_bytes: 52786726
+        uvr_metadata_hash: 1d64a6d2c30f709b8c9b4ce1366d96ee
+      - role: normalized_metadata
+        filename: mdx_uvr_mdxnet_kara_2.json
+        installed_name: normalized-metadata.json
+        source_id: trvlvr_application_data
+        url: "embedded:audio_models/configs/mdx_uvr_mdxnet_kara_2.json"
+        sha256: 6e676dcc1240a1306eae6ecaf0eab325acf90b1f33f3eb7f687835a39c8531e0
+    model_metadata:
+      target_stem: Instrumental
+      expected_stems:
+        - Instrumental
+        - Vocals
+      normalized_metadata_sha256: 6e676dcc1240a1306eae6ecaf0eab325acf90b1f33f3eb7f687835a39c8531e0
+    output_contract:
+      Instrumental: karaoke_instrumental
+      Vocals: extracted_vocal
+    supported_backends:
+      - openvino_gpu
+      - openvino_cpu
+      - onnx_cpu
+    parameter_schema_id: mdx_v1
+    license:
+      status: review_recorded
+      source_attribution: "UVR public MDX-NET Karaoke 2"
+      source_page: "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models"
+      redistribution: user_download
+      review_date: "2026-08-18"
+
+  - id: melband_roformer_karaoke_aufr33_viperx
+    display_name: "MelBand-RoFormer Karaoke (aufr33 + viperx)"
+    purpose: "Default analysis karaoke (lead vocal isolation)"
+    family: roformer
+    architecture: mdxc_melband_roformer
+    operation: separate_vocals
+    runner: mdxc_torch
+    estimated_bytes: 913096801
+    input_contract:
+      accepted_roles:
+        - source_mix
+      channels: 2
+      sample_rate_policy: model_native
+    files:
+      - role: checkpoint
+        filename: mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt
+        installed_name: model.ckpt
+        source_id: aufr33_viperx_karaoke
+        url: "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+        sha256: 1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813
+        size_bytes: 913096801
+      - role: model_config
+        filename: mel_band_roformer_karaoke_aufr33_viperx.yaml
+        installed_name: config.yaml
+        source_id: aufr33_viperx_karaoke
+        url: "embedded:audio_models/configs/mel_band_roformer_karaoke_aufr33_viperx.yaml"
+        sha256: b35077d94861f068097cce1a5e54633c055e7dcc2613eade4e4dc7c7c9c3f48b
+        size_bytes: 1726
+    model_metadata:
+      target_stem: Vocals
+      expected_stems:
+        - Vocals
+        - Instrumental
+    output_contract:
+      Vocals: extracted_vocal
+      Instrumental: residual_instrumental
+    supported_backends:
+      - torch_cuda
+      - torch_xpu
+      - torch_cpu
+    parameter_schema_id: mdxc_roformer_v1
+    license:
+      status: review_recorded
+      source_attribution: "aufr33 + viperx MelBand RoFormer Karaoke / UVR public catalog"
+      source_page: "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models"
+      redistribution: user_download
+      review_date: "2026-08-18"
+      notes: "Existing Uta Studio default karaoke weights. Users already have this checkpoint in models/audio_separator/."

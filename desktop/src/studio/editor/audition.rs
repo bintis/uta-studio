@@ -20,6 +20,47 @@ pub(crate) fn start_editor_load_job(
     "Loading chart, audio, and waveform…".to_string()
 }
 
+pub(crate) fn start_editor_revision_load_job(
+    reference: app_core::ArtifactRef,
+    audio: Arc<uta_studio_audio::EditorAudioPlayer>,
+    job: &mut NativeEditorLoadJob,
+) -> String {
+    if job.receiver.is_some() {
+        return "The chart editor is already loading.".to_string();
+    }
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = load_native_editor_revision(&reference, audio.as_ref());
+        let _ = sender.send(result);
+    });
+    job.receiver = Some(Mutex::new(receiver));
+    "Loading the selected immutable revision, audio, and editor evidence…".to_string()
+}
+
+pub(crate) fn start_editor_merge_load_job(
+    candidate: app_core::ArtifactRef,
+    authored: app_core::ArtifactRef,
+    mode: app_core::ChartRevisionMergeMode,
+    audio: Arc<uta_studio_audio::EditorAudioPlayer>,
+    job: &mut NativeEditorLoadJob,
+) -> String {
+    if job.receiver.is_some() {
+        return "The chart editor is already loading.".to_string();
+    }
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let mut chart =
+                app_core::load_chart(&candidate.file_hash).map_err(|error| error.to_string())?;
+            chart.vocal_chart = app_core::merge_chart_revisions(&candidate, &authored, mode)?;
+            finish_native_editor_load(chart, Some(candidate), audio.as_ref())
+        })();
+        let _ = sender.send(result);
+    });
+    job.receiver = Some(Mutex::new(receiver));
+    "Building a validated chart merge working copy…".to_string()
+}
+
 pub(crate) fn poll_editor_load_job(
     mut session: ResMut<StudioSession>,
     mut invalidated: ResMut<UiInvalidated>,
@@ -65,6 +106,24 @@ pub(crate) fn load_native_editor(
 ) -> Result<NativeEditor, String> {
     bevy::log::info!("Loading chart for the native editor");
     let chart = app_core::load_chart(file_hash).map_err(|error| error.to_string())?;
+    finish_native_editor_load(chart, None, audio)
+}
+
+fn load_native_editor_revision(
+    reference: &app_core::ArtifactRef,
+    audio: &uta_studio_audio::EditorAudioPlayer,
+) -> Result<NativeEditor, String> {
+    let mut chart =
+        app_core::load_chart(&reference.file_hash).map_err(|error| error.to_string())?;
+    app_core::apply_artifact_revision_to_chart(&mut chart, reference)?;
+    finish_native_editor_load(chart, Some(reference.clone()), audio)
+}
+
+fn finish_native_editor_load(
+    chart: app_core::ChartDocument,
+    source: Option<app_core::ArtifactRef>,
+    audio: &uta_studio_audio::EditorAudioPlayer,
+) -> Result<NativeEditor, String> {
     bevy::log::info!("Decoding the bounded editor waveform while playback is stopped");
     // The overview waveform is a lyric/pitch alignment aid, so it defaults to
     // the voice, not whatever instrumental happens to be auditioned — but
@@ -85,13 +144,9 @@ pub(crate) fn load_native_editor(
     let status =
         editor_audio_status(audio.load_path(std::path::Path::new(&chart.audio.instrumental)));
     bevy::log::info!("Native editor is ready");
-    Ok(NativeEditor::new(
-        chart,
-        status,
-        waveform,
-        waveform_source,
-        "instrumental",
-    ))
+    let mut editor = NativeEditor::new(chart, status, waveform, waveform_source, "instrumental");
+    editor.artifact_source = source;
+    Ok(editor)
 }
 
 /// Resolves which file a waveform source refers to, falling back to the

@@ -22,6 +22,7 @@ skip cleanly rather than fail when that's the case.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 try:
     import server  # type: ignore[import]
@@ -114,6 +115,24 @@ class ProgressPayloadNodeFieldsTests(unittest.TestCase):
         self.assertIn("stage_progress", payload)
         self.assertIn("stage_routes", payload)
 
+    def test_capture_request_is_frozen_into_the_pipeline_call(self):
+        cmd = {
+            "audio_path": "/tmp/source.flac",
+            "cache_path": "/tmp/cache",
+            "hash": "song-capture",
+            "capture_preprocessed_audio": True,
+        }
+        with (
+            mock.patch.object(server, "run_pipeline") as run_pipeline,
+            mock.patch.object(server, "set_align_backend"),
+            mock.patch.object(server, "set_vocal_threshold_pct"),
+            mock.patch.object(server, "reset_peak_stats"),
+            mock.patch.object(server, "log_vram"),
+            mock.patch.object(server, "end_of_song_cleanup"),
+        ):
+            server.process_song(cmd, "cpu")
+        self.assertTrue(run_pipeline.call_args.kwargs["capture_preprocessed_audio"])
+
     def test_artifact_reused_carries_its_reason(self):
         payload = server._progress_payload(
             {}, "cpu", 50, "Stems already cached, skipping separation",
@@ -122,6 +141,26 @@ class ProgressPayloadNodeFieldsTests(unittest.TestCase):
         )
         self.assertEqual(payload["event"], "artifact_reused")
         self.assertEqual(payload["artifact_reused_reason"], "cache_hit")
+
+    def test_atomic_output_commit_metadata_survives_in_stage_route(self):
+        artifact = {
+            "slot": "output:0",
+            "artifact_kind": "TimedTranscript",
+            "path": "/cache/song_timed_transcript.json",
+            "binding_kind": "produced",
+            "config_hash": "cfg",
+            "algorithm_version": "1",
+        }
+        payload = server._progress_payload(
+            90,
+            "Alignment complete",
+            metadata={
+                "node_id": "lyrics.align",
+                "event": "node_completed",
+                "artifacts": [artifact],
+            },
+        )
+        self.assertEqual(payload["stage_routes"][0]["committed_outputs"], [artifact])
 
     def test_absent_event_never_sets_artifact_reused_reason(self):
         payload = server._progress_payload(

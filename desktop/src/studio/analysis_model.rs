@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use app_core::{AnalysisGraphSpec, AnalysisNodeId, AnalysisPlan};
+use app_core::{AnalysisGraphSpec, AnalysisNodeId, AnalysisPlan, ArtifactKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GraphNodeState {
@@ -184,16 +184,199 @@ pub(crate) struct RenderNode {
     pub(crate) collapsed_child_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenderEdgeRole {
+    ComputeDependency,
+    ArtifactOutput,
+    ExportTarget,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RenderEdge {
+    pub(crate) from: AnalysisNodeId,
+    pub(crate) to: AnalysisNodeId,
+    pub(crate) artifact_kind: Option<ArtifactKind>,
+    pub(crate) role: RenderEdgeRole,
+    pub(crate) producer_node: AnalysisNodeId,
+}
+
+impl RenderEdge {
+    pub(crate) fn endpoints(&self) -> (AnalysisNodeId, AnalysisNodeId) {
+        (self.from.clone(), self.to.clone())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RenderGraph {
     pub(crate) nodes: Vec<RenderNode>,
-    pub(crate) edges: Vec<(AnalysisNodeId, AnalysisNodeId)>,
+    pub(crate) edges: Vec<RenderEdge>,
 }
 
 impl RenderGraph {
     pub(crate) fn node(&self, id: &AnalysisNodeId) -> Option<&RenderNode> {
         self.nodes.iter().find(|n| &n.id == id)
     }
+
+    pub(crate) fn edge_pairs(&self) -> Vec<(AnalysisNodeId, AnalysisNodeId)> {
+        self.edges.iter().map(RenderEdge::endpoints).collect()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GraphLineageHighlight {
+    pub(crate) emphasized_nodes: BTreeSet<AnalysisNodeId>,
+    pub(crate) emphasized_edges: BTreeSet<(AnalysisNodeId, AnalysisNodeId)>,
+    pub(crate) missing_gaps: Vec<String>,
+}
+
+impl GraphLineageHighlight {
+    pub(crate) fn emphasizes_node(&self, id: &AnalysisNodeId) -> bool {
+        self.emphasized_nodes.is_empty() || self.emphasized_nodes.contains(id)
+    }
+
+    pub(crate) fn emphasizes_edge(&self, from: &AnalysisNodeId, to: &AnalysisNodeId) -> bool {
+        self.emphasized_edges.is_empty()
+            || self.emphasized_edges.contains(&(from.clone(), to.clone()))
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        !self.emphasized_nodes.is_empty()
+    }
+}
+
+pub(crate) fn virtual_artifact_node_id(kind: ArtifactKind) -> Option<&'static str> {
+    match kind {
+        ArtifactKind::VocalStem => Some("artifact.vocal_stem"),
+        ArtifactKind::InstrumentalStem => Some("artifact.instrumental_stem"),
+        ArtifactKind::PitchTrack => Some("artifact.note_guide"),
+        ArtifactKind::TimedTranscript => Some("artifact.timed_lyrics"),
+        ArtifactKind::AuthoredChart | ArtifactKind::CandidateChart => Some("artifact.chart"),
+        _ => None,
+    }
+}
+
+pub(crate) fn filter_render_graph_for_mini_view(render: RenderGraph) -> RenderGraph {
+    let compute_ids: BTreeSet<AnalysisNodeId> = render
+        .nodes
+        .iter()
+        .filter(|node| node.kind == RenderNodeKind::Compute)
+        .map(|node| node.id.clone())
+        .collect();
+    RenderGraph {
+        nodes: render
+            .nodes
+            .into_iter()
+            .filter(|node| node.kind == RenderNodeKind::Compute)
+            .collect(),
+        edges: render
+            .edges
+            .into_iter()
+            .filter(|edge| compute_ids.contains(&edge.from) && compute_ids.contains(&edge.to))
+            .collect(),
+    }
+}
+
+pub(crate) fn graph_lineage_highlight(
+    render: &RenderGraph,
+    lineage: &app_core::ArtifactLineage,
+    scope: crate::studio::LineageScope,
+    selected: &app_core::ArtifactRef,
+) -> GraphLineageHighlight {
+    let mut emphasized_nodes = BTreeSet::new();
+    let mut missing_gaps = lineage.missing_revision_ids.clone();
+    let include_upstream = matches!(
+        scope,
+        crate::studio::LineageScope::Upstream | crate::studio::LineageScope::Full
+    );
+    let include_downstream = matches!(
+        scope,
+        crate::studio::LineageScope::Downstream | crate::studio::LineageScope::Full
+    );
+
+    let map_revision =
+        |kind: ArtifactKind, producer: &AnalysisNodeId, into: &mut BTreeSet<AnalysisNodeId>| {
+            let producer_id = AnalysisNodeId::new(producer.as_str());
+            if render.node(&producer_id).is_some() {
+                into.insert(producer_id);
+            }
+            if let Some(virtual_id) = virtual_artifact_node_id(kind) {
+                let virtual_id = AnalysisNodeId::new(virtual_id);
+                if render.node(&virtual_id).is_some() {
+                    into.insert(virtual_id);
+                }
+            }
+        };
+
+    if include_upstream {
+        for node in &lineage.nodes {
+            map_revision(
+                node.artifact.kind,
+                &node.artifact.producer_node,
+                &mut emphasized_nodes,
+            );
+        }
+    } else {
+        map_revision(
+            selected.kind,
+            &AnalysisNodeId::new(""),
+            &mut emphasized_nodes,
+        );
+        if let Some(root) = lineage.nodes.first() {
+            map_revision(
+                root.artifact.kind,
+                &root.artifact.producer_node,
+                &mut emphasized_nodes,
+            );
+        }
+    }
+    if include_downstream {
+        for consumer in &lineage.downstream_consumers {
+            if render.node(consumer).is_some() {
+                emphasized_nodes.insert(consumer.clone());
+            }
+        }
+        if selected.kind == ArtifactKind::AuthoredChart
+            || selected.kind == ArtifactKind::CandidateChart
+        {
+            for export_id in ["export.utz", "export.ultrastar"] {
+                let export_id = AnalysisNodeId::new(export_id);
+                if render.node(&export_id).is_some() {
+                    emphasized_nodes.insert(export_id);
+                }
+            }
+        }
+    }
+
+    if emphasized_nodes.is_empty() {
+        missing_gaps.extend(lineage.missing_revision_ids.iter().cloned());
+    }
+
+    let emphasized_edges = render
+        .edges
+        .iter()
+        .filter(|edge| emphasized_nodes.contains(&edge.from) && emphasized_nodes.contains(&edge.to))
+        .map(RenderEdge::endpoints)
+        .collect();
+
+    GraphLineageHighlight {
+        emphasized_nodes,
+        emphasized_edges,
+        missing_gaps,
+    }
+}
+
+fn infer_compute_edge_kind(
+    graph: &AnalysisGraphSpec,
+    from: &AnalysisNodeId,
+    to: &AnalysisNodeId,
+) -> Option<ArtifactKind> {
+    let from_node = graph.node(from)?;
+    let to_node = graph.node(to)?;
+    from_node
+        .outputs
+        .iter()
+        .find(|kind| to_node.inputs.contains(kind))
+        .copied()
 }
 
 /// Rolls a compound node's collapsed-vs-expanded children into one
@@ -252,40 +435,50 @@ pub(crate) fn build_render_graph(
     // column. Only kept when both endpoints are actually in `view` (a
     // collapsed compound child's edges to its parent are not drawn, same
     // as the child itself not being drawn).
-    let mut edges: Vec<(AnalysisNodeId, AnalysisNodeId)> = graph
+    let mut edges: Vec<RenderEdge> = graph
         .edges
         .iter()
         .filter(|edge| view.node(&edge.from).is_some() && view.node(&edge.to).is_some())
-        .map(|edge| (edge.from.clone(), edge.to.clone()))
+        .map(|edge| RenderEdge {
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+            artifact_kind: infer_compute_edge_kind(graph, &edge.from, &edge.to),
+            role: RenderEdgeRole::ComputeDependency,
+            producer_node: edge.from.clone(),
+        })
         .collect();
 
-    let push_artifact =
-        |id: &str,
-         label: &str,
-         detail: &str,
-         upstream_id: &str,
-         kind: app_core::ArtifactKind,
-         nodes: &mut Vec<RenderNode>,
-         edges: &mut Vec<(AnalysisNodeId, AnalysisNodeId)>| {
-            let upstream = AnalysisNodeId::new(upstream_id);
-            if view.node(&upstream).is_none() {
-                // The upstream compute node isn't in the (possibly filtered)
-                // view -- nothing to attach this artifact to.
-                return;
-            }
-            let state =
-                artifact_ready_state(upstream_state(view, &upstream), artifact_present(kind));
-            let artifact_id = AnalysisNodeId::new(id);
-            nodes.push(RenderNode {
-                id: artifact_id.clone(),
-                kind: RenderNodeKind::Artifact,
-                label: label.to_string(),
-                detail: detail.to_string(),
-                state,
-                collapsed_child_count: 0,
-            });
-            edges.push((upstream, artifact_id));
-        };
+    let push_artifact = |id: &str,
+                         label: &str,
+                         detail: &str,
+                         upstream_id: &str,
+                         kind: app_core::ArtifactKind,
+                         nodes: &mut Vec<RenderNode>,
+                         edges: &mut Vec<RenderEdge>| {
+        let upstream = AnalysisNodeId::new(upstream_id);
+        if view.node(&upstream).is_none() {
+            // The upstream compute node isn't in the (possibly filtered)
+            // view -- nothing to attach this artifact to.
+            return;
+        }
+        let state = artifact_ready_state(upstream_state(view, &upstream), artifact_present(kind));
+        let artifact_id = AnalysisNodeId::new(id);
+        nodes.push(RenderNode {
+            id: artifact_id.clone(),
+            kind: RenderNodeKind::Artifact,
+            label: label.to_string(),
+            detail: detail.to_string(),
+            state,
+            collapsed_child_count: 0,
+        });
+        edges.push(RenderEdge {
+            from: upstream.clone(),
+            to: artifact_id,
+            artifact_kind: Some(kind),
+            role: RenderEdgeRole::ArtifactOutput,
+            producer_node: upstream,
+        });
+    };
 
     push_artifact(
         "artifact.vocal_stem",
@@ -349,7 +542,13 @@ pub(crate) fn build_render_graph(
             collapsed_child_count: 0,
         });
         for (source_id, _) in timed_lyrics_upstreams {
-            edges.push((source_id, timed_lyrics_id.clone()));
+            edges.push(RenderEdge {
+                from: source_id.clone(),
+                to: timed_lyrics_id.clone(),
+                artifact_kind: Some(app_core::ArtifactKind::TimedTranscript),
+                role: RenderEdgeRole::ArtifactOutput,
+                producer_node: source_id,
+            });
         }
     }
 
@@ -384,7 +583,13 @@ pub(crate) fn build_render_graph(
                 state: chart_state,
                 collapsed_child_count: 0,
             });
-            edges.push((AnalysisNodeId::new("artifact.chart"), export_id));
+            edges.push(RenderEdge {
+                from: AnalysisNodeId::new("artifact.chart"),
+                to: export_id,
+                artifact_kind: Some(app_core::ArtifactKind::AuthoredChart),
+                role: RenderEdgeRole::ExportTarget,
+                producer_node: AnalysisNodeId::new("chart.build_candidate"),
+            });
         }
     }
 
@@ -642,7 +847,7 @@ mod tests {
                 render
                     .edges
                     .iter()
-                    .any(|(from, to)| from == &edge.from && to == &edge.to),
+                    .any(|render_edge| render_edge.from == edge.from && render_edge.to == edge.to),
                 "missing real compute edge {} -> {}",
                 edge.from.as_str(),
                 edge.to.as_str()
@@ -705,8 +910,8 @@ mod tests {
         let sources: Vec<&AnalysisNodeId> = render
             .edges
             .iter()
-            .filter(|(_, to)| to == &id("artifact.timed_lyrics"))
-            .map(|(from, _)| from)
+            .filter(|edge| edge.to == id("artifact.timed_lyrics"))
+            .map(|edge| &edge.from)
             .collect();
         assert!(sources.contains(&&id("lyrics.align")));
         assert!(sources.contains(&&id("lyrics.import_timed")));
@@ -728,16 +933,16 @@ mod tests {
         let view = full_view_model(&|_| false);
         let graph = app_core::baseline_graph_spec();
         let render = build_render_graph(&graph, &view, &|_| false);
-        for (from, to) in &render.edges {
+        for edge in &render.edges {
             assert!(
-                render.node(from).is_some(),
+                render.node(&edge.from).is_some(),
                 "edge references {} which isn't in the render graph",
-                from.as_str()
+                edge.from.as_str()
             );
             assert!(
-                render.node(to).is_some(),
+                render.node(&edge.to).is_some(),
                 "edge references {} which isn't in the render graph",
-                to.as_str()
+                edge.to.as_str()
             );
         }
     }
@@ -754,5 +959,126 @@ mod tests {
         assert_eq!(chart.state, GraphNodeState::Complete);
         assert_eq!(utz.state, GraphNodeState::Complete);
         assert_eq!(ultrastar.state, GraphNodeState::Complete);
+    }
+
+    #[test]
+    fn artifact_and_export_edges_carry_a_concrete_kind() {
+        let view = full_view_model(&|_| false);
+        let render = build_render_graph(&app_core::baseline_graph_spec(), &view, &|_| false);
+        let vocal = render
+            .edges
+            .iter()
+            .find(|edge| edge.to == id("artifact.vocal_stem"))
+            .unwrap();
+        assert_eq!(vocal.artifact_kind, Some(app_core::ArtifactKind::VocalStem));
+        assert_eq!(vocal.producer_node, id("stems.separate"));
+        let export = render
+            .edges
+            .iter()
+            .find(|edge| edge.to == id("export.utz"))
+            .unwrap();
+        assert_eq!(
+            export.artifact_kind,
+            Some(app_core::ArtifactKind::AuthoredChart)
+        );
+    }
+
+    #[test]
+    fn mini_view_keeps_only_compute_nodes_and_edges() {
+        let view = full_view_model(&|_| false);
+        let render = filter_render_graph_for_mini_view(build_render_graph(
+            &app_core::baseline_graph_spec(),
+            &view,
+            &|_| false,
+        ));
+        assert!(
+            render
+                .nodes
+                .iter()
+                .all(|node| node.kind == RenderNodeKind::Compute)
+        );
+        assert!(render.node(&id("artifact.vocal_stem")).is_none());
+        assert!(render.node(&id("export.utz")).is_none());
+        assert!(render.node(&id("stems.separate")).is_some());
+        assert!(
+            render
+                .edges
+                .iter()
+                .all(|edge| render.node(&edge.from).is_some() && render.node(&edge.to).is_some())
+        );
+    }
+
+    #[test]
+    fn lineage_highlight_emphasizes_producer_and_deemphasizes_unrelated() {
+        let view = full_view_model(&|_| false);
+        let render = build_render_graph(&app_core::baseline_graph_spec(), &view, &|_| false);
+        let selected = app_core::ArtifactRef {
+            file_hash: "song".into(),
+            kind: app_core::ArtifactKind::VocalStem,
+            revision_id: "rev-a".into(),
+        };
+        let lineage = app_core::ArtifactLineage {
+            root: selected.clone(),
+            nodes: vec![app_core::ArtifactLineageNode {
+                artifact: app_core::ArtifactRevision {
+                    id: "rev-a".into(),
+                    file_hash: "song".into(),
+                    kind: app_core::ArtifactKind::VocalStem,
+                    path: std::path::PathBuf::from("/tmp/vocal.flac"),
+                    content_hash: "abc".into(),
+                    producer_node: id("stems.separate"),
+                    input_revisions: Vec::new(),
+                    config_hash: "cfg".into(),
+                    algorithm_version: "v1".into(),
+                    created_at_ms: 1,
+                    byte_size: 8,
+                    active: true,
+                    legacy: false,
+                    invalidated: false,
+                },
+                depth: 0,
+            }],
+            missing_revision_ids: vec!["legacy-missing".into()],
+            downstream_consumers: vec![id("pitch.extract")],
+        };
+        let highlight = graph_lineage_highlight(
+            &render,
+            &lineage,
+            crate::studio::LineageScope::Full,
+            &selected,
+        );
+        assert!(highlight.emphasized_nodes.contains(&id("stems.separate")));
+        assert!(
+            highlight
+                .emphasized_nodes
+                .contains(&id("artifact.vocal_stem"))
+        );
+        assert!(highlight.emphasized_nodes.contains(&id("pitch.extract")));
+        assert!(!highlight.emphasized_nodes.contains(&id("lyrics.align")));
+        assert_eq!(highlight.missing_gaps, vec!["legacy-missing".to_string()]);
+
+        let mini = filter_render_graph_for_mini_view(render);
+        let mini_highlight = graph_lineage_highlight(
+            &mini,
+            &lineage,
+            crate::studio::LineageScope::Full,
+            &selected,
+        );
+        assert!(
+            mini_highlight
+                .emphasized_nodes
+                .contains(&id("stems.separate"))
+        );
+        assert!(
+            mini_highlight
+                .emphasized_nodes
+                .contains(&id("pitch.extract"))
+        );
+        assert!(
+            !mini_highlight
+                .emphasized_nodes
+                .iter()
+                .any(|id| id.as_str().starts_with("artifact."))
+        );
     }
 }

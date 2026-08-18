@@ -5,8 +5,8 @@ use tracing::{info, warn};
 use ts_rs::TS;
 
 use crate::analyzer::{
-    AnalysisProgressSnapshot, AnalysisStageRoute, enqueue_one, is_usdx_song, mark_stems_only,
-    prepare_lrc_no_stems, unix_time_ms, update_song_analyzed,
+    AnalysisArtifactCommit, AnalysisProgressSnapshot, AnalysisStageRoute, enqueue_one,
+    is_usdx_song, mark_stems_only, prepare_lrc_no_stems, unix_time_ms, update_song_analyzed,
 };
 use crate::cache::CacheDir;
 use crate::library_db;
@@ -316,7 +316,7 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     updated.no_stems = no_stems;
     library_db::update_song_fields(file_hash, &updated).map_err(|e| e.to_string())?;
 
-    record_timed_lyrics_import(file_hash, &updated.title, &updated.artist);
+    record_timed_lyrics_import(&cache, file_hash, &updated.title, &updated.artist)?;
 
     Ok(())
 }
@@ -334,12 +334,37 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
 /// in-flight to coordinate with. Best-effort: a failure here must not fail
 /// the import itself, which is why every fallible step below is silently
 /// dropped rather than propagated.
-fn record_timed_lyrics_import(file_hash: &str, title: &str, artist: &str) {
+fn record_timed_lyrics_import(
+    cache: &CacheDir,
+    file_hash: &str,
+    title: &str,
+    artist: &str,
+) -> Result<(), String> {
     let now = unix_time_ms();
+    let (immutable_path, content_hash, byte_size) =
+        crate::analysis_artifact::ArtifactStore::new(&cache.path)?.capture(
+            file_hash,
+            crate::analysis_graph::ArtifactKind::TimedTranscript,
+            &cache.timed_transcript_path(file_hash),
+        )?;
     let route = AnalysisStageRoute {
         stage: "finalizing".to_string(),
         node_id: Some("lyrics.import_timed".to_string()),
         node_event: Some("node_completed".to_string()),
+        binding_kind: None,
+        committed_outputs: vec![AnalysisArtifactCommit {
+            slot: "output:0".to_string(),
+            artifact_kind: "TimedTranscript".to_string(),
+            path: cache.timed_transcript_path(file_hash),
+            binding_kind: "produced".to_string(),
+            config_hash: "timed-lrc-import".to_string(),
+            algorithm_version: format!("lrc-parser/app-{}", env!("CARGO_PKG_VERSION")),
+            immutable_path: Some(immutable_path),
+            content_hash: Some(content_hash),
+            byte_size: Some(byte_size),
+            capture_error: None,
+        }],
+        input_revision_ids: vec![None],
         operation: "Imported timed lyrics".to_string(),
         implementation: "Uta Studio LRC parser".to_string(),
         model: "N/A".to_string(),
@@ -371,10 +396,8 @@ fn record_timed_lyrics_import(file_hash: &str, title: &str, artist: &str) {
         node_event: Some("node_completed".to_string()),
         artifact_reused_reason: None,
     };
-    let Ok(snapshot_json) = serde_json::to_string(&snapshot) else {
-        return;
-    };
-    let Ok(run_id) = library_db::analysis_history_insert(
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
+    let run_id = library_db::analysis_history_insert(
         file_hash,
         title,
         artist,
@@ -383,10 +406,9 @@ fn record_timed_lyrics_import(file_hash: &str, title: &str, artist: &str) {
         now,
         &snapshot_json,
         None,
-    ) else {
-        return;
-    };
-    let _ = library_db::analysis_node_attempts_insert_batch(
+    )
+    .map_err(|error| error.to_string())?;
+    library_db::analysis_node_attempts_insert_batch(
         run_id,
         file_hash,
         &[library_db::NewAnalysisNodeAttempt {
@@ -405,7 +427,9 @@ fn record_timed_lyrics_import(file_hash: &str, title: &str, artist: &str) {
             started_at_ms: Some(now),
             finished_at_ms: Some(now),
         }],
-    );
+    )
+    .map_err(|error| error.to_string())?;
+    crate::artifact_workbench::capture_analysis_run_artifacts_in(cache, run_id, file_hash)
 }
 
 pub(crate) fn write_lyrics_file(
@@ -547,7 +571,7 @@ mod timed_lyrics_import_history_tests {
     //! `record_timed_lyrics_import`'s real INSERT behavior against an
     //! actual DB fixture, not mocks.
     use super::record_timed_lyrics_import;
-    use crate::library_db;
+    use crate::{cache::CacheDir, library_db};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(label: &str) -> std::path::PathBuf {
@@ -565,8 +589,17 @@ mod timed_lyrics_import_history_tests {
     fn records_a_completed_history_row_and_a_matching_node_attempt() {
         let root = temp_root("basic");
         let _guard = library_db::reconnect_for_test(&root);
+        let cache = CacheDir {
+            path: root.join("cache"),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        std::fs::write(
+            cache.timed_transcript_path("songTimedLrc"),
+            b"{\"segments\":[]}",
+        )
+        .unwrap();
 
-        record_timed_lyrics_import("songTimedLrc", "Test Title", "Test Artist");
+        record_timed_lyrics_import(&cache, "songTimedLrc", "Test Title", "Test Artist").unwrap();
 
         let history = library_db::analysis_history_load(50).expect("load history");
         let run = history
@@ -580,7 +613,15 @@ mod timed_lyrics_import_history_tests {
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0].node_id, "lyrics.import_timed");
         assert_eq!(attempts[0].status, "succeeded");
+        let bindings = library_db::analysis_node_artifacts_load(run.id, "lyrics.import_timed")
+            .expect("load exact bindings");
+        assert!(bindings.iter().any(|binding| {
+            binding.direction == "output"
+                && binding.binding_kind == "produced"
+                && binding.revision_id.is_some()
+        }));
 
+        drop(_guard);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -594,8 +635,17 @@ mod timed_lyrics_import_history_tests {
         // depends on, not just that a row exists.
         let root = temp_root("roundtrip");
         let _guard = library_db::reconnect_for_test(&root);
+        let cache = CacheDir {
+            path: root.join("cache"),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        std::fs::write(
+            cache.timed_transcript_path("songTimedLrcRoundtrip"),
+            b"{\"segments\":[]}",
+        )
+        .unwrap();
 
-        record_timed_lyrics_import("songTimedLrcRoundtrip", "Title", "Artist");
+        record_timed_lyrics_import(&cache, "songTimedLrcRoundtrip", "Title", "Artist").unwrap();
 
         let history = library_db::analysis_history_load(50).expect("load history");
         let row = history
@@ -608,6 +658,7 @@ mod timed_lyrics_import_history_tests {
         assert_eq!(snapshot.node_event.as_deref(), Some("node_completed"));
         assert_eq!(snapshot.stage_routes.len(), 1);
 
+        drop(_guard);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

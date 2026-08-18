@@ -1,9 +1,38 @@
 """Audio analysis utilities: vocal region detection, silence splitting, normalization."""
 
+import os
+import tempfile
+
 import numpy as np
 
 DEFAULT_VOCAL_THRESHOLD_PCT = 0.15
 _vocal_threshold_pct = DEFAULT_VOCAL_THRESHOLD_PCT
+
+
+def write_capture_flac_atomic(path: str, audio, sample_rate: int = 16000) -> None:
+    """Durably materialize an explicitly requested float-audio boundary.
+
+    The normal analysis path never calls this. A temporary file in the same
+    directory is fsynced and atomically replaced so Rust never observes a
+    partial FLAC when it handles the subsequent commit event.
+    """
+    import soundfile as sf
+
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="preprocessed_", suffix=".flac.tmp", dir=directory)
+    os.close(fd)
+    try:
+        sf.write(temporary, audio, sample_rate, format="FLAC", subtype="PCM_24")
+        with open(temporary, "rb") as captured:
+            os.fsync(captured.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def set_vocal_threshold_pct(pct) -> None:

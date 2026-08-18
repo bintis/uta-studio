@@ -49,6 +49,10 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 - Treat native audio position as the clock source, but interpolate the visible playhead on animation frames between lightweight status syncs. Timed lyrics with overlapping or very short ranges must use collision-free visual lanes; long lyric controls wrap instead of overlapping adjacent content.
 - The Linux desktop is Wayland-only. Do not enable an X11 window backend or use XWayland as a fallback.
 
+## File size
+
+- A single source file (`.rs`, `.py`, or other application code) must stay at or under 2000 lines. Larger files must be split or refactored along existing module boundaries before handoff.
+
 ## Safety and completion checks
 
 - Never expose an unauthenticated HTTP control server. Feature APIs stay inside the local process unless the user explicitly requests and approves a different security design.

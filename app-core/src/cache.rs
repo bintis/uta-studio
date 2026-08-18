@@ -91,6 +91,13 @@ impl CacheDir {
         self.path.join(format!("{hash}_vocal_chart.json"))
     }
 
+    /// Analyzer-produced, replaceable chart proposal. This is deliberately
+    /// distinct from both the timed transcript and the user-owned authored
+    /// chart so a new analysis run can never rewrite editor work.
+    pub fn candidate_chart_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_candidate_chart.json"))
+    }
+
     pub fn variant_transcript_path(&self, hash: &str, tempo: f64) -> PathBuf {
         self.path
             .join(format!("{hash}_transcript_{}.json", format_tempo(tempo)))
@@ -240,7 +247,10 @@ impl CacheDir {
     /// `delete_analysis_outputs_keep_chart` instead; see that method's docs.
     pub fn delete_song_cache(&self, hash: &str) {
         self.delete_analysis_outputs_keep_chart(hash);
-        self.invalidate_authored_chart(hash);
+        let chart = self.vocal_chart_path(hash);
+        if !crate::library_db::analysis_artifact_path_is_pinned(&chart).unwrap_or(false) {
+            self.invalidate_authored_chart(hash);
+        }
     }
 
     /// Same file set as `delete_song_cache`, minus the Authored Chart.
@@ -251,7 +261,9 @@ impl CacheDir {
     /// action) keep using `delete_song_cache` directly.
     pub fn delete_analysis_outputs_keep_chart(&self, hash: &str) {
         for path in self.analysis_output_paths_keep_chart(hash) {
-            if path.is_file() {
+            let pinned =
+                crate::library_db::analysis_artifact_path_is_pinned(&path).unwrap_or(false);
+            if path.is_file() && !pinned {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -275,6 +287,7 @@ impl CacheDir {
             self.recognized_text_path(hash),
             self.asr_segments_path(hash),
             self.timed_transcript_path(hash),
+            self.candidate_chart_path(hash),
             self.lyrics_path(hash),
             self.pitch_track_path(hash),
             self.pitch_notes_path(hash),
@@ -345,10 +358,43 @@ impl CacheDir {
     }
 
     pub fn clear_all(&self) {
-        if self.path.is_dir() {
-            let _ = std::fs::remove_dir_all(&self.path);
-            let _ = std::fs::create_dir_all(&self.path);
+        if !self.path.is_dir() {
+            return;
         }
+
+        // Pin semantics are stronger than Active: a pinned revision is a
+        // user-declared keep-safe copy, so generated-cache cleanup must not
+        // remove its backing file. Preserve only pinned files that actually
+        // live below this cache root; source media is never represented here.
+        let pinned = crate::library_db::analysis_artifact_pinned_paths()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|path| path.is_file() && path.starts_with(&self.path))
+            .collect::<Vec<_>>();
+        let preserve_root = self.path.with_file_name(format!(
+            ".uta-studio-pinned-preserve-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&preserve_root);
+        let _ = std::fs::create_dir_all(&preserve_root);
+
+        let mut preserved = Vec::new();
+        for (index, path) in pinned.iter().enumerate() {
+            let temp = preserve_root.join(format!("pinned-{index}"));
+            if std::fs::copy(path, &temp).is_ok() {
+                preserved.push((temp, path.clone()));
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&self.path);
+        let _ = std::fs::create_dir_all(&self.path);
+        for (temp, destination) in preserved {
+            if let Some(parent) = destination.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(temp, destination);
+        }
+        let _ = std::fs::remove_dir_all(preserve_root);
     }
 }
 

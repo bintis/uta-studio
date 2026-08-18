@@ -130,6 +130,9 @@ impl TapSession {
 
 pub(crate) struct NativeEditor {
     pub(crate) chart: app_core::ChartDocument,
+    /// Immutable Candidate/Authored revision this working copy was opened
+    /// from. Ordinary current-chart loads leave this unset.
+    pub(crate) artifact_source: Option<app_core::ArtifactRef>,
     /// The authoritative UTZ 0.2 chart under edit. Every note and lyric change
     /// goes through it; nothing is re-derived from analyzer JSON on save.
     pub(crate) document: app_core::EditorDocument,
@@ -333,6 +336,7 @@ impl NativeEditor {
             + 2.0;
         Self {
             chart,
+            artifact_source: None,
             document,
             pitch_frames,
             beat_grid_visible: !beats.is_empty(),

@@ -1,0 +1,312 @@
+[
+  {
+    "id": "marker",
+    "baseName": "uta-skin-marker",
+    "requiredForFullSkin": true,
+    "description": "Legacy .osk Uta-aware sentinel; never drawn.",
+    "variants": [
+      "uta-skin-marker.png",
+      "uta-skin-marker@2x.png"
+    ]
+  },
+  {
+    "id": "pitchPanel",
+    "baseName": "uta-pitch-panel",
+    "requiredForFullSkin": false,
+    "description": "Pitch-guide panel texture; falls back to ruleset vector panel.",
+    "variants": [
+      "uta-pitch-panel.png",
+      "uta-pitch-panel@2x.png"
+    ]
+  },
+  {
+    "id": "targetNormal",
+    "baseName": "uta-target-note-normal",
+    "requiredForFullSkin": true,
+    "description": "Normal pitched target-note body.",
+    "variants": [
+      "uta-target-note-normal.png",
+      "uta-target-note-normal@2x.png"
+    ]
+  },
+  {
+    "id": "targetGolden",
+    "baseName": "uta-target-note-golden",
+    "requiredForFullSkin": false,
+    "description": "Golden pitched target-note body.",
+    "variants": [
+      "uta-target-note-golden.png",
+      "uta-target-note-golden@2x.png"
+    ]
+  },
+  {
+    "id": "targetFreestyle",
+    "baseName": "uta-target-note-freestyle",
+    "requiredForFullSkin": false,
+    "description": "Freestyle target-note body with diagonal coding.",
+    "variants": [
+      "uta-target-note-freestyle.png",
+      "uta-target-note-freestyle@2x.png"
+    ]
+  },
+  {
+    "id": "targetGoldenFreestyle",
+    "baseName": "uta-target-note-golden-freestyle",
+    "requiredForFullSkin": false,
+    "description": "Golden freestyle note.",
+    "variants": [
+      "uta-target-note-golden-freestyle.png",
+      "uta-target-note-golden-freestyle@2x.png"
+    ]
+  },
+  {
+    "id": "targetRap",
+    "baseName": "uta-target-note-rap",
+    "requiredForFullSkin": false,
+    "description": "Rap note with segmented coding.",
+    "variants": [
+      "uta-target-note-rap.png",
+      "uta-target-note-rap@2x.png"
+    ]
+  },
+  {
+    "id": "targetGoldenRap",
+    "baseName": "uta-target-note-golden-rap",
+    "requiredForFullSkin": false,
+    "description": "Golden rap note.",
+    "variants": [
+      "uta-target-note-golden-rap.png",
+      "uta-target-note-golden-rap@2x.png"
+    ]
+  },
+  {
+    "id": "targetSpoken",
+    "baseName": "uta-target-note-spoken",
+    "requiredForFullSkin": false,
+    "description": "Spoken note with dotted centre line.",
+    "variants": [
+      "uta-target-note-spoken.png",
+      "uta-target-note-spoken@2x.png"
+    ]
+  },
+  {
+    "id": "targetGoldenSpoken",
+    "baseName": "uta-target-note-golden-spoken",
+    "requiredForFullSkin": false,
+    "description": "Golden spoken note.",
+    "variants": [
+      "uta-target-note-golden-spoken.png",
+      "uta-target-note-golden-spoken@2x.png"
+    ]
+  },
+  {
+    "id": "playhead",
+    "baseName": "uta-playhead",
+    "requiredForFullSkin": true,
+    "description": "Playhead marker; critical fallback is always retained.",
+    "variants": [
+      "uta-playhead.png",
+      "uta-playhead@2x.png"
+    ]
+  },
+  {
+    "id": "gridMajor",
+    "baseName": "uta-grid-major",
+    "requiredForFullSkin": false,
+    "description": "Major semitone/octave grid tile.",
+    "variants": [
+      "uta-grid-major.png",
+      "uta-grid-major@2x.png"
+    ]
+  },
+  {
+    "id": "gridMinor",
+    "baseName": "uta-grid-minor",
+    "requiredForFullSkin": false,
+    "description": "Minor grid tile.",
+    "variants": [
+      "uta-grid-minor.png",
+      "uta-grid-minor@2x.png"
+    ]
+  },
+  {
+    "id": "curveReference",
+    "baseName": "uta-curve-reference",
+    "requiredForFullSkin": true,
+    "description": "Reference curve brush or cap.",
+    "variants": [
+      "uta-curve-reference.png",
+      "uta-curve-reference@2x.png"
+    ]
+  },
+  {
+    "id": "curveLive",
+    "baseName": "uta-curve-live",
+    "requiredForFullSkin": true,
+    "description": "Live curve brush or cap.",
+    "variants": [
+      "uta-curve-live.png",
+      "uta-curve-live@2x.png"
+    ]
+  },
+  {
+    "id": "curveTrail",
+    "baseName": "uta-curve-trail",
+    "requiredForFullSkin": false,
+    "description": "Optional singing-guide trail brush.",
+    "variants": [
+      "uta-curve-trail.png",
+      "uta-curve-trail@2x.png"
+    ]
+  },
+  {
+    "id": "lyricsCurrentUnderline",
+    "baseName": "uta-lyrics-current-underline",
+    "requiredForFullSkin": false,
+    "description": "Current lyric underline/highlight.",
+    "variants": [
+      "uta-lyrics-current-underline.png",
+      "uta-lyrics-current-underline@2x.png"
+    ]
+  },
+  {
+    "id": "lyricsReadingMarker",
+    "baseName": "uta-lyrics-reading-marker",
+    "requiredForFullSkin": false,
+    "description": "Reading/ruby marker.",
+    "variants": [
+      "uta-lyrics-reading-marker.png",
+      "uta-lyrics-reading-marker@2x.png"
+    ]
+  },
+  {
+    "id": "hudPanel",
+    "baseName": "uta-hud-panel",
+    "requiredForFullSkin": false,
+    "description": "Score/practice HUD background tile.",
+    "variants": [
+      "uta-hud-panel.png",
+      "uta-hud-panel@2x.png"
+    ]
+  },
+  {
+    "id": "hudAccent",
+    "baseName": "uta-hud-accent",
+    "requiredForFullSkin": false,
+    "description": "HUD accent strip.",
+    "variants": [
+      "uta-hud-accent.png",
+      "uta-hud-accent@2x.png"
+    ]
+  },
+  {
+    "id": "feedbackPerfect",
+    "baseName": "uta-feedback-perfect",
+    "requiredForFullSkin": false,
+    "description": "Perfect feedback badge.",
+    "variants": [
+      "uta-feedback-perfect.png",
+      "uta-feedback-perfect@2x.png"
+    ]
+  },
+  {
+    "id": "feedbackGreat",
+    "baseName": "uta-feedback-great",
+    "requiredForFullSkin": false,
+    "description": "Great feedback badge.",
+    "variants": [
+      "uta-feedback-great.png",
+      "uta-feedback-great@2x.png"
+    ]
+  },
+  {
+    "id": "feedbackGood",
+    "baseName": "uta-feedback-good",
+    "requiredForFullSkin": false,
+    "description": "Good feedback badge.",
+    "variants": [
+      "uta-feedback-good.png",
+      "uta-feedback-good@2x.png"
+    ]
+  },
+  {
+    "id": "feedbackBad",
+    "baseName": "uta-feedback-bad",
+    "requiredForFullSkin": false,
+    "description": "Bad feedback badge.",
+    "variants": [
+      "uta-feedback-bad.png",
+      "uta-feedback-bad@2x.png"
+    ]
+  },
+  {
+    "id": "feedbackMiss",
+    "baseName": "uta-feedback-miss",
+    "requiredForFullSkin": false,
+    "description": "Miss feedback badge.",
+    "variants": [
+      "uta-feedback-miss.png",
+      "uta-feedback-miss@2x.png"
+    ]
+  },
+  {
+    "id": "faultHigh",
+    "baseName": "uta-fault-high",
+    "requiredForFullSkin": false,
+    "description": "Directional high-pitch icon.",
+    "variants": [
+      "uta-fault-high.png",
+      "uta-fault-high@2x.png"
+    ]
+  },
+  {
+    "id": "faultLow",
+    "baseName": "uta-fault-low",
+    "requiredForFullSkin": false,
+    "description": "Directional low-pitch icon.",
+    "variants": [
+      "uta-fault-low.png",
+      "uta-fault-low@2x.png"
+    ]
+  },
+  {
+    "id": "faultUnstable",
+    "baseName": "uta-fault-unstable",
+    "requiredForFullSkin": false,
+    "description": "Unstable-pitch icon.",
+    "variants": [
+      "uta-fault-unstable.png",
+      "uta-fault-unstable@2x.png"
+    ]
+  },
+  {
+    "id": "faultCoverage",
+    "baseName": "uta-fault-coverage",
+    "requiredForFullSkin": false,
+    "description": "Low-coverage icon.",
+    "variants": [
+      "uta-fault-coverage.png",
+      "uta-fault-coverage@2x.png"
+    ]
+  },
+  {
+    "id": "particleSing",
+    "baseName": "uta-particle-sing",
+    "requiredForFullSkin": false,
+    "description": "Optional singing particle.",
+    "variants": [
+      "uta-particle-sing.png",
+      "uta-particle-sing@2x.png"
+    ]
+  },
+  {
+    "id": "particleScore",
+    "baseName": "uta-particle-score",
+    "requiredForFullSkin": false,
+    "description": "Optional scoring particle.",
+    "variants": [
+      "uta-particle-score.png",
+      "uta-particle-score@2x.png"
+    ]
+  }
+]

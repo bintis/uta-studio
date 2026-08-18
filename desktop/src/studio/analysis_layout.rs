@@ -46,6 +46,21 @@ impl Default for LayoutSpacing {
     }
 }
 
+impl LayoutSpacing {
+    /// Tighter canvas metrics so the full analysis flow can sit on one
+    /// page at the 160% default zoom. Tests keep using `Default` so their
+    /// coordinate assertions stay independent of the on-screen density.
+    pub(crate) fn canvas() -> Self {
+        Self {
+            node_width: 128.0,
+            node_height: 70.0,
+            column_gap: 36.0,
+            row_gap: 16.0,
+            margin: 16.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GraphLayout {
     pub(crate) rects: BTreeMap<AnalysisNodeId, LayoutRect>,
