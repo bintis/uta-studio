@@ -199,26 +199,19 @@ mod pipeline_flags_tests {
 
     #[test]
     fn no_targets_means_run_everything() {
-        let (
-            skip_transcription,
-            skip_separation,
-            skip_pitch,
-            freeze_separation,
-            freeze_pitch,
-            bypass_separation,
-        ) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &BTreeSet::new(),
             &BTreeSet::new(),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_transcription);
-        assert!(!skip_separation);
-        assert!(!skip_pitch);
-        assert!(!freeze_separation);
-        assert!(!freeze_pitch);
-        assert!(!bypass_separation);
+        assert!(!flags.skip_transcription);
+        assert!(!flags.skip_separation);
+        assert!(!flags.skip_pitch);
+        assert!(!flags.freeze_separation);
+        assert!(!flags.freeze_pitch);
+        assert!(!flags.bypass_separation);
     }
 
     #[test]
@@ -226,42 +219,42 @@ mod pipeline_flags_tests {
         // Replaces the old PITCH_ONLY special case: pitch.extract requires
         // stems.separate transitively, so separation must still run, but no
         // lyrics node is targeted so transcription/alignment must not.
-        let (skip_transcription, skip_separation, skip_pitch, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["pitch.extract"]),
             &BTreeSet::new(),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(skip_transcription);
-        assert!(!skip_separation);
-        assert!(!skip_pitch);
+        assert!(flags.skip_transcription);
+        assert!(!flags.skip_separation);
+        assert!(!flags.skip_pitch);
     }
 
     #[test]
     fn lyrics_target_never_skips_transcription() {
-        let (skip_transcription, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["lyrics.align"]),
             &BTreeSet::new(),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_transcription);
+        assert!(!flags.skip_transcription);
     }
 
     #[test]
     fn full_candidate_chart_target_skips_neither() {
-        let (skip_transcription, skip_separation, skip_pitch, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["chart.build_candidate"]),
             &BTreeSet::new(),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_transcription);
-        assert!(!skip_separation);
-        assert!(!skip_pitch);
+        assert!(!flags.skip_transcription);
+        assert!(!flags.skip_separation);
+        assert!(!flags.skip_pitch);
     }
 
     #[test]
@@ -273,29 +266,29 @@ mod pipeline_flags_tests {
         // disable working as designed (docs/analysis-dag-redesign.md §6),
         // not a request the caller's own disable was refused for, so this
         // must still succeed and skip pitch.
-        let (skip_transcription, skip_separation, skip_pitch, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &BTreeSet::new(),
             &targets(&["pitch.extract"]),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_transcription);
-        assert!(!skip_separation);
-        assert!(skip_pitch);
+        assert!(!flags.skip_transcription);
+        assert!(!flags.skip_separation);
+        assert!(flags.skip_pitch);
     }
 
     #[test]
     fn disabling_pitch_extract_while_targeting_only_stems_has_no_downstream_to_block() {
-        let (_skip_transcription, skip_separation, skip_pitch, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["stems.separate"]),
             &targets(&["pitch.extract"]),
             &no_freeze(),
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_separation);
-        assert!(skip_pitch);
+        assert!(!flags.skip_separation);
+        assert!(flags.skip_pitch);
     }
 
     #[test]
@@ -318,24 +311,17 @@ mod pipeline_flags_tests {
         // `None` vocals path and crash instead of reusing the frozen file.
         let mut frozen = BTreeSet::new();
         frozen.insert(ArtifactKind::VocalStem);
-        let (
-            _skip_transcription,
-            skip_separation,
-            _skip_pitch,
-            freeze_separation,
-            freeze_pitch,
-            bypass_separation,
-        ) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["pitch.extract"]),
             &BTreeSet::new(),
             &frozen,
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_separation, "a frozen node must not also be skipped");
-        assert!(freeze_separation);
-        assert!(!freeze_pitch);
-        assert!(!bypass_separation);
+        assert!(!flags.skip_separation, "a frozen node must not also be skipped");
+        assert!(flags.freeze_separation);
+        assert!(!flags.freeze_pitch);
+        assert!(!flags.bypass_separation);
     }
 
     #[test]
@@ -343,24 +329,17 @@ mod pipeline_flags_tests {
         let mut frozen = BTreeSet::new();
         frozen.insert(ArtifactKind::PitchTrack);
         frozen.insert(ArtifactKind::PitchNoteCandidates);
-        let (
-            _skip_transcription,
-            skip_separation,
-            skip_pitch,
-            freeze_separation,
-            freeze_pitch,
-            _bypass_separation,
-        ) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["chart.build_candidate"]),
             &BTreeSet::new(),
             &frozen,
             &no_bypass(),
         )
         .unwrap();
-        assert!(!skip_separation);
-        assert!(!freeze_separation);
-        assert!(!skip_pitch, "a frozen node must not also be skipped");
-        assert!(freeze_pitch);
+        assert!(!flags.skip_separation);
+        assert!(!flags.freeze_separation);
+        assert!(!flags.skip_pitch, "a frozen node must not also be skipped");
+        assert!(flags.freeze_pitch);
     }
 
     #[test]
@@ -372,23 +351,16 @@ mod pipeline_flags_tests {
         // than leaving the vocals path unset.
         let mut bypassed = BTreeSet::new();
         bypassed.insert(AnalysisNodeId::new("stems.separate"));
-        let (
-            _skip_transcription,
-            skip_separation,
-            _skip_pitch,
-            freeze_separation,
-            _freeze_pitch,
-            bypass_separation,
-        ) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets(&["pitch.extract"]),
             &BTreeSet::new(),
             &no_freeze(),
             &bypassed,
         )
         .unwrap();
-        assert!(skip_separation);
-        assert!(!freeze_separation);
-        assert!(bypass_separation);
+        assert!(flags.skip_separation);
+        assert!(!flags.freeze_separation);
+        assert!(flags.bypass_separation);
     }
 }
 
@@ -507,6 +479,7 @@ mod preview_full_analysis_plan_tests {
             lyrics_route: LyricsRoute::WhisperAsr,
             model_availability: std::collections::BTreeMap::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
+            active_stem_nodes: BTreeSet::new(),
         };
         let plan =
             build_plan(&baseline_graph_spec(), &request).expect("baseline graph always plans");
@@ -540,9 +513,10 @@ mod frozen_config_tests {
     static GUARD: Mutex<()> = Mutex::new(());
 
     fn config_with_model(model: &str) -> AppConfig {
-        let mut config = AppConfig::default();
-        config.whisper_model = Some(model.to_string());
-        config
+        AppConfig {
+            whisper_model: Some(model.to_string()),
+            ..AppConfig::default()
+        }
     }
 
     #[test]
@@ -667,15 +641,15 @@ mod pending_intent_tests {
             .remove(hash)
             .unwrap()
             .targets;
-        let (skip_transcription, skip_separation, ..) = pipeline_flags_for_request(
+        let flags = pipeline_flags_for_request(
             &targets,
             &BTreeSet::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
         .unwrap();
-        assert!(skip_transcription);
-        assert!(!skip_separation);
+        assert!(flags.skip_transcription);
+        assert!(!flags.skip_separation);
     }
 }
 
@@ -1660,16 +1634,16 @@ mod node_attempt_tests {
     fn record_node_attempts_skips_routes_without_a_real_node_id() {
         let root = temp_root("skip-legacy");
         let _guard = library_db::reconnect_for_test(&root);
-        let run_id = library_db::analysis_history_insert(
-            "songE",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songE",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
 
         let snapshot = AnalysisProgressSnapshot {
@@ -1738,4 +1712,3 @@ mod enqueue_tests {
         assert!(error.to_string().contains("source media is empty"));
     }
 }
-

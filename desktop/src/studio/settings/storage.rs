@@ -4,7 +4,7 @@ use crate::studio::*;
 pub(crate) fn spawn_storage_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
 ) {
@@ -32,19 +32,23 @@ pub(crate) fn spawn_storage_settings(
             "Every format opens Save As here first. You can still choose another folder for each export.\n\n{export_path}"
         ),
         vec![
-            ("Choose…".to_string(), UiAction::ChooseExportFolder),
+            (
+                "Choose…".to_string(),
+                UiAction::from(LibraryCommand::ChooseExportFolder),
+            ),
             (
                 "Use system default".to_string(),
-                UiAction::ClearExportFolder,
+                UiAction::from(LibraryCommand::ClearExportFolder),
             ),
         ],
     );
-    spawn_storage_usage_row(parent, font.clone(), theme, cache_stats);
+    spawn_storage_usage_row(parent, font.clone(), session.config, theme, cache_stats);
 }
 
 pub(crate) fn spawn_storage_usage_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    config: &AppConfig,
     theme: &StudioTheme,
     cache_stats: &CacheStatsJob,
 ) {
@@ -55,7 +59,11 @@ pub(crate) fn spawn_storage_usage_row(
                 (
                     "Current",
                     theme.foreground,
-                    format!("Latest scan: {}", format_bytes(total)),
+                    localized_message(
+                        config,
+                        UiMessage::LatestScan,
+                        &[("{size}", &format_bytes(total))],
+                    ),
                 )
             }
             (Some(stats), true) => {
@@ -63,9 +71,10 @@ pub(crate) fn spawn_storage_usage_row(
                 (
                     "Recalculating",
                     theme.primary,
-                    format!(
-                        "Recalculating in background. Latest scan: {}",
-                        format_bytes(total)
+                    localized_message(
+                        config,
+                        UiMessage::CacheRecalculating,
+                        &[("{size}", &format_bytes(total))],
                     ),
                 )
             }
@@ -83,7 +92,8 @@ pub(crate) fn spawn_storage_usage_row(
         };
     let mut status_description = status_summary;
     if let Some(error) = cache_stats.error.as_deref() {
-        status_description = format!("Cache stats failed to calculate: {error}");
+        status_description =
+            localized_message(config, UiMessage::CacheStatsFailed, &[("{error}", error)]);
     }
     let status_text_color = if cache_stats.error.is_some() {
         theme.destructive
@@ -182,11 +192,11 @@ pub(crate) fn spawn_storage_usage_row(
                         vec![
                             (
                                 "Clear generated cache".to_string(),
-                                UiAction::RequestClearCache(CacheClearScope::Generated),
+                                UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Generated)),
                             ),
                             (
                                 "Clear models".to_string(),
-                                UiAction::RequestClearCache(CacheClearScope::Models),
+                                UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Models)),
                             ),
                         ],
                     );
@@ -318,7 +328,7 @@ pub(crate) fn spawn_storage_usage_category(
 pub(crate) fn spawn_watched_folders_setting(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let paths = session.config.library_paths();
@@ -375,8 +385,8 @@ pub(crate) fn spawn_watched_folders_setting(
                         font.clone(),
                         theme,
                         vec![
-                            ("Add folder…".to_string(), UiAction::ChooseFolder),
-                            ("Rescan all".to_string(), UiAction::RescanLibrary),
+                            ("Add folder…".to_string(), UiAction::from(LibraryCommand::ChooseFolder)),
+                            ("Rescan all".to_string(), UiAction::from(LibraryCommand::RescanLibrary)),
                         ],
                     );
                 });
@@ -445,7 +455,7 @@ pub(crate) fn spawn_watched_folders_setting(
                                         font.clone(),
                                         theme,
                                         "Remove",
-                                        UiAction::RequestRemoveFolder(path.clone()),
+                                        UiAction::from(LibraryCommand::RequestRemoveFolder(path.clone())),
                                     );
                                 });
                         });

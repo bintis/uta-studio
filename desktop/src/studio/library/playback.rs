@@ -64,26 +64,28 @@ pub(crate) fn handle_library_search_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     focus: Res<InputFocus>,
     inputs: Query<&EditableText, With<LibrarySearchInput>>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut library: ResMut<LibraryState>,
+    mut dialogs: ResMut<DialogState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let command = keys.pressed(KeyCode::ControlLeft)
         || keys.pressed(KeyCode::ControlRight)
         || keys.pressed(KeyCode::SuperLeft)
         || keys.pressed(KeyCode::SuperRight);
-    if command && keys.just_pressed(KeyCode::KeyK) && session.route != StudioRoute::Editor {
-        session.search_open = true;
-        session.activity_open = false;
-        session.about_open = false;
-        invalidated.0 = true;
+    if command && keys.just_pressed(KeyCode::KeyK) && shell.route != StudioRoute::Editor {
+        dialogs.search_open = true;
+        dialogs.activity_open = false;
+        dialogs.about_open = false;
+        invalidated.invalidate(UiDirtyRegion::Library);
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) && session.search_open {
-        session.search_open = false;
-        invalidated.0 = true;
+    if keys.just_pressed(KeyCode::Escape) && dialogs.search_open {
+        dialogs.search_open = false;
+        invalidated.invalidate(UiDirtyRegion::Library);
         return;
     }
-    if !session.search_open || !keys.just_pressed(KeyCode::Enter) {
+    if !dialogs.search_open || !keys.just_pressed(KeyCode::Enter) {
         return;
     }
     let Some(entity) = focus.get() else {
@@ -94,13 +96,13 @@ pub(crate) fn handle_library_search_keyboard(
     };
     let value = input.value().to_string();
     let value = value.trim();
-    session.library_search = (!value.is_empty()).then(|| value.to_string());
-    session.route = StudioRoute::Library;
-    session.library_view = LibraryView::All;
-    session.library_facet = None;
-    session.search_open = false;
-    session.refresh_library();
-    invalidated.0 = true;
+    library.library_search = (!value.is_empty()).then(|| value.to_string());
+    shell.route = StudioRoute::Library;
+    library.library_view = LibraryView::All;
+    library.library_facet = None;
+    dialogs.search_open = false;
+    library.refresh();
+    invalidated.invalidate(UiDirtyRegion::Library);
 }
 
 pub(crate) fn start_export_job(
@@ -171,10 +173,11 @@ pub(crate) fn start_export_all_job(
 }
 
 pub(crate) fn poll_export_job(
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    let result = session.export_job.receiver.as_ref().and_then(|receiver| {
+    let result = jobs.export_job.receiver.as_ref().and_then(|receiver| {
         receiver
             .lock()
             .ok()
@@ -189,9 +192,9 @@ pub(crate) fn poll_export_job(
     let Some(result) = result else {
         return;
     };
-    session.export_job.receiver = None;
-    session.notice = Some(result);
-    invalidated.0 = true;
+    jobs.export_job.receiver = None;
+    shell.notice = Some(result);
+    invalidated.invalidate(UiDirtyRegion::Library);
 }
 
 pub(crate) fn library_visible_position(playback: &LibraryPlayback) -> f64 {
@@ -406,11 +409,12 @@ pub(crate) fn handle_library_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    mut library: ResMut<LibraryState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<LibrarySongList>>,
     graphs: Query<(&ComputedNode, &UiGlobalTransform), With<AnalysisGraphViewport>>,
 ) {
-    if session.route != StudioRoute::Library || session.library_view == LibraryView::Queue {
+    if shell.route != StudioRoute::Library || library.library_view == LibraryView::Queue {
         return;
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -441,39 +445,40 @@ pub(crate) fn handle_library_scroll(
     let size = computed.size() * computed.inverse_scale_factor();
     let content = computed.content_size() * computed.inverse_scale_factor();
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
-    session.library_scroll_offset = position.y;
+    library.library_scroll_offset = position.y;
 }
 
 pub(crate) fn sync_library_audio(
     time: Res<Time>,
     mut timer: ResMut<LibraryAudioSyncTimer>,
     audio: Res<NativeLibraryAudio>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut playback: ResMut<PlaybackState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.library_playback.file_hash.is_none() {
+    if playback.library_playback.file_hash.is_none() {
         return;
     }
     if timer.0.tick(time.delta()).just_finished() {
-        let was_playing = session.library_playback.status.playing;
-        let had_ended = session.library_playback.status.ended;
+        let was_playing = playback.library_playback.status.playing;
+        let had_ended = playback.library_playback.status.ended;
         match audio.0.status() {
             Ok(status) => {
                 if let Some(error) = status.error.clone() {
-                    session.notice = Some(format!("Library playback stopped: {error}"));
-                    invalidated.0 = true;
+                    shell.notice = Some(format!("Library playback stopped: {error}"));
+                    invalidated.invalidate(UiDirtyRegion::Library);
                 }
-                session.library_playback.visible_position = status.position_secs;
-                session.library_playback.status = status;
-                session.library_playback.last_audio_sync = Instant::now();
-                if session.library_playback.status.ended && !had_ended {
-                    let repeat = session.library_playback.repeat;
+                playback.library_playback.visible_position = status.position_secs;
+                playback.library_playback.status = status;
+                playback.library_playback.last_audio_sync = Instant::now();
+                if playback.library_playback.status.ended && !had_ended {
+                    let repeat = playback.library_playback.repeat;
                     let result = if repeat == LibraryRepeatMode::One {
-                        restart_library_song(&audio.0, &mut session.library_playback)
+                        restart_library_song(&audio.0, &mut playback.library_playback)
                     } else {
                         advance_library_queue(
                             &audio.0,
-                            &mut session.library_playback,
+                            &mut playback.library_playback,
                             1,
                             repeat == LibraryRepeatMode::All,
                         )
@@ -481,33 +486,33 @@ pub(crate) fn sync_library_audio(
                     if let Err(error) = result
                         && error != "This is the end of the queue."
                     {
-                        session.notice = Some(error);
+                        shell.notice = Some(error);
                     }
-                    invalidated.0 = true;
+                    invalidated.invalidate(UiDirtyRegion::Library);
                 }
-                if was_playing != session.library_playback.status.playing
-                    || had_ended != session.library_playback.status.ended
+                if was_playing != playback.library_playback.status.playing
+                    || had_ended != playback.library_playback.status.ended
                 {
-                    invalidated.0 = true;
+                    invalidated.invalidate(UiDirtyRegion::Library);
                 }
             }
             Err(error) => {
-                session.notice = Some(error);
-                invalidated.0 = true;
+                shell.notice = Some(error);
+                invalidated.invalidate(UiDirtyRegion::Library);
             }
         }
-    } else if session.library_playback.status.playing {
-        session.library_playback.visible_position =
-            library_visible_position(&session.library_playback);
+    } else if playback.library_playback.status.playing {
+        playback.library_playback.visible_position =
+            library_visible_position(&playback.library_playback);
     }
 }
 
 pub(crate) fn update_library_player_ui(
-    session: Res<StudioSession>,
+    playback: Res<PlaybackState>,
     mut progress: Query<&mut Node, With<LibraryPlayerProgress>>,
     mut clocks: Query<&mut Text, (With<LibraryPlayerClockText>, Without<LibraryPlayerProgress>)>,
 ) {
-    let playback = &session.library_playback;
+    let playback = &playback.library_playback;
     if !playback.status.loaded {
         return;
     }

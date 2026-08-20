@@ -105,16 +105,16 @@ pub(crate) fn finish_analysis_history(file_hash: &str, status: &str, error_messa
     let Ok(snapshot_json) = serde_json::to_string(&snapshot) else {
         return;
     };
-    let Ok(run_id) = library_db::analysis_history_insert(
+    let Ok(run_id) = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
         file_hash,
-        &song.title,
-        &song.artist,
+        title: &song.title,
+        artist: &song.artist,
         status,
         started_at_ms,
-        unix_time_ms(),
-        &snapshot_json,
+        finished_at_ms: unix_time_ms(),
+        snapshot_json: &snapshot_json,
         error_message,
-    ) else {
+    }) else {
         return;
     };
     record_node_attempts(run_id, file_hash, &snapshot);
@@ -400,8 +400,7 @@ pub(crate) fn resolve_frozen_config(
 /// Empty `targets` means "no special intent was stashed for this run" --
 /// self-contained default of "run everything," so callers don't have to
 /// duplicate that empty-check themselves.
-fn unused_audio_processing_nodes() -> BTreeSet<crate::analysis_graph::AnalysisNodeId> {
-    use crate::analysis_graph::AnalysisNodeId;
+fn configured_active_stem_nodes() -> BTreeSet<crate::analysis_graph::AnalysisNodeId> {
     use crate::audio_processing::AudioProcessingSettings;
 
     let config = crate::config::AppConfig::load();
@@ -409,24 +408,7 @@ fn unused_audio_processing_nodes() -> BTreeSet<crate::analysis_graph::AnalysisNo
         .audio_processing
         .clone()
         .unwrap_or_else(|| AudioProcessingSettings::from_legacy_separator(config.separator()));
-    let mut unused = BTreeSet::new();
-    let chain = &settings.vocal_cleanup_chain;
-    if !chain.iter().any(|id| id.contains("denoise")) {
-        unused.insert(AnalysisNodeId::new("vocals.denoise"));
-    }
-    if !chain.iter().any(|id| id.contains("dereverb")) {
-        unused.insert(AnalysisNodeId::new("vocals.dereverb"));
-    }
-    if settings.accompaniment_model_id.is_none() {
-        unused.insert(AnalysisNodeId::new("stems.instrumental"));
-    }
-    if settings.karaoke_model_id.is_none() {
-        unused.insert(AnalysisNodeId::new("stems.karaoke"));
-    }
-    if settings.multistem_model_id.is_none() {
-        unused.insert(AnalysisNodeId::new("stems.multistem"));
-    }
-    unused
+    crate::analysis_graph::active_stem_nodes_from_settings(&settings)
 }
 
 pub(crate) fn build_execution_plan(
@@ -445,17 +427,16 @@ pub(crate) fn build_execution_plan(
     } else {
         targets.clone()
     };
-    let mut effective_bypass = bypassed_nodes.clone();
-    effective_bypass.extend(unused_audio_processing_nodes());
     let request = AnalysisRequest {
         file_hash: String::new(),
         targets: effective_targets,
         disabled_nodes: disabled_nodes.clone(),
         frozen_artifacts: frozen_artifacts.clone(),
-        bypassed_nodes: effective_bypass,
+        bypassed_nodes: bypassed_nodes.clone(),
         lyrics_route: LyricsRoute::WhisperAsr,
         model_availability: BTreeMap::new(),
         profile_snapshot: AnalysisProfileSnapshot::default(),
+        active_stem_nodes: configured_active_stem_nodes(),
     };
     build_plan(&graph, &request)
 }
@@ -466,9 +447,17 @@ pub(crate) fn build_execution_plan(
 /// Phase 4 status note) -- every other node (`music.*`, `preflight`,
 /// `chart.build_candidate`) is computed unconditionally regardless of what
 /// the plan says.
-pub(crate) fn pipeline_flags_from_plan(
-    plan: &crate::analysis_plan::AnalysisPlan,
-) -> (bool, bool, bool, bool, bool, bool) {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PipelineFlags {
+    pub(crate) skip_transcription: bool,
+    pub(crate) skip_separation: bool,
+    pub(crate) skip_pitch: bool,
+    pub(crate) freeze_separation: bool,
+    pub(crate) freeze_pitch: bool,
+    pub(crate) bypass_separation: bool,
+}
+
+pub(crate) fn pipeline_flags_from_plan(plan: &crate::analysis_plan::AnalysisPlan) -> PipelineFlags {
     use crate::analysis_graph::AnalysisNodeId;
     use crate::analysis_plan::NodeState;
 
@@ -485,9 +474,11 @@ pub(crate) fn pipeline_flags_from_plan(
     let lyrics_ran = will_run("lyrics.transcribe")
         || will_run("lyrics.align")
         || will_run("lyrics.import_timed");
-    let freeze_separation = node_state_is("stems.separate", NodeState::Frozen);
+    let freeze_separation = node_state_is("stems.separate", NodeState::Frozen)
+        || node_state_is("stems.bind_analysis_outputs", NodeState::Frozen);
     let freeze_pitch = node_state_is("pitch.extract", NodeState::Frozen);
-    let bypass_separation = node_state_is("stems.separate", NodeState::Bypassed);
+    let bypass_separation = node_state_is("stems.separate", NodeState::Bypassed)
+        || node_state_is("stems.bind_analysis_outputs", NodeState::Bypassed);
     // A Frozen node must still be "run" from the pipeline's point of view --
     // it needs to hand its cached output (the vocals path, for stems) to
     // whatever downstream node actually executes this run. A Bypassed node
@@ -496,16 +487,21 @@ pub(crate) fn pipeline_flags_from_plan(
     // instead, which is exactly what `skip_separation` already models
     // (`vocals_path` stays unset by the separation call itself), so no
     // extra exemption is needed here for it the way Frozen needs one.
-    let skip_separation = !will_run("stems.separate") && !freeze_separation;
+    let separation_will_run = will_run("stems.separate")
+        || will_run("stems.vocals")
+        || will_run("stems.bind_analysis_outputs")
+        || will_run("stems.instrumental")
+        || will_run("stems.multistem");
+    let skip_separation = !separation_will_run && !freeze_separation;
     let skip_pitch = !will_run("pitch.extract") && !freeze_pitch;
-    (
-        !lyrics_ran,
+    PipelineFlags {
+        skip_transcription: !lyrics_ran,
         skip_separation,
         skip_pitch,
         freeze_separation,
         freeze_pitch,
         bypass_separation,
-    )
+    }
 }
 
 /// Resolves which real pipeline booleans a request implies, by asking the
@@ -534,7 +530,7 @@ pub(crate) fn pipeline_flags_for_request(
     disabled_nodes: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
     frozen_artifacts: &BTreeSet<crate::analysis_graph::ArtifactKind>,
     bypassed_nodes: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
-) -> Result<(bool, bool, bool, bool, bool, bool), Vec<crate::analysis_plan::PlanWarning>> {
+) -> Result<PipelineFlags, Vec<crate::analysis_plan::PlanWarning>> {
     let plan = build_execution_plan(targets, disabled_nodes, frozen_artifacts, bypassed_nodes)
         .map_err(|_| Vec::new())?;
     let rejected_disables: Vec<_> = plan
@@ -712,6 +708,14 @@ pub(crate) fn downstream_closure(
             if edge.from == current {
                 stack.push(edge.to.clone());
             }
+        }
+        // stems.separate is the MINI/compat shell; its real charting
+        // output is bind. Walk from bind so "run this node and downstream"
+        // still covers pitch and lyrics.
+        if current.as_str() == "stems.separate" {
+            stack.push(crate::analysis_graph::AnalysisNodeId::new(
+                "stems.bind_analysis_outputs",
+            ));
         }
     }
     visited
@@ -1001,6 +1005,7 @@ pub(crate) fn preview_analysis_request_for(
         lyrics_route: LyricsRoute::WhisperAsr,
         model_availability,
         profile_snapshot,
+        active_stem_nodes: configured_active_stem_nodes(),
     }
 }
 

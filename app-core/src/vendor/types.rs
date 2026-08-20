@@ -1,22 +1,7 @@
-use std::{
-    env,
-    io::{BufRead, BufReader, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-};
-
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use tracing::info;
 use ts_rs::TS;
-
-use crate::{
-    cache::{
-        CachePaths, models_dir, normalized_target_path, relocate_app_data_path,
-        relocate_directory_contents, same_path, songs_cache_dir, uta_studio_dir, vendor_dir,
-    },
-    vendor_scripts,
-};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]

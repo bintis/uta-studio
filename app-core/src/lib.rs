@@ -41,7 +41,8 @@ pub use analysis_artifact::{
 };
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
-    DisablePolicy, GraphValidationError, baseline_graph_spec,
+    DisablePolicy, GraphValidationError, active_stem_nodes_from_settings, baseline_graph_spec,
+    default_active_stem_nodes, lyrics_route_node_ids, optional_stem_node_ids, stem_group_node_ids,
 };
 pub use analysis_plan::{
     AnalysisPlan, AnalysisRequest, LyricsRoute, NodeState, PlanError, PlanWarning, PlannedNode,
@@ -138,7 +139,7 @@ pub use song::{
 pub use source::{
     FolderSource, LibraryFolderEntry, MediaSource, active_source, list_library_folder,
 };
-pub use ultrastar_export::{export_ultrastar, validate_ultrastar_chart};
+pub use ultrastar_export::{export_ultrastar, validate_ultrastar_chart, validate_ultrastar_text};
 pub use utz::VocalChartV1;
 pub use utz_export::{
     ExportProgress, ExportableSong, export_utz, export_utz_with_progress, list_exportable_songs,

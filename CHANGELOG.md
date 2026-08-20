@@ -2,6 +2,13 @@
 
 This changelog is generated from git history.
 
+## 0.5.1 — 2026-08-20
+
+- Refined library navigation by grouping charts and video under My Library and removing artist/album sidebar entries.
+- Restored entity-bound song and DAG pointer interactions, including reliable node context-menu dismissal.
+- Moved DAG context menus to a lightweight overlay so opening or closing one does not rebuild the graph.
+- Removed per-frame UI API registry reconstruction and normal-use whole-tree rebuild instrumentation that caused interaction lag.
+
 ## 0.5.0 — 2026-08-18
 
 ### Audio model catalog

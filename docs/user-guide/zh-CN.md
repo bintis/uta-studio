@@ -24,6 +24,8 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
+Uta Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
+
 #### Debian / Ubuntu
 
 ```sh
@@ -124,7 +126,7 @@ Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模�
 
 #### 曲库视图
 
-曲库提供全部音乐、分析进度、已完成谱面、视频来源、艺术家、专辑、播放列表和文件夹等视图。搜索可筛选歌曲、艺术家、专辑和播放列表。
+“浏览”包含全部音乐和分析进度；“我的曲库”包含谱面、视频来源、播放列表和文件夹。搜索可筛选歌曲、艺术家、专辑和播放列表。
 
 #### 监视文件夹
 
@@ -395,7 +397,7 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 - `music.analysis` — 调性、节奏和描述符分析，供后续时间和谱面使用。
 - `stems.separate` — 人声与伴奏分轨。
 - `pitch.extract` — 音高曲线和音符候选证据。
-- `lyrics.preprocess` — 供识别使用的音频；除非捕获，否则为临时文件。
+- `lyrics.preprocess`（人声预处理） — 把人声收成识别/对齐用的音频；除非捕获，否则为临时文件。
 - `lyrics.transcribe` — 识别文本。
 - `lyrics.align` — 带词级时间的转录。
 - `lyrics.import_timed` — 导入的带时间歌词。

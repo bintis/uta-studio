@@ -16,19 +16,21 @@ pub struct AnalysisHistoryRow {
     pub error_message: Option<String>,
 }
 
+pub struct NewAnalysisHistory<'a> {
+    pub file_hash: &'a str,
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub status: &'a str,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub snapshot_json: &'a str,
+    pub error_message: Option<&'a str>,
+}
+
 /// Returns the new row's id -- needed so a caller can attach
 /// `analysis_node_attempts` rows (phase plan §2.3) to the run that
 /// produced them.
-pub fn analysis_history_insert(
-    file_hash: &str,
-    title: &str,
-    artist: &str,
-    status: &str,
-    started_at_ms: i64,
-    finished_at_ms: i64,
-    snapshot_json: &str,
-    error_message: Option<&str>,
-) -> rusqlite::Result<i64> {
+pub fn analysis_history_insert(run: &NewAnalysisHistory<'_>) -> rusqlite::Result<i64> {
     with_conn_mut(|connection| {
         connection.execute(
             "INSERT INTO analysis_history (
@@ -36,14 +38,14 @@ pub fn analysis_history_insert(
                 finished_at_ms, snapshot_json, error_message
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                file_hash,
-                title,
-                artist,
-                status,
-                started_at_ms,
-                finished_at_ms,
-                snapshot_json,
-                error_message,
+                run.file_hash,
+                run.title,
+                run.artist,
+                run.status,
+                run.started_at_ms,
+                run.finished_at_ms,
+                run.snapshot_json,
+                run.error_message,
             ],
         )?;
         Ok(connection.last_insert_rowid())

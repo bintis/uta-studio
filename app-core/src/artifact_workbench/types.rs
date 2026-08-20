@@ -3,25 +3,16 @@
 //! This module is intentionally framework-independent. The desktop shell can
 //! render these values without reading cache files or inventing lineage.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis_artifact::{
-    ArtifactRevision, ArtifactStore, hash_file_contents, load_active_artifact,
-    load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
-    record_artifact_revision,
-};
-use crate::analysis_graph::{AnalysisNodeId, ArtifactKind, baseline_graph_spec};
-use crate::analysis_plan::{AnalysisPlan, AnalysisRequest, NodeState};
-use crate::cache::CacheDir;
+use crate::analysis_artifact::{ArtifactRevision, load_active_artifact};
+use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::library_db;
 
-pub(crate) use super::inspect::{bounded_read, inspect_artifact, revision_by_id};
+use super::inspect::{bounded_read, inspect_artifact, revision_by_id};
 
 fn workbench_now_ms() -> i64 {
     SystemTime::now()

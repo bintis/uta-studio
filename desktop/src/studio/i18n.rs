@@ -126,161 +126,120 @@ fn render_template(locale: UiLocale, key: &str, replacements: &[(&str, &str)]) -
     Some(rendered)
 }
 
-fn translate_diagnostic_summary(locale: UiLocale, source: &str) -> Option<String> {
-    let parts = source.split(" · ").collect::<Vec<_>>();
-    if parts.len() != 4 {
-        return None;
-    }
-    let passed = parts[0].strip_suffix(" passed")?;
-    let failed = parts[1].strip_suffix(" failed")?;
-    let skipped = parts[2].strip_suffix(" skipped")?;
-    let apis = parts[3].strip_suffix(" APIs")?;
-    render_template(
-        locale,
-        "{passed} passed · {failed} failed · {skipped} skipped · {apis} APIs",
-        &[
-            ("{passed}", passed),
-            ("{failed}", failed),
-            ("{skipped}", skipped),
-            ("{apis}", apis),
-        ],
-    )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UiMessage {
+    AppVersion,
+    RuntimeMissingComponents,
+    PathOpened,
+    FontSize,
+    LatestScan,
+    CacheRecalculating,
+    CacheStatsFailed,
+    FolderReadFailed,
+    WatchedLocations,
+    LogMissing,
+    TranscriptPreviewFailed,
+    TranscriptLoadFailed,
+    TranscriptWaveformFailed,
+    AudioWaveform,
+    TranscriptPreviewing,
+    TimingNotNumeric,
+    LanguageReprocessQueued,
+    ArtifactRevisionsRecorded,
+    FolderStoppedWatching,
+    AccelerationSet,
+    FlacEstimatedUpperBound,
+    SeparationProfileApplied,
+    AnalysisEngineSelected,
+    DiagnosticsSummary,
 }
 
-fn translate_dynamic(locale: UiLocale, source: &str) -> Option<String> {
-    for (prefix, key) in [
-        ("Version ", "Version {value}"),
-        ("Font size: ", "Font size: {value}"),
-        ("Missing components: ", "Missing components: {value}"),
-        ("Latest scan: ", "Latest scan: {value}"),
-        (
-            "Recalculating in background. Latest scan: ",
-            "Recalculating in background. Latest scan: {value}",
-        ),
-        (
-            "Cache stats failed to calculate: ",
-            "Cache stats failed to calculate: {value}",
-        ),
-        (
-            "Could not read this folder: ",
-            "Could not read this folder: {value}",
-        ),
-        ("WATCHED LOCATIONS · ", "WATCHED LOCATIONS · {value}"),
-        (
-            "No application log exists yet at ",
-            "No application log exists yet at {value}",
-        ),
-        ("Opened ", "Opened {value}"),
-        (
-            "Could not preview transcript audio: ",
-            "Could not preview transcript audio: {value}",
-        ),
-        (
-            "Could not load transcript audio: ",
-            "Could not load transcript audio: {value}",
-        ),
-        (
-            "Could not load transcript waveform: ",
-            "Could not load transcript waveform: {value}",
-        ),
-        ("AUDIO WAVEFORM · ", "AUDIO WAVEFORM · {value}"),
-    ] {
-        if let Some(value) = source.strip_prefix(prefix) {
-            return render_template(locale, key, &[("{value}", value)]);
+impl UiMessage {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::AppVersion => "message.app_version",
+            Self::RuntimeMissingComponents => "message.runtime_missing_components",
+            Self::PathOpened => "message.path_opened",
+            Self::FontSize => "message.font_size",
+            Self::LatestScan => "message.latest_scan",
+            Self::CacheRecalculating => "message.cache_recalculating",
+            Self::CacheStatsFailed => "message.cache_stats_failed",
+            Self::FolderReadFailed => "message.folder_read_failed",
+            Self::WatchedLocations => "message.watched_locations",
+            Self::LogMissing => "message.log_missing",
+            Self::TranscriptPreviewFailed => "message.transcript_preview_failed",
+            Self::TranscriptLoadFailed => "message.transcript_load_failed",
+            Self::TranscriptWaveformFailed => "message.transcript_waveform_failed",
+            Self::AudioWaveform => "message.audio_waveform",
+            Self::TranscriptPreviewing => "message.transcript_previewing",
+            Self::TimingNotNumeric => "message.timing_not_numeric",
+            Self::LanguageReprocessQueued => "message.language_reprocess_queued",
+            Self::ArtifactRevisionsRecorded => "message.artifact_revisions_recorded",
+            Self::FolderStoppedWatching => "message.folder_stopped_watching",
+            Self::AccelerationSet => "message.acceleration_set",
+            Self::FlacEstimatedUpperBound => "message.flac_estimated_upper_bound",
+            Self::SeparationProfileApplied => "message.separation_profile_applied",
+            Self::AnalysisEngineSelected => "message.analysis_engine_selected",
+            Self::DiagnosticsSummary => "message.diagnostics_summary",
         }
     }
 
-    if let Some(value) = source
-        .strip_prefix("Previewing transcript at ")
-        .and_then(|value| value.strip_suffix('.'))
-    {
-        return render_template(
-            locale,
-            "Previewing transcript at {value}.",
-            &[("{value}", value)],
-        );
+    const fn english(self) -> &'static str {
+        match self {
+            Self::AppVersion => "Version {version}",
+            Self::RuntimeMissingComponents => "Missing components: {components}",
+            Self::PathOpened => "Opened {path}",
+            Self::FontSize => "Font size: {size}",
+            Self::LatestScan => "Latest scan: {size}",
+            Self::CacheRecalculating => "Recalculating in background. Latest scan: {size}",
+            Self::CacheStatsFailed => "Cache stats failed to calculate: {error}",
+            Self::FolderReadFailed => "Could not read this folder: {error}",
+            Self::WatchedLocations => "WATCHED LOCATIONS · {count}",
+            Self::LogMissing => "No application log exists yet at {path}",
+            Self::TranscriptPreviewFailed => "Could not preview transcript audio: {error}",
+            Self::TranscriptLoadFailed => "Could not load transcript audio: {error}",
+            Self::TranscriptWaveformFailed => "Could not load transcript waveform: {error}",
+            Self::AudioWaveform => "AUDIO WAVEFORM · {duration}",
+            Self::TranscriptPreviewing => "Previewing transcript at {position}.",
+            Self::TimingNotNumeric => "{field} is not numeric",
+            Self::LanguageReprocessQueued => "Language set to {language}; reprocessing queued.",
+            Self::ArtifactRevisionsRecorded => "Recorded {count} artifact revision(s) from disk.",
+            Self::FolderStoppedWatching => {
+                "Stopped watching {path}. No source media was moved or deleted."
+            }
+            Self::AccelerationSet => {
+                "Acceleration set to {backend}. Reconfigure the runtime to apply it."
+            }
+            Self::FlacEstimatedUpperBound => {
+                "Estimated upper bound before FLAC compression: {size} MiB."
+            }
+            Self::SeparationProfileApplied => {
+                "{profile} separation profile applied. Existing stems change only after re-analysis."
+            }
+            Self::AnalysisEngineSelected => {
+                "{engine} selected. Existing charts change only after re-analysis."
+            }
+            Self::DiagnosticsSummary => {
+                "{passed} passed · {failed} failed · {skipped} skipped · {apis} APIs"
+            }
+        }
     }
+}
 
-    if let Some(value) = source.strip_suffix(" is not numeric") {
-        return render_template(locale, "{value} is not numeric", &[("{value}", value)]);
-    }
-
-    if let Some(value) = source
-        .strip_prefix("Language set to ")
-        .and_then(|value| value.strip_suffix("; reprocessing queued."))
-    {
-        return render_template(
-            locale,
-            "Language set to {value}; reprocessing queued.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) = source
-        .strip_prefix("Recorded ")
-        .and_then(|value| value.strip_suffix(" artifact revision(s) from disk."))
-    {
-        return render_template(
-            locale,
-            "Recorded {value} artifact revision(s) from disk.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) = source
-        .strip_prefix("Stopped watching ")
-        .and_then(|value| value.strip_suffix(". No source media was moved or deleted."))
-    {
-        return render_template(
-            locale,
-            "Stopped watching {value}. No source media was moved or deleted.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) = source
-        .strip_prefix("Acceleration set to ")
-        .and_then(|value| value.strip_suffix(". Reconfigure the runtime to apply it."))
-    {
-        return render_template(
-            locale,
-            "Acceleration set to {value}. Reconfigure the runtime to apply it.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) = source
-        .strip_prefix("Estimated upper bound before FLAC compression: ")
-        .and_then(|value| value.strip_suffix(" MiB."))
-    {
-        return render_template(
-            locale,
-            "Estimated upper bound before FLAC compression: {value} MiB.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) = source
-        .strip_suffix(" separation profile applied. Existing stems change only after re-analysis.")
-    {
-        return render_template(
-            locale,
-            "{value} separation profile applied. Existing stems change only after re-analysis.",
-            &[("{value}", value)],
-        );
-    }
-
-    if let Some(value) =
-        source.strip_suffix(" selected. Existing charts change only after re-analysis.")
-    {
-        return render_template(
-            locale,
-            "{value} selected. Existing charts change only after re-analysis.",
-            &[("{value}", value)],
-        );
-    }
-
-    translate_diagnostic_summary(locale, source)
+/// Renders a stable message ID before a `Text` entity is created.
+pub(crate) fn localized_message(
+    config: &AppConfig,
+    message: UiMessage,
+    replacements: &[(&str, &str)],
+) -> String {
+    let locale = effective_ui_locale(config);
+    render_template(locale, message.id(), replacements).unwrap_or_else(|| {
+        let mut rendered = message.english().to_string();
+        for (placeholder, value) in replacements {
+            rendered = rendered.replace(placeholder, value);
+        }
+        rendered
+    })
 }
 
 pub(crate) fn translate_ui(locale: UiLocale, source: &str) -> Option<String> {
@@ -300,21 +259,22 @@ pub(crate) fn translate_ui(locale: UiLocale, source: &str) -> Option<String> {
         return Some(format!("{translated}\n\n{tail}"));
     }
 
-    translate_dynamic(locale, source)
+    None
 }
 
-pub(crate) fn localize_ui_text(
-    session: Res<StudioSession>,
-    mut texts: Query<
-        &mut Text,
-        (
-            Changed<Text>,
-            Without<EditableText>,
-            Without<NoRuntimeLocalization>,
-        ),
-    >,
-) {
-    let locale = effective_ui_locale(&session.config);
+type LocalizableTexts<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Text,
+    (
+        Changed<Text>,
+        Without<EditableText>,
+        Without<NoRuntimeLocalization>,
+    ),
+>;
+
+pub(crate) fn localize_ui_text(shell: Res<ShellState>, mut texts: LocalizableTexts) {
+    let locale = effective_ui_locale(&shell.config);
     if locale == UiLocale::English {
         return;
     }
@@ -358,32 +318,54 @@ mod tests {
             |catalog: &HashMap<String, String>| catalog.keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(keys(&english), keys(&chinese));
         assert_eq!(keys(&english), keys(&japanese));
-        assert!(english.iter().all(|(key, value)| key == value));
+        assert!(
+            english
+                .iter()
+                .all(|(key, value)| key.starts_with("message.") || key == value)
+        );
         assert!(chinese.values().all(|value| !value.trim().is_empty()));
         assert!(japanese.values().all(|value| !value.trim().is_empty()));
     }
 
     #[test]
-    fn exact_and_dynamic_copy_is_localized() {
+    fn exact_static_copy_is_localized() {
         assert_eq!(
             translate_ui(UiLocale::SimplifiedChinese, "Settings").as_deref(),
             Some("设置")
         );
-        let version = env!("CARGO_PKG_VERSION");
-        let english = format!("Version {version}");
-        let japanese = format!("バージョン {version}");
-        assert_eq!(
-            translate_ui(UiLocale::Japanese, &english).as_deref(),
-            Some(japanese.as_str())
-        );
-        assert_eq!(
-            translate_ui(
-                UiLocale::SimplifiedChinese,
-                "2 passed · 1 failed · 3 skipped · 17 APIs"
-            )
-            .as_deref(),
-            Some("2 项通过 · 1 项失败 · 3 项跳过 · 17 个 API")
-        );
         assert_eq!(translate_ui(UiLocale::Japanese, "user supplied text"), None);
+    }
+
+    #[test]
+    fn stable_message_ids_render_arguments_before_text_creation() {
+        let config = AppConfig {
+            ui_language: Some("ja".to_string()),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            localized_message(
+                &config,
+                UiMessage::PathOpened,
+                &[("{path}", "C:\\Music\\song.flac")]
+            ),
+            "C:\\Music\\song.flac を開きました"
+        );
+        let chinese = AppConfig {
+            ui_language: Some("zh-CN".to_string()),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            localized_message(
+                &chinese,
+                UiMessage::DiagnosticsSummary,
+                &[
+                    ("{passed}", "2"),
+                    ("{failed}", "1"),
+                    ("{skipped}", "3"),
+                    ("{apis}", "17"),
+                ]
+            ),
+            "2 项通过 · 1 项失败 · 3 项跳过 · 17 个 API"
+        );
     }
 }

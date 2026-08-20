@@ -125,7 +125,11 @@
         in {
           default = pkgs.mkShell {
             inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}."uta-studio" ];
-            packages = [ pkgs.rustfmt ];
+            # Keep compiler-coupled tools from the same nixpkgs toolchain.
+            # Falling through to a host clippy can load metadata produced by
+            # a different LLVM build even when both report the same Rust
+            # release and commit.
+            packages = with pkgs; [ clippy rustfmt ];
             shellHook = ''
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_UV_PATH="${pkgs.uv}/bin/uv"

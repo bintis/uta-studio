@@ -13,7 +13,8 @@ use ts_rs::TS;
 
 use crate::analysis_graph::{
     AnalysisGraphSpec, AnalysisNodeId, ArtifactKind, DisablePolicy, GraphValidationError,
-    baseline_graph_spec, lyrics_route_node_ids,
+    baseline_graph_spec, default_active_stem_nodes, lyrics_route_node_ids, optional_stem_node_ids,
+    stem_group_node_ids,
 };
 use crate::analysis_profile::AnalysisProfileSnapshot;
 
@@ -105,6 +106,11 @@ pub struct AnalysisRequest {
     pub model_availability: BTreeMap<AnalysisNodeId, bool>,
     #[serde(default)]
     pub profile_snapshot: AnalysisProfileSnapshot,
+    /// Stem-pipeline nodes selected by the current audio settings. An empty
+    /// set means "use the default chart path" (`stems.vocals` + bind).
+    /// Optional stem nodes not listed here become `NotApplicable`.
+    #[serde(default)]
+    pub active_stem_nodes: BTreeSet<AnalysisNodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -164,6 +170,39 @@ fn direct_parents(graph: &AnalysisGraphSpec, id: &AnalysisNodeId) -> Vec<Analysi
         .collect()
 }
 
+fn effective_active_stem_nodes(request: &AnalysisRequest) -> BTreeSet<AnalysisNodeId> {
+    if request.active_stem_nodes.is_empty() {
+        default_active_stem_nodes()
+    } else {
+        let mut nodes = request.active_stem_nodes.clone();
+        nodes.insert(AnalysisNodeId::new("stems.bind_analysis_outputs"));
+        nodes
+    }
+}
+
+fn expand_stem_group(ids: &BTreeSet<AnalysisNodeId>) -> BTreeSet<AnalysisNodeId> {
+    let mut expanded = ids.clone();
+    if ids.contains(&AnalysisNodeId::new("stems.separate")) {
+        expanded.extend(stem_group_node_ids());
+    }
+    expanded
+}
+
+fn plan_parents(
+    graph: &AnalysisGraphSpec,
+    id: &AnalysisNodeId,
+    universe: &BTreeSet<AnalysisNodeId>,
+) -> Vec<AnalysisNodeId> {
+    let mut parents = direct_parents(graph, id);
+    if id.as_str() == "stems.bind_analysis_outputs"
+        && !universe.contains(&AnalysisNodeId::new("stems.vocals"))
+        && universe.contains(&AnalysisNodeId::new("stems.multistem"))
+    {
+        parents.push(AnalysisNodeId::new("stems.multistem"));
+    }
+    parents
+}
+
 /// Builds a concrete plan for one request against one graph. Pure function:
 /// no filesystem, queue, or model-installer access — see module docs.
 pub fn build_plan(
@@ -175,12 +214,17 @@ pub fn build_plan(
 
     let route_nodes = lyrics_route_node_ids();
     let active_route_nodes = request.lyrics_route.active_nodes();
+    let optional_stems = optional_stem_node_ids();
+    let active_stems = effective_active_stem_nodes(request);
     let universe: BTreeSet<AnalysisNodeId> = graph
         .nodes
         .iter()
         .map(|n| n.id.clone())
         .filter(|id| !route_nodes.contains(id) || active_route_nodes.contains(id))
+        .filter(|id| !optional_stems.contains(id) || active_stems.contains(id))
         .collect();
+    let disabled_nodes = expand_stem_group(&request.disabled_nodes);
+    let request_bypassed = expand_stem_group(&request.bypassed_nodes);
 
     for target in &request.targets {
         if !universe.contains(target) {
@@ -212,11 +256,11 @@ pub fn build_plan(
             frozen_nodes.insert(id.clone());
             continue;
         }
-        if request.bypassed_nodes.contains(&id) {
+        if request_bypassed.contains(&id) {
             bypassed_nodes.insert(id.clone());
             continue;
         }
-        for parent in direct_parents(graph, &id) {
+        for parent in plan_parents(graph, &id, &universe) {
             if universe.contains(&parent) {
                 stack.push(parent);
             }
@@ -229,53 +273,27 @@ pub fn build_plan(
     let mut states: BTreeMap<AnalysisNodeId, (NodeState, Option<String>)> = BTreeMap::new();
     for id in &order {
         if !universe.contains(id) {
+            let reason = if optional_stems.contains(id) {
+                "not part of the selected stem pipeline"
+            } else {
+                "not part of the selected lyrics route"
+            };
             states.insert(
                 id.clone(),
-                (
-                    NodeState::NotApplicable,
-                    Some("not part of the selected lyrics route".to_string()),
-                ),
+                (NodeState::NotApplicable, Some(reason.to_string())),
             );
             continue;
         }
-        if !required.contains(id) {
-            states.insert(id.clone(), (NodeState::Ready, None));
-            continue;
-        }
-        if frozen_nodes.contains(id) {
-            states.insert(id.clone(), (NodeState::Frozen, None));
-            continue;
-        }
-        if bypassed_nodes.contains(id) {
+        if request_bypassed.contains(id) || bypassed_nodes.contains(id) {
             states.insert(id.clone(), (NodeState::Bypassed, None));
             continue;
         }
 
         let node = graph
             .node(id)
-            .expect("required node exists in a validated graph");
+            .expect("universe node exists in a validated graph");
 
-        let mut blocking_parent: Option<AnalysisNodeId> = None;
-        for parent in direct_parents(graph, id) {
-            if let Some((parent_state, _)) = states.get(&parent) {
-                if matches!(parent_state, NodeState::Blocked | NodeState::Disabled) {
-                    blocking_parent = Some(parent);
-                    break;
-                }
-            }
-        }
-        if let Some(parent) = blocking_parent {
-            states.insert(
-                id.clone(),
-                (
-                    NodeState::Blocked,
-                    Some(format!("upstream node {parent} is disabled or blocked")),
-                ),
-            );
-            continue;
-        }
-
-        if request.disabled_nodes.contains(id) {
+        if disabled_nodes.contains(id) {
             match node.disable_policy {
                 DisablePolicy::AlwaysRequired => {
                     states.insert(
@@ -290,6 +308,34 @@ pub fn build_plan(
                     states.insert(id.clone(), (NodeState::Disabled, None));
                 }
             }
+            continue;
+        }
+        if !required.contains(id) {
+            states.insert(id.clone(), (NodeState::Ready, None));
+            continue;
+        }
+        if frozen_nodes.contains(id) {
+            states.insert(id.clone(), (NodeState::Frozen, None));
+            continue;
+        }
+
+        let mut blocking_parent: Option<AnalysisNodeId> = None;
+        for parent in plan_parents(graph, id, &universe) {
+            if let Some((parent_state, _)) = states.get(&parent)
+                && matches!(parent_state, NodeState::Blocked | NodeState::Disabled)
+            {
+                blocking_parent = Some(parent);
+                break;
+            }
+        }
+        if let Some(parent) = blocking_parent {
+            states.insert(
+                id.clone(),
+                (
+                    NodeState::Blocked,
+                    Some(format!("upstream node {parent} is disabled or blocked")),
+                ),
+            );
             continue;
         }
 
@@ -368,6 +414,7 @@ mod tests {
             lyrics_route: route,
             model_availability: BTreeMap::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
+            active_stem_nodes: BTreeSet::new(),
         }
     }
 
@@ -385,12 +432,23 @@ mod tests {
                 .will_run
         );
         assert!(
-            plan.node(&AnalysisNodeId::new("stems.separate"))
+            plan.node(&AnalysisNodeId::new("stems.vocals"))
+                .unwrap()
+                .will_run
+        );
+        assert!(
+            plan.node(&AnalysisNodeId::new("stems.bind_analysis_outputs"))
                 .unwrap()
                 .will_run
         );
         assert!(
             plan.node(&AnalysisNodeId::new("preflight"))
+                .unwrap()
+                .will_run
+        );
+        assert!(
+            !plan
+                .node(&AnalysisNodeId::new("stems.separate"))
                 .unwrap()
                 .will_run
         );
@@ -440,15 +498,17 @@ mod tests {
     fn frozen_artifact_satisfies_downstream_input_without_rerunning_upstream() {
         let graph = baseline_graph_spec();
         let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
-        req.frozen_artifacts.insert(ArtifactKind::VocalStem);
+        req.frozen_artifacts.insert(ArtifactKind::AnalysisVocalStem);
 
         let plan = build_plan(&graph, &req).unwrap();
-        let stems = plan.node(&AnalysisNodeId::new("stems.separate")).unwrap();
-        assert_eq!(stems.state, NodeState::Frozen);
-        assert!(!stems.will_run);
+        let bind = plan
+            .node(&AnalysisNodeId::new("stems.bind_analysis_outputs"))
+            .unwrap();
+        assert_eq!(bind.state, NodeState::Frozen);
+        assert!(!bind.will_run);
 
-        // Freezing stems.separate must stop the closure from reaching
-        // further upstream to preflight.
+        // Freezing bind's analysis vocal must stop the closure from
+        // reaching further upstream to extract or preflight.
         assert!(
             !plan
                 .node(&AnalysisNodeId::new("preflight"))
@@ -521,6 +581,12 @@ mod tests {
                 .unwrap()
                 .state,
             NodeState::Disabled
+        );
+        assert_eq!(
+            plan.node(&AnalysisNodeId::new("stems.bind_analysis_outputs"))
+                .unwrap()
+                .state,
+            NodeState::Blocked
         );
         assert_eq!(
             plan.node(&AnalysisNodeId::new("pitch.extract"))
@@ -653,6 +719,73 @@ mod tests {
         assert_eq!(
             err,
             PlanError::UnknownTarget(AnalysisNodeId::new("lyrics.align"))
+        );
+    }
+
+    #[test]
+    fn unused_stem_nodes_are_not_applicable_and_do_not_run() {
+        let graph = baseline_graph_spec();
+        let plan = build_plan(
+            &graph,
+            &request(&["chart.build_candidate"], LyricsRoute::WhisperAsr),
+        )
+        .unwrap();
+        for unused in [
+            "vocals.denoise",
+            "vocals.dereverb",
+            "stems.instrumental",
+            "stems.karaoke",
+            "stems.multistem",
+        ] {
+            let node = plan.node(&AnalysisNodeId::new(unused)).unwrap();
+            assert_eq!(node.state, NodeState::NotApplicable, "{unused}");
+            assert!(!node.will_run, "{unused}");
+        }
+        assert!(
+            plan.node(&AnalysisNodeId::new("stems.vocals"))
+                .unwrap()
+                .will_run
+        );
+        assert!(
+            plan.node(&AnalysisNodeId::new("stems.bind_analysis_outputs"))
+                .unwrap()
+                .will_run
+        );
+    }
+
+    #[test]
+    fn selected_cleanup_and_accompaniment_are_required_for_pitch() {
+        let graph = baseline_graph_spec();
+        let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
+        req.active_stem_nodes = [
+            "stems.vocals",
+            "vocals.denoise",
+            "vocals.dereverb",
+            "stems.instrumental",
+            "stems.bind_analysis_outputs",
+        ]
+        .into_iter()
+        .map(AnalysisNodeId::new)
+        .collect();
+        let plan = build_plan(&graph, &req).unwrap();
+        for expected in [
+            "stems.vocals",
+            "vocals.denoise",
+            "vocals.dereverb",
+            "stems.instrumental",
+            "stems.bind_analysis_outputs",
+            "pitch.extract",
+        ] {
+            assert!(
+                plan.node(&AnalysisNodeId::new(expected)).unwrap().will_run,
+                "{expected} should run"
+            );
+        }
+        assert_eq!(
+            plan.node(&AnalysisNodeId::new("stems.karaoke"))
+                .unwrap()
+                .state,
+            NodeState::NotApplicable
         );
     }
 

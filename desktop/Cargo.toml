@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-desktop"
-version = "0.5.0"
+version = "0.5.1"
 description = "Bevy desktop application for Uta Studio."
 authors = ["bintis"]
 license = "GPL-3.0"

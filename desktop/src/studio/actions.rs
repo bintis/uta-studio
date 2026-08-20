@@ -1,81 +1,121 @@
 use crate::studio::*;
 
+#[derive(SystemParam)]
+pub(crate) struct ActionSystemParams<'w, 's> {
+    keys: Res<'w, ButtonInput<KeyCode>>,
+    text_inputs: EditorTextInputs<'w, 's>,
+    search_inputs: LibrarySearchInputs<'w, 's>,
+    windows: PrimaryWindowAndAnalysisViewport<'w, 's>,
+    audio: Res<'w, NativeAudio>,
+    library_audio: Res<'w, NativeLibraryAudio>,
+    pitch_audition: Res<'w, NativePitchAudition>,
+    shell: ResMut<'w, ShellState>,
+    library: ResMut<'w, LibraryState>,
+    analysis: ResMut<'w, AnalysisUiState>,
+    editor: ResMut<'w, EditorUiState>,
+    dialogs: ResMut<'w, DialogState>,
+    jobs: ResMut<'w, AsyncJobs>,
+    playback: ResMut<'w, PlaybackState>,
+    setup: ResMut<'w, NativeSetup>,
+    diagnostics: ResMut<'w, NativeDiagnostics>,
+    authoring: ResMut<'w, NativeAuthoringJob>,
+    theme: ResMut<'w, StudioTheme>,
+    clear_color: ResMut<'w, ClearColor>,
+    invalidated: ResMut<'w, UiInvalidated>,
+}
+
 pub(crate) fn handle_actions(
     mut commands: Commands,
     interactions: Query<(&Interaction, &UiAction), Changed<Interaction>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    text_inputs: EditorTextInputs,
-    search_inputs: Query<
-        &EditableText,
-        (
-            With<LibrarySearchInput>,
-            Without<LyricsEditorInput>,
-            Without<LanguageEditorInput>,
-        ),
-    >,
-    mut windows: PrimaryWindowAndAnalysisViewport,
-    audio: Res<NativeAudio>,
-    library_audio: Res<NativeLibraryAudio>,
-    pitch_audition: Res<NativePitchAudition>,
-    mut session: ResMut<StudioSession>,
-    mut setup: ResMut<NativeSetup>,
-    mut diagnostics: ResMut<NativeDiagnostics>,
-    mut authoring: ResMut<NativeAuthoringJob>,
-    mut theme: ResMut<StudioTheme>,
-    mut clear_color: ResMut<ClearColor>,
-    mut invalidated: ResMut<UiInvalidated>,
+    mut context: ActionSystemParams,
 ) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let graph_viewport_width = windows
+        // The node-menu backdrop guarantees that every action received while
+        // this menu is open came from the menu or its dismiss surface. Tear
+        // down that overlay before dispatching the selected command so no
+        // workspace-scoped action can leave a stale menu entity behind.
+        if context.dialogs.analysis_node_context.take().is_some() {
+            context.invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        let graph_viewport_width = context
+            .windows
             .analysis_graph_viewport
             .iter()
             .next()
             .map(|computed| computed.size().x * computed.inverse_scale_factor());
-        let Ok((window_entity, mut window)) = windows.windows.single_mut() else {
+        let Ok((window_entity, mut window)) = context.windows.windows.single_mut() else {
             continue;
         };
         if apply_chrome_action(
             action,
             &mut commands,
-            &keys,
-            &search_inputs,
+            &context.search_inputs,
             window_entity,
-            &mut window,
             graph_viewport_width,
-            &audio,
-            &library_audio,
-            &mut session,
-            &mut invalidated,
+            ChromeActionState {
+                audio: &context.audio,
+                library_audio: &context.library_audio,
+                state: StudioStateMut {
+                    shell: &mut context.shell,
+                    library: &mut context.library,
+                    analysis: &mut context.analysis,
+                    editor: &mut context.editor,
+                    dialogs: &mut context.dialogs,
+                    jobs: &mut context.jobs,
+                    playback: &mut context.playback,
+                },
+                invalidated: &mut context.invalidated,
+            },
         ) {
             continue;
         }
         if apply_settings_action(
             action,
-            &mut window,
-            &mut session,
-            &mut setup,
-            &mut diagnostics,
-            &mut theme,
-            &mut clear_color,
-            &mut invalidated,
+            SettingsActionContext {
+                window: &mut window,
+                state: StudioStateMut {
+                    shell: &mut context.shell,
+                    library: &mut context.library,
+                    analysis: &mut context.analysis,
+                    editor: &mut context.editor,
+                    dialogs: &mut context.dialogs,
+                    jobs: &mut context.jobs,
+                    playback: &mut context.playback,
+                },
+                setup: &mut context.setup,
+                diagnostics: &mut context.diagnostics,
+                theme: &mut context.theme,
+                clear_color: &mut context.clear_color,
+                invalidated: &mut context.invalidated,
+            },
         ) {
             continue;
         }
         apply_content_action(
             action,
-            &mut commands,
-            &keys,
-            &text_inputs,
-            &search_inputs,
-            &audio,
-            &library_audio,
-            &pitch_audition,
-            &mut session,
-            &mut authoring,
-            &mut invalidated,
+            &context.keys,
+            &context.text_inputs,
+            ContentActionServices {
+                audio: &context.audio,
+                library_audio: &context.library_audio,
+                pitch_audition: &context.pitch_audition,
+            },
+            ContentActionState {
+                state: StudioStateMut {
+                    shell: &mut context.shell,
+                    library: &mut context.library,
+                    analysis: &mut context.analysis,
+                    editor: &mut context.editor,
+                    dialogs: &mut context.dialogs,
+                    jobs: &mut context.jobs,
+                    playback: &mut context.playback,
+                },
+                authoring: &mut context.authoring,
+                invalidated: &mut context.invalidated,
+            },
         );
     }
 }

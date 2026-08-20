@@ -204,11 +204,12 @@ mod tests {
         asr_engine: &str,
         align_backend: &str,
     ) -> crate::config::AppConfig {
-        let mut config = crate::config::AppConfig::default();
-        config.separator = Some(separator.to_string());
-        config.asr_engine = Some(asr_engine.to_string());
-        config.align_backend = Some(align_backend.to_string());
-        config
+        crate::config::AppConfig {
+            separator: Some(separator.to_string()),
+            asr_engine: Some(asr_engine.to_string()),
+            align_backend: Some(align_backend.to_string()),
+            ..crate::config::AppConfig::default()
+        }
     }
 
     #[test]

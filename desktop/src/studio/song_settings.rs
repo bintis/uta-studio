@@ -174,7 +174,7 @@ pub(crate) fn spawn_song_settings_panel(
                                 theme,
                                 "Choose…",
                                 9.0,
-                                UiAction::ChooseBackgroundVideo,
+                                UiAction::from(EditorCommand::ChooseBackgroundVideo),
                             );
                             if panel.background_video_path.is_some() {
                                 spawn_text_button(
@@ -183,7 +183,7 @@ pub(crate) fn spawn_song_settings_panel(
                                     theme,
                                     "Clear",
                                     9.0,
-                                    UiAction::ClearBackgroundVideo,
+                                    UiAction::from(EditorCommand::ClearBackgroundVideo),
                                 );
                             }
                         });
@@ -240,7 +240,7 @@ pub(crate) fn spawn_song_settings_panel(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::CloseSongSettings,
+                                UiAction::from(EditorCommand::CloseSongSettings),
                             );
                             spawn_text_button(
                                 row,
@@ -248,7 +248,7 @@ pub(crate) fn spawn_song_settings_panel(
                                 theme,
                                 "Save",
                                 10.0,
-                                UiAction::SaveSongSettings,
+                                UiAction::from(EditorCommand::SaveSongSettings),
                             );
                         });
                 });

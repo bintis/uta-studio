@@ -1,12 +1,20 @@
 use crate::studio::*;
 
 pub fn run() {
-    let session = StudioSession::load();
+    let StudioStateBundle {
+        shell,
+        library,
+        analysis,
+        editor,
+        dialogs,
+        jobs,
+        playback,
+    } = StudioStateBundle::load();
     let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
-    let theme = StudioTheme::new(session.config.dark_mode.unwrap_or(false));
-    set_ui_font_scale(session.config.font_scale());
-    let mut window = studio_window(&session.config, theme.dark);
+    let theme = StudioTheme::new(shell.config.dark_mode.unwrap_or(false));
+    set_ui_font_scale(shell.config.font_scale());
+    let mut window = studio_window(&shell.config, theme.dark);
     let restore_window_mode = window.mode;
     if !matches!(restore_window_mode, WindowMode::Windowed) {
         window.mode = WindowMode::Windowed;
@@ -15,7 +23,13 @@ pub fn run() {
     App::new()
         .insert_resource(ClearColor(theme.background))
         .insert_resource(theme)
-        .insert_resource(session)
+        .insert_resource(shell)
+        .insert_resource(library)
+        .insert_resource(analysis)
+        .insert_resource(editor)
+        .insert_resource(dialogs)
+        .insert_resource(jobs)
+        .insert_resource(playback)
         .insert_resource(NativeAudio(native_audio))
         .insert_resource(NativePitchAudition(Arc::new(
             uta_studio_audio::PitchAudition::new(),
@@ -24,6 +38,8 @@ pub fn run() {
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
         .insert_resource(UiInvalidated::default())
+        .insert_resource(UiRebuildMetrics::default())
+        .insert_resource(DebugScreenshotState::default())
         .insert_resource(NavigationInputState::default())
         .insert_resource(LibraryRefreshTimer(Timer::from_seconds(
             1.0,
@@ -76,6 +92,10 @@ pub fn run() {
         .add_systems(Update, update_startup_banner)
         .add_systems(
             Update,
+            capture_debug_screenshot.after(update_startup_banner),
+        )
+        .add_systems(
+            Update,
             (
                 register_navigation_targets,
                 handle_accessible_navigation,
@@ -119,8 +139,16 @@ pub fn run() {
                 .before(rebuild_ui),
         )
         .add_systems(Update, rebuild_ui.after(handle_actions))
+        .add_systems(Update, audit_ui_api_coverage.after(rebuild_ui))
         .add_systems(Update, localize_ui_text.after(rebuild_ui))
         .add_systems(Update, update_button_visuals.after(rebuild_ui))
+        .add_systems(
+            Update,
+            finalize_ui_rebuild_metrics
+                .after(rebuild_ui)
+                .after(localize_ui_text)
+                .after(update_button_visuals),
+        )
         .add_systems(
             Update,
             update_navigation_focus_visuals
@@ -147,6 +175,33 @@ pub fn run() {
         .add_systems(Update, update_editor_shortcuts_panel_visibility)
         .add_systems(Update, update_library_player_ui)
         .run();
+}
+
+pub(crate) fn capture_debug_screenshot(
+    mut commands: Commands,
+    startup_banner: Res<StartupBannerState>,
+    mut state: ResMut<DebugScreenshotState>,
+) {
+    let Some(path) = state.path.clone() else {
+        return;
+    };
+    if state.requested || !startup_banner.done {
+        return;
+    }
+    state.settled_frames = state.settled_frames.saturating_add(1);
+    if state.settled_frames < 30 {
+        return;
+    }
+    state.requested = true;
+    commands
+        .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+        .observe(
+            move |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+                  mut app_exit: MessageWriter<AppExit>| {
+                bevy::render::view::screenshot::save_to_disk(&path)(captured);
+                app_exit.write(AppExit::Success);
+            },
+        );
 }
 
 pub(crate) fn studio_log_filter() -> String {
@@ -262,17 +317,29 @@ pub(crate) fn studio_window(config: &AppConfig, dark: bool) -> Window {
     }
 }
 
-pub(crate) fn setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut images: ResMut<Assets<Image>>,
-    mut local_images: ResMut<LocalImages>,
-    startup_banner: Res<StartupBannerState>,
-    session: Res<StudioSession>,
-    native_setup: Res<NativeSetup>,
-    cache_stats: Res<CacheStatsJob>,
-    theme: Res<StudioTheme>,
-) {
+#[derive(SystemParam)]
+pub(crate) struct StartupUiResources<'w> {
+    asset_server: Res<'w, AssetServer>,
+    images: ResMut<'w, Assets<Image>>,
+    local_images: ResMut<'w, LocalImages>,
+    startup_banner: Res<'w, StartupBannerState>,
+    state: StudioStateRead<'w>,
+    native_setup: Res<'w, NativeSetup>,
+    cache_stats: Res<'w, CacheStatsJob>,
+    theme: Res<'w, StudioTheme>,
+}
+
+pub(crate) fn setup(mut commands: Commands, resources: StartupUiResources) {
+    let StartupUiResources {
+        asset_server,
+        mut images,
+        mut local_images,
+        startup_banner,
+        state,
+        native_setup,
+        cache_stats,
+        theme,
+    } = resources;
     commands.spawn(Camera2d);
     let brand = BrandImages {
         logo: decode_embedded_png(LOGO_BYTES, &mut images),
@@ -282,6 +349,7 @@ pub(crate) fn setup(
     // The very first frame, before the window (and any editor route that
     // could have a context menu open) exists — the configured default
     // resolution is a fine stand-in.
+    let session = state.view();
     render_ui(
         &mut commands,
         &asset_server,
@@ -355,15 +423,15 @@ pub(crate) fn update_startup_banner(
     }
 
     state.timer.tick(time.delta());
-    if let Ok(mut window) = windows.single_mut() {
-        if matches!(window.mode, WindowMode::Windowed) {
-            window.enabled_buttons = EnabledButtons {
-                minimize: false,
-                maximize: false,
-                close: false,
-            };
-            window.decorations = !state.timer.is_finished();
-        }
+    if let Ok(mut window) = windows.single_mut()
+        && matches!(window.mode, WindowMode::Windowed)
+    {
+        window.enabled_buttons = EnabledButtons {
+            minimize: false,
+            maximize: false,
+            close: false,
+        };
+        window.decorations = !state.timer.is_finished();
     }
     if let Ok(mut image) = banner.single_mut() {
         image.color = Color::WHITE.with_alpha(state.alpha());
@@ -391,6 +459,17 @@ pub(crate) fn update_startup_banner(
     }
 }
 
+#[derive(SystemParam)]
+pub(crate) struct UiRegionQueries<'w, 's> {
+    roots: Query<'w, 's, Entity, With<StudioUiRoot>>,
+    bodies: Query<'w, 's, Entity, With<StudioBodyRoot>>,
+    workspace_regions: Query<'w, 's, Entity, With<WorkspaceRegionRoot>>,
+    editor_regions: Query<'w, 's, Entity, With<EditorRegionRoot>>,
+    overlay_regions: Query<'w, 's, Entity, With<OverlayRegionRoot>>,
+    children: Query<'w, 's, &'static Children>,
+    windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+}
+
 // Bevy systems expose each independently tracked resource/query as a parameter.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rebuild_ui(
@@ -399,37 +478,168 @@ pub(crate) fn rebuild_ui(
     mut images: ResMut<Assets<Image>>,
     brand: Res<BrandImages>,
     mut local_images: ResMut<LocalImages>,
-    session: Res<StudioSession>,
+    state: StudioStateRead,
     native_setup: Res<NativeSetup>,
     cache_stats: Res<CacheStatsJob>,
     theme: Res<StudioTheme>,
     mut invalidated: ResMut<UiInvalidated>,
-    roots: Query<Entity, With<StudioUiRoot>>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    mut metrics: ResMut<UiRebuildMetrics>,
+    ui: UiRegionQueries,
 ) {
-    if !invalidated.0 {
+    let Some(regions) = invalidated.take() else {
         return;
-    }
-    for entity in &roots {
-        commands.entity(entity).despawn();
-    }
-    let window_size = windows
+    };
+    let started = std::time::Instant::now();
+    // Counting every descendant twice made even an overlay-only context menu
+    // pay O(the entire DAG) instrumentation cost. Keep those diagnostics
+    // available when their debug target is enabled, but free in normal use.
+    let collect_metrics = bevy::log::tracing::enabled!(
+        target: "uta_studio::ui_rebuild",
+        bevy::log::Level::DEBUG
+    );
+    let old_entities = collect_metrics
+        .then(|| count_ui_entities(&ui.roots, &ui.children))
+        .unwrap_or(0);
+    let window_size = ui
+        .windows
         .single()
         .map(|window| Vec2::new(window.width(), window.height()))
         .unwrap_or(Vec2::new(1280.0, 800.0));
-    render_ui(
-        &mut commands,
-        &asset_server,
-        &mut images,
-        &brand,
-        &mut local_images,
-        &session,
-        &native_setup,
-        &cache_stats,
-        &theme,
-        window_size,
+    let session = state.view();
+    let workspace_dirty = regions.contains(UiDirtyRegion::Library)
+        || regions.contains(UiDirtyRegion::Analysis)
+        || regions.contains(UiDirtyRegion::Settings)
+        || regions.contains(UiDirtyRegion::Documentation);
+    let editor_dirty = regions.contains(UiDirtyRegion::Editor);
+    let overlay_dirty = regions.contains(UiDirtyRegion::Dialog);
+    let mut full_rebuild = regions.requires_full_rebuild() || ui.roots.single().is_err();
+    if !full_rebuild && workspace_dirty && session.route != StudioRoute::Editor {
+        full_rebuild = ui.bodies.single().is_err() || ui.workspace_regions.single().is_err();
+    }
+    if !full_rebuild && editor_dirty && session.route == StudioRoute::Editor {
+        full_rebuild = ui.editor_regions.single().is_err();
+    }
+    if !full_rebuild && overlay_dirty {
+        full_rebuild = ui.overlay_regions.single().is_err();
+    }
+
+    let mut rebuilt = false;
+    if full_rebuild {
+        for entity in &ui.roots {
+            commands.entity(entity).despawn();
+        }
+        render_ui(
+            &mut commands,
+            &asset_server,
+            &mut images,
+            &brand,
+            &mut local_images,
+            &session,
+            &native_setup,
+            &cache_stats,
+            &theme,
+            window_size,
+        );
+        rebuilt = true;
+    } else {
+        if workspace_dirty && session.route != StudioRoute::Editor {
+            for entity in &ui.workspace_regions {
+                commands.entity(entity).despawn();
+            }
+            if let Ok(body) = ui.bodies.single() {
+                commands.entity(body).with_children(|body| {
+                    spawn_workspace_region(
+                        body,
+                        asset_server.load(FONT_PATH),
+                        asset_server.load(ICON_ATLAS_PATH),
+                        &asset_server,
+                        &mut images,
+                        &mut local_images,
+                        &session,
+                        &native_setup,
+                        &cache_stats,
+                        &theme,
+                    );
+                });
+                rebuilt = true;
+            }
+        }
+        if editor_dirty && session.route == StudioRoute::Editor {
+            for entity in &ui.editor_regions {
+                commands.entity(entity).despawn();
+            }
+            if let Ok(root) = ui.roots.single() {
+                commands.entity(root).with_children(|root| {
+                    spawn_editor_region(
+                        root,
+                        asset_server.load(FONT_PATH),
+                        asset_server.load(ICON_ATLAS_PATH),
+                        &session,
+                        &theme,
+                        window_size,
+                    );
+                });
+                rebuilt = true;
+            }
+        }
+        if overlay_dirty {
+            for entity in &ui.overlay_regions {
+                commands.entity(entity).despawn();
+            }
+            if let Ok(root) = ui.roots.single() {
+                commands.entity(root).with_children(|root| {
+                    spawn_overlay_region(
+                        root,
+                        asset_server.load(FONT_PATH),
+                        asset_server.load(ICON_ATLAS_PATH),
+                        &brand,
+                        &session,
+                        &theme,
+                    );
+                });
+                rebuilt = true;
+            }
+        }
+    }
+    if rebuilt && collect_metrics {
+        metrics.begin(started, started.elapsed(), old_entities, regions);
+    }
+}
+
+fn count_ui_entities(
+    roots: &Query<Entity, With<StudioUiRoot>>,
+    children: &Query<&Children>,
+) -> usize {
+    let mut count = 0;
+    let mut pending = roots.iter().collect::<Vec<_>>();
+    while let Some(entity) = pending.pop() {
+        count += 1;
+        if let Ok(descendants) = children.get(entity) {
+            pending.extend(descendants.iter());
+        }
+    }
+    count
+}
+
+pub(crate) fn finalize_ui_rebuild_metrics(
+    mut metrics: ResMut<UiRebuildMetrics>,
+    roots: Query<Entity, With<StudioUiRoot>>,
+    children: Query<&Children>,
+) {
+    let Some(pending) = metrics.finish() else {
+        return;
+    };
+    let new_entities = count_ui_entities(&roots, &children);
+    bevy::log::debug!(
+        target: "uta_studio::ui_rebuild",
+        rebuild = pending.sequence,
+        regions = ?pending.regions,
+        old_entities = pending.old_entities,
+        new_entities,
+        render_ms = pending.render_elapsed.as_secs_f64() * 1_000.0,
+        materialized_ms = pending.started.elapsed().as_secs_f64() * 1_000.0,
+        "rebuilt Studio UI"
     );
-    invalidated.0 = false;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -439,7 +649,7 @@ pub(crate) fn render_ui(
     images: &mut Assets<Image>,
     brand: &BrandImages,
     local_images: &mut LocalImages,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     native_setup: &NativeSetup,
     cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
@@ -461,7 +671,7 @@ pub(crate) fn render_ui(
         ))
         .with_children(|root| {
             if session.route == StudioRoute::Editor {
-                spawn_editor(
+                spawn_editor_region(
                     root,
                     font.clone(),
                     icons.clone(),
@@ -470,12 +680,15 @@ pub(crate) fn render_ui(
                     window_size,
                 );
             } else {
-                root.spawn(Node {
-                    min_height: px(0),
-                    flex_grow: 1.0,
-                    flex_direction: FlexDirection::Row,
-                    ..default()
-                })
+                root.spawn((
+                    StudioBodyRoot,
+                    Node {
+                        min_height: px(0),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Row,
+                        ..default()
+                    },
+                ))
                 .with_children(|body| {
                     spawn_sidebar(
                         body,
@@ -485,55 +698,159 @@ pub(crate) fn render_ui(
                         session,
                         theme,
                     );
-                    spawn_workspace(
+                    spawn_workspace_region(
                         body,
                         font.clone(),
+                        icons.clone(),
                         asset_server,
                         images,
                         local_images,
                         session,
                         native_setup,
                         cache_stats,
-                        icons.clone(),
                         theme,
                     );
                 });
             }
+            spawn_overlay_region(root, font, icons, brand, session, theme);
+        });
+}
+
+fn spawn_workspace_region(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    local_images: &mut LocalImages,
+    session: &StudioSessionView<'_>,
+    native_setup: &NativeSetup,
+    cache_stats: &CacheStatsJob,
+    theme: &StudioTheme,
+) {
+    parent
+        .spawn((
+            WorkspaceRegionRoot,
+            Node {
+                min_width: px(0),
+                min_height: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+        ))
+        .with_children(|region| {
+            spawn_workspace(
+                region,
+                font,
+                asset_server,
+                images,
+                local_images,
+                session,
+                native_setup,
+                cache_stats,
+                icons,
+                theme,
+            );
+        });
+}
+
+fn spawn_editor_region(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+    window_size: Vec2,
+) {
+    parent
+        .spawn((
+            EditorRegionRoot,
+            Node {
+                min_width: px(0),
+                min_height: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+        ))
+        .with_children(|region| {
+            spawn_editor(region, font, icons, session, theme, window_size);
+        });
+}
+
+fn spawn_overlay_region(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    brand: &BrandImages,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+) {
+    parent
+        .spawn((
+            OverlayRegionRoot,
+            Pickable::IGNORE,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                top: px(0),
+                bottom: px(0),
+                ..default()
+            },
+        ))
+        .with_children(|overlay| {
+            if let Some(context) = session.analysis_node_context.as_ref() {
+                spawn_analysis_node_context_menu(overlay, font.clone(), theme, context);
+            }
             if session.activity_open {
-                spawn_activity_center(root, font.clone(), icons.clone(), session, theme);
+                spawn_activity_center(overlay, font.clone(), icons, session, theme);
             }
             if let Some(revision) = session.pending_artifact_delete.as_ref() {
-                spawn_artifact_delete_confirmation(root, font.clone(), theme, revision);
+                spawn_artifact_delete_confirmation(overlay, font.clone(), theme, revision);
             }
             if let Some(revision) = session.pending_artifact_invalidate.as_ref() {
-                spawn_artifact_invalidate_confirmation(root, font.clone(), theme, revision);
+                spawn_artifact_invalidate_confirmation(overlay, font.clone(), theme, revision);
             }
             if let Some(revision) = session.pending_artifact_active.as_ref() {
-                spawn_artifact_active_confirmation(root, font.clone(), theme, revision);
+                spawn_artifact_active_confirmation(overlay, font.clone(), theme, revision);
             }
             if let Some(file_hash) = session.pending_intermediate_capture.as_deref() {
-                spawn_intermediate_capture_confirmation(root, font.clone(), theme, file_hash);
+                spawn_intermediate_capture_confirmation(
+                    overlay,
+                    font.clone(),
+                    session.config,
+                    theme,
+                    file_hash,
+                );
             }
             if let Some(file_hash) = session.pending_chart_replace.as_deref() {
-                spawn_chart_replace_confirmation(root, font.clone(), theme, file_hash);
+                spawn_chart_replace_confirmation(overlay, font.clone(), theme, file_hash);
             }
             if let Some(diff) = session.artifact_diff.as_ref() {
-                spawn_artifact_diff_panel(root, font.clone(), theme, diff);
+                spawn_artifact_diff_panel(overlay, font.clone(), theme, diff);
             }
             if let Some(lineage) = session.artifact_lineage.as_ref() {
-                spawn_artifact_lineage_panel(root, font.clone(), theme, lineage);
+                spawn_artifact_lineage_panel(overlay, font.clone(), theme, lineage);
             }
             if let Some(impact) = session.artifact_impact.as_ref() {
-                spawn_artifact_impact_panel(root, font.clone(), theme, impact);
+                spawn_artifact_impact_panel(overlay, font.clone(), theme, impact);
             }
             if session.about_open {
-                spawn_about_dialog(root, font.clone(), brand.logo.clone(), theme);
+                spawn_about_dialog(
+                    overlay,
+                    font.clone(),
+                    brand.logo.clone(),
+                    &session.config,
+                    theme,
+                );
             }
             if let Some(panel) = session.song_settings.as_ref() {
-                spawn_song_settings_panel(root, font.clone(), theme, panel);
+                spawn_song_settings_panel(overlay, font.clone(), theme, panel);
             }
             if let Some(destination) = session.pending_leave {
-                spawn_leave_confirmation(root, font, theme, session, destination);
+                spawn_leave_confirmation(overlay, font, theme, session, destination);
             }
         });
 }
@@ -542,7 +859,7 @@ pub(crate) fn spawn_leave_confirmation(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     destination: PendingLeave,
 ) {
     let dirty = session.editor.as_ref().is_some_and(|editor| editor.dirty);
@@ -604,7 +921,7 @@ pub(crate) fn spawn_leave_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelLeave,
+                            UiAction::from(AppCommand::CancelLeave),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 ..default()
@@ -618,7 +935,7 @@ pub(crate) fn spawn_leave_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmLeave,
+                            UiAction::from(AppCommand::ConfirmLeave),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),

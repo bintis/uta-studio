@@ -32,6 +32,7 @@ mod timed_transcript_boundary_tests {
             },
             TranscriptBoundaryEdge::Start,
             0.025,
+            &AppConfig::default(),
         )
         .unwrap();
         assert_eq!(value["segments"][0]["words"][0]["start"], 1.0);
@@ -60,6 +61,7 @@ pub(crate) fn adjust_transcript_boundary_value(
     target: TranscriptBoundaryTarget,
     edge: TranscriptBoundaryEdge,
     delta_seconds: f64,
+    config: &AppConfig,
 ) -> Result<(), String> {
     let field = match edge {
         TranscriptBoundaryEdge::Start => "start",
@@ -82,7 +84,9 @@ pub(crate) fn adjust_transcript_boundary_value(
     let seconds = boundary
         .get(field)
         .and_then(serde_json::Value::as_f64)
-        .ok_or_else(|| format!("{field} is not numeric"))?;
+        .ok_or_else(|| {
+            localized_message(config, UiMessage::TimingNotNumeric, &[("{field}", field)])
+        })?;
     boundary[field] = serde_json::json!(seconds + delta_seconds);
     Ok(())
 }
@@ -171,9 +175,10 @@ pub(crate) struct NativeLyricsSearchJob {
 
 #[derive(Default)]
 pub(crate) struct NativeLyricsWaveformJob {
-    pub(crate) receiver:
-        Option<Mutex<mpsc::Receiver<(String, Result<app_core::ChartWaveform, String>)>>>,
+    pub(crate) receiver: Option<Mutex<mpsc::Receiver<LyricsWaveformResult>>>,
 }
+
+type LyricsWaveformResult = (String, Result<app_core::ChartWaveform, String>);
 
 pub(crate) fn start_lyrics_waveform_job(file_hash: &str, job: &mut NativeLyricsWaveformJob) {
     if job.receiver.is_some() {

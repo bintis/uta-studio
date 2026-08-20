@@ -24,6 +24,8 @@ Download the package for your system from the project’s GitHub Releases page. 
 3. Start `uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
 
+Windows 10/11 x86-64 is supported. Editor and library audition use the system WASAPI output and do not require a separately installed codec pack for FLAC, MP3, WAV, Ogg/Vorbis, or common AAC/MP4 inputs.
+
 #### Debian / Ubuntu
 
 ```sh
@@ -124,7 +126,7 @@ The user guide is also available inside the application. Open **Settings → Gen
 
 #### Library views
 
-The library provides views for all music, analysis progress, completed charts, video sources, artists, albums, playlists, and folders. Search can filter tracks, artists, albums, and playlists.
+Browse contains all music and analysis progress. My Library contains charts, video sources, playlists, and folders. Search can filter tracks, artists, albums, and playlists.
 
 #### Watched folders
 
@@ -395,7 +397,7 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
 - `stems.separate` — vocal and instrumental stems.
 - `pitch.extract` — pitch curve and note-candidate evidence.
-- `lyrics.preprocess` — audio prepared for recognition; ephemeral unless captured.
+- `lyrics.preprocess` (Vocal Preprocessing) — vocal audio prepared for recognition and alignment; ephemeral unless captured.
 - `lyrics.transcribe` — recognized text.
 - `lyrics.align` — word-timed transcript.
 - `lyrics.import_timed` — imported timed lyrics.

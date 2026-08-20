@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Rust, docs, and analyzer
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            zlib1g-dev \
+            libudev-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libglvnd-dev \
+            libvulkan-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check all Rust targets
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Test all Rust targets
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Lint all Rust targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Check generated documentation
+        run: cargo xtask docs check
+
+      - name: Compile Python analyzer sources
+        run: python3 -m compileall -q app-core/analyzer
+
+  windows:
+    name: Windows workspace and native audio
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Check all Windows targets
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Test Windows native audio contract
+        run: cargo test -p uta-studio-audio --locked
+
+  wayland-smoke:
+    name: Headless Wayland screenshots
+    if: github.event_name != 'pull_request'
+    needs:
+      - quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Wayland and native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            zlib1g-dev \
+            libudev-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libglvnd-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            weston
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Build native desktop shell
+        run: cargo build --locked -p uta-studio-desktop
+
+      - name: Capture locale and narrow-window smoke evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/wayland-smoke.sh target/debug/uta-studio smoke/en-wide.png en 1280x720
+          scripts/wayland-smoke.sh target/debug/uta-studio smoke/zh-narrow.png zh-CN 560x900
+          scripts/wayland-smoke.sh target/debug/uta-studio smoke/ja-large-font.png ja 960x720 140
+
+      - name: Upload Wayland smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayland-smoke-screenshots
+          path: smoke/*.png
+          if-no-files-found: error
+
+  nix-package:
+    name: Nix package
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs:
+      - quality
+      - windows
+      - wayland-smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Build packaged application
+        run: nix build path:.#uta-studio --print-build-logs

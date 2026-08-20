@@ -853,9 +853,9 @@ impl EditorDocument {
                 // A single relationship (one syllable, or continuing an
                 // earlier one) — splitting mid-syllable means both halves
                 // keep singing it, so the tail continues it.
-                let head = right.lyrics.iter().find_map(|token| match token {
-                    LyricToken::Text(token) => Some(token.id.clone()),
-                    LyricToken::Continuation { continuation_of } => Some(continuation_of.clone()),
+                let head = right.lyrics.first().map(|token| match token {
+                    LyricToken::Text(token) => token.id.clone(),
+                    LyricToken::Continuation { continuation_of } => continuation_of.clone(),
                 });
                 head.map(|continuation_of| vec![LyricToken::Continuation { continuation_of }])
                     .unwrap_or_default()
@@ -963,7 +963,7 @@ impl EditorDocument {
     }
 
     pub fn quantize_notes(&mut self, indices: Option<&BTreeSet<usize>>, grid: f64) -> usize {
-        if !(grid > 0.0) {
+        if grid.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return 0;
         }
         let grid_units = self.to_units(grid).max(1);

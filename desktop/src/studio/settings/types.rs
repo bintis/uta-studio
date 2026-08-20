@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use super::*;
 use crate::studio::*;
 
 pub(crate) const SETTINGS_CONTROL_WIDTH: f32 = 230.0;

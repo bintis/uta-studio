@@ -1,7 +1,11 @@
 //! Chart edit commands: thin, named wrappers over `EditorDocument`
 //! mutations so the action layer never touches the document directly.
 
-use crate::studio::*;
+use std::collections::BTreeSet;
+
+use crate::studio::widgets::format_duration;
+
+use super::state::{NativeEditor, WordSelection};
 
 pub(crate) fn move_chart_note(
     document: &mut app_core::EditorDocument,

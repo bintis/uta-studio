@@ -4,7 +4,7 @@ use crate::studio::*;
 pub(crate) fn spawn_analysis_history_list(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     if session.analysis_history.is_empty() {
@@ -46,7 +46,7 @@ pub(crate) fn spawn_analysis_history_list(
                             theme,
                             "Clear history…",
                             8.0,
-                            UiAction::RequestClearAnalysisHistory,
+                            UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
                         );
                     }
                 });
@@ -85,7 +85,7 @@ pub(crate) fn spawn_analysis_history_list(
                             theme,
                             "Cancel",
                             8.0,
-                            UiAction::CancelClearAnalysisHistory,
+                            UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
                         );
                         spawn_text_button(
                             confirmation,
@@ -93,7 +93,7 @@ pub(crate) fn spawn_analysis_history_list(
                             theme,
                             "Delete history",
                             8.0,
-                            UiAction::ConfirmClearAnalysisHistory,
+                            UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
                         );
                     });
             }
@@ -104,7 +104,7 @@ pub(crate) fn spawn_analysis_history_list(
                 history_list
                     .spawn((
                         Button,
-                        UiAction::SelectAnalysisHistory(Some(history.id)),
+                        UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(history.id))),
                         Node {
                             width: percent(100),
                             min_height: px(48),
@@ -177,14 +177,16 @@ pub(crate) fn handle_analysis_graph_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    library: Res<LibraryState>,
+    mut analysis: ResMut<AnalysisUiState>,
     mut viewports: Query<
         (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
         With<AnalysisGraphViewport>,
     >,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Library || session.library_view != LibraryView::Queue {
+    if shell.route != StudioRoute::Library || library.library_view != LibraryView::Queue {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -220,24 +222,26 @@ pub(crate) fn handle_analysis_graph_scroll(
         }
     }
     if zoom_delta.abs() > f32::EPSILON {
-        let zoomed = clamp_analysis_graph_zoom(session.analysis_graph_zoom + zoom_delta);
-        if (zoomed - session.analysis_graph_zoom).abs() > f32::EPSILON {
-            session.analysis_graph_zoom = zoomed;
-            invalidated.0 = true;
+        let zoomed = clamp_analysis_graph_zoom(analysis.analysis_graph_zoom + zoom_delta);
+        if (zoomed - analysis.analysis_graph_zoom).abs() > f32::EPSILON {
+            analysis.analysis_graph_zoom = zoomed;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
     }
     if pan_delta.abs() > f32::EPSILON {
         let size = computed.size() * computed.inverse_scale_factor();
         let content = computed.content_size() * computed.inverse_scale_factor();
         position.x = (position.x + pan_delta).clamp(0.0, (content.x - size.x).max(0.0));
-        session.analysis_graph_scroll_offset = position.x;
+        analysis.analysis_graph_scroll_offset = position.x;
     }
 }
 
 pub(crate) fn refresh_analysis_activity(
     time: Res<Time>,
     mut timer: ResMut<AnalysisRefreshTimer>,
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    mut library: ResMut<LibraryState>,
+    mut analysis: ResMut<AnalysisUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if !timer.0.tick(time.delta()).just_finished() {
@@ -245,52 +249,54 @@ pub(crate) fn refresh_analysis_activity(
     }
     let tasks = app_core::load_analysis_tasks();
     let history = app_core::load_analysis_history(100);
-    if tasks == session.analysis_tasks && history == session.analysis_history {
+    if tasks == analysis.analysis_tasks && history == analysis.analysis_history {
         return;
     }
-    session.analysis_tasks = tasks;
-    session.analysis_history = history;
-    if (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
-        || session.route == StudioRoute::AnalysisInspect
+    analysis.analysis_tasks = tasks;
+    analysis.analysis_history = history;
+    if (shell.route == StudioRoute::Library && library.library_view == LibraryView::Queue)
+        || shell.route == StudioRoute::AnalysisInspect
     {
-        session.refresh_library();
+        library.refresh();
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Analysis);
 }
 
-fn analysis_page_is_open(session: &StudioSession) -> bool {
-    (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
-        || session.route == StudioRoute::AnalysisInspect
+fn analysis_page_is_open(route: StudioRoute, library_view: LibraryView) -> bool {
+    (route == StudioRoute::Library && library_view == LibraryView::Queue)
+        || route == StudioRoute::AnalysisInspect
 }
 
 /// Keeps the live DAG node in the middle of the canvas while a run is
 /// walking the graph. Recenters only when the running `node_id` changes so
 /// a manual pan is not yanked back on every refresh tick.
 pub(crate) fn follow_live_analysis_node(
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    library: Res<LibraryState>,
+    mut analysis: ResMut<AnalysisUiState>,
     mut invalidated: ResMut<UiInvalidated>,
     viewports: Query<&ComputedNode, With<AnalysisGraphViewport>>,
 ) {
-    if !analysis_page_is_open(&session) {
-        if session.analysis_graph_follow_node.take().is_some() {
+    if !analysis_page_is_open(shell.route, library.library_view) {
+        if analysis.analysis_graph_follow_node.take().is_some() {
             // Leaving the page drops the follow so reopening recenters.
         }
         return;
     }
-    if session.analysis_graph_needs_fit {
+    if analysis.analysis_graph_needs_fit {
         return;
     }
-    let live_id = session
+    let live_id = analysis
         .analysis_tasks
         .iter()
         .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
         .and_then(|task| task.live.as_ref())
         .and_then(|live| live.node_id.clone());
     let Some(live_id) = live_id else {
-        session.analysis_graph_follow_node = None;
+        analysis.analysis_graph_follow_node = None;
         return;
     };
-    if session.analysis_graph_follow_node.as_deref() == Some(live_id.as_str()) {
+    if analysis.analysis_graph_follow_node.as_deref() == Some(live_id.as_str()) {
         return;
     }
     let viewport_width = viewports
@@ -298,24 +304,28 @@ pub(crate) fn follow_live_analysis_node(
         .next()
         .map(|computed| computed.size().x * computed.inverse_scale_factor())
         .unwrap_or(0.0);
-    session.analysis_graph_scroll_offset = estimated_analysis_graph_center_scroll(
+    analysis.analysis_graph_scroll_offset = estimated_analysis_graph_center_scroll(
         &live_id,
-        clamp_analysis_graph_zoom(session.analysis_graph_zoom),
+        clamp_analysis_graph_zoom(analysis.analysis_graph_zoom),
         viewport_width,
     );
-    session.analysis_graph_follow_node = Some(live_id);
-    invalidated.0 = true;
+    analysis.analysis_graph_follow_node = Some(live_id);
+    invalidated.invalidate(UiDirtyRegion::Analysis);
 }
 
 /// Scales the DAG so the full flow fits the current viewport, then leaves
 /// zoom alone until the user clicks Fit or switches MINI/Full. Needs a
 /// laid-out `AnalysisGraphViewport` so it waits a frame after spawn.
 pub(crate) fn fit_analysis_graph_to_viewport(
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    library: Res<LibraryState>,
+    mut analysis: ResMut<AnalysisUiState>,
     mut invalidated: ResMut<UiInvalidated>,
     viewports: Query<(&ComputedNode, &AnalysisGraphViewport)>,
 ) {
-    if !session.analysis_graph_needs_fit || !analysis_page_is_open(&session) {
+    if !analysis.analysis_graph_needs_fit
+        || !analysis_page_is_open(shell.route, library.library_view)
+    {
         return;
     }
     let Ok((computed, canvas)) = viewports.single() else {
@@ -335,10 +345,10 @@ pub(crate) fn fit_analysis_graph_to_viewport(
         viewport.x,
         viewport.y,
     );
-    session.analysis_graph_needs_fit = false;
-    session.analysis_graph_scroll_offset = 0.0;
-    if (fitted - session.analysis_graph_zoom).abs() > 0.01 {
-        session.analysis_graph_zoom = fitted;
-        invalidated.0 = true;
+    analysis.analysis_graph_needs_fit = false;
+    analysis.analysis_graph_scroll_offset = 0.0;
+    if (fitted - analysis.analysis_graph_zoom).abs() > 0.01 {
+        analysis.analysis_graph_zoom = fitted;
+        invalidated.invalidate(UiDirtyRegion::Analysis);
     }
 }

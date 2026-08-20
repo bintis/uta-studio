@@ -1,6 +1,10 @@
 use super::*;
 use crate::studio::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this declarative player renderer receives the shared UI asset set"
+)]
 pub(crate) fn spawn_library_player(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -8,7 +12,7 @@ pub(crate) fn spawn_library_player(
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
     local_images: &mut LocalImages,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let playback_song = session
@@ -125,7 +129,7 @@ pub(crate) fn spawn_library_player(
                                 icons.clone(),
                                 theme,
                                 UiIcon::Shuffle,
-                                UiAction::ToggleLibraryShuffle,
+                                UiAction::from(LibraryCommand::ToggleLibraryShuffle),
                                 session.library_playback.shuffle,
                                 false,
                                 30.0,
@@ -135,7 +139,7 @@ pub(crate) fn spawn_library_player(
                                 icons.clone(),
                                 theme,
                                 UiIcon::Previous,
-                                UiAction::PreviousLibrarySong,
+                                UiAction::from(LibraryCommand::PreviousLibrarySong),
                                 false,
                                 false,
                                 30.0,
@@ -147,7 +151,7 @@ pub(crate) fn spawn_library_player(
                                     theme,
                                     "−10",
                                     9.0,
-                                    UiAction::SeekLibraryRelative(-10),
+                                    UiAction::from(LibraryCommand::SeekLibraryRelative(-10)),
                                 );
                             }
                             spawn_icon_button(
@@ -160,9 +164,11 @@ pub(crate) fn spawn_library_player(
                                     UiIcon::Play
                                 },
                                 if current {
-                                    UiAction::ToggleLibraryPlayback
+                                    UiAction::from(LibraryCommand::ToggleLibraryPlayback)
                                 } else {
-                                    UiAction::PlayLibrarySong(song.file_hash.clone())
+                                    UiAction::from(LibraryCommand::PlayLibrarySong(
+                                        song.file_hash.clone(),
+                                    ))
                                 },
                                 true,
                                 false,
@@ -175,7 +181,7 @@ pub(crate) fn spawn_library_player(
                                     theme,
                                     "+10",
                                     9.0,
-                                    UiAction::SeekLibraryRelative(10),
+                                    UiAction::from(LibraryCommand::SeekLibraryRelative(10)),
                                 );
                             }
                             spawn_icon_button(
@@ -183,7 +189,7 @@ pub(crate) fn spawn_library_player(
                                 icons.clone(),
                                 theme,
                                 UiIcon::Next,
-                                UiAction::NextLibrarySong,
+                                UiAction::from(LibraryCommand::NextLibrarySong),
                                 false,
                                 false,
                                 30.0,
@@ -193,7 +199,7 @@ pub(crate) fn spawn_library_player(
                                 icons.clone(),
                                 theme,
                                 UiIcon::Repeat,
-                                UiAction::CycleLibraryRepeat,
+                                UiAction::from(LibraryCommand::CycleLibraryRepeat),
                                 session.library_playback.repeat != LibraryRepeatMode::Off,
                                 false,
                                 30.0,
@@ -304,7 +310,7 @@ pub(crate) fn spawn_library_player(
                                 icons.clone(),
                                 theme,
                                 UiIcon::Volume,
-                                UiAction::ToggleLibraryMute,
+                                UiAction::from(LibraryCommand::ToggleLibraryMute),
                                 session.library_playback.volume == 0.0,
                                 false,
                                 28.0,
@@ -315,7 +321,7 @@ pub(crate) fn spawn_library_player(
                                 theme,
                                 "−",
                                 10.0,
-                                UiAction::AdjustLibraryVolume(-5),
+                                UiAction::from(LibraryCommand::AdjustLibraryVolume(-5)),
                             );
                             spawn_text(
                                 output,
@@ -330,14 +336,14 @@ pub(crate) fn spawn_library_player(
                                 theme,
                                 "+",
                                 10.0,
-                                UiAction::AdjustLibraryVolume(5),
+                                UiAction::from(LibraryCommand::AdjustLibraryVolume(5)),
                             );
                             spawn_icon_button(
                                 output,
                                 icons.clone(),
                                 theme,
                                 UiIcon::Queue,
-                                UiAction::ToggleLibraryQueue,
+                                UiAction::from(LibraryCommand::ToggleLibraryQueue),
                                 session.library_playback.queue_open,
                                 false,
                                 30.0,
@@ -355,7 +361,7 @@ pub(crate) fn spawn_library_play_queue(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
@@ -412,7 +418,7 @@ pub(crate) fn spawn_library_play_queue(
                         icons.clone(),
                         theme,
                         UiIcon::Close,
-                        UiAction::ToggleLibraryQueue,
+                        UiAction::from(LibraryCommand::ToggleLibraryQueue),
                         false,
                         false,
                         28.0,
@@ -452,7 +458,7 @@ pub(crate) fn spawn_library_play_queue(
                 queue
                     .spawn((
                         Button,
-                        UiAction::PlayLibrarySong(file_hash.clone()),
+                        UiAction::from(LibraryCommand::PlayLibrarySong(file_hash.clone())),
                         Node {
                             width: percent(100),
                             min_height: px(38),
@@ -586,7 +592,7 @@ pub(crate) fn spawn_empty_library(
                     ));
                     card.spawn((
                         Button,
-                        UiAction::ChooseFolder,
+                        UiAction::from(LibraryCommand::ChooseFolder),
                         Node {
                             height: px(42),
                             padding: UiRect::horizontal(px(18)),
@@ -633,7 +639,10 @@ pub(crate) fn library_select_options(
     }
 }
 
-pub(crate) fn library_select_value(kind: LibrarySelectKind, session: &StudioSession) -> &str {
+pub(crate) fn library_select_value<'a>(
+    kind: LibrarySelectKind,
+    session: &'a StudioSessionView<'a>,
+) -> &'a str {
     match kind {
         LibrarySelectKind::Status => session.library_status.as_deref().unwrap_or("all"),
         LibrarySelectKind::TranscriptSource => session
@@ -656,7 +665,7 @@ pub(crate) fn spawn_library_filter_select(
     icons: Handle<Image>,
     theme: &StudioTheme,
     kind: LibrarySelectKind,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
 ) {
     let current = library_select_value(kind, session);
     let open = session.open_library_select == Some(kind);
@@ -675,7 +684,7 @@ pub(crate) fn spawn_library_filter_select(
             control
                 .spawn((
                     Button,
-                    UiAction::OpenLibrarySelect(kind),
+                    UiAction::from(LibraryCommand::OpenLibrarySelect(kind)),
                     Node {
                         width: percent(100),
                         height: px(34),
@@ -737,7 +746,10 @@ pub(crate) fn spawn_library_filter_select(
                             let selected = *value == current;
                             menu.spawn((
                                 Button,
-                                UiAction::SelectLibraryValue(kind, (*value).to_string()),
+                                UiAction::from(LibraryCommand::SelectLibraryValue(
+                                    kind,
+                                    (*value).to_string(),
+                                )),
                                 Node {
                                     width: percent(100),
                                     min_height: px(29),

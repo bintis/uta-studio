@@ -269,7 +269,7 @@ pub(crate) fn spawn_activity_button(
         .with_children(|slot| {
             slot.spawn((
                 Button,
-                UiAction::ToggleActivity,
+                UiAction::from(AppCommand::ToggleActivity),
                 Node {
                     width: percent(100),
                     height: percent(100),
@@ -571,19 +571,23 @@ pub(crate) fn spawn_text(
     ));
 }
 
+type ActionButtons<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Interaction,
+        &'static UiAction,
+        &'static mut BackgroundColor,
+        Option<&'static RestingButtonBackground>,
+    ),
+    Or<(Added<Button>, Changed<Interaction>)>,
+>;
+
 pub(crate) fn update_button_visuals(
     mut commands: Commands,
     theme: Res<StudioTheme>,
-    mut buttons: Query<
-        (
-            Entity,
-            &Interaction,
-            &UiAction,
-            &mut BackgroundColor,
-            Option<&RestingButtonBackground>,
-        ),
-        Or<(Added<Button>, Changed<Interaction>)>,
-    >,
+    mut buttons: ActionButtons,
 ) {
     for (entity, interaction, action, mut background, resting) in &mut buttons {
         let has_recorded_background = resting.is_some();

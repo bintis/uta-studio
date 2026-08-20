@@ -189,20 +189,21 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     // them). The `Err` fallback mirrors `pipeline_flags_for_targets`'s own
     // fail-open: `run_analysis_plan` already rejects an unhonorable disable
     // before it's ever queued, so this should be unreachable in practice.
-    let (
+    let flags = pipeline_flags_for_request(
+        &node_targets,
+        &disabled_nodes,
+        &frozen_artifacts,
+        &bypassed_nodes,
+    )
+    .unwrap_or_default();
+    let PipelineFlags {
         skip_transcription,
         skip_separation,
         skip_pitch,
         freeze_separation,
         freeze_pitch,
         bypass_separation,
-    ) = pipeline_flags_for_request(
-        &node_targets,
-        &disabled_nodes,
-        &frozen_artifacts,
-        &bypassed_nodes,
-    )
-    .unwrap_or((false, false, false, false, false, false));
+    } = flags;
 
     // Phase 4 §4.1: the config this job actually runs with is the snapshot
     // frozen at enqueue time (`enqueue_one`/`enqueue_all`), not whatever
@@ -581,6 +582,10 @@ pub(crate) enum SongResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Keep the adapter's flat JSON wire shape. Boxing the Progress payload would
+// either change that contract or require a custom deserializer for no runtime
+// benefit: events are consumed one at a time from the child process.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ServerEvent {
     Progress {
         pct: u32,
@@ -629,6 +634,7 @@ pub(crate) enum ServerEvent {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod node_event_tests {
     use super::*;
 

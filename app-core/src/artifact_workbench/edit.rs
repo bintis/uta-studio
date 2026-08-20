@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    analysis_artifact::{ArtifactStore, record_artifact_revision},
+    cache::CacheDir,
+};
 
 pub fn begin_artifact_edit(reference: &ArtifactRef) -> Result<ArtifactEditDraft, String> {
     let inspection = inspect_artifact(reference)?;

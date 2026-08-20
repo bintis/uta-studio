@@ -397,16 +397,16 @@ fn record_timed_lyrics_import(
         artifact_reused_reason: None,
     };
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
-    let run_id = library_db::analysis_history_insert(
+    let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
         file_hash,
         title,
         artist,
-        "completed",
-        now,
-        now,
-        &snapshot_json,
-        None,
-    )
+        status: "completed",
+        started_at_ms: now,
+        finished_at_ms: now,
+        snapshot_json: &snapshot_json,
+        error_message: None,
+    })
     .map_err(|error| error.to_string())?;
     library_db::analysis_node_attempts_insert_batch(
         run_id,

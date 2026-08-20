@@ -176,7 +176,13 @@ pub fn export_ultrastar(
 /// export so the smoke test proves the file can be consumed, not merely written.
 pub fn validate_ultrastar_chart(path: impl AsRef<Path>) -> Result<(), UtaStudioError> {
     let content = std::fs::read_to_string(path)?;
-    crate::usdx::validate_usdx_str(&content)
+    validate_ultrastar_text(&content)
+}
+
+/// Parse and validate untrusted UltraStar text without touching the filesystem.
+/// This is the narrow input boundary used by the fuzz target.
+pub fn validate_ultrastar_text(content: &str) -> Result<(), UtaStudioError> {
+    crate::usdx::validate_usdx_str(content)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,7 +459,9 @@ mod tests {
     use crate::{editor::NoteKind, usdx::validate_usdx_str, vocal_chart::migrate_analyzer_chart};
     use utz::VocalChartV1;
 
-    fn chart(language: &str, phrases: &[&[(f64, f64, u8, &str, &str)]]) -> VocalChartV1 {
+    type TestNote<'a> = (f64, f64, u8, &'a str, &'a str);
+
+    fn chart(language: &str, phrases: &[&[TestNote<'_>]]) -> VocalChartV1 {
         let mut segments = Vec::new();
         let mut notes = Vec::new();
         for phrase in phrases {

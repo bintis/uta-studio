@@ -942,7 +942,6 @@ mod tests {
     /// See `library_db::reconnect_for_test` -- shared across every test
     /// module in the crate that needs real SQL, so this can't race with
     /// e.g. `analysis_profile`'s DB-backed tests.
-    #[must_use]
     fn isolated_test_db(label: &str) -> MutexGuard<'static, ()> {
         crate::library_db::reconnect_for_test(&temp_dir(&format!("db-{label}")))
     }

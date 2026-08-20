@@ -1,6 +1,10 @@
 use super::*;
 use crate::studio::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row builder keeps its label, description, selection kind, and UI assets explicit"
+)]
 pub(crate) fn spawn_select_setting_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -9,7 +13,7 @@ pub(crate) fn spawn_select_setting_row(
     label: impl Into<String>,
     description: impl Into<String>,
     kind: SettingsSelectKind,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
 ) {
     let label = label.into();
     let description = description.into();
@@ -68,7 +72,7 @@ pub(crate) fn spawn_select_setting_row(
                 control
                     .spawn((
                         Button,
-                        UiAction::OpenSettingsSelect(kind),
+                        UiAction::from(SettingsCommand::OpenSettingsSelect(kind)),
                         Node {
                             width: percent(100),
                             height: px(36),
@@ -128,7 +132,10 @@ pub(crate) fn spawn_select_setting_row(
                                 let selected = *value == current;
                                 menu.spawn((
                                     Button,
-                                    UiAction::SelectSettingsValue(kind, (*value).to_string()),
+                                    UiAction::from(SettingsCommand::SelectSettingsValue(
+                                        kind,
+                                        (*value).to_string(),
+                                    )),
                                     Node {
                                         width: percent(100),
                                         min_height: px(31),
@@ -348,7 +355,7 @@ pub(crate) fn spawn_source_file_row(
                     font,
                     theme,
                     "Open",
-                    UiAction::OpenSource(path.to_path_buf()),
+                    UiAction::from(LibraryCommand::OpenSource(path.to_path_buf())),
                 );
             });
         });
@@ -363,7 +370,7 @@ pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {
 
 pub(crate) fn sync_numeric_settings(
     mut inputs: Query<(&mut EditableText, &NumericSetting)>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
 ) {
     for (mut input, setting) in &mut inputs {
         // `Changed<EditableText>` also fires the instant the component is
@@ -390,42 +397,40 @@ pub(crate) fn sync_numeric_settings(
             input.editor_mut().set_text(&clamped.to_string());
         }
         let current = match setting {
-            NumericSetting::BeamSize => session.config.beam_size(),
-            NumericSetting::BatchSize => session.config.batch_size(),
+            NumericSetting::BeamSize => shell.config.beam_size(),
+            NumericSetting::BatchSize => shell.config.batch_size(),
             NumericSetting::VocalThreshold => {
-                (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32
+                (shell.config.vocal_detection_threshold_pct() * 100.0).round() as u32
             }
-            NumericSetting::SeparatorSegmentSize => session.config.separator_segment_size(),
-            NumericSetting::SeparatorOverlap => session.config.separator_overlap(),
-            NumericSetting::SeparatorBatchSize => session.config.separator_batch_size(),
-            NumericSetting::SeparatorNormalization => session.config.separator_normalization_pct(),
-            NumericSetting::DemucsShifts => session.config.demucs_shifts(),
-            NumericSetting::DemucsOverlap => session.config.demucs_overlap_pct(),
+            NumericSetting::SeparatorSegmentSize => shell.config.separator_segment_size(),
+            NumericSetting::SeparatorOverlap => shell.config.separator_overlap(),
+            NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size(),
+            NumericSetting::SeparatorNormalization => shell.config.separator_normalization_pct(),
+            NumericSetting::DemucsShifts => shell.config.demucs_shifts(),
+            NumericSetting::DemucsOverlap => shell.config.demucs_overlap_pct(),
         };
         if clamped == current {
             continue;
         }
         match setting {
-            NumericSetting::BeamSize => session.config.beam_size = Some(clamped),
-            NumericSetting::BatchSize => session.config.batch_size = Some(clamped),
+            NumericSetting::BeamSize => shell.config.beam_size = Some(clamped),
+            NumericSetting::BatchSize => shell.config.batch_size = Some(clamped),
             NumericSetting::VocalThreshold => {
-                session.config.vocal_detection_threshold_pct = Some(f64::from(clamped) / 100.0)
+                shell.config.vocal_detection_threshold_pct = Some(f64::from(clamped) / 100.0)
             }
             NumericSetting::SeparatorSegmentSize => {
-                session.config.separator_segment_size = Some(clamped)
+                shell.config.separator_segment_size = Some(clamped)
             }
-            NumericSetting::SeparatorOverlap => session.config.separator_overlap = Some(clamped),
-            NumericSetting::SeparatorBatchSize => {
-                session.config.separator_batch_size = Some(clamped)
-            }
+            NumericSetting::SeparatorOverlap => shell.config.separator_overlap = Some(clamped),
+            NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size = Some(clamped),
             NumericSetting::SeparatorNormalization => {
-                session.config.separator_normalization_pct = Some(clamped)
+                shell.config.separator_normalization_pct = Some(clamped)
             }
-            NumericSetting::DemucsShifts => session.config.demucs_shifts = Some(clamped),
-            NumericSetting::DemucsOverlap => session.config.demucs_overlap_pct = Some(clamped),
+            NumericSetting::DemucsShifts => shell.config.demucs_shifts = Some(clamped),
+            NumericSetting::DemucsOverlap => shell.config.demucs_overlap_pct = Some(clamped),
         }
-        if let Some(error) = save_config_error(&session.config) {
-            session.notice = Some(error);
+        if let Some(error) = save_config_error(&shell.config) {
+            shell.notice = Some(error);
         }
     }
 }

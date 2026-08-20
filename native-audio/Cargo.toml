@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-audio"
-version = "0.5.0"
+version = "0.5.1"
 description = "Native editor audition runtime for Uta Studio."
 authors = ["bintis"]
 license = "GPL-3.0"
@@ -12,3 +12,9 @@ serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gstreamer = "0.25"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows audition uses the system WASAPI device through CPAL. Symphonia is
+# embedded code, not a separately installed runtime, and covers the media
+# formats Uta Studio indexes without downloading codecs when the app starts.
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all"] }

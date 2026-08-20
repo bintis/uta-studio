@@ -197,15 +197,16 @@ fn plain_inline(markdown: &str) -> String {
     let mut output = String::new();
     let mut index = 0;
     while index < chars.len() {
-        if chars[index] == '!' && chars.get(index + 1) == Some(&'[') {
-            if let Some(close) = chars[index + 2..].iter().position(|ch| *ch == ']') {
-                let after = index + 2 + close + 1;
-                if chars.get(after) == Some(&'(')
-                    && let Some(end) = chars[after + 1..].iter().position(|ch| *ch == ')')
-                {
-                    index = after + end + 2;
-                    continue;
-                }
+        if chars[index] == '!'
+            && chars.get(index + 1) == Some(&'[')
+            && let Some(close) = chars[index + 2..].iter().position(|ch| *ch == ']')
+        {
+            let after = index + 2 + close + 1;
+            if chars.get(after) == Some(&'(')
+                && let Some(end) = chars[after + 1..].iter().position(|ch| *ch == ')')
+            {
+                index = after + end + 2;
+                continue;
             }
         }
         if chars[index] == '['
@@ -552,7 +553,7 @@ fn documentation_layout_for_width(width: f32) -> DocumentationLayout {
 pub(crate) fn spawn_documentation(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let locale = effective_ui_locale(&session.config);
@@ -590,7 +591,7 @@ pub(crate) fn spawn_documentation(
                     theme,
                     "Back",
                     10.0,
-                    UiAction::DocumentationBack,
+                    UiAction::from(AppCommand::DocumentationBack),
                 );
                 if !session.documentation.forward_stack.is_empty() {
                     spawn_text_button(
@@ -599,7 +600,7 @@ pub(crate) fn spawn_documentation(
                         theme,
                         "Forward",
                         10.0,
-                        UiAction::DocumentationForward,
+                        UiAction::from(AppCommand::DocumentationForward),
                     );
                 }
                 header
@@ -692,7 +693,7 @@ pub(crate) fn spawn_documentation(
                             theme,
                             label,
                             9.0,
-                            UiAction::OpenDocumentation(Some(anchor.to_string())),
+                            UiAction::from(AppCommand::OpenDocumentation(Some(anchor.to_string()))),
                         );
                     }
                     if !hits.is_empty() {
@@ -708,10 +709,10 @@ pub(crate) fn spawn_documentation(
                                 theme,
                                 &hit.heading,
                                 9.0,
-                                UiAction::OpenDocumentation(Some(format!(
+                                UiAction::from(AppCommand::OpenDocumentation(Some(format!(
                                     "heading:{}",
                                     hit.anchor
-                                ))),
+                                )))),
                             );
                         }
                     }
@@ -796,7 +797,9 @@ pub(crate) fn spawn_documentation(
                                 theme,
                                 &text,
                                 8.0,
-                                UiAction::OpenDocumentation(Some(format!("heading:{anchor}"))),
+                                UiAction::from(AppCommand::OpenDocumentation(Some(format!(
+                                    "heading:{anchor}"
+                                )))),
                             );
                         }
                     }
@@ -806,67 +809,67 @@ pub(crate) fn spawn_documentation(
 }
 
 pub(crate) fn sync_documentation_search(
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
     inputs: Query<&EditableText, With<DocumentationSearchInput>>,
     contents: Query<&ScrollPosition, With<DocumentationContent>>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Documentation {
+    if shell.route != StudioRoute::Documentation {
         return;
     }
     let Ok(input) = inputs.single() else { return };
-    if input.value() != session.documentation.query.as_str() {
-        session.documentation.query = input.value().to_string();
-        invalidated.0 = true;
+    if input.value() != shell.documentation.query.as_str() {
+        shell.documentation.query = input.value().to_string();
+        invalidated.invalidate(UiDirtyRegion::Documentation);
     }
     if let Ok(position) = contents.single()
-        && (position.0.y - session.documentation.scroll_offset).abs() > 0.5
+        && (position.0.y - shell.documentation.scroll_offset).abs() > 0.5
     {
-        session.documentation.scroll_offset = position.0.y;
-        if let Some(anchor) = session.documentation.anchor.clone() {
-            let offset = session.documentation.scroll_offset;
-            session
-                .documentation
-                .scroll_positions
-                .insert(anchor, offset);
+        shell.documentation.scroll_offset = position.0.y;
+        if let Some(anchor) = shell.documentation.anchor.clone() {
+            let offset = shell.documentation.scroll_offset;
+            shell.documentation.scroll_positions.insert(anchor, offset);
         }
     }
 }
 
 pub(crate) fn handle_documentation_shortcuts(
     keys: Res<ButtonInput<KeyCode>>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    analysis: Res<AnalysisUiState>,
+    editor: Res<EditorUiState>,
+    mut dialogs: ResMut<DialogState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if keys.just_pressed(KeyCode::F1) {
-        let anchor = session
+        let anchor = analysis
             .selected_analysis_stage
             .as_deref()
-            .and_then(|stage| {
+            .map(|stage| {
                 let (node, _) = stage_primary_node_and_artifact(analysis_stage_index(stage));
-                Some(documentation_anchor_for_node(node).to_string())
+                documentation_anchor_for_node(node).to_string()
             })
-            .or_else(|| match session.route {
+            .or_else(|| match shell.route {
                 StudioRoute::Editor => Some("guide:editor".to_string()),
                 StudioRoute::SongDetail => Some("guide:lyrics".to_string()),
                 _ => Some("guide:getting-started".to_string()),
             });
-        let origin = session.route;
+        let origin = shell.route;
         if origin != StudioRoute::Documentation {
-            session.documentation.return_route = Some(origin);
-            session.documentation.back_stack.clear();
-            session.documentation.forward_stack.clear();
-            session.documentation.anchor = None;
+            shell.documentation.return_route = Some(origin);
+            shell.documentation.back_stack.clear();
+            shell.documentation.forward_stack.clear();
+            shell.documentation.anchor = None;
         }
-        session.documentation.navigate(anchor);
-        if session.route == StudioRoute::Editor
-            && session.editor.as_ref().is_some_and(|editor| editor.dirty)
+        shell.documentation.navigate(anchor);
+        if shell.route == StudioRoute::Editor
+            && editor.editor.as_ref().is_some_and(|editor| editor.dirty)
         {
-            session.pending_leave = Some(PendingLeave::Documentation);
+            dialogs.pending_leave = Some(PendingLeave::Documentation);
         } else {
-            session.route = StudioRoute::Documentation;
+            shell.route = StudioRoute::Documentation;
         }
-        invalidated.0 = true;
+        invalidated.invalidate(UiDirtyRegion::Documentation);
     }
 }
 

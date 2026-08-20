@@ -5,7 +5,7 @@ pub(crate) fn spawn_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     native_setup: &NativeSetup,
     cache_stats: &CacheStatsJob,
     theme: &StudioTheme,
@@ -77,7 +77,7 @@ pub(crate) fn spawn_settings(
                         theme,
                         "Documentation",
                         10.0,
-                        UiAction::Documentation,
+                        UiAction::from(AppCommand::Documentation),
                     );
                     spawn_text_button(
                         nav,
@@ -85,7 +85,7 @@ pub(crate) fn spawn_settings(
                         theme,
                         "About Uta Studio",
                         10.0,
-                        UiAction::OpenAbout,
+                        UiAction::from(AppCommand::OpenAbout),
                     );
                 });
 
@@ -132,7 +132,7 @@ pub(crate) fn spawn_settings(
                                     page,
                                     font.clone(),
                                     session,
-                                    &cache_stats,
+                                    cache_stats,
                                     theme,
                                 ),
                                 SettingsTab::Models => spawn_model_settings(
@@ -192,7 +192,7 @@ pub(crate) fn spawn_settings_tab(
     parent
         .spawn((
             Button,
-            UiAction::SettingsTab(tab),
+            UiAction::from(SettingsCommand::SettingsTab(tab)),
             Node {
                 width: percent(100),
                 height: px(36),
@@ -260,7 +260,7 @@ pub(crate) fn spawn_general_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     spawn_settings_header(
@@ -278,7 +278,7 @@ pub(crate) fn spawn_general_settings(
         "Dark mode",
         "Enable a dark palette across the application.",
         session.config.dark_mode.unwrap_or(false),
-        UiAction::ToggleTheme,
+        UiAction::from(SettingsCommand::ToggleTheme),
     );
     spawn_switch_setting_row(
         parent,
@@ -291,7 +291,7 @@ pub(crate) fn spawn_general_settings(
             "The app uses a standard window."
         },
         session.config.fullscreen.unwrap_or(false),
-        UiAction::ToggleFullscreen,
+        UiAction::from(AppCommand::ToggleFullscreen),
     );
     spawn_select_setting_row(
         parent,
@@ -309,7 +309,7 @@ pub(crate) fn spawn_general_settings(
         theme,
         "User guide",
         "Open the built-in offline documentation center. F1 opens context help from the current workspace.",
-        Some(("Open user guide", UiAction::Documentation)),
+        Some(("Open user guide", UiAction::from(AppCommand::Documentation))),
     );
     spawn_setting_row(
         parent,
@@ -317,7 +317,7 @@ pub(crate) fn spawn_general_settings(
         theme,
         "Application log",
         "Review recent events when analysis, editing, or export needs troubleshooting.",
-        Some(("View log", UiAction::OpenLog)),
+        Some(("View log", UiAction::from(AppCommand::OpenLog))),
     );
     spawn_setting_row(
         parent,
@@ -325,7 +325,7 @@ pub(crate) fn spawn_general_settings(
         theme,
         "Feature API diagnostics",
         "Verify local APIs, native audio, and real UTZ/UltraStar exports in a unique temporary folder that is always removed.",
-        Some(("Run checks", UiAction::RunDiagnostics)),
+        Some(("Run checks", UiAction::from(AppCommand::RunDiagnostics))),
     );
     spawn_shift_setting_row(
         parent,
@@ -337,17 +337,18 @@ pub(crate) fn spawn_general_settings(
             "{}px",
             ui_font_size_percent_to_points(session.config.font_scale_percent())
         ),
-        UiAction::AdjustUiFontScale(-1),
-        UiAction::AdjustUiFontScale(1),
+        UiAction::from(SettingsCommand::AdjustUiFontScale(-1)),
+        UiAction::from(SettingsCommand::AdjustUiFontScale(1)),
     );
     if let Some(report) = session.diagnostic_report.as_ref() {
-        spawn_diagnostics_report(parent, font.clone(), theme, report);
+        spawn_diagnostics_report(parent, font.clone(), session.config, theme, report);
     }
 }
 
 pub(crate) fn spawn_diagnostics_report(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    config: &AppConfig,
     theme: &StudioTheme,
     report: &uta_studio_diagnostics::DiagnosticReport,
 ) {
@@ -413,9 +414,15 @@ pub(crate) fn spawn_diagnostics_report(
             spawn_text(
                 panel,
                 font.clone(),
-                format!(
-                    "{} passed · {} failed · {} skipped · {} APIs",
-                    report.passed, report.failed, report.skipped, report.capabilities
+                localized_message(
+                    config,
+                    UiMessage::DiagnosticsSummary,
+                    &[
+                        ("{passed}", &report.passed.to_string()),
+                        ("{failed}", &report.failed.to_string()),
+                        ("{skipped}", &report.skipped.to_string()),
+                        ("{apis}", &report.capabilities.to_string()),
+                    ],
                 ),
                 10.0,
                 theme.foreground,
@@ -522,7 +529,7 @@ pub(crate) fn spawn_diagnostic_check_row(
         });
 }
 
-pub(crate) fn diagnostic_status_color<'a>(status: &str, theme: &'a StudioTheme) -> Color {
+pub(crate) fn diagnostic_status_color(status: &str, theme: &StudioTheme) -> Color {
     match status {
         "passed" => theme.primary,
         "failed" => theme.destructive,

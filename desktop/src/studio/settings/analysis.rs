@@ -5,7 +5,7 @@ pub(crate) fn spawn_analysis_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     spawn_settings_header(
@@ -33,7 +33,7 @@ pub(crate) fn spawn_analysis_settings(
         )),
         Some((
             "Manage models…".to_string(),
-            UiAction::SettingsTab(SettingsTab::Models),
+            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
     spawn_select_setting_row(
@@ -169,7 +169,9 @@ pub(crate) fn spawn_analysis_settings(
                 } else {
                     "Show advanced"
                 },
-                UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Separation),
+                UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                    AnalysisAdvancedSection::Separation,
+                )),
             )),
         );
     } else {
@@ -190,8 +192,8 @@ pub(crate) fn spawn_analysis_settings(
             "Model default is used until edited. Smaller values reduce memory; larger values may improve continuity. Range: 64–1024.",
             session.config.separator_segment_size(),
             NumericSetting::SeparatorSegmentSize,
-            UiAction::AdjustSeparatorSegmentSize(-32),
-            UiAction::AdjustSeparatorSegmentSize(32),
+            UiAction::from(SettingsCommand::AdjustSeparatorSegmentSize(-32)),
+            UiAction::from(SettingsCommand::AdjustSeparatorSegmentSize(32)),
         );
         spawn_number_setting_row(
             parent,
@@ -201,8 +203,8 @@ pub(crate) fn spawn_analysis_settings(
             "More overlap can reduce chunk seams at the cost of additional processing. Range: 2–32.",
             session.config.separator_overlap(),
             NumericSetting::SeparatorOverlap,
-            UiAction::AdjustSeparatorOverlap(-1),
-            UiAction::AdjustSeparatorOverlap(1),
+            UiAction::from(SettingsCommand::AdjustSeparatorOverlap(-1)),
+            UiAction::from(SettingsCommand::AdjustSeparatorOverlap(1)),
         );
         spawn_number_setting_row(
             parent,
@@ -212,8 +214,8 @@ pub(crate) fn spawn_analysis_settings(
             "Lower this first if separation runs out of system or accelerator memory. Range: 1–8.",
             session.config.separator_batch_size(),
             NumericSetting::SeparatorBatchSize,
-            UiAction::AdjustSeparatorBatchSize(-1),
-            UiAction::AdjustSeparatorBatchSize(1),
+            UiAction::from(SettingsCommand::AdjustSeparatorBatchSize(-1)),
+            UiAction::from(SettingsCommand::AdjustSeparatorBatchSize(1)),
         );
         spawn_number_setting_row(
             parent,
@@ -223,8 +225,8 @@ pub(crate) fn spawn_analysis_settings(
             "Peak normalization applied by the separator before stems enter the lossless cache. Range: 1–100%.",
             session.config.separator_normalization_pct(),
             NumericSetting::SeparatorNormalization,
-            UiAction::AdjustSeparatorNormalization(-1),
-            UiAction::AdjustSeparatorNormalization(1),
+            UiAction::from(SettingsCommand::AdjustSeparatorNormalization(-1)),
+            UiAction::from(SettingsCommand::AdjustSeparatorNormalization(1)),
         );
     } else if separation_advanced && session.config.separator() == "demucs" {
         spawn_number_setting_row(
@@ -235,8 +237,8 @@ pub(crate) fn spawn_analysis_settings(
             "More random shifts can improve separation quality but multiply inference cost. Range: 1–8.",
             session.config.demucs_shifts(),
             NumericSetting::DemucsShifts,
-            UiAction::AdjustDemucsShifts(-1),
-            UiAction::AdjustDemucsShifts(1),
+            UiAction::from(SettingsCommand::AdjustDemucsShifts(-1)),
+            UiAction::from(SettingsCommand::AdjustDemucsShifts(1)),
         );
         spawn_number_setting_row(
             parent,
@@ -246,8 +248,8 @@ pub(crate) fn spawn_analysis_settings(
             "Overlap between inference windows. Range: 1–95%.",
             session.config.demucs_overlap_pct(),
             NumericSetting::DemucsOverlap,
-            UiAction::AdjustDemucsOverlap(-1),
-            UiAction::AdjustDemucsOverlap(1),
+            UiAction::from(SettingsCommand::AdjustDemucsOverlap(-1)),
+            UiAction::from(SettingsCommand::AdjustDemucsOverlap(1)),
         );
     }
 
@@ -267,7 +269,7 @@ pub(crate) fn spawn_analysis_settings(
         )),
         Some((
             "Manage models…".to_string(),
-            UiAction::SettingsTab(SettingsTab::Models),
+            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
     spawn_select_setting_row(
@@ -325,7 +327,9 @@ pub(crate) fn spawn_analysis_settings(
             } else {
                 "Show advanced"
             },
-            UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Transcription),
+            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                AnalysisAdvancedSection::Transcription,
+            )),
         )),
     );
     if transcription_advanced {
@@ -341,8 +345,8 @@ pub(crate) fn spawn_analysis_settings(
             "Whisper search breadth. Values are clamped between 1 and 16.",
             session.config.beam_size(),
             NumericSetting::BeamSize,
-            UiAction::AdjustBeamSize(-1),
-            UiAction::AdjustBeamSize(1),
+            UiAction::from(SettingsCommand::AdjustBeamSize(-1)),
+            UiAction::from(SettingsCommand::AdjustBeamSize(1)),
         );
         spawn_number_setting_row(
             parent,
@@ -356,8 +360,8 @@ pub(crate) fn spawn_analysis_settings(
             "Lower this if this transcription engine runs out of GPU or system memory.",
             session.config.batch_size(),
             NumericSetting::BatchSize,
-            UiAction::AdjustBatchSize(-1),
-            UiAction::AdjustBatchSize(1),
+            UiAction::from(SettingsCommand::AdjustBatchSize(-1)),
+            UiAction::from(SettingsCommand::AdjustBatchSize(1)),
         );
     }
 
@@ -375,7 +379,7 @@ pub(crate) fn spawn_analysis_settings(
         )),
         Some((
             "Manage models…".to_string(),
-            UiAction::SettingsTab(SettingsTab::Models),
+            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
     spawn_select_setting_row(
@@ -409,7 +413,7 @@ pub(crate) fn spawn_analysis_settings(
         )),
         Some((
             "Manage models…".to_string(),
-            UiAction::SettingsTab(SettingsTab::Models),
+            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
     spawn_select_setting_row(
@@ -435,7 +439,9 @@ pub(crate) fn spawn_analysis_settings(
             } else {
                 "Show advanced"
             },
-            UiAction::ToggleAnalysisAdvanced(AnalysisAdvancedSection::Pitch),
+            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                AnalysisAdvancedSection::Pitch,
+            )),
         )),
     );
     if pitch_advanced {
@@ -448,8 +454,8 @@ pub(crate) fn spawn_analysis_settings(
             "Lower for soft singing; raise to remove more silence. Range: 0–60%.",
             threshold,
             NumericSetting::VocalThreshold,
-            UiAction::AdjustVocalThreshold(-1),
-            UiAction::AdjustVocalThreshold(1),
+            UiAction::from(SettingsCommand::AdjustVocalThreshold(-1)),
+            UiAction::from(SettingsCommand::AdjustVocalThreshold(1)),
         );
     }
 
@@ -471,7 +477,7 @@ pub(crate) fn spawn_analysis_settings(
             "Off · New songs wait for an explicit analysis action."
         },
         session.config.auto_analyze(),
-        UiAction::ToggleAutoAnalyze,
+        UiAction::from(SettingsCommand::ToggleAutoAnalyze),
     );
     spawn_setting_row(
         parent,
@@ -479,7 +485,10 @@ pub(crate) fn spawn_analysis_settings(
         theme,
         "Analysis defaults",
         "Restore every stage and its advanced controls to the recommended starting values.",
-        Some(("Restore defaults", UiAction::RestoreAnalysisDefaults)),
+        Some((
+            "Restore defaults",
+            UiAction::from(SettingsCommand::RestoreAnalysisDefaults),
+        )),
     );
 }
 

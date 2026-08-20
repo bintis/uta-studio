@@ -8,14 +8,9 @@
 //! notes, but a drag legitimately passes through one. Violations surface as
 //! chart problems and block saving instead of fighting the pointer.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
-use utz::{
-    DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
-    ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
-};
-
-use crate::editor::{round_units_to_millis, seconds_to_units, units_to_seconds};
+use utz::{NoteBonus, NotePitch, ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalTrackRole};
 
 /// The shortest authorable note. Matches the analyzer-era editor so existing
 /// charts keep their timing behaviour.

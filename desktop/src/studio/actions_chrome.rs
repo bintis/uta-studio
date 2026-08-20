@@ -1,169 +1,207 @@
 use crate::studio::*;
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) fn completed_analysis_run_id(
+    history: &[app_core::AnalysisRunHistory],
+    file_hash: &str,
+) -> Option<i64> {
+    history
+        .iter()
+        .find(|run| run.file_hash == file_hash && run.status == "completed")
+        .map(|run| run.id)
+}
+
+pub(crate) struct ChromeActionState<'a> {
+    pub(crate) audio: &'a NativeAudio,
+    pub(crate) library_audio: &'a NativeLibraryAudio,
+    pub(crate) state: StudioStateMut<'a>,
+    pub(crate) invalidated: &'a mut UiInvalidated,
+}
+
 pub(crate) fn apply_chrome_action(
     action: &UiAction,
     commands: &mut Commands,
-    keys: &Res<ButtonInput<KeyCode>>,
-    search_inputs: &Query<
-        &EditableText,
-        (
-            With<LibrarySearchInput>,
-            Without<LyricsEditorInput>,
-            Without<LanguageEditorInput>,
-        ),
-    >,
+    search_inputs: &LibrarySearchInputs,
     window_entity: Entity,
-    window: &mut Window,
     _graph_viewport_width: Option<f32>,
-    audio: &Res<NativeAudio>,
-    library_audio: &Res<NativeLibraryAudio>,
-    session: &mut StudioSession,
-    invalidated: &mut UiInvalidated,
+    state: ChromeActionState,
 ) -> bool {
-    match action {
-        UiAction::ToggleGlobalSearch => {
-            session.search_open = !session.search_open;
-            session.activity_open = false;
-            session.about_open = false;
-            invalidated.0 = true;
+    let ChromeActionState {
+        audio,
+        library_audio,
+        state: studio,
+        invalidated,
+    } = state;
+    match &action.0 {
+        UiCommand::App(AppCommand::ToggleGlobalSearch) => {
+            studio.dialogs.search_open = !studio.dialogs.search_open;
+            studio.dialogs.activity_open = false;
+            studio.dialogs.about_open = false;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ToggleActivity => {
-            session.activity_open = !session.activity_open;
-            session.search_open = false;
-            session.about_open = false;
-            session.analysis_tasks = app_core::load_analysis_tasks();
-            invalidated.0 = true;
+        UiCommand::App(AppCommand::ToggleActivity) => {
+            studio.dialogs.activity_open = !studio.dialogs.activity_open;
+            studio.dialogs.search_open = false;
+            studio.dialogs.about_open = false;
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::CloseActivity => {
-            session.activity_open = false;
-            invalidated.0 = true;
+        UiCommand::App(AppCommand::CloseActivity) => {
+            studio.dialogs.activity_open = false;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::SelectAnalysisHistory(id) => {
-            session.selected_analysis_history = *id;
-            session.selected_analysis_stage = None;
-            session.activity_open = false;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::SelectAnalysisHistory(id)) => {
+            studio.analysis.selected_analysis_history = *id;
+            studio.analysis.selected_analysis_stage = None;
+            studio.dialogs.activity_open = false;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::SelectAnalysisStage(stage) => {
-            session.selected_analysis_stage = Some(stage.clone());
-            session.analysis_node_context = None;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::OpenSongAnalysis(file_hash)) => {
+            // Refresh before resolving the run so a just-finished analysis can be
+            // opened directly from the song page without waiting for the timer.
+            studio.analysis.analysis_history = app_core::load_analysis_history(500);
+            studio.analysis.selected_analysis_history =
+                completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
+            studio.analysis.selected_analysis_stage = None;
+            studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.library.library_view = LibraryView::Queue;
+            studio.library.library_facet = None;
+            studio.shell.route = StudioRoute::Library;
+            studio.dialogs.activity_open = false;
+            studio.shell.notice = studio
+                .analysis
+                .selected_analysis_history
+                .is_none()
+                .then(|| "No saved analysis session is available for this song.".to_string());
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::OpenAnalysisInspect(stage) => {
-            session.selected_analysis_stage = Some(stage.clone());
-            session.analysis_node_context = None;
-            session.library_view = LibraryView::Queue;
-            session.route = StudioRoute::AnalysisInspect;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(stage)) => {
+            studio.analysis.selected_analysis_stage = Some(stage.clone());
+            studio.dialogs.analysis_node_context = None;
+            studio.library.library_view = LibraryView::Queue;
+            studio.shell.route = StudioRoute::AnalysisInspect;
+            invalidated.invalidate(action.0.dirty_region());
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::AdjustAnalysisGraphZoom(delta_percent) => {
-            session.analysis_graph_zoom = clamp_analysis_graph_zoom(
-                session.analysis_graph_zoom + (*delta_percent as f32) / 100.0,
+        UiCommand::Analysis(AnalysisCommand::AdjustAnalysisGraphZoom(delta_percent)) => {
+            studio.analysis.analysis_graph_zoom = clamp_analysis_graph_zoom(
+                studio.analysis.analysis_graph_zoom + (*delta_percent as f32) / 100.0,
             );
-            session.analysis_graph_needs_fit = false;
-            invalidated.0 = true;
+            studio.analysis.analysis_graph_needs_fit = false;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiAction::ToggleAnalysisMiniView => {
-            session.analysis_mini_view = !session.analysis_mini_view;
-            session.analysis_graph_needs_fit = true;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView) => {
+            studio.analysis.analysis_mini_view = !studio.analysis.analysis_mini_view;
+            studio.analysis.analysis_graph_needs_fit = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiAction::FitAnalysisGraph(_) => {
-            session.analysis_graph_needs_fit = true;
-            session.analysis_graph_scroll_offset = 0.0;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph(_)) => {
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_scroll_offset = 0.0;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiAction::FocusAnalysisGraphNode(scroll, stage_id) => {
-            session.analysis_graph_scroll_offset = (*scroll).max(0) as f32;
-            session.selected_analysis_stage = Some(stage_id.clone());
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)) => {
+            studio.analysis.analysis_graph_scroll_offset = (*scroll).max(0) as f32;
+            studio.analysis.selected_analysis_stage = Some(stage_id.clone());
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiAction::DismissAnalysisNodeContext => {
-            session.analysis_node_context = None;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext) => {
+            studio.dialogs.analysis_node_context = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::RequestClearAnalysisHistory => {
-            session.pending_analysis_history_clear = true;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::RequestClearAnalysisHistory) => {
+            studio.dialogs.pending_analysis_history_clear = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::CancelClearAnalysisHistory => {
-            session.pending_analysis_history_clear = false;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::CancelClearAnalysisHistory) => {
+            studio.dialogs.pending_analysis_history_clear = false;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ConfirmClearAnalysisHistory => {
-            session.pending_analysis_history_clear = false;
+        UiCommand::Analysis(AnalysisCommand::ConfirmClearAnalysisHistory) => {
+            studio.dialogs.pending_analysis_history_clear = false;
             match app_core::clear_analysis_history() {
                 Ok(()) => {
-                    session.analysis_history.clear();
-                    session.selected_analysis_history = None;
-                    session.selected_analysis_stage = None;
-                    session.notice = Some("Analysis history deleted.".into());
+                    studio.analysis.analysis_history.clear();
+                    studio.analysis.selected_analysis_history = None;
+                    studio.analysis.selected_analysis_stage = None;
+                    studio.shell.notice = Some("Analysis history deleted.".into());
                 }
                 Err(error) => {
-                    session.notice = Some(format!("Could not delete analysis history: {error}"));
+                    studio.shell.notice =
+                        Some(format!("Could not delete analysis history: {error}"));
                 }
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::OpenAbout => {
-            session.about_open = true;
-            session.activity_open = false;
-            session.search_open = false;
-            invalidated.0 = true;
+        UiCommand::App(AppCommand::OpenAbout) => {
+            studio.dialogs.about_open = true;
+            studio.dialogs.activity_open = false;
+            studio.dialogs.search_open = false;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::CloseAbout => {
-            session.about_open = false;
-            invalidated.0 = true;
+        UiCommand::App(AppCommand::CloseAbout) => {
+            studio.dialogs.about_open = false;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::Back => {
-            session.open_settings_select = None;
-            session.open_editor_select = None;
-            if session.route == StudioRoute::Editor {
-                if session.editor.as_ref().is_some_and(|editor| editor.dirty) {
-                    session.pending_leave = Some(PendingLeave::Back);
+        UiCommand::App(AppCommand::Back) => {
+            studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_editor_select = None;
+            if studio.shell.route == StudioRoute::Editor {
+                if studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
+                {
+                    studio.dialogs.pending_leave = Some(PendingLeave::Back);
                 } else {
                     let _ = audio.0.stop();
-                    session.editor = None;
-                    session.route = StudioRoute::SongDetail;
-                    session.notice = None;
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::SongDetail;
+                    studio.shell.notice = None;
                 }
-                invalidated.0 = true;
-            } else if session.route == StudioRoute::AnalysisInspect {
-                session.route = StudioRoute::Library;
-                session.library_view = LibraryView::Queue;
-                session.notice = None;
-                invalidated.0 = true;
-            } else if session.route != StudioRoute::Library {
-                session.route = StudioRoute::Library;
-                session.notice = None;
-                invalidated.0 = true;
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.shell.route == StudioRoute::AnalysisInspect {
+                studio.shell.route = StudioRoute::Library;
+                studio.library.library_view = LibraryView::Queue;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.shell.route != StudioRoute::Library {
+                studio.shell.route = StudioRoute::Library;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiAction::Home => {
-            session.open_settings_select = None;
-            session.open_editor_select = None;
-            if session.route == StudioRoute::Editor {
-                if session.editor.as_ref().is_some_and(|editor| editor.dirty) {
-                    session.pending_leave = Some(PendingLeave::Home);
-                    invalidated.0 = true;
+        UiCommand::App(AppCommand::Home) => {
+            studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_editor_select = None;
+            if studio.shell.route == StudioRoute::Editor {
+                if studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
+                {
+                    studio.dialogs.pending_leave = Some(PendingLeave::Home);
+                    invalidated.invalidate(action.0.dirty_region());
                     return true;
                 }
                 let _ = audio.0.stop();
-                session.editor = None;
+                studio.editor.editor = None;
             }
-            if session.route != StudioRoute::Library {
-                session.route = StudioRoute::Library;
-                session.notice = None;
-                invalidated.0 = true;
+            if studio.shell.route != StudioRoute::Library {
+                studio.shell.route = StudioRoute::Library;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiAction::CancelLeave => {
-            session.pending_leave = None;
-            invalidated.0 = true;
+        UiCommand::App(AppCommand::CancelLeave) => {
+            studio.dialogs.pending_leave = None;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        UiAction::ConfirmLeave => {
-            let destination = session.pending_leave.take();
+        UiCommand::App(AppCommand::ConfirmLeave) => {
+            let destination = studio.dialogs.pending_leave.take();
             let _ = audio.0.stop();
             match destination {
                 Some(PendingLeave::Exit) => {
@@ -171,200 +209,205 @@ pub(crate) fn apply_chrome_action(
                     commands.entity(window_entity).despawn();
                 }
                 Some(PendingLeave::Back) => {
-                    session.editor = None;
-                    session.route = StudioRoute::SongDetail;
-                    session.notice = None;
-                    invalidated.0 = true;
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::SongDetail;
+                    studio.shell.notice = None;
+                    invalidated.invalidate(action.0.dirty_region());
                 }
                 Some(PendingLeave::Home) => {
-                    session.editor = None;
-                    session.route = StudioRoute::Library;
-                    session.notice = None;
-                    invalidated.0 = true;
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::Library;
+                    studio.shell.notice = None;
+                    invalidated.invalidate(action.0.dirty_region());
                 }
                 Some(PendingLeave::Documentation) => {
-                    session.editor = None;
-                    session.route = StudioRoute::Documentation;
-                    session.notice = None;
-                    invalidated.0 = true;
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::Documentation;
+                    studio.shell.notice = None;
+                    invalidated.invalidate(action.0.dirty_region());
                 }
                 None => {}
             }
         }
-        UiAction::SetLibraryView(view) => {
-            let view_changed = session.library_view != *view;
-            session.library_view = *view;
-            session.library_status = None;
-            session.library_search = None;
-            session.library_facet = None;
-            session.route = StudioRoute::Library;
-            session.song_context = None;
-            session.activity_open = false;
-            session.about_open = false;
-            session.search_open = false;
-            session.notice = None;
+        UiCommand::Library(LibraryCommand::SetLibraryView(view)) => {
+            let view_changed = studio.library.library_view != *view;
+            studio.library.library_view = *view;
+            studio.library.library_status = None;
+            studio.library.library_search = None;
+            studio.library.library_facet = None;
+            studio.shell.route = StudioRoute::Library;
+            studio.dialogs.song_context = None;
+            studio.dialogs.activity_open = false;
+            studio.dialogs.about_open = false;
+            studio.dialogs.search_open = false;
+            studio.shell.notice = None;
             if view_changed {
-                session.library_scroll_offset = 0.0;
-                session.analysis_graph_scroll_offset = 0.0;
+                studio.library.library_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_scroll_offset = 0.0;
                 if *view == LibraryView::Queue {
-                    session.analysis_graph_needs_fit = true;
+                    studio.analysis.analysis_graph_needs_fit = true;
                 }
             }
-            session.refresh_library();
-            invalidated.0 = true;
+            studio.library.refresh();
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::SetLibraryFacet(facet) => {
-            session.library_view = LibraryView::All;
-            session.library_search = None;
-            session.library_facet = Some(facet.clone());
-            session.route = StudioRoute::Library;
-            session.song_context = None;
-            session.notice = None;
-            session.refresh_library();
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::SetLibraryFacet(facet)) => {
+            studio.library.library_view = LibraryView::All;
+            studio.library.library_search = None;
+            studio.library.library_facet = Some(facet.clone());
+            studio.shell.route = StudioRoute::Library;
+            studio.dialogs.song_context = None;
+            studio.shell.notice = None;
+            studio.library.refresh();
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::LoadMoreSongs => {
-            session.load_more_songs();
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::LoadMoreSongs) => {
+            studio.library.load_more();
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ApplyLibrarySearch => {
+        UiCommand::Library(LibraryCommand::ApplyLibrarySearch) => {
             let value = search_inputs
                 .single()
                 .map(|input| input.value().to_string())
                 .unwrap_or_default();
             let value = value.trim();
-            session.library_search = (!value.is_empty()).then(|| value.to_string());
-            session.route = StudioRoute::Library;
-            session.library_view = LibraryView::All;
-            session.library_facet = None;
-            session.search_open = false;
-            session.refresh_library();
-            session.notice = None;
-            invalidated.0 = true;
+            studio.library.library_search = (!value.is_empty()).then(|| value.to_string());
+            studio.shell.route = StudioRoute::Library;
+            studio.library.library_view = LibraryView::All;
+            studio.library.library_facet = None;
+            studio.dialogs.search_open = false;
+            studio.library.refresh();
+            studio.shell.notice = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ClearLibrarySearch => {
-            session.library_search = None;
-            session.route = StudioRoute::Library;
-            session.refresh_library();
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::ClearLibrarySearch) => {
+            studio.library.library_search = None;
+            studio.shell.route = StudioRoute::Library;
+            studio.library.refresh();
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ToggleLibraryLayout => {
-            session.config.song_list_view = Some(
-                if session.config.song_list_view.as_deref() == Some("grid") {
+        UiCommand::Library(LibraryCommand::ToggleLibraryLayout) => {
+            studio.shell.config.song_list_view = Some(
+                if studio.shell.config.song_list_view.as_deref() == Some("grid") {
                     "table"
                 } else {
                     "grid"
                 }
                 .to_string(),
             );
-            if let Some(error) = save_config_error(&session.config) {
-                session.notice = Some(error);
+            if let Some(error) = save_config_error(&studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ToggleExportAllMenu => {
-            session.export_all_open = !session.export_all_open;
-            session.open_library_select = None;
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::ToggleExportAllMenu) => {
+            studio.dialogs.export_all_open = !studio.dialogs.export_all_open;
+            studio.dialogs.open_library_select = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ExportAllUtz | UiAction::ExportAllUltraStar => {
-            session.export_all_open = false;
-            let extension = if matches!(action, UiAction::ExportAllUtz) {
+        UiCommand::Library(LibraryCommand::ExportAllUtz)
+        | UiCommand::Library(LibraryCommand::ExportAllUltraStar) => {
+            studio.dialogs.export_all_open = false;
+            let extension = if matches!(&action.0, UiCommand::Library(LibraryCommand::ExportAllUtz))
+            {
                 "utz"
             } else {
                 "txt"
             };
-            if let Some(export_directory) = session.config.export_path.clone() {
-                session.notice = Some(start_export_all_job(
+            if let Some(export_directory) = studio.shell.config.export_path.clone() {
+                studio.shell.notice = Some(start_export_all_job(
                     extension,
                     export_directory,
-                    &mut session.export_job,
+                    &mut studio.jobs.export_job,
                 ));
             } else {
-                session.route = StudioRoute::Settings;
-                session.settings_tab = SettingsTab::Storage;
-                session.request_cache_stats_refresh = true;
-                session.notice =
+                studio.shell.route = StudioRoute::Settings;
+                studio.shell.settings_tab = SettingsTab::Storage;
+                studio.jobs.request_cache_stats_refresh = true;
+                studio.shell.notice =
                     Some("Choose a default export folder before using Export all.".to_string());
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::OpenLibrarySelect(kind) => {
-            session.open_library_select = if session.open_library_select == Some(*kind) {
-                None
-            } else {
-                Some(*kind)
-            };
-            session.export_all_open = false;
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::OpenLibrarySelect(kind)) => {
+            studio.dialogs.open_library_select =
+                if studio.dialogs.open_library_select == Some(*kind) {
+                    None
+                } else {
+                    Some(*kind)
+                };
+            studio.dialogs.export_all_open = false;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::SelectLibraryValue(kind, value) => {
+        UiCommand::Library(LibraryCommand::SelectLibraryValue(kind, value)) => {
             let value = (value != "all").then(|| value.clone());
             match kind {
-                LibrarySelectKind::Status => session.library_status = value,
-                LibrarySelectKind::TranscriptSource => session.library_transcript_source = value,
+                LibrarySelectKind::Status => studio.library.library_status = value,
+                LibrarySelectKind::TranscriptSource => {
+                    studio.library.library_transcript_source = value
+                }
             }
-            session.open_library_select = None;
-            session.refresh_library();
-            session.notice = None;
-            invalidated.0 = true;
+            studio.dialogs.open_library_select = None;
+            studio.library.refresh();
+            studio.shell.notice = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::AnalyzeAll => {
+        UiCommand::Library(LibraryCommand::AnalyzeAll) => {
             if app_core::analysis_runtime_status().ready {
-                app_core::enqueue_all(&session.library_filters());
-                session.analysis_tasks = app_core::load_analysis_tasks();
-                session.library_view = LibraryView::Queue;
-                session.library_facet = None;
-                session.route = StudioRoute::Library;
-                session.refresh_library();
-                session.notice = Some("Matching unanalyzed songs were queued.".to_string());
+                app_core::enqueue_all(&studio.library.filters());
+                studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+                studio.library.library_view = LibraryView::Queue;
+                studio.library.library_facet = None;
+                studio.shell.route = StudioRoute::Library;
+                studio.library.refresh();
+                studio.shell.notice = Some("Matching unanalyzed songs were queued.".to_string());
             } else {
-                session.route = StudioRoute::Settings;
-                session.settings_tab = SettingsTab::Models;
-                session.notice = Some(
+                studio.shell.route = StudioRoute::Settings;
+                studio.shell.settings_tab = SettingsTab::Models;
+                studio.shell.notice = Some(
                     "Analysis is disabled until setup is completed in Settings > Models & runtime."
                         .to_string(),
                 );
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::Folders => {
-            session.route = StudioRoute::Folders;
-            session.notice = None;
-            session.folder_browser.context_menu = None;
-            if session.folder_browser.root.is_none()
-                && let Some(path) = session.config.library_paths().into_iter().next()
+        UiCommand::App(AppCommand::Folders) => {
+            studio.shell.route = StudioRoute::Folders;
+            studio.shell.notice = None;
+            studio.library.folder_browser.context_menu = None;
+            if studio.library.folder_browser.root.is_none()
+                && let Some(path) = studio.shell.config.library_paths().into_iter().next()
             {
-                session.folder_browser.select_root(path);
+                studio.library.folder_browser.select_root(path);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::DismissAnalysisArtifactContext => {
-            session.analysis_artifact_context = None;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::DismissAnalysisArtifactContext) => {
+            studio.dialogs.analysis_artifact_context = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::DismissAnalysisExportContext => {
-            session.analysis_export_context = None;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::DismissAnalysisExportContext) => {
+            studio.dialogs.analysis_export_context = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ToggleAnalysisLineageMode => {
-            session.analysis_lineage_mode = !session.analysis_lineage_mode;
-            if !session.analysis_lineage_mode {
-                session.artifact_lineage = None;
+        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisLineageMode) => {
+            studio.analysis.analysis_lineage_mode = !studio.analysis.analysis_lineage_mode;
+            if !studio.analysis.analysis_lineage_mode {
+                studio.dialogs.artifact_lineage = None;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ValidateExportNode(file_hash, kind) => {
-            session.analysis_export_context = None;
-            session.notice = Some(match app_core::validate_export_node(file_hash, *kind) {
+        UiCommand::Analysis(AnalysisCommand::ValidateExportNode(file_hash, kind)) => {
+            studio.dialogs.analysis_export_context = None;
+            studio.shell.notice = Some(match app_core::validate_export_node(file_hash, *kind) {
                 Ok(message) => message,
                 Err(error) => error,
             });
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::RevealLastExport(file_hash, kind) => {
-            session.analysis_export_context = None;
-            session.notice = Some(match app_core::last_export_destination(file_hash, *kind) {
+        UiCommand::Analysis(AnalysisCommand::RevealLastExport(file_hash, kind)) => {
+            studio.dialogs.analysis_export_context = None;
+            studio.shell.notice = Some(match app_core::last_export_destination(file_hash, *kind) {
                 Some(path) if path.is_file() => {
                     let target = path.parent().unwrap_or(path.as_path());
                     match open::that_detached(target) {
@@ -375,74 +418,84 @@ pub(crate) fn apply_chrome_action(
                 Some(path) => format!("last export is missing: {}", path.display()),
                 None => "No last export is tracked yet.".to_string(),
             });
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::Documentation => {
-            let origin = session.route;
+        UiCommand::App(AppCommand::Documentation) => {
+            let origin = studio.shell.route;
             if origin != StudioRoute::Documentation {
-                session.documentation.return_route = Some(origin);
-                session.documentation.back_stack.clear();
-                session.documentation.forward_stack.clear();
-                session.documentation.anchor = None;
+                studio.shell.documentation.return_route = Some(origin);
+                studio.shell.documentation.back_stack.clear();
+                studio.shell.documentation.forward_stack.clear();
+                studio.shell.documentation.anchor = None;
             }
-            session
+            studio
+                .shell
                 .documentation
                 .navigate(Some("guide:getting-started".to_string()));
-            if session.route == StudioRoute::Editor
-                && session.editor.as_ref().is_some_and(|editor| editor.dirty)
+            if studio.shell.route == StudioRoute::Editor
+                && studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
             {
-                session.pending_leave = Some(PendingLeave::Documentation);
+                studio.dialogs.pending_leave = Some(PendingLeave::Documentation);
             } else {
-                session.route = StudioRoute::Documentation;
-                session.notice = None;
+                studio.shell.route = StudioRoute::Documentation;
+                studio.shell.notice = None;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::OpenDocumentation(anchor) => {
-            let origin = session.route;
+        UiCommand::App(AppCommand::OpenDocumentation(anchor)) => {
+            let origin = studio.shell.route;
             if origin != StudioRoute::Documentation {
-                session.documentation.return_route = Some(origin);
-                session.documentation.back_stack.clear();
-                session.documentation.forward_stack.clear();
-                session.documentation.anchor = None;
+                studio.shell.documentation.return_route = Some(origin);
+                studio.shell.documentation.back_stack.clear();
+                studio.shell.documentation.forward_stack.clear();
+                studio.shell.documentation.anchor = None;
             }
-            session.documentation.navigate(anchor.clone());
-            if session.route == StudioRoute::Editor
-                && session.editor.as_ref().is_some_and(|editor| editor.dirty)
+            studio.shell.documentation.navigate(anchor.clone());
+            if studio.shell.route == StudioRoute::Editor
+                && studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
             {
-                session.pending_leave = Some(PendingLeave::Documentation);
+                studio.dialogs.pending_leave = Some(PendingLeave::Documentation);
             } else {
-                session.route = StudioRoute::Documentation;
-                session.notice = None;
+                studio.shell.route = StudioRoute::Documentation;
+                studio.shell.notice = None;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::DocumentationBack => {
-            if !session.documentation.go_back() {
-                session.route = session
+        UiCommand::App(AppCommand::DocumentationBack) => {
+            if !studio.shell.documentation.go_back() {
+                studio.shell.route = studio
+                    .shell
                     .documentation
                     .return_route
                     .take()
                     .unwrap_or(StudioRoute::Library);
-                session.documentation.forward_stack.clear();
+                studio.shell.documentation.forward_stack.clear();
             }
-            session.notice = None;
-            invalidated.0 = true;
+            studio.shell.notice = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::DocumentationForward => {
-            if session.documentation.go_forward() {
-                invalidated.0 = true;
+        UiCommand::App(AppCommand::DocumentationForward) => {
+            if studio.shell.documentation.go_forward() {
+                invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiAction::SelectArtifactInspectorTab(tab) => {
-            session.selected_artifact_inspector_tab = *tab;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::SelectArtifactInspectorTab(tab)) => {
+            studio.analysis.selected_artifact_inspector_tab = *tab;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ToggleArtifactPinned(reference) => {
+        UiCommand::Analysis(AnalysisCommand::ToggleArtifactPinned(reference)) => {
             match app_core::inspect_artifact(reference) {
                 Ok(inspection) => {
                     let target = !inspection.pinned;
-                    session.notice = match app_core::set_artifact_pinned(reference, target) {
+                    studio.shell.notice = match app_core::set_artifact_pinned(reference, target) {
                         Ok(()) => Some(if target {
                             "Artifact revision pinned. It is protected from deletion.".to_string()
                         } else {
@@ -451,67 +504,67 @@ pub(crate) fn apply_chrome_action(
                         Err(error) => Some(error),
                     };
                 }
-                Err(error) => session.notice = Some(error),
+                Err(error) => studio.shell.notice = Some(error),
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ShowArtifactLineage(reference) => {
+        UiCommand::Analysis(AnalysisCommand::ShowArtifactLineage(reference)) => {
             match app_core::artifact_lineage(reference) {
                 Ok(lineage) => {
-                    session.analysis_lineage_mode = true;
-                    session.artifact_lineage = Some(ArtifactLineagePanel {
+                    studio.analysis.analysis_lineage_mode = true;
+                    studio.dialogs.artifact_lineage = Some(ArtifactLineagePanel {
                         lineage,
-                        scope: session.analysis_lineage_scope,
+                        scope: studio.analysis.analysis_lineage_scope,
                         selected: reference.clone(),
                     });
                 }
-                Err(error) => session.notice = Some(error),
+                Err(error) => studio.shell.notice = Some(error),
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::SetArtifactLineageScope(scope) => {
-            session.analysis_lineage_scope = *scope;
-            if let Some(panel) = session.artifact_lineage.as_mut() {
+        UiCommand::Analysis(AnalysisCommand::SetArtifactLineageScope(scope)) => {
+            studio.analysis.analysis_lineage_scope = *scope;
+            if let Some(panel) = studio.dialogs.artifact_lineage.as_mut() {
                 panel.scope = *scope;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::SelectArtifactLineageRevision(reference) => {
-            if let Some(panel) = session.artifact_lineage.as_mut() {
+        UiCommand::Analysis(AnalysisCommand::SelectArtifactLineageRevision(reference)) => {
+            if let Some(panel) = studio.dialogs.artifact_lineage.as_mut() {
                 panel.selected = reference.clone();
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::CloseArtifactLineage => {
-            session.artifact_lineage = None;
-            session.analysis_lineage_mode = false;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::CloseArtifactLineage) => {
+            studio.dialogs.artifact_lineage = None;
+            studio.analysis.analysis_lineage_mode = false;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ShowArtifactImpact(reference) => {
+        UiCommand::Analysis(AnalysisCommand::ShowArtifactImpact(reference)) => {
             match app_core::preview_artifact_downstream_impact(reference) {
-                Ok(impact) => session.artifact_impact = Some(impact),
-                Err(error) => session.notice = Some(error),
+                Ok(impact) => studio.dialogs.artifact_impact = Some(impact),
+                Err(error) => studio.shell.notice = Some(error),
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::CloseArtifactImpact => {
-            session.artifact_impact = None;
-            invalidated.0 = true;
+        UiCommand::Analysis(AnalysisCommand::CloseArtifactImpact) => {
+            studio.dialogs.artifact_impact = None;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::ConfirmArtifactImpact => {
-            if let Some(impact) = session.artifact_impact.take() {
+        UiCommand::Analysis(AnalysisCommand::ConfirmArtifactImpact) => {
+            if let Some(impact) = studio.dialogs.artifact_impact.take() {
                 let request = app_core::analysis_request_from_impact(&impact.file_hash, &impact);
-                session.notice = Some(match app_core::run_analysis_request(request) {
+                studio.shell.notice = Some(match app_core::run_analysis_request(request) {
                     Ok(()) => {
-                        session.analysis_tasks = app_core::load_analysis_tasks();
+                        studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
                         "Confirmed impact plan was queued.".to_string()
                     }
                     Err(error) => error,
                 });
             }
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
-        UiAction::OpenArtifactCompatibleEditor(reference) => {
+        UiCommand::Analysis(AnalysisCommand::OpenArtifactCompatibleEditor(reference)) => {
             match reference.kind {
                 app_core::ArtifactKind::LyricsInput
                 | app_core::ArtifactKind::RecognizedText
@@ -528,9 +581,9 @@ pub(crate) fn apply_chrome_action(
                                     serde_json::to_string_pretty(value).unwrap_or_default(),
                                 ),
                             };
-                            session.selected_song = Some(reference.file_hash.clone());
-                            session.route = StudioRoute::SongDetail;
-                            session.lyrics_editor = Some(NativeLyricsEditor {
+                            studio.library.selected_song = Some(reference.file_hash.clone());
+                            studio.shell.route = StudioRoute::SongDetail;
+                            studio.dialogs.lyrics_editor = Some(NativeLyricsEditor {
                                 file_hash: reference.file_hash.clone(),
                                 mode,
                                 separate_stems: true,
@@ -545,95 +598,107 @@ pub(crate) fn apply_chrome_action(
                                 let _ = audio.0.stop();
                                 start_lyrics_waveform_job(
                                     &reference.file_hash,
-                                    &mut session.lyrics_waveform_job,
+                                    &mut studio.jobs.lyrics_waveform_job,
                                 );
                             }
-                            session.notice = Some(
+                            studio.shell.notice = Some(
                                     "Opened an immutable artifact revision as an editable working copy."
                                         .to_string(),
                                 );
                         }
-                        Err(error) => session.notice = Some(error),
+                        Err(error) => studio.shell.notice = Some(error),
                     }
                 }
                 app_core::ArtifactKind::CandidateChart
                 | app_core::ArtifactKind::AuthoredChart
                 | app_core::ArtifactKind::PitchTrack
                 | app_core::ArtifactKind::PitchNoteCandidates => {
-                    session.selected_song = Some(reference.file_hash.clone());
-                    session.editor = None;
-                    session.route = StudioRoute::Editor;
-                    session.notice = Some(start_editor_revision_load_job(
+                    studio.library.selected_song = Some(reference.file_hash.clone());
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::Editor;
+                    studio.shell.notice = Some(start_editor_revision_load_job(
                         reference.clone(),
                         Arc::clone(&audio.0),
-                        &mut session.editor_load_job,
+                        &mut studio.jobs.editor_load_job,
                     ));
                 }
                 _ => {
-                    session.notice = Some(
+                    studio.shell.notice = Some(
                         "No compatible in-app editor exists for this artifact kind.".to_string(),
                     );
                 }
             }
-            invalidated.0 = true;
+            invalidated.invalidate(if studio.shell.route == StudioRoute::Editor {
+                UiDirtyRegion::Editor
+            } else {
+                action.0.dirty_region()
+            });
         }
-        UiAction::MergeCandidateChart(candidate, authored, mode) => {
-            session.selected_song = Some(candidate.file_hash.clone());
-            session.editor = None;
-            session.route = StudioRoute::Editor;
-            session.notice = Some(start_editor_merge_load_job(
+        UiCommand::Analysis(AnalysisCommand::MergeCandidateChart(candidate, authored, mode)) => {
+            studio.library.selected_song = Some(candidate.file_hash.clone());
+            studio.editor.editor = None;
+            studio.shell.route = StudioRoute::Editor;
+            studio.shell.notice = Some(start_editor_merge_load_job(
                 candidate.clone(),
                 authored.clone(),
                 *mode,
                 Arc::clone(&audio.0),
-                &mut session.editor_load_job,
+                &mut studio.jobs.editor_load_job,
             ));
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
         }
-        UiAction::MergeSelectedCandidatePhrase(candidate, authored) => {
-            session.analysis_artifact_context = None;
-            match merge_mode_from_editor_selection(session.editor.as_ref(), true) {
+        UiCommand::Analysis(AnalysisCommand::MergeSelectedCandidatePhrase(candidate, authored)) => {
+            studio.dialogs.analysis_artifact_context = None;
+            match merge_mode_from_editor_selection(studio.editor.editor.as_ref(), true) {
                 Ok(mode) => {
-                    session.selected_song = Some(candidate.file_hash.clone());
-                    session.editor = None;
-                    session.route = StudioRoute::Editor;
-                    session.notice = Some(start_editor_merge_load_job(
+                    studio.library.selected_song = Some(candidate.file_hash.clone());
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::Editor;
+                    studio.shell.notice = Some(start_editor_merge_load_job(
                         candidate.clone(),
                         authored.clone(),
                         mode,
                         Arc::clone(&audio.0),
-                        &mut session.editor_load_job,
+                        &mut studio.jobs.editor_load_job,
                     ));
                 }
-                Err(error) => session.notice = Some(error),
+                Err(error) => studio.shell.notice = Some(error),
             }
-            invalidated.0 = true;
+            invalidated.invalidate(if studio.shell.route == StudioRoute::Editor {
+                UiDirtyRegion::Editor
+            } else {
+                action.0.dirty_region()
+            });
         }
-        UiAction::MergeSelectedCandidateRange(candidate, authored) => {
-            session.analysis_artifact_context = None;
-            match merge_mode_from_editor_selection(session.editor.as_ref(), false) {
+        UiCommand::Analysis(AnalysisCommand::MergeSelectedCandidateRange(candidate, authored)) => {
+            studio.dialogs.analysis_artifact_context = None;
+            match merge_mode_from_editor_selection(studio.editor.editor.as_ref(), false) {
                 Ok(mode) => {
-                    session.selected_song = Some(candidate.file_hash.clone());
-                    session.editor = None;
-                    session.route = StudioRoute::Editor;
-                    session.notice = Some(start_editor_merge_load_job(
+                    studio.library.selected_song = Some(candidate.file_hash.clone());
+                    studio.editor.editor = None;
+                    studio.shell.route = StudioRoute::Editor;
+                    studio.shell.notice = Some(start_editor_merge_load_job(
                         candidate.clone(),
                         authored.clone(),
                         mode,
                         Arc::clone(&audio.0),
-                        &mut session.editor_load_job,
+                        &mut studio.jobs.editor_load_job,
                     ));
                 }
-                Err(error) => session.notice = Some(error),
+                Err(error) => studio.shell.notice = Some(error),
             }
-            invalidated.0 = true;
+            invalidated.invalidate(if studio.shell.route == StudioRoute::Editor {
+                UiDirtyRegion::Editor
+            } else {
+                action.0.dirty_region()
+            });
         }
-        UiAction::KeepAuthoredChart => {
-            session.analysis_artifact_context = None;
-            session.pending_chart_replace = None;
-            session.notice =
+        UiCommand::Analysis(AnalysisCommand::KeepAuthoredChart) => {
+            studio.dialogs.analysis_artifact_context = None;
+            studio.dialogs.pending_chart_replace = None;
+            studio.shell.notice =
                 Some("Authored chart kept. The candidate revision was not applied.".to_string());
-            invalidated.0 = true;
+            invalidated.invalidate(action.0.dirty_region());
         }
 
         _ => return false,

@@ -1,6 +1,5 @@
 //! Library route: browsing, filters, song rows, player, and export.
 
-use super::*;
 use crate::studio::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +41,7 @@ impl LibraryView {
         match self {
             Self::All => "Song Library",
             Self::Queue => "Analysis",
-            Self::Completed => "Completed Charts",
+            Self::Completed => "Charts",
             Self::Videos => "Video",
             Self::Artists => "Artists",
             Self::Albums => "Albums",
@@ -53,9 +52,7 @@ impl LibraryView {
         match self {
             Self::All => "ALL MUSIC",
             Self::Queue => "IN PROGRESS",
-            Self::Completed => "READY TO AUTHOR",
-            Self::Videos => "VIDEO SOURCES",
-            Self::Artists | Self::Albums => "MY LIBRARY",
+            Self::Completed | Self::Videos | Self::Artists | Self::Albums => "MY LIBRARY",
         }
     }
 

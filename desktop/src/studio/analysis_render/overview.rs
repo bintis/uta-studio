@@ -1,7 +1,9 @@
 use super::*;
 use crate::studio::*;
 
-pub(crate) fn current_analysis_header(session: &StudioSession) -> Option<(String, String, usize)> {
+pub(crate) fn current_analysis_header(
+    session: &StudioSessionView<'_>,
+) -> Option<(String, String, usize)> {
     let active_task = session
         .analysis_tasks
         .iter()
@@ -75,7 +77,7 @@ fn spawn_analysis_empty_canvas(
 pub(crate) fn spawn_analysis_session_overview(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     spawn_analysis_session_surface(parent, font, session, theme, false);
@@ -84,7 +86,7 @@ pub(crate) fn spawn_analysis_session_overview(
 pub(crate) fn spawn_analysis_inspect_surface(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     spawn_analysis_session_surface(parent, font, session, theme, true);
@@ -93,7 +95,7 @@ pub(crate) fn spawn_analysis_inspect_surface(
 fn spawn_analysis_session_surface(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
     inspect_only: bool,
 ) {
@@ -186,7 +188,7 @@ fn spawn_analysis_session_surface(
                     .unwrap_or(0)
             })
         })
-        .unwrap_or_else(|| {
+        .unwrap_or({
             if selected_stage_index < stage_index {
                 100
             } else {
@@ -418,12 +420,12 @@ fn spawn_analysis_session_surface(
                             theme,
                             "View live",
                             9.0,
-                            UiAction::SelectAnalysisHistory(None),
+                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(None)),
                         );
                     }
                 });
-            if let Some(live) = task.live.as_ref() {
-                if let Some(fallback_from) = live.fallback_from.as_deref() {
+            if let Some(live) = task.live.as_ref()
+                && let Some(fallback_from) = live.fallback_from.as_deref() {
                     session_card
                         .spawn(Node {
                             width: percent(100),
@@ -462,7 +464,6 @@ fn spawn_analysis_session_surface(
                         });
                 }
             }
-            }
 
             let active_stage_progress = task
                 .live
@@ -494,10 +495,14 @@ fn spawn_analysis_session_surface(
             // per-node state (`expanded_compound_nodes`) is left untouched
             // either way, so switching back to Full restores it exactly.
             let no_expanded = std::collections::BTreeSet::new();
+            let mut full_expanded = session.expanded_compound_nodes.clone();
+            // Stem children are the real selected pipeline; always show them
+            // in Full view instead of the stems.separate shell.
+            full_expanded.insert(app_core::AnalysisNodeId::new("stems.separate"));
             let expanded = if session.analysis_mini_view {
                 &no_expanded
             } else {
-                &session.expanded_compound_nodes
+                &full_expanded
             };
             let graph_view = build_graph_view_model(
                 &graph_spec,
@@ -537,20 +542,24 @@ fn spawn_analysis_session_surface(
                     )
                 })
                 .or_else(|| {
-                    session.analysis_lineage_mode.then(|| GraphLineageHighlight::default())
+                    session.analysis_lineage_mode.then(GraphLineageHighlight::default)
                 });
             let lineage_active = lineage_highlight
                 .as_ref()
                 .is_some_and(GraphLineageHighlight::is_active);
             let render_ids: Vec<app_core::AnalysisNodeId> =
                 render_graph.nodes.iter().map(|n| n.id.clone()).collect();
-            let layout = layered_layout_from_edges(
+            let routed = layered_layout_from_edges(
                 &render_ids,
                 &render_graph.edge_pairs(),
                 LayoutSpacing::canvas(),
-            );
-            let canvas_width = layout.as_ref().map_or(780.0, |l| l.canvas_width).max(780.0);
-            let canvas_height = layout.as_ref().map_or(280.0, |l| l.canvas_height).max(220.0);
+            )
+            .map(|layout| {
+                route_layered_edges(&layout, &render_graph.edge_pairs(), LayoutSpacing::canvas())
+            });
+            let layout = routed.as_ref().map(|routed| &routed.layout);
+            let canvas_width = layout.map_or(780.0, |l| l.canvas_width).max(780.0);
+            let canvas_height = layout.map_or(280.0, |l| l.canvas_height).max(220.0);
             let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
             let scaled_canvas_width = canvas_width * zoom;
             let scaled_canvas_height = canvas_height * zoom;
@@ -564,7 +573,7 @@ fn spawn_analysis_session_surface(
             // "菜单项必须按状态和节点能力启用或禁用".
             let current_focus = live_node_id
                 .map(app_core::AnalysisNodeId::new)
-                .and_then(|id| analysis_graph_focus_target(layout.as_ref(), &id, zoom));
+                .and_then(|id| analysis_graph_focus_target(layout, &id, zoom));
             let failed_focus = plan_preview
                 .as_ref()
                 .and_then(|plan| {
@@ -572,7 +581,7 @@ fn spawn_analysis_session_surface(
                         .iter()
                         .find(|node| node.state == app_core::NodeState::Failed)
                 })
-                .and_then(|node| analysis_graph_focus_target(layout.as_ref(), &node.id, zoom));
+                .and_then(|node| analysis_graph_focus_target(layout, &node.id, zoom));
             let stale_focus = plan_preview
                 .as_ref()
                 .and_then(|plan| {
@@ -580,7 +589,7 @@ fn spawn_analysis_session_surface(
                         .iter()
                         .find(|node| node.state == app_core::NodeState::Stale)
                 })
-                .and_then(|node| analysis_graph_focus_target(layout.as_ref(), &node.id, zoom));
+                .and_then(|node| analysis_graph_focus_target(layout, &node.id, zoom));
 
             session_card
                 .spawn(Node {
@@ -599,9 +608,9 @@ fn spawn_analysis_session_surface(
                         theme,
                         "−",
                         11.0,
-                        UiAction::AdjustAnalysisGraphZoom(
+                        UiAction::from(AnalysisCommand::AdjustAnalysisGraphZoom(
                             -((ANALYSIS_GRAPH_ZOOM_STEP * 100.0).round() as i32),
-                        ),
+                        )),
                     );
                     spawn_text(
                         controls,
@@ -616,9 +625,9 @@ fn spawn_analysis_session_surface(
                         theme,
                         "+",
                         11.0,
-                        UiAction::AdjustAnalysisGraphZoom(
+                        UiAction::from(AnalysisCommand::AdjustAnalysisGraphZoom(
                             (ANALYSIS_GRAPH_ZOOM_STEP * 100.0).round() as i32,
-                        ),
+                        )),
                     );
                     spawn_text_button(
                         controls,
@@ -626,7 +635,7 @@ fn spawn_analysis_session_surface(
                         theme,
                         "Fit",
                         9.0,
-                        UiAction::FitAnalysisGraph(canvas_width.round() as i32),
+                        UiAction::from(AnalysisCommand::FitAnalysisGraph(canvas_width.round() as i32)),
                     );
                     spawn_text_button(
                         controls,
@@ -638,7 +647,7 @@ fn spawn_analysis_session_surface(
                             "MINI view"
                         },
                         9.0,
-                        UiAction::ToggleAnalysisMiniView,
+                        UiAction::from(AnalysisCommand::ToggleAnalysisMiniView),
                     );
                     if let Some((scroll, stage_id)) = current_focus {
                         spawn_text_button(
@@ -647,7 +656,7 @@ fn spawn_analysis_session_surface(
                             theme,
                             "Focus current",
                             9.0,
-                            UiAction::FocusAnalysisGraphNode(scroll, stage_id),
+                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
                         );
                     }
                     if let Some((scroll, stage_id)) = failed_focus {
@@ -657,7 +666,7 @@ fn spawn_analysis_session_surface(
                             theme,
                             "Focus failed",
                             9.0,
-                            UiAction::FocusAnalysisGraphNode(scroll, stage_id),
+                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
                         );
                     }
                     if let Some((scroll, stage_id)) = stale_focus {
@@ -667,7 +676,7 @@ fn spawn_analysis_session_surface(
                             theme,
                             "Focus stale",
                             9.0,
-                            UiAction::FocusAnalysisGraphNode(scroll, stage_id),
+                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
                         );
                     }
                     spawn_text_button(
@@ -676,7 +685,7 @@ fn spawn_analysis_session_surface(
                         theme,
                         "Plan Preview",
                         9.0,
-                        UiAction::OpenPlanPreview(task.file_hash.clone()),
+                        UiAction::from(AnalysisCommand::OpenPlanPreview(task.file_hash.clone())),
                     );
                     spawn_text_button(
                         controls,
@@ -688,7 +697,7 @@ fn spawn_analysis_session_surface(
                             "Source"
                         },
                         9.0,
-                        UiAction::ToggleAnalysisLineageMode,
+                        UiAction::from(AnalysisCommand::ToggleAnalysisLineageMode),
                     );
                     if session.analysis_lineage_mode || session.artifact_lineage.is_some() {
                         for (label, scope) in [
@@ -702,7 +711,7 @@ fn spawn_analysis_session_surface(
                                 theme,
                                 label,
                                 9.0,
-                                UiAction::SetArtifactLineageScope(scope),
+                                UiAction::from(AnalysisCommand::SetArtifactLineageScope(scope)),
                             );
                         }
                         spawn_text_button(
@@ -711,7 +720,7 @@ fn spawn_analysis_session_surface(
                             theme,
                             "Return to run view",
                             9.0,
-                            UiAction::CloseArtifactLineage,
+                            UiAction::from(AnalysisCommand::CloseArtifactLineage),
                         );
                     }
                 });
@@ -722,6 +731,7 @@ fn spawn_analysis_session_surface(
                         unscaled_width: canvas_width,
                         unscaled_height: canvas_height,
                     },
+                    UiPointerApi(&["ui.pointer.analysis_viewport_pan"]),
                     ScrollPosition(Vec2::new(session.analysis_graph_scroll_offset, 0.0)),
                     Node {
                         width: percent(100),
@@ -747,15 +757,21 @@ fn spawn_analysis_session_surface(
                             ..default()
                         })
                         .with_children(|graph| {
-                            let Some(layout) = layout.as_ref() else {
+                            let Some(routed) = routed.as_ref() else {
                                 return;
                             };
-                            let spacing = LayoutSpacing::canvas();
-                            let column_step = spacing.node_width + spacing.column_gap;
+                            let layout = &routed.layout;
+                            for band in layout.lane_bands() {
+                                spawn_analysis_graph_lane_band(
+                                    graph,
+                                    font.clone(),
+                                    theme,
+                                    band,
+                                    zoom,
+                                );
+                            }
                             for edge in &render_graph.edges {
-                                let (Some(from_rect), Some(to_rect)) =
-                                    (layout.rect(&edge.from), layout.rect(&edge.to))
-                                else {
+                                let Some(path) = routed.path(&edge.from, &edge.to) else {
                                     continue;
                                 };
                                 let binding = edge.artifact_kind.map(|kind| {
@@ -773,27 +789,10 @@ fn spawn_analysis_session_surface(
                                     && lineage_highlight.as_ref().is_some_and(|highlight| {
                                         !highlight.emphasizes_edge(&edge.from, &edge.to)
                                     });
-                                let from_box = zoomed_box(from_rect, zoom);
-                                let to_box = zoomed_box(to_rect, zoom);
-                                let from_port = from_box.right_port();
-                                let to_port = to_box.left_port();
-                                let points = if to_rect.x - from_rect.x > column_step * 1.5 {
-                                    let rail_y = spacing.margin * 0.5 * zoom;
-                                    [
-                                        from_port,
-                                        Vec2::new(from_port.x, rail_y),
-                                        Vec2::new(to_port.x, rail_y),
-                                        to_port,
-                                    ]
-                                } else {
-                                    let mid_x = (from_port.x + to_port.x) / 2.0;
-                                    [
-                                        from_port,
-                                        Vec2::new(mid_x, from_port.y),
-                                        Vec2::new(mid_x, to_port.y),
-                                        to_port,
-                                    ]
-                                };
+                                let points: Vec<Vec2> = path
+                                    .iter()
+                                    .map(|point| Vec2::new(point.x * zoom, point.y * zoom))
+                                    .collect();
                                 let show_label = selected_edge
                                     || session.analysis_lineage_mode
                                     || session.artifact_lineage.is_some();
@@ -849,6 +848,8 @@ fn spawn_analysis_session_surface(
                                                     | GraphNodeState::Failed
                                                     | GraphNodeState::Stale
                                             );
+                                        } else if !node.detail.is_empty() {
+                                            route = node.detail.clone();
                                         }
                                         if node.collapsed_child_count > 0 {
                                             route = format!(
@@ -865,17 +866,19 @@ fn spawn_analysis_session_surface(
                                             graph,
                                             font.clone(),
                                             theme,
-                                            bounds,
-                                            bucket,
-                                            stage_id,
-                                            node.id.as_str(),
-                                            &task.file_hash,
-                                            &node.label,
-                                            state,
-                                            selected_stage == stage_id || edge_endpoint,
-                                            &route,
-                                            warning,
-                                            lineage_dimmed,
+                                            AnalysisStageNodeSpec {
+                                                bounds,
+                                                index: bucket,
+                                                stage_id,
+                                                node_id: node.id.as_str(),
+                                                file_hash: &task.file_hash,
+                                                label: &node.label,
+                                                state,
+                                                selected: selected_stage == stage_id || edge_endpoint,
+                                                route: &route,
+                                                warning,
+                                                dimmed: lineage_dimmed,
+                                            },
                                         );
                                     }
                                     RenderNodeKind::Artifact => {
@@ -926,7 +929,7 @@ fn spawn_analysis_session_surface(
                 .observe(
                     |mut drag: On<Pointer<Drag>>,
                      ui_scale: Res<UiScale>,
-                     mut session: ResMut<StudioSession>,
+                     mut analysis: ResMut<AnalysisUiState>,
                      mut viewports: Query<
                         (&ComputedNode, &mut ScrollPosition),
                         With<AnalysisGraphViewport>,
@@ -943,7 +946,7 @@ fn spawn_analysis_session_surface(
                         let delta = drag.delta / ui_scale.0;
                         position.x = (position.x - delta.x)
                             .clamp(0.0, (content.x - size.x).max(0.0));
-                        session.analysis_graph_scroll_offset = position.x;
+                        analysis.analysis_graph_scroll_offset = position.x;
                     },
                 );
             }
@@ -1141,7 +1144,7 @@ fn spawn_analysis_session_surface(
                                         theme,
                                         "Sync from disk",
                                         8.0,
-                                        UiAction::SyncArtifactRevisions(task.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::SyncArtifactRevisions(task.file_hash.clone())),
                                     );
                                 });
                             spawn_text(
@@ -1213,9 +1216,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Play",
                                                 8.0,
-                                                UiAction::PlayArtifactRevision(
+                                                UiAction::from(LibraryCommand::PlayArtifactRevision(
                                                     revision.path.clone(),
-                                                ),
+                                                )),
                                             );
                                         } else {
                                             // §7.6 "Preview": the JSON/text
@@ -1229,9 +1232,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Preview",
                                                 8.0,
-                                                UiAction::PreviewArtifactRevision(
+                                                UiAction::from(AnalysisCommand::PreviewArtifactRevision(
                                                     revision.path.clone(),
-                                                ),
+                                                )),
                                             );
                                         }
                                         spawn_text_button(
@@ -1240,7 +1243,7 @@ fn spawn_analysis_session_surface(
                                             theme,
                                             "Open",
                                             8.0,
-                                            UiAction::OpenArtifactRevision(revision.path.clone()),
+                                            UiAction::from(AnalysisCommand::OpenArtifactRevision(revision.path.clone())),
                                         );
                                         spawn_text_button(
                                             row,
@@ -1248,9 +1251,9 @@ fn spawn_analysis_session_surface(
                                             theme,
                                             "Reveal",
                                             8.0,
-                                            UiAction::RevealArtifactRevision(
+                                            UiAction::from(AnalysisCommand::RevealArtifactRevision(
                                                 revision.path.clone(),
-                                            ),
+                                            )),
                                         );
                                         if !revision.active && !revision.invalidated {
                                             spawn_text_button(
@@ -1259,9 +1262,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Set active",
                                                 8.0,
-                                                UiAction::SetActiveArtifactRevision(
+                                                UiAction::from(AnalysisCommand::SetActiveArtifactRevision(
                                                     revision.clone(),
-                                                ),
+                                                )),
                                             );
                                         }
                                         // Phase 6 `invalidate_artifact_revision` /
@@ -1278,9 +1281,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Invalidate",
                                                 8.0,
-                                                UiAction::RequestInvalidateArtifactRevision(
+                                                UiAction::from(AnalysisCommand::RequestInvalidateArtifactRevision(
                                                     revision.clone(),
-                                                ),
+                                                )),
                                             );
                                         }
                                         spawn_text_button(
@@ -1289,7 +1292,7 @@ fn spawn_analysis_session_surface(
                                             theme,
                                             "Inspect provenance",
                                             8.0,
-                                            UiAction::InspectArtifactProvenance(revision.clone()),
+                                            UiAction::from(AnalysisCommand::InspectArtifactProvenance(revision.clone())),
                                         );
                                         let workbench_ref =
                                             artifact_ref_from_revision(revision);
@@ -1309,9 +1312,9 @@ fn spawn_analysis_session_surface(
                                                     theme,
                                                     "Edit",
                                                     8.0,
-                                                    UiAction::OpenArtifactCompatibleEditor(
+                                                    UiAction::from(AnalysisCommand::OpenArtifactCompatibleEditor(
                                                         workbench_ref.clone(),
-                                                    ),
+                                                    )),
                                                 );
                                             }
                                             spawn_text_button(
@@ -1320,7 +1323,7 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 if inspection.pinned { "Unpin" } else { "Pin" },
                                                 8.0,
-                                                UiAction::ToggleArtifactPinned(workbench_ref.clone()),
+                                                UiAction::from(AnalysisCommand::ToggleArtifactPinned(workbench_ref.clone())),
                                             );
                                             spawn_text_button(
                                                 row,
@@ -1328,7 +1331,7 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Source",
                                                 8.0,
-                                                UiAction::ShowArtifactLineage(workbench_ref.clone()),
+                                                UiAction::from(AnalysisCommand::ShowArtifactLineage(workbench_ref.clone())),
                                             );
                                             spawn_text_button(
                                                 row,
@@ -1336,7 +1339,7 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Impact",
                                                 8.0,
-                                                UiAction::ShowArtifactImpact(workbench_ref.clone()),
+                                                UiAction::from(AnalysisCommand::ShowArtifactImpact(workbench_ref.clone())),
                                             );
                                             spawn_text_button(
                                                 row,
@@ -1344,10 +1347,10 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Help",
                                                 8.0,
-                                                UiAction::OpenDocumentation(Some(format!(
+                                                UiAction::from(AppCommand::OpenDocumentation(Some(format!(
                                                     "artifact:{:?}",
                                                     revision.kind
-                                                ))),
+                                                )))),
                                             );
                                         }
                                         // §7.6 "Compare revisions": against
@@ -1365,10 +1368,10 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Compare revisions",
                                                 8.0,
-                                                UiAction::CompareArtifactRevisions(
+                                                UiAction::from(AnalysisCommand::CompareArtifactRevisions(
                                                     revision.clone(),
                                                     artifact_ref_from_revision(active),
-                                                ),
+                                                )),
                                             );
                                         }
                                         let revision_is_pinned = app_core::inspect_artifact(
@@ -1382,9 +1385,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Delete",
                                                 8.0,
-                                                UiAction::RequestDeleteArtifactRevision(
+                                                UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(
                                                     revision.clone(),
-                                                ),
+                                                )),
                                             );
                                         }
                                     });
@@ -1496,9 +1499,6 @@ fn spawn_analysis_session_surface(
 
         });
 
-    if let Some(context) = session.analysis_node_context.as_ref() {
-        spawn_analysis_node_context_menu(parent, font.clone(), theme, context);
-    }
     if let Some(context) = session.analysis_artifact_context.as_ref() {
         spawn_analysis_artifact_context_menu(parent, font.clone(), theme, context);
     }

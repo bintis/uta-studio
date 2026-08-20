@@ -1,6 +1,42 @@
 //! Editor input: keyboard, wheel, and pointer capture translation.
 
-use crate::studio::*;
+use std::time::{Duration, Instant};
+
+use bevy::{
+    ecs::{change_detection::DetectChanges, system::SystemParam},
+    input_focus::InputFocus,
+    prelude::{
+        ButtonInput, Changed, ComputedNode, Display, Interaction, KeyCode, MessageReader,
+        MouseButton, Node, Query, Ref, Res, ResMut, UiGlobalTransform, Window, With, Without,
+        percent,
+    },
+    text::EditableText,
+    window::PrimaryWindow,
+};
+
+use crate::studio::{
+    session::{NativeAudio, StudioRoute},
+    state::{EditorUiState, ShellState},
+    ui_invalidation::{UiDirtyRegion, UiInvalidated},
+};
+
+use super::{
+    action_input::chord_key_code,
+    actions::finish_tap,
+    commands::{
+        bind_editor_lyric, editor_note_for_word, insert_chart_note, move_chart_note,
+        resize_chart_note, set_editor_word_timing, unbind_editor_note, update_editor_word_text,
+    },
+    state::{
+        EDITOR_DRAG_MIN_PX, EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX, EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS,
+        EDITOR_PITCH_HEIGHT_PERCENT, EDITOR_PITCH_TOP_PERCENT, EditorDrag, EditorLyricNode,
+        EditorLyricResizeHandle, EditorLyricsSurface, EditorMarqueeBox, EditorNoteNode,
+        EditorNoteOriginal, EditorNoteResizeHandle, EditorPointerCapture, EditorTimelineSurface,
+        EditorWordInput, EditorWordOriginal, InlineEditorWordInput, NoteEdge, chart_notes,
+        nearest_note_boundary, selected_editor_word, set_editor_pitch_span,
+        snap_lyric_move_to_notes, surface_pitch_fraction,
+    },
+};
 
 /// Ends a held tap when the key comes back up, and rescues one that was left
 /// held when playback stopped or focus moved into a text field.
@@ -8,7 +44,8 @@ pub(crate) fn handle_tap_release(
     keys: Res<ButtonInput<KeyCode>>,
     focus: Res<InputFocus>,
     editable: Query<(), With<EditableText>>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut editor_state: ResMut<EditorUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let typing = focus.get().is_some_and(|entity| editable.contains(entity));
@@ -19,28 +56,26 @@ pub(crate) fn handle_tap_release(
             .unwrap_or_default(),
     );
     let released = tap_key.is_some_and(|key| keys.just_released(key));
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = editor_state.editor.as_mut() else {
         return;
     };
     if editor.tap.holding.is_none() {
         return;
     }
-    if released || typing || !editor.audio_status.playing {
-        if finish_tap(editor) {
-            let remaining = editor.tap.remaining();
-            session.notice = (remaining > 0)
-                .then(|| format!("{remaining} note(s) left to re-time."))
-                .or_else(|| Some("Tapped the last queued note.".to_string()));
-            invalidated.0 = true;
-        }
+    if (released || typing || !editor.audio_status.playing) && finish_tap(editor) {
+        let remaining = editor.tap.remaining();
+        shell.notice = (remaining > 0)
+            .then(|| format!("{remaining} note(s) left to re-time."))
+            .or_else(|| Some("Tapped the last queued note.".to_string()));
+        invalidated.invalidate(UiDirtyRegion::Editor);
     }
 }
 
 pub(crate) fn sync_editor_word_input(
     inputs: Query<(Ref<EditableText>, &EditorWordInput)>,
-    mut session: ResMut<StudioSession>,
+    mut editor_state: ResMut<EditorUiState>,
 ) {
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = editor_state.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {
@@ -75,7 +110,7 @@ pub(crate) fn finish_inline_lyric_edit(
     keys: Res<ButtonInput<KeyCode>>,
     mut focus: ResMut<InputFocus>,
     inline_inputs: Query<(), With<InlineEditorWordInput>>,
-    mut session: ResMut<StudioSession>,
+    mut editor_state: ResMut<EditorUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if !keys.just_pressed(KeyCode::Enter) && !keys.just_pressed(KeyCode::Escape) {
@@ -88,20 +123,21 @@ pub(crate) fn finish_inline_lyric_edit(
         return;
     }
     focus.clear();
-    if let Some(editor) = session.editor.as_mut() {
+    if let Some(editor) = editor_state.editor.as_mut() {
         editor.word_edit_focus = None;
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 pub(crate) fn handle_editor_wheel(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut session: ResMut<StudioSession>,
+    shell: Res<ShellState>,
+    mut editor_state: ResMut<EditorUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Editor
-        || session
+    if shell.route != StudioRoute::Editor
+        || editor_state
             .editor
             .as_ref()
             .is_some_and(|editor| editor.problems_panel_open || editor.shortcuts_panel_open)
@@ -112,7 +148,7 @@ pub(crate) fn handle_editor_wheel(
     if delta.abs() < f32::EPSILON {
         return;
     }
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = editor_state.editor.as_mut() else {
         return;
     };
     let control = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
@@ -137,7 +173,13 @@ pub(crate) fn handle_editor_wheel(
             (editor.viewport_start - f64::from(delta) * editor.viewport_duration * 0.08).max(0.0);
     }
     editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
+}
+
+#[derive(SystemParam)]
+pub(crate) struct EditorPointerState<'w> {
+    shell: ResMut<'w, ShellState>,
+    editor: ResMut<'w, EditorUiState>,
 }
 
 // Pointer capture coordinates multiple independent ECS inputs in one frame.
@@ -176,11 +218,15 @@ pub(crate) fn handle_editor_pointer_capture(
     >,
     mut marquee_box: Query<&mut Node, With<EditorMarqueeBox>>,
     mut capture: ResMut<EditorPointerCapture>,
-    mut session: ResMut<StudioSession>,
+    state: EditorPointerState,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
+    let EditorPointerState {
+        mut shell,
+        editor: mut editor_state,
+    } = state;
     let focus_lost = focus_events.read().any(|event| !event.focused);
-    if session.route != StudioRoute::Editor || focus_lost || !mouse.pressed(MouseButton::Left) {
+    if shell.route != StudioRoute::Editor || focus_lost || !mouse.pressed(MouseButton::Left) {
         for mut node in &mut marquee_box {
             node.display = Display::None;
         }
@@ -196,7 +242,7 @@ pub(crate) fn handle_editor_pointer_capture(
         {
             let size = computed.size() * computed.inverse_scale_factor();
             if size.x > 1.0
-                && let Some(editor) = session.editor.as_mut()
+                && let Some(editor) = editor_state.editor.as_mut()
             {
                 let local = global_transform
                     .affine()
@@ -238,9 +284,9 @@ pub(crate) fn handle_editor_pointer_capture(
                     ) {
                         editor.select_only_note(index);
                         editor.dirty = true;
-                        session.notice = Some("Added note at the pointer.".to_string());
+                        shell.notice = Some("Added note at the pointer.".to_string());
                     }
-                    invalidated.0 = true;
+                    invalidated.invalidate(UiDirtyRegion::Editor);
                     return;
                 }
                 let was_playing = editor.audio_status.playing;
@@ -252,14 +298,14 @@ pub(crate) fn handle_editor_pointer_capture(
                         editor.visible_position = status.position_secs;
                         editor.audio_status = status;
                         editor.last_audio_sync = Instant::now();
-                        session.notice = None;
+                        shell.notice = None;
                     }
-                    Err(error) => session.notice = Some(error),
+                    Err(error) => shell.notice = Some(error),
                 }
             }
         }
         if had_finished {
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
         }
         return;
     }
@@ -273,7 +319,7 @@ pub(crate) fn handle_editor_pointer_capture(
         // window. A global release or focus-loss event still clears it above.
         return;
     };
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = editor_state.editor.as_mut() else {
         capture.drag = None;
         return;
     };
@@ -315,12 +361,10 @@ pub(crate) fn handle_editor_pointer_capture(
         let bind_held = keys.pressed(KeyCode::KeyB);
         let unbind_held = keys.pressed(KeyCode::KeyC);
         if bind_held && (pressed_note.is_some() || pressed_lyric.is_some()) {
-            let pair = pressed_note
-                .and_then(|note_index| editor.selected_word.map(|word| (word, note_index)))
-                .or_else(|| {
-                    pressed_lyric
-                        .and_then(|word| editor.selected_note.map(|note_index| (word, note_index)))
-                });
+            let pair = editor
+                .selected_word
+                .zip(pressed_note)
+                .or_else(|| pressed_lyric.zip(editor.selected_note));
             editor.checkpoint("Bind lyric to note");
             match pair.and_then(|(word, note_index)| {
                 bind_editor_lyric(&mut editor.document, word, note_index)
@@ -328,17 +372,17 @@ pub(crate) fn handle_editor_pointer_capture(
                 Some(bound) => {
                     editor.select_only_note(bound);
                     editor.dirty = true;
-                    session.notice = Some("Bound lyric to note.".to_string());
+                    shell.notice = Some("Bound lyric to note.".to_string());
                 }
                 None => {
                     editor.undo.pop();
-                    session.notice = Some(
+                    shell.notice = Some(
                         "Select an unpitched lyric and a lyric-less note, then hold B and click the other one to bind them."
                             .to_string(),
                     );
                 }
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
             return;
         } else if unbind_held && (pressed_note.is_some() || pressed_lyric.is_some()) {
             let note_index = pressed_note.or_else(|| {
@@ -349,15 +393,15 @@ pub(crate) fn handle_editor_pointer_capture(
                 Some(freed) => {
                     editor.select_only_word(freed);
                     editor.dirty = true;
-                    session.notice = Some("Unbound lyric from note.".to_string());
+                    shell.notice = Some("Unbound lyric from note.".to_string());
                 }
                 None => {
                     editor.undo.pop();
-                    session.notice =
+                    shell.notice =
                         Some("This note has no separable pitch and lyric to unbind.".to_string());
                 }
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
             return;
         }
         if let Some((selection, edge)) = pressed_lyric_resize {
@@ -376,7 +420,7 @@ pub(crate) fn handle_editor_pointer_capture(
                     });
                 }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if let Some(selection) = pressed_lyric {
             let modifier = keys.any_pressed([
@@ -425,7 +469,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 }
             }
             editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
         } else if let Some((index, edge)) = pressed_resize {
             if let Some(note) = chart_notes(&editor.document)
                 .into_iter()
@@ -444,7 +488,7 @@ pub(crate) fn handle_editor_pointer_capture(
                     });
                 }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if let Some(index) = pressed_note {
             let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -458,7 +502,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.selected_word = None;
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             if !editor.selected_notes.contains(&index) {
@@ -490,7 +534,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if surface_interactions
             .iter()
@@ -538,7 +582,7 @@ pub(crate) fn handle_editor_pointer_capture(
                             pointer_start: pointer,
                             viewport_duration: editor.viewport_duration,
                         });
-                        invalidated.0 = true;
+                        invalidated.invalidate(UiDirtyRegion::Editor);
                     } else {
                         editor.undo.pop();
                     }
@@ -656,7 +700,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.dirty = true;
             } else {
                 capture.drag = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         EditorDrag::ResizeNote {
@@ -682,7 +726,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.dirty = true;
             } else {
                 capture.drag = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         EditorDrag::InsertNote {
@@ -699,7 +743,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.dirty = true;
             } else {
                 capture.drag = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         EditorDrag::Lyric {
@@ -747,7 +791,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.dirty = true;
             } else {
                 capture.drag = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         EditorDrag::ResizeLyric {
@@ -787,7 +831,7 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.dirty = true;
             } else {
                 capture.drag = None;
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         EditorDrag::Pan {

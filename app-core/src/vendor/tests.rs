@@ -21,16 +21,23 @@ mod ready_marker_contract_tests {
 }
 
 mod node_model_availability_tests {
-    use super::node_model_availability_from_checks;
+    use super::{ModelAvailabilityChecks, node_model_availability_from_checks};
     use crate::analysis_graph::AnalysisNodeId;
 
     #[test]
     fn separator_and_pitch_map_directly_to_their_own_node() {
-        let map = node_model_availability_from_checks(
-            false, true, "whisper", "cpu", true, true, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("stems.separate")], false);
-        assert_eq!(map[&AnalysisNodeId::new("pitch.extract")], true);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: false,
+            pitch_ready: true,
+            asr_engine: "whisper",
+            backend: "cpu",
+            primary_asr_model_ready: true,
+            language_detector_ready: true,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(!map[&AnalysisNodeId::new("stems.separate")]);
+        assert!(map[&AnalysisNodeId::new("pitch.extract")]);
     }
 
     #[test]
@@ -38,39 +45,74 @@ mod node_model_availability_tests {
         // Whisper detects language with the same model it transcribes
         // with -- unlike parakeet/intel, which need a separate tiny model
         // first. A missing (false) detector must not block this path.
-        let map = node_model_availability_from_checks(
-            true, true, "whisper", "cpu", true, false, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], true);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: true,
+            pitch_ready: true,
+            asr_engine: "whisper",
+            backend: "cpu",
+            primary_asr_model_ready: true,
+            language_detector_ready: false,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(map[&AnalysisNodeId::new("lyrics.transcribe")]);
     }
 
     #[test]
     fn parakeet_requires_both_its_own_model_and_the_language_detector() {
-        let map = node_model_availability_from_checks(
-            true, true, "parakeet", "cuda", true, false, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: true,
+            pitch_ready: true,
+            asr_engine: "parakeet",
+            backend: "cuda",
+            primary_asr_model_ready: true,
+            language_detector_ready: false,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(!map[&AnalysisNodeId::new("lyrics.transcribe")]);
 
-        let map = node_model_availability_from_checks(
-            true, true, "parakeet", "cuda", true, true, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], true);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: true,
+            pitch_ready: true,
+            asr_engine: "parakeet",
+            backend: "cuda",
+            primary_asr_model_ready: true,
+            language_detector_ready: true,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(map[&AnalysisNodeId::new("lyrics.transcribe")]);
     }
 
     #[test]
     fn intel_backend_requires_the_language_detector_regardless_of_asr_engine() {
-        let map = node_model_availability_from_checks(
-            true, true, "whisper", "intel", true, false, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: true,
+            pitch_ready: true,
+            asr_engine: "whisper",
+            backend: "intel",
+            primary_asr_model_ready: true,
+            language_detector_ready: false,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(!map[&AnalysisNodeId::new("lyrics.transcribe")]);
     }
 
     #[test]
     fn missing_primary_asr_model_blocks_transcription_even_with_a_ready_detector() {
-        let map = node_model_availability_from_checks(
-            true, true, "parakeet", "cuda", false, true, "whisperx", true,
-        );
-        assert_eq!(map[&AnalysisNodeId::new("lyrics.transcribe")], false);
+        let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+            separator_ready: true,
+            pitch_ready: true,
+            asr_engine: "parakeet",
+            backend: "cuda",
+            primary_asr_model_ready: false,
+            language_detector_ready: true,
+            align_backend: "whisperx",
+            align_model_ready: true,
+        });
+        assert!(!map[&AnalysisNodeId::new("lyrics.transcribe")]);
     }
 
     #[test]
@@ -79,25 +121,46 @@ mod node_model_availability_tests {
         // per-language wav2vec2 model on demand, so `align_model_ready` must
         // simply be ignored for them, not used as a gate.
         for backend in ["whisperx", "ctc"] {
-            let map = node_model_availability_from_checks(
-                true, true, "whisper", "cpu", true, true, backend, false,
-            );
-            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], true);
+            let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+                separator_ready: true,
+                pitch_ready: true,
+                asr_engine: "whisper",
+                backend: "cpu",
+                primary_asr_model_ready: true,
+                language_detector_ready: true,
+                align_backend: backend,
+                align_model_ready: false,
+            });
+            assert!(map[&AnalysisNodeId::new("lyrics.align")]);
         }
     }
 
     #[test]
     fn qwen_and_mms_karaoke_alignment_are_blocked_when_their_model_is_missing() {
         for backend in ["qwen", "mms_karaoke"] {
-            let map = node_model_availability_from_checks(
-                true, true, "whisper", "cpu", true, true, backend, false,
-            );
-            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], false);
+            let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+                separator_ready: true,
+                pitch_ready: true,
+                asr_engine: "whisper",
+                backend: "cpu",
+                primary_asr_model_ready: true,
+                language_detector_ready: true,
+                align_backend: backend,
+                align_model_ready: false,
+            });
+            assert!(!map[&AnalysisNodeId::new("lyrics.align")]);
 
-            let map = node_model_availability_from_checks(
-                true, true, "whisper", "cpu", true, true, backend, true,
-            );
-            assert_eq!(map[&AnalysisNodeId::new("lyrics.align")], true);
+            let map = node_model_availability_from_checks(ModelAvailabilityChecks {
+                separator_ready: true,
+                pitch_ready: true,
+                asr_engine: "whisper",
+                backend: "cpu",
+                primary_asr_model_ready: true,
+                language_detector_ready: true,
+                align_backend: backend,
+                align_model_ready: true,
+            });
+            assert!(map[&AnalysisNodeId::new("lyrics.align")]);
         }
     }
 }

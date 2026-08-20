@@ -15,6 +15,12 @@ mod node_stage_bridge_tests {
         // progress_node never visibly moves a node backward or forward in
         // the UI.
         assert_eq!(analysis_node_stage_index("stems.separate"), Some(1));
+        assert_eq!(analysis_node_stage_index("stems.vocals"), Some(1));
+        assert_eq!(analysis_node_stage_index("vocals.denoise"), Some(1));
+        assert_eq!(
+            analysis_node_stage_index("stems.bind_analysis_outputs"),
+            Some(1)
+        );
         assert_eq!(analysis_stage_index("separation"), 1);
 
         assert_eq!(analysis_node_stage_index("pitch.extract"), Some(2));
@@ -1151,7 +1157,7 @@ mod compound_toggle_tests {
     //! secondary-click path and the `UTA_STUDIO_DEBUG_EXPAND_COMPOUND` debug
     //! path.
     use super::analysis_node_compound_toggle_action;
-    use crate::studio::UiAction;
+    use crate::studio::{AnalysisCommand, UiAction};
 
     #[test]
     fn a_plain_node_has_no_toggle_action() {
@@ -1168,7 +1174,9 @@ mod compound_toggle_tests {
         assert_eq!(label, "Expand sub-checks");
         assert_eq!(
             action,
-            UiAction::ToggleAnalysisCompoundNode("music.analysis".to_string())
+            UiAction::from(AnalysisCommand::ToggleAnalysisCompoundNode(
+                "music.analysis".to_string()
+            ))
         );
     }
 

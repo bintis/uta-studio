@@ -21,7 +21,7 @@ pub(crate) fn update_navigation_focus_visuals(
 pub(crate) fn handle_fullscreen_shortcut(
     keys: Res<ButtonInput<KeyCode>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if !keys.just_pressed(KeyCode::F11) {
@@ -30,10 +30,10 @@ pub(crate) fn handle_fullscreen_shortcut(
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    if let Some(error) = toggle_fullscreen(&mut window, &mut session.config) {
-        session.notice = Some(error);
+    if let Some(error) = toggle_fullscreen(&mut window, &mut shell.config) {
+        shell.notice = Some(error);
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Chrome);
 }
 
 pub(crate) fn toggle_fullscreen(window: &mut Window, config: &mut AppConfig) -> Option<String> {

@@ -149,16 +149,16 @@ mod tests {
         let root = temp_root("round-trip");
         let _guard = library_db::reconnect_for_test(&root);
 
-        let run_id = library_db::analysis_history_insert(
-            "songA",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songA",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
 
         let attempts = vec![
@@ -213,16 +213,16 @@ mod tests {
         let root = temp_root("isolation");
         let _guard = library_db::reconnect_for_test(&root);
 
-        let run_id = library_db::analysis_history_insert(
-            "songB",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songB",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
         analysis_node_attempts_insert_batch(
             run_id,
@@ -257,16 +257,16 @@ mod tests {
         let root = temp_root("timing");
         let _guard = library_db::reconnect_for_test(&root);
 
-        let run_id = library_db::analysis_history_insert(
-            "songTiming",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songTiming",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
         analysis_node_attempts_insert_batch(
             run_id,
@@ -330,16 +330,16 @@ mod tests {
         let root = temp_root("empty-batch");
         let _guard = library_db::reconnect_for_test(&root);
 
-        let run_id = library_db::analysis_history_insert(
-            "songC",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songC",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
         analysis_node_attempts_insert_batch(run_id, "songC", &[]).expect("empty batch is ok");
 
@@ -353,16 +353,16 @@ mod tests {
         let root = temp_root("cascade");
         let _guard = library_db::reconnect_for_test(&root);
 
-        let run_id = library_db::analysis_history_insert(
-            "songD",
-            "Title",
-            "Artist",
-            "completed",
-            1_000,
-            2_000,
-            "{}",
-            None,
-        )
+        let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "songD",
+            title: "Title",
+            artist: "Artist",
+            status: "completed",
+            started_at_ms: 1_000,
+            finished_at_ms: 2_000,
+            snapshot_json: "{}",
+            error_message: None,
+        })
         .expect("insert run");
         analysis_node_attempts_insert_batch(
             run_id,

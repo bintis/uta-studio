@@ -1,10 +1,12 @@
-use super::*;
+use super::{
+    EditorDocument, FlatNote, LyricAddress, MIN_NOTE_SECONDS, NoteKind, parse_phrase_tokens,
+};
 use std::collections::{BTreeSet, HashSet};
 
-use crate::editor::{ProblemReport, problems, seconds_to_units, syllabize};
+use crate::editor::seconds_to_units;
 use utz::{
-    DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NoteScoring, ScoringMode,
-    VocalMode, VocalNote, VocalPhrase,
+    LyricJoin, LyricTextToken, LyricToken, NoteBonus, NoteScoring, ScoringMode, VocalMode,
+    VocalNote, VocalPhrase,
 };
 
 impl EditorDocument {
@@ -228,10 +230,7 @@ impl EditorDocument {
             LyricToken::Continuation { .. } => None,
         })?;
         let mut tail_index = source_index;
-        loop {
-            let Some(next_index) = tail_index.checked_add(1) else {
-                break;
-            };
+        while let Some(next_index) = tail_index.checked_add(1) {
             let Some((phrase, note)) = self.note_at(next_index) else {
                 break;
             };

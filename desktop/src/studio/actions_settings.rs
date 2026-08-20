@@ -1,56 +1,73 @@
 use crate::studio::*;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_settings_action(
-    action: &UiAction,
-    mut window: &mut Window,
-    session: &mut StudioSession,
-    mut setup: &mut NativeSetup,
-    diagnostics: &mut NativeDiagnostics,
-    theme: &mut StudioTheme,
-    clear_color: &mut ClearColor,
-    invalidated: &mut UiInvalidated,
-) -> bool {
-    match action {
-        UiAction::Settings => {
-            session.route = StudioRoute::Settings;
-            session.notice = None;
-            session.open_settings_select = None;
-            if session.settings_tab == SettingsTab::Storage {
-                session.request_cache_stats_refresh = true;
+pub(crate) struct SettingsActionContext<'a> {
+    pub(crate) window: &'a mut Window,
+    pub(crate) state: StudioStateMut<'a>,
+    pub(crate) setup: &'a mut NativeSetup,
+    pub(crate) diagnostics: &'a mut NativeDiagnostics,
+    pub(crate) theme: &'a mut StudioTheme,
+    pub(crate) clear_color: &'a mut ClearColor,
+    pub(crate) invalidated: &'a mut UiInvalidated,
+}
+
+pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionContext) -> bool {
+    let SettingsActionContext {
+        window,
+        state: studio,
+        setup,
+        diagnostics,
+        theme,
+        clear_color,
+        invalidated,
+    } = context;
+    match &action.0 {
+        UiCommand::App(AppCommand::Settings) => {
+            studio.shell.route = StudioRoute::Settings;
+            studio.shell.notice = None;
+            studio.dialogs.open_settings_select = None;
+            if studio.shell.settings_tab == SettingsTab::Storage {
+                studio.jobs.request_cache_stats_refresh = true;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::SettingsTab(tab) => {
-            session.route = StudioRoute::Settings;
-            session.settings_tab = *tab;
-            session.notice = None;
-            session.open_settings_select = None;
-            session.request_cache_stats_refresh =
-                matches!(session.settings_tab, SettingsTab::Storage);
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::SettingsTab(tab)) => {
+            studio.shell.route = StudioRoute::Settings;
+            studio.shell.settings_tab = *tab;
+            studio.shell.notice = None;
+            studio.dialogs.open_settings_select = None;
+            studio.jobs.request_cache_stats_refresh =
+                matches!(studio.shell.settings_tab, SettingsTab::Storage);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ToggleFullscreen => {
-            if let Some(error) = toggle_fullscreen(&mut window, &mut session.config) {
-                session.notice = Some(error);
+        UiCommand::App(AppCommand::ToggleFullscreen) => {
+            if let Some(error) = toggle_fullscreen(window, &mut studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::OpenLog => {
+        UiCommand::App(AppCommand::OpenLog) => {
             let path = app_core::default_uta_studio_dir().join("uta-studio.log");
-            session.notice = Some(if path.is_file() {
+            studio.shell.notice = Some(if path.is_file() {
                 match open::that_detached(&path) {
-                    Ok(()) => format!("Opened {}", path.display()),
+                    Ok(()) => localized_message(
+                        &studio.shell.config,
+                        UiMessage::PathOpened,
+                        &[("{path}", &path.display().to_string())],
+                    ),
                     Err(error) => format!("Could not open {}: {error}", path.display()),
                 }
             } else {
-                format!("No application log exists yet at {}", path.display())
+                localized_message(
+                    &studio.shell.config,
+                    UiMessage::LogMissing,
+                    &[("{path}", &path.display().to_string())],
+                )
             });
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RunDiagnostics => {
+        UiCommand::App(AppCommand::RunDiagnostics) => {
             if diagnostics.receiver.is_some() {
-                session.notice = Some("Feature diagnostics are already running.".to_string());
+                studio.shell.notice = Some("Feature diagnostics are already running.".to_string());
             } else {
                 let (sender, receiver) = mpsc::channel();
                 std::thread::spawn(move || {
@@ -63,68 +80,70 @@ pub(crate) fn apply_settings_action(
                     let _ = sender.send(report);
                 });
                 diagnostics.receiver = Some(Mutex::new(receiver));
-                session.diagnostic_report = None;
-                session.notice =
+                studio.dialogs.diagnostic_report = None;
+                studio.shell.notice =
                     Some("Running safe diagnostics and temporary export checks…".to_string());
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RefreshRuntimeStatus => {
-            session.notice = Some("Runtime status refreshed from local files.".to_string());
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::RefreshRuntimeStatus) => {
+            studio.shell.notice = Some("Runtime status refreshed from local files.".to_string());
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::OpenSettingsSelect(kind) => {
-            session.open_settings_select = if session.open_settings_select == Some(*kind) {
-                None
-            } else {
-                Some(*kind)
-            };
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::OpenSettingsSelect(kind)) => {
+            studio.dialogs.open_settings_select =
+                if studio.dialogs.open_settings_select == Some(*kind) {
+                    None
+                } else {
+                    Some(*kind)
+                };
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::SelectSettingsValue(kind, value) => {
+        UiCommand::Settings(SettingsCommand::SelectSettingsValue(kind, value)) => {
             match kind {
                 SettingsSelectKind::UiLanguage => {
-                    session.config.ui_language = (value != "system").then(|| value.clone());
+                    studio.shell.config.ui_language = (value != "system").then(|| value.clone());
                 }
                 SettingsSelectKind::ComputeBackend => {
-                    session.config.compute_backend = Some(value.clone());
+                    studio.shell.config.compute_backend = Some(value.clone());
                 }
                 SettingsSelectKind::Separator => {
-                    session.config.separator = Some(value.clone());
-                    session.config.audio_processing = Some(
+                    studio.shell.config.separator = Some(value.clone());
+                    studio.shell.config.audio_processing = Some(
                         app_core::AudioProcessingSettings::from_legacy_separator(value),
                     );
                 }
                 SettingsSelectKind::SeparatorPreset => {
-                    apply_separator_preset(&mut session.config, value);
+                    apply_separator_preset(&mut studio.shell.config, value);
                 }
                 SettingsSelectKind::AsrEngine => {
-                    session.config.asr_engine = Some(value.clone());
+                    studio.shell.config.asr_engine = Some(value.clone());
                 }
                 SettingsSelectKind::WhisperModel => {
-                    session.config.whisper_model = Some(value.clone());
+                    studio.shell.config.whisper_model = Some(value.clone());
                 }
                 SettingsSelectKind::AlignBackend => {
-                    session.config.align_backend = Some(value.clone());
+                    studio.shell.config.align_backend = Some(value.clone());
                 }
                 SettingsSelectKind::PitchModel => {
-                    session.config.pitch_model = Some(value.clone());
+                    studio.shell.config.pitch_model = Some(value.clone());
                 }
                 SettingsSelectKind::AudioVocalModel => {
-                    audio_settings_mut(&mut session.config).vocal_model_id = Some(value.clone());
+                    audio_settings_mut(&mut studio.shell.config).vocal_model_id =
+                        Some(value.clone());
                 }
                 SettingsSelectKind::AudioAccompanimentModel => {
-                    audio_settings_mut(&mut session.config).accompaniment_model_id =
+                    audio_settings_mut(&mut studio.shell.config).accompaniment_model_id =
                         (value != "none").then(|| value.clone());
                 }
                 SettingsSelectKind::AudioKaraokeModel => {
-                    audio_settings_mut(&mut session.config).karaoke_model_id =
+                    audio_settings_mut(&mut studio.shell.config).karaoke_model_id =
                         (value != "none").then(|| value.clone());
                 }
                 SettingsSelectKind::AudioDenoise
                 | SettingsSelectKind::AudioDereverb
                 | SettingsSelectKind::AudioCleanupOrder => {
-                    let current = audio_settings(&session.config).vocal_cleanup_chain;
+                    let current = audio_settings(&studio.shell.config).vocal_cleanup_chain;
                     let denoise = match kind {
                         SettingsSelectKind::AudioDenoise => value != "none",
                         _ => current.iter().any(|id| id.contains("denoise")),
@@ -141,17 +160,17 @@ pub(crate) fn apply_settings_action(
                             matches!((d, r), (Some(di), Some(ri)) if ri < di)
                         }
                     };
-                    audio_settings_mut(&mut session.config).vocal_cleanup_chain =
+                    audio_settings_mut(&mut studio.shell.config).vocal_cleanup_chain =
                         rewrite_cleanup_chain(&current, denoise, dereverb, dereverb_first);
                 }
                 SettingsSelectKind::AudioTorchBackend => {
-                    audio_settings_mut(&mut session.config).torch_backend = value.clone();
+                    audio_settings_mut(&mut studio.shell.config).torch_backend = value.clone();
                 }
                 SettingsSelectKind::AudioOnnxBackend => {
-                    audio_settings_mut(&mut session.config).onnx_backend = value.clone();
+                    audio_settings_mut(&mut studio.shell.config).onnx_backend = value.clone();
                 }
                 SettingsSelectKind::AudioPrecisionPolicy => {
-                    audio_settings_mut(&mut session.config).precision_policy = value.clone();
+                    audio_settings_mut(&mut studio.shell.config).precision_policy = value.clone();
                 }
             }
             if matches!(
@@ -163,98 +182,100 @@ pub(crate) fn apply_settings_action(
                     | SettingsSelectKind::AudioDereverb
                     | SettingsSelectKind::AudioCleanupOrder
             ) {
-                let derived = audio_settings(&session.config).derived_legacy_separator();
-                session.config.separator = Some(derived.to_string());
+                let derived = audio_settings(&studio.shell.config).derived_legacy_separator();
+                studio.shell.config.separator = Some(derived.to_string());
             }
-            if session.config.compute_backend.as_deref() != Some("intel")
-                && session.config.separator() == "openvino_demucs"
+            if studio.shell.config.compute_backend.as_deref() != Some("intel")
+                && studio.shell.config.separator() == "openvino_demucs"
             {
-                session.config.separator = Some("karaoke".to_string());
+                studio.shell.config.separator = Some("karaoke".to_string());
             }
-            session.open_settings_select = None;
-            session.notice = save_config_error(&session.config).or_else(|| {
-                    Some(match kind {
-                        SettingsSelectKind::UiLanguage => {
-                            "Interface language updated.".to_string()
-                        }
-                        SettingsSelectKind::ComputeBackend => format!(
-                            "Acceleration set to {}. Reconfigure the runtime to apply it.",
-                            settings_select_label(*kind, value)
-                        ),
-                        SettingsSelectKind::SeparatorPreset => format!(
-                            "{} separation profile applied. Existing stems change only after re-analysis.",
-                            settings_select_label(*kind, value)
-                        ),
-                        _ => format!(
-                            "{} selected. Existing charts change only after re-analysis.",
-                            settings_select_label(*kind, value)
-                        ),
-                    })
-                });
-            invalidated.0 = true;
+            studio.dialogs.open_settings_select = None;
+            studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
+                Some(match kind {
+                    SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
+                    SettingsSelectKind::ComputeBackend => localized_message(
+                        &studio.shell.config,
+                        UiMessage::AccelerationSet,
+                        &[("{backend}", settings_select_label(*kind, value))],
+                    ),
+                    SettingsSelectKind::SeparatorPreset => localized_message(
+                        &studio.shell.config,
+                        UiMessage::SeparationProfileApplied,
+                        &[("{profile}", settings_select_label(*kind, value))],
+                    ),
+                    _ => localized_message(
+                        &studio.shell.config,
+                        UiMessage::AnalysisEngineSelected,
+                        &[("{engine}", settings_select_label(*kind, value))],
+                    ),
+                })
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ToggleAnalysisAdvanced(section) => {
-            session.open_analysis_advanced = if session.open_analysis_advanced == Some(*section) {
-                None
-            } else {
-                Some(*section)
-            };
-            session.open_settings_select = None;
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::ToggleAnalysisAdvanced(section)) => {
+            studio.dialogs.open_analysis_advanced =
+                if studio.dialogs.open_analysis_advanced == Some(*section) {
+                    None
+                } else {
+                    Some(*section)
+                };
+            studio.dialogs.open_settings_select = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::InstallAudioModel(model_id) => {
-            session.notice = Some(match app_core::install_audio_model(model_id) {
+        UiCommand::Settings(SettingsCommand::InstallAudioModel(model_id)) => {
+            studio.shell.notice = Some(match app_core::install_audio_model(model_id) {
                 Ok(status) => format!(
                     "{} is {}. Analysis uses it only after the next run.",
                     status.display_name, status.state
                 ),
                 Err(error) => error,
             });
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RemoveAudioModel(model_id) => {
-            session.notice = Some(match app_core::remove_audio_model(model_id) {
+        UiCommand::Settings(SettingsCommand::RemoveAudioModel(model_id)) => {
+            studio.shell.notice = Some(match app_core::remove_audio_model(model_id) {
                 Ok(()) => "Audio model removed. Existing song cache and charts were not deleted."
                     .to_string(),
                 Err(error) => error,
             });
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RequestSetup(target) => {
+        UiCommand::Settings(SettingsCommand::RequestSetup(target)) => {
             if setup.receiver.is_some() {
-                session.notice = Some("A runtime setup job is already running.".to_string());
+                studio.shell.notice = Some("A runtime setup job is already running.".to_string());
             } else {
-                session.pending_setup = Some(SetupRequest { target: *target });
-                session.notice = None;
+                studio.dialogs.pending_setup = Some(SetupRequest { target: *target });
+                studio.shell.notice = None;
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::CancelSetup => {
-            session.pending_setup = None;
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::CancelSetup) => {
+            studio.dialogs.pending_setup = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ConfirmSetup => {
-            if let Some(request) = session.pending_setup.take() {
-                start_native_setup(&session.config, request, &mut setup);
-                session.notice = Some("Preparing analysis runtime…".to_string());
-                invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::ConfirmSetup) => {
+            if let Some(request) = studio.dialogs.pending_setup.take() {
+                start_native_setup(&studio.shell.config, request, setup);
+                studio.shell.notice = Some("Preparing analysis runtime…".to_string());
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiAction::RescanLibrary => {
-            if session.config.library_paths().is_empty() {
-                session.notice = Some("Add a watched folder before scanning.".to_string());
-            } else if session.scanning {
-                session.notice = Some("A library scan is already running.".to_string());
+        UiCommand::Library(LibraryCommand::RescanLibrary) => {
+            if studio.shell.config.library_paths().is_empty() {
+                studio.shell.notice = Some("Add a watched folder before scanning.".to_string());
+            } else if studio.library.scanning {
+                studio.shell.notice = Some("A library scan is already running.".to_string());
             } else {
-                session.scanning = true;
-                session.notice = Some("Library scan started.".to_string());
+                studio.library.scanning = true;
+                studio.shell.notice = Some("Library scan started.".to_string());
                 app_core::start_scan();
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ToggleTheme => {
-            session.config.dark_mode = Some(!theme.dark);
-            session.notice = save_config_error(&session.config);
+        UiCommand::Settings(SettingsCommand::ToggleTheme) => {
+            studio.shell.config.dark_mode = Some(!theme.dark);
+            studio.shell.notice = save_config_error(&studio.shell.config);
             *theme = StudioTheme::new(!theme.dark);
             clear_color.0 = theme.background;
             window.window_theme = Some(if theme.dark {
@@ -262,263 +283,273 @@ pub(crate) fn apply_settings_action(
             } else {
                 WindowTheme::Light
             });
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ChooseFolder => {
+        UiCommand::Library(LibraryCommand::ChooseFolder) => {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                let mut paths = session.config.library_paths();
+                let mut paths = studio.shell.config.library_paths();
                 if !paths.contains(&path) {
                     paths.push(path.clone());
-                    session.config.library_source = Some(LibrarySource::Folders { paths });
-                    if let Some(error) = save_config_error(&session.config) {
-                        session.notice = Some(error);
+                    studio.shell.config.library_source = Some(LibrarySource::Folders { paths });
+                    if let Some(error) = save_config_error(&studio.shell.config) {
+                        studio.shell.notice = Some(error);
                     } else {
-                        session.scanning = true;
-                        session.notice = Some("Folder added; library scan started.".to_string());
+                        studio.library.scanning = true;
+                        studio.shell.notice =
+                            Some("Folder added; library scan started.".to_string());
                         app_core::start_scan();
-                        session.refresh_library();
-                        if session.route == StudioRoute::Folders {
-                            session.folder_browser.select_root(path);
+                        studio.library.refresh();
+                        if studio.shell.route == StudioRoute::Folders {
+                            studio.library.folder_browser.select_root(path);
                         }
                     }
                 } else {
-                    session.notice = Some("That folder is already watched.".to_string());
+                    studio.shell.notice = Some("That folder is already watched.".to_string());
                 }
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiAction::ChooseExportFolder => {
+        UiCommand::Library(LibraryCommand::ChooseExportFolder) => {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                session.config.export_path = Some(path);
-                session.notice = save_config_error(&session.config)
+                studio.shell.config.export_path = Some(path);
+                studio.shell.notice = save_config_error(&studio.shell.config)
                     .or_else(|| Some("Default export folder updated.".to_string()));
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiAction::ClearExportFolder => {
-            session.config.export_path = None;
-            session.notice = save_config_error(&session.config)
+        UiCommand::Library(LibraryCommand::ClearExportFolder) => {
+            studio.shell.config.export_path = None;
+            studio.shell.notice = save_config_error(&studio.shell.config)
                 .or_else(|| Some("Export dialogs will use the system default.".to_string()));
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::SelectFolderRoot(path) => {
-            session.folder_browser.select_root(path.clone());
-            session.notice = None;
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::SelectFolderRoot(path)) => {
+            studio.library.folder_browser.select_root(path.clone());
+            studio.shell.notice = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::FolderUp => {
-            if let Some(parent) = session.folder_browser.parent() {
-                session.folder_browser.current = Some(parent);
-                session.folder_browser.context_menu = None;
-                session.folder_browser.refresh();
-                session.notice = None;
-                invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::FolderUp) => {
+            if let Some(parent) = studio.library.folder_browser.parent() {
+                studio.library.folder_browser.current = Some(parent);
+                studio.library.folder_browser.context_menu = None;
+                studio.library.folder_browser.refresh();
+                studio.shell.notice = None;
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiAction::OpenFolderEntry(path) => {
-            session.folder_browser.context_menu = None;
+        UiCommand::Library(LibraryCommand::OpenFolderEntry(path)) => {
+            studio.library.folder_browser.context_menu = None;
             if path.is_dir() {
-                session.folder_browser.current = Some(path.clone());
-                session.folder_browser.refresh();
-                session.notice = None;
+                studio.library.folder_browser.current = Some(path.clone());
+                studio.library.folder_browser.refresh();
+                studio.shell.notice = None;
             } else {
-                session.notice = Some(open_library_entry(path, &session.config));
+                studio.shell.notice = Some(open_library_entry(path, &studio.shell.config));
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RevealFolderEntry(path) => {
-            session.folder_browser.context_menu = None;
-            session.notice = Some(reveal_library_entry(path, &session.config));
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::RevealFolderEntry(path)) => {
+            studio.library.folder_browser.context_menu = None;
+            studio.shell.notice = Some(reveal_library_entry(path, &studio.shell.config));
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::DismissFolderContext => {
-            session.folder_browser.context_menu = None;
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::DismissFolderContext) => {
+            studio.library.folder_browser.context_menu = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RequestRemoveFolder(path) => {
-            session.folder_browser.context_menu = None;
-            session.folder_browser.pending_remove = Some(path.clone());
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::RequestRemoveFolder(path)) => {
+            studio.library.folder_browser.context_menu = None;
+            studio.library.folder_browser.pending_remove = Some(path.clone());
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::CancelRemoveFolder => {
-            session.folder_browser.pending_remove = None;
-            invalidated.0 = true;
+        UiCommand::Library(LibraryCommand::CancelRemoveFolder) => {
+            studio.library.folder_browser.pending_remove = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ConfirmRemoveFolder => {
-            if let Some(path) = session.folder_browser.pending_remove.take() {
-                let mut paths = session.config.library_paths();
+        UiCommand::Library(LibraryCommand::ConfirmRemoveFolder) => {
+            if let Some(path) = studio.library.folder_browser.pending_remove.take() {
+                let mut paths = studio.shell.config.library_paths();
                 paths.retain(|entry| entry != &path);
-                session.config.library_source = if paths.is_empty() {
+                studio.shell.config.library_source = if paths.is_empty() {
                     None
                 } else {
                     Some(LibrarySource::Folders { paths })
                 };
-                if let Some(error) = save_config_error(&session.config) {
-                    session.notice = Some(error);
+                if let Some(error) = save_config_error(&studio.shell.config) {
+                    studio.shell.notice = Some(error);
                 } else {
-                    if session.config.library_source.is_some() {
-                        session.scanning = true;
+                    if studio.shell.config.library_source.is_some() {
+                        studio.library.scanning = true;
                         app_core::start_scan();
                     } else {
                         app_core::clear_library_index();
-                        session.scanning = false;
+                        studio.library.scanning = false;
                     }
-                    session.notice = Some(format!(
-                        "Stopped watching {}. No source media was moved or deleted.",
-                        path.display()
+                    studio.shell.notice = Some(localized_message(
+                        &studio.shell.config,
+                        UiMessage::FolderStoppedWatching,
+                        &[("{path}", &path.display().to_string())],
                     ));
                 }
-                session.folder_browser = FolderBrowser::new(&session.config);
-                session.refresh_library();
-                invalidated.0 = true;
+                studio.library.folder_browser = FolderBrowser::new(&studio.shell.config);
+                studio.library.refresh();
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiAction::AdjustBeamSize(delta) => {
-            session.config.beam_size = Some(
-                (i64::from(session.config.beam_size()) + i64::from(*delta)).clamp(1, 16) as u32,
+        UiCommand::Settings(SettingsCommand::AdjustBeamSize(delta)) => {
+            studio.shell.config.beam_size = Some(
+                (i64::from(studio.shell.config.beam_size()) + i64::from(*delta)).clamp(1, 16)
+                    as u32,
             );
-            if let Some(error) = save_config_error(&session.config) {
-                session.notice = Some(error);
+            if let Some(error) = save_config_error(&studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustBatchSize(delta) => {
-            session.config.batch_size = Some(
-                (i64::from(session.config.batch_size()) + i64::from(*delta)).clamp(1, 16) as u32,
+        UiCommand::Settings(SettingsCommand::AdjustBatchSize(delta)) => {
+            studio.shell.config.batch_size = Some(
+                (i64::from(studio.shell.config.batch_size()) + i64::from(*delta)).clamp(1, 16)
+                    as u32,
             );
-            if let Some(error) = save_config_error(&session.config) {
-                session.notice = Some(error);
+            if let Some(error) = save_config_error(&studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustSeparatorSegmentSize(delta) => {
-            session.config.separator_segment_size = Some(
-                (i64::from(session.config.separator_segment_size()) + i64::from(*delta))
+        UiCommand::Settings(SettingsCommand::AdjustSeparatorSegmentSize(delta)) => {
+            studio.shell.config.separator_segment_size = Some(
+                (i64::from(studio.shell.config.separator_segment_size()) + i64::from(*delta))
                     .clamp(64, 1024) as u32,
             );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustSeparatorOverlap(delta) => {
-            session.config.separator_overlap = Some(
-                (i64::from(session.config.separator_overlap()) + i64::from(*delta)).clamp(2, 32)
-                    as u32,
+        UiCommand::Settings(SettingsCommand::AdjustSeparatorOverlap(delta)) => {
+            studio.shell.config.separator_overlap = Some(
+                (i64::from(studio.shell.config.separator_overlap()) + i64::from(*delta))
+                    .clamp(2, 32) as u32,
             );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustSeparatorBatchSize(delta) => {
-            session.config.separator_batch_size = Some(
-                (i64::from(session.config.separator_batch_size()) + i64::from(*delta)).clamp(1, 8)
-                    as u32,
+        UiCommand::Settings(SettingsCommand::AdjustSeparatorBatchSize(delta)) => {
+            studio.shell.config.separator_batch_size = Some(
+                (i64::from(studio.shell.config.separator_batch_size()) + i64::from(*delta))
+                    .clamp(1, 8) as u32,
             );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustSeparatorNormalization(delta) => {
-            session.config.separator_normalization_pct = Some(
-                (i64::from(session.config.separator_normalization_pct()) + i64::from(*delta))
+        UiCommand::Settings(SettingsCommand::AdjustSeparatorNormalization(delta)) => {
+            studio.shell.config.separator_normalization_pct = Some(
+                (i64::from(studio.shell.config.separator_normalization_pct()) + i64::from(*delta))
                     .clamp(1, 100) as u32,
             );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustDemucsShifts(delta) => {
-            session.config.demucs_shifts = Some(
-                (i64::from(session.config.demucs_shifts()) + i64::from(*delta)).clamp(1, 8) as u32,
-            );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
-        }
-        UiAction::AdjustDemucsOverlap(delta) => {
-            session.config.demucs_overlap_pct = Some(
-                (i64::from(session.config.demucs_overlap_pct()) + i64::from(*delta)).clamp(1, 95)
+        UiCommand::Settings(SettingsCommand::AdjustDemucsShifts(delta)) => {
+            studio.shell.config.demucs_shifts = Some(
+                (i64::from(studio.shell.config.demucs_shifts()) + i64::from(*delta)).clamp(1, 8)
                     as u32,
             );
-            session.notice = save_config_error(&session.config);
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustUiFontScale(delta) => {
-            let current = ui_font_size_percent_to_points(session.config.font_scale_percent());
+        UiCommand::Settings(SettingsCommand::AdjustDemucsOverlap(delta)) => {
+            studio.shell.config.demucs_overlap_pct = Some(
+                (i64::from(studio.shell.config.demucs_overlap_pct()) + i64::from(*delta))
+                    .clamp(1, 95) as u32,
+            );
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::AdjustUiFontScale(delta)) => {
+            let current = ui_font_size_percent_to_points(studio.shell.config.font_scale_percent());
             let next = (i64::from(current) + i64::from(*delta) * i64::from(UI_FONT_SIZE_STEP_PX))
                 .clamp(
                     i64::from(UI_FONT_SIZE_MIN_PX),
                     i64::from(UI_FONT_SIZE_MAX_PX),
                 );
             let next_percent = ui_font_points_to_scale_percent(next as u32);
-            session.config.font_scale_percent = Some(next_percent);
+            studio.shell.config.font_scale_percent = Some(next_percent);
             set_ui_font_scale(next_percent as f32 / 100.0);
-            session.notice = save_config_error(&session.config)
-                .or_else(|| Some(format!("Font size: {}px", next)));
-            invalidated.0 = true;
+            studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
+                Some(localized_message(
+                    &studio.shell.config,
+                    UiMessage::FontSize,
+                    &[("{size}", &format!("{next}px"))],
+                ))
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ToggleAutoAnalyze => {
-            session.config.auto_analyze = Some(!session.config.auto_analyze());
-            if let Some(error) = save_config_error(&session.config) {
-                session.notice = Some(error);
+        UiCommand::Settings(SettingsCommand::ToggleAutoAnalyze) => {
+            studio.shell.config.auto_analyze = Some(!studio.shell.config.auto_analyze());
+            if let Some(error) = save_config_error(&studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::AdjustVocalThreshold(delta) => {
-            let current = (session.config.vocal_detection_threshold_pct() * 100.0).round();
+        UiCommand::Settings(SettingsCommand::AdjustVocalThreshold(delta)) => {
+            let current = (studio.shell.config.vocal_detection_threshold_pct() * 100.0).round();
             let value = (current + f64::from(*delta)).clamp(0.0, 60.0) / 100.0;
-            session.config.vocal_detection_threshold_pct = Some(value);
-            if let Some(error) = save_config_error(&session.config) {
-                session.notice = Some(error);
+            studio.shell.config.vocal_detection_threshold_pct = Some(value);
+            if let Some(error) = save_config_error(&studio.shell.config) {
+                studio.shell.notice = Some(error);
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RestoreAnalysisDefaults => {
-            session.config.separator = Some("karaoke".to_string());
-            session.config.separator_segment_size = None;
-            session.config.separator_overlap = None;
-            session.config.separator_batch_size = None;
-            session.config.separator_normalization_pct = None;
-            session.config.demucs_shifts = None;
-            session.config.demucs_overlap_pct = None;
-            session.config.asr_engine = Some("whisper".to_string());
-            session.config.align_backend = Some("whisperx".to_string());
-            session.config.pitch_model = Some("rmvpe".to_string());
-            session.config.vocal_detection_threshold_pct = Some(0.15);
-            session.config.whisper_model = Some("large-v3".to_string());
-            session.config.beam_size = Some(8);
-            session.config.batch_size = Some(8);
-            session.config.compute_backend = Some("cpu".to_string());
-            session.config.auto_analyze = Some(false);
-            session.notice = save_config_error(&session.config)
+        UiCommand::Settings(SettingsCommand::RestoreAnalysisDefaults) => {
+            studio.shell.config.separator = Some("karaoke".to_string());
+            studio.shell.config.separator_segment_size = None;
+            studio.shell.config.separator_overlap = None;
+            studio.shell.config.separator_batch_size = None;
+            studio.shell.config.separator_normalization_pct = None;
+            studio.shell.config.demucs_shifts = None;
+            studio.shell.config.demucs_overlap_pct = None;
+            studio.shell.config.asr_engine = Some("whisper".to_string());
+            studio.shell.config.align_backend = Some("whisperx".to_string());
+            studio.shell.config.pitch_model = Some("rmvpe".to_string());
+            studio.shell.config.vocal_detection_threshold_pct = Some(0.15);
+            studio.shell.config.whisper_model = Some("large-v3".to_string());
+            studio.shell.config.beam_size = Some(8);
+            studio.shell.config.batch_size = Some(8);
+            studio.shell.config.compute_backend = Some("cpu".to_string());
+            studio.shell.config.auto_analyze = Some(false);
+            studio.shell.notice = save_config_error(&studio.shell.config)
                 .or_else(|| Some("Analysis defaults restored.".to_string()));
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::RequestClearCache(scope) => {
-            session.pending_cache_clear = Some(*scope);
-            session.notice = None;
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::RequestClearCache(scope)) => {
+            studio.dialogs.pending_cache_clear = Some(*scope);
+            studio.shell.notice = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::CancelClearCache => {
-            session.pending_cache_clear = None;
-            invalidated.0 = true;
+        UiCommand::Settings(SettingsCommand::CancelClearCache) => {
+            studio.dialogs.pending_cache_clear = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiAction::ConfirmClearCache => {
-            if let Some(scope) = session.pending_cache_clear.take() {
+        UiCommand::Settings(SettingsCommand::ConfirmClearCache) => {
+            if let Some(scope) = studio.dialogs.pending_cache_clear.take() {
                 match scope {
                     CacheClearScope::Generated => {
                         app_core::CacheDir::new().clear_all();
-                        session.refresh_library();
-                        session.request_cache_stats_refresh = true;
-                        session.notice = Some(
+                        studio.library.refresh();
+                        studio.jobs.request_cache_stats_refresh = true;
+                        studio.shell.notice = Some(
                             "Generated cache cleared. Source media was not changed.".to_string(),
                         );
                     }
                     CacheClearScope::Models => {
                         app_core::clear_models();
-                        session.request_cache_stats_refresh = true;
-                        session.notice = Some(
+                        studio.jobs.request_cache_stats_refresh = true;
+                        studio.shell.notice = Some(
                                 "Downloaded models cleared. Runtime setup now reports the missing artifacts."
                                     .to_string(),
                             );
                     }
                 }
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
 

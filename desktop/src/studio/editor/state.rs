@@ -1,7 +1,18 @@
 //! Editor state: the `NativeEditor` resource, viewport, selection,
 //! history, and the read-only chart views the timeline renders.
 
-use crate::studio::*;
+use std::{
+    collections::BTreeSet,
+    sync::{Mutex, mpsc},
+    time::{Duration, Instant},
+};
+
+use bevy::{
+    color::Alpha,
+    prelude::{Color, Component, Resource, Timer, Vec2},
+};
+
+use crate::{studio::widgets::format_duration, theme::StudioTheme};
 
 pub(crate) const EDITOR_TRACK_GUTTER_WIDTH: f32 = 40.0;
 

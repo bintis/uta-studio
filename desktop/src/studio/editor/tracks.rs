@@ -7,8 +7,31 @@
 //! otherwise overlap and moves it somewhere legal.
 
 use app_core::TrackSummary;
+use bevy::{
+    color::Alpha,
+    ecs::change_detection::DetectChanges,
+    input_focus::tab_navigation::TabIndex,
+    prelude::{
+        AlignItems, BackgroundColor, BorderColor, BorderRadius, Button, ChildSpawnerCommands,
+        FlexDirection, Font, Handle, Image, JustifyContent, Node, Overflow, Pickable, Query, Ref,
+        ResMut, Text, TextColor, TextLayout, UiRect, children, default, percent, px,
+    },
+    text::{EditableText, TextCursorStyle},
+};
 
-use crate::studio::*;
+use crate::{
+    studio::{
+        commands::{EditorCommand, UiAction},
+        state::EditorUiState,
+        widgets::{UiIcon, spawn_icon_button, spawn_text, ui_text_font},
+    },
+    theme::StudioTheme,
+};
+
+use super::{
+    actions::EditorAction,
+    state::{EditorSingerInput, NativeEditor},
+};
 
 /// Height of the strip. Tall enough for a role, a singer, and a coverage bar.
 const TRACK_CARD_WIDTH: f32 = 186.0;
@@ -66,7 +89,7 @@ pub(crate) fn spawn_editor_tracks(
                 icons,
                 theme,
                 UiIcon::Add,
-                UiAction::Editor(EditorAction::AddTrack),
+                UiAction::from(EditorCommand::Editor(EditorAction::AddTrack)),
                 false,
                 false,
                 32.0,
@@ -104,7 +127,7 @@ fn spawn_track_card(
     parent
         .spawn((
             Button,
-            UiAction::SelectEditorTrack(track.index),
+            UiAction::from(EditorCommand::SelectEditorTrack(track.index)),
             Node {
                 width: px(TRACK_CARD_WIDTH),
                 // The active card packs an extra row (the singer name field)
@@ -147,7 +170,7 @@ fn spawn_track_card(
                 if active {
                     header.spawn((
                         Button,
-                        UiAction::Editor(EditorAction::CycleTrackRole),
+                        UiAction::from(EditorCommand::Editor(EditorAction::CycleTrackRole)),
                         Node {
                             height: px(15),
                             align_items: AlignItems::Center,
@@ -179,7 +202,7 @@ fn spawn_track_card(
                 if active {
                     header.spawn((
                         Button,
-                        UiAction::Editor(EditorAction::ToggleTrackScoring),
+                        UiAction::from(EditorCommand::Editor(EditorAction::ToggleTrackScoring)),
                         Node {
                             height: px(15),
                             align_items: AlignItems::Center,
@@ -210,7 +233,7 @@ fn spawn_track_card(
                     if removable {
                         header.spawn((
                             Button,
-                            UiAction::Editor(EditorAction::RemoveTrack),
+                            UiAction::from(EditorCommand::Editor(EditorAction::RemoveTrack)),
                             Node {
                                 height: px(15),
                                 align_items: AlignItems::Center,
@@ -230,7 +253,7 @@ fn spawn_track_card(
                 } else if has_selection {
                     header.spawn((
                         Button,
-                        UiAction::MoveSelectionToTrack(track.index),
+                        UiAction::from(EditorCommand::MoveSelectionToTrack(track.index)),
                         Node {
                             height: px(15),
                             align_items: AlignItems::Center,
@@ -337,9 +360,9 @@ fn spawn_track_card(
 /// Applies a typed singer name to the track it belongs to.
 pub(crate) fn sync_editor_singer_input(
     inputs: Query<(Ref<EditableText>, &EditorSingerInput)>,
-    mut session: ResMut<StudioSession>,
+    mut state: ResMut<EditorUiState>,
 ) {
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {

@@ -1,6 +1,6 @@
 # Uta Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta Studio 0.5.0
+**Applies to:** Uta Studio 0.5.1
 **Document revision:** 2026-08-18
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,32 +27,34 @@ Uta Studio does not move or delete source media. Generated stems, models, previe
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.5.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release 0.5.1 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
 
 #### Windows
 
-1. Download `uta-studio-0.5.0-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-0.5.1-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
 3. Start `uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
 
+Windows 10/11 x86-64 is supported. Editor and library audition use the system WASAPI output and do not require a separately installed codec pack for FLAC, MP3, WAV, Ogg/Vorbis, or common AAC/MP4 inputs.
+
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.5.0-x86_64-linux.bin
-./uta-studio-0.5.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.1-x86_64-linux.bin
+./uta-studio-0.5.1-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -62,7 +64,7 @@ The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayla
 Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
 
 ```sh
-sha256sum -c uta-studio-0.5.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.1-linux-deb.sha256
 ```
 
 Use the checksum file matching the package type you downloaded.
@@ -136,7 +138,7 @@ The user guide is also available inside the application. Open **Settings → Gen
 
 #### Library views
 
-The library provides views for all music, analysis progress, completed charts, video sources, artists, albums, playlists, and folders. Search can filter tracks, artists, albums, and playlists.
+Browse contains all music and analysis progress. My Library contains charts, video sources, playlists, and folders. Search can filter tracks, artists, albums, and playlists.
 
 #### Watched folders
 
@@ -155,7 +157,9 @@ Uta Studio uses four explicit stages. Generated files from these stages are type
 
 #### 01 · Vocal separation
 
-Creates vocal and instrumental stems before recognition. Available choices depend on platform and configured runtime, and may include UVR Karaoke, Demucs, or an Intel/OpenVINO path.
+Creates vocal and instrumental stems before recognition. Available choices depend on platform and configured runtime, and may include the legacy UVR Karaoke / Demucs / Intel OpenVINO path or the 0.5 audio catalog (BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem).
+
+Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline. Vocal, accompaniment, karaoke, denoise, and dereverb models can be chosen independently, including cleanup order; existing chart data changes only after re-analysis.
 
 Use a balanced profile first. Memory-saving profiles reduce peak use; quality profiles usually take longer and can require more memory.
 
@@ -405,7 +409,7 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
 - `stems.separate` — vocal and instrumental stems.
 - `pitch.extract` — pitch curve and note-candidate evidence.
-- `lyrics.preprocess` — audio prepared for recognition; ephemeral unless captured.
+- `lyrics.preprocess` (Vocal Preprocessing) — vocal audio prepared for recognition and alignment; ephemeral unless captured.
 - `lyrics.transcribe` — recognized text.
 - `lyrics.align` — word-timed transcript.
 - `lyrics.import_timed` — imported timed lyrics.
@@ -445,32 +449,34 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.5.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.5.1 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
 
 #### Windows
 
-1. 下载 `uta-studio-0.5.0-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-0.5.1-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
+Uta Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
+
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.5.0-x86_64-linux.bin
-./uta-studio-0.5.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.1-x86_64-linux.bin
+./uta-studio-0.5.1-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -480,7 +486,7 @@ Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWa
 从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
 
 ```sh
-sha256sum -c uta-studio-0.5.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.1-linux-deb.sha256
 ```
 
 校验文件必须与下载的包类型一致。
@@ -554,7 +560,7 @@ Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模�
 
 #### 曲库视图
 
-曲库提供全部音乐、分析进度、已完成谱面、视频来源、艺术家、专辑、播放列表和文件夹等视图。搜索可筛选歌曲、艺术家、专辑和播放列表。
+“浏览”包含全部音乐和分析进度；“我的曲库”包含谱面、视频来源、播放列表和文件夹。搜索可筛选歌曲、艺术家、专辑和播放列表。
 
 #### 监视文件夹
 
@@ -573,7 +579,9 @@ Uta Studio 使用四个明确阶段。这些阶段生成的文件是带类型的
 
 #### 01 · 人声分离
 
-在识别前创建人声与伴奏分轨。可用选项取决于平台和运行环境，可能包括 UVR Karaoke、Demucs 或 Intel/OpenVINO 路径。
+在识别前创建人声与伴奏分轨。可用选项取决于平台和运行环境，包括旧版 UVR Karaoke / Demucs / Intel OpenVINO，以及 0.5 音频目录（BS-RoFormer 人声、MelBand 伴奏、Karaoke 2、去噪、去混响和 HTDemucs 六声部）。
+
+目录模型只能在 **设置 > 模型与运行环境** 中，确认名称、来源、体积和许可后安装。分析过程保持离线。人声、伴奏、卡拉 OK、去噪和去混响模型可独立选择（含清理顺序）；已有制谱数据只会在重新分析后改变。
 
 建议先使用“均衡”配置。节省内存配置可降低峰值占用；高质量配置通常更慢，并需要更多内存。
 
@@ -823,7 +831,7 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 - `music.analysis` — 调性、节奏和描述符分析，供后续时间和谱面使用。
 - `stems.separate` — 人声与伴奏分轨。
 - `pitch.extract` — 音高曲线和音符候选证据。
-- `lyrics.preprocess` — 供识别使用的音频；除非捕获，否则为临时文件。
+- `lyrics.preprocess`（人声预处理） — 把人声收成识别/对齐用的音频；除非捕获，否则为临时文件。
 - `lyrics.transcribe` — 识别文本。
 - `lyrics.align` — 带词级时间的转录。
 - `lyrics.import_timed` — 导入的带时间歌词。
@@ -863,32 +871,34 @@ Uta Studio が元メディアを移動・削除することはありません。
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.5.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.5.1 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
 
 #### Windows
 
-1. `uta-studio-0.5.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-0.5.1-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
 
+Windows 10/11 x86-64 は正式対応です。エディターとライブラリの試聴にはシステムの WASAPI 出力を使い、FLAC、MP3、WAV、Ogg/Vorbis、一般的な AAC/MP4 入力に別途コーデックパックは不要です。
+
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.0-1_amd64.deb
+sudo apt install ./uta-studio_0.5.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.5.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.5.0-x86_64-linux.bin
-./uta-studio-0.5.0-x86_64-linux.bin
+chmod +x uta-studio-0.5.1-x86_64-linux.bin
+./uta-studio-0.5.1-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -898,7 +908,7 @@ Linux デスクトップ版は Wayland ネイティブです。X11 バックエ�
 ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
 
 ```sh
-sha256sum -c uta-studio-0.5.0-linux-deb.sha256
+sha256sum -c uta-studio-0.5.1-linux-deb.sha256
 ```
 
 ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
@@ -972,7 +982,7 @@ Uta Studio は互換性のあるローカルの `ffmpeg`、`uv`、Python、既�
 
 #### ライブラリ表示
 
-すべての楽曲、解析状況、完成済み譜面、動画ソース、アーティスト、アルバム、プレイリスト、フォルダーなどの表示があります。検索では楽曲、アーティスト、アルバム、プレイリストを絞り込めます。
+「ブラウズ」にはすべての楽曲と解析状況があり、「マイライブラリ」には譜面、動画ソース、プレイリスト、フォルダーがあります。検索では楽曲、アーティスト、アルバム、プレイリストを絞り込めます。
 
 #### 監視フォルダー
 
@@ -991,7 +1001,9 @@ Uta Studio は4つの明示的な段階を使用します。各段階の生成�
 
 #### 01 · ボーカル分離
 
-認識前にボーカルと伴奏のステムを作ります。利用可能な選択肢はプラットフォームとランタイムにより異なり、UVR Karaoke、Demucs、Intel/OpenVINO 系などがあります。
+認識前にボーカルと伴奏のステムを作ります。利用可能な選択肢はプラットフォームとランタイムにより、従来の UVR Karaoke / Demucs / Intel OpenVINO に加え、0.5 オーディオカタログ（BS-RoFormer ボーカル、MelBand 伴奏、Karaoke 2、ノイズ除去、残響除去、HTDemucs 6 ステム）を含みます。
+
+カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。分析自体はオフラインです。ボーカル、伴奏、カラオケ、ノイズ除去、残響除去は個別に選べ、順序も指定できます。既存の譜面は再分析後にだけ変わります。
 
 まずはバランス設定を推奨します。省メモリ設定はピーク使用量を下げ、高品質設定は通常より長い処理時間と多くのメモリを必要とします。
 
@@ -1241,7 +1253,7 @@ Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそ
 - `music.analysis` — 後のタイミングと譜面に使うキー、リズム、記述子解析です。
 - `stems.separate` — ボーカルと伴奏ステムです。
 - `pitch.extract` — ピッチ曲線とノート候補の証拠です。
-- `lyrics.preprocess` — 認識用に整えた音声です。キャプチャしない限り一時的です。
+- `lyrics.preprocess`（Vocal Preprocessing） — 認識・アライメント用に整えたボーカル音声です。キャプチャしない限り一時的です。
 - `lyrics.transcribe` — 認識テキストです。
 - `lyrics.align` — 単語タイミング付き転写です。
 - `lyrics.import_timed` — 取り込み済みのタイミング付き歌詞です。

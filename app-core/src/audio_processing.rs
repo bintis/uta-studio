@@ -108,16 +108,14 @@ impl AudioProcessingSettings {
         match self.legacy_profile.as_deref() {
             Some("legacy_htdemucs") => "demucs",
             Some("legacy_openvino_demucs") => "openvino_demucs",
-            Some("legacy_karaoke_roformer") | None => {
+            Some("legacy_karaoke_roformer") | None
                 if self.multistem_model_id.as_deref() == Some("htdemucs_6s")
                     && self.vocal_model_id.is_none()
-                    && self.karaoke_model_id.is_none()
-                {
-                    "demucs"
-                } else {
-                    "karaoke"
-                }
+                    && self.karaoke_model_id.is_none() =>
+            {
+                "demucs"
             }
+            Some("legacy_karaoke_roformer") | None => "karaoke",
             _ => "karaoke",
         }
     }
@@ -184,20 +182,30 @@ impl AudioProcessingPlanSnapshot {
             precision_policy: settings.precision_policy.clone(),
             fallback_policy: default_fallback_policy(),
         };
-        if let Some(model_id) = settings.karaoke_model_id.as_deref() {
-            return karaoke_snapshot(model_id, settings, runtime);
+        let demucs_only = is_demucs_chart_path(settings);
+        let mut plan = if demucs_only {
+            demucs_snapshot(settings, runtime)
+        } else if let Some(vocal) = settings.vocal_model_id.as_deref() {
+            chart_snapshot(vocal, settings, runtime)
+        } else {
+            chart_snapshot(DEFAULT_LEGACY_KARAOKE_MODEL_ID, settings, runtime)
+        };
+        if !demucs_only {
+            if let Some(model_id) = settings.karaoke_model_id.as_deref() {
+                append_karaoke_side_path(&mut plan, model_id, settings);
+            }
+            if settings.multistem_model_id.is_some() {
+                append_multistem_side_path(&mut plan, settings);
+            }
         }
-        if settings.legacy_profile.as_deref() == Some("legacy_htdemucs")
-            || settings.multistem_model_id.as_deref() == Some("htdemucs_6s")
-                && settings.vocal_model_id.is_none()
-        {
-            return demucs_snapshot(settings, runtime);
-        }
-        if let Some(vocal) = settings.vocal_model_id.as_deref() {
-            return chart_snapshot(vocal, settings, runtime);
-        }
-        chart_snapshot(DEFAULT_LEGACY_KARAOKE_MODEL_ID, settings, runtime)
+        plan
     }
+}
+
+pub fn is_demucs_chart_path(settings: &AudioProcessingSettings) -> bool {
+    settings.legacy_profile.as_deref() == Some("legacy_htdemucs")
+        || (settings.multistem_model_id.as_deref() == Some("htdemucs_6s")
+            && settings.vocal_model_id.is_none())
 }
 
 fn param(map: &AudioParameterMap, extra: &AudioParameterMap) -> AudioParameterMap {
@@ -309,46 +317,63 @@ fn chart_snapshot(
     }
 }
 
-fn karaoke_snapshot(
+fn karaoke_side_step(model_id: &str, settings: &AudioProcessingSettings) -> AudioProcessingStep {
+    AudioProcessingStep {
+        step_id: "extract_karaoke".to_string(),
+        model_id: model_id.to_string(),
+        input: AudioInputReference::SourceMedia,
+        selected_output_roles: vec![
+            "karaoke_instrumental".to_string(),
+            "extracted_vocal".to_string(),
+        ],
+        effective_parameters: param(
+            &settings.common_overrides,
+            settings
+                .per_model_overrides
+                .get(model_id)
+                .unwrap_or(&AudioParameterMap::new()),
+        ),
+    }
+}
+
+fn append_karaoke_side_path(
+    plan: &mut AudioProcessingPlanSnapshot,
     model_id: &str,
     settings: &AudioProcessingSettings,
-    runtime: AudioRuntimeRequest,
-) -> AudioProcessingPlanSnapshot {
-    AudioProcessingPlanSnapshot {
-        schema_version: AUDIO_CATALOG_SCHEMA_VERSION,
-        catalog_version: AUDIO_CATALOG_VERSION.to_string(),
-        steps: vec![AudioProcessingStep {
-            step_id: "extract_karaoke".to_string(),
-            model_id: model_id.to_string(),
-            input: AudioInputReference::SourceMedia,
-            selected_output_roles: vec![
-                "karaoke_instrumental".to_string(),
-                "extracted_vocal".to_string(),
-            ],
-            effective_parameters: param(
-                &settings.common_overrides,
-                settings
-                    .per_model_overrides
-                    .get(model_id)
-                    .unwrap_or(&AudioParameterMap::new()),
-            ),
-        }],
-        output_bindings: vec![
-            AudioOutputBinding {
-                artifact_role: "instrumental".to_string(),
-                step_id: "extract_karaoke".to_string(),
-                role: "karaoke_instrumental".to_string(),
-                sum: None,
-            },
-            AudioOutputBinding {
-                artifact_role: "vocals".to_string(),
-                step_id: "extract_karaoke".to_string(),
-                role: "extracted_vocal".to_string(),
-                sum: None,
-            },
-        ],
-        requested_runtime: runtime,
-        profile_id: Some("karaoke_hq".to_string()),
+) {
+    if plan
+        .steps
+        .iter()
+        .any(|step| step.step_id == "extract_karaoke")
+    {
+        return;
+    }
+    plan.steps.push(karaoke_side_step(model_id, settings));
+    plan.output_bindings.push(AudioOutputBinding {
+        artifact_role: "karaoke_instrumental".to_string(),
+        step_id: "extract_karaoke".to_string(),
+        role: "karaoke_instrumental".to_string(),
+        sum: None,
+    });
+}
+
+fn append_multistem_side_path(
+    plan: &mut AudioProcessingPlanSnapshot,
+    settings: &AudioProcessingSettings,
+) {
+    if plan.steps.iter().any(|step| step.step_id == "separate_6s") {
+        return;
+    }
+    let side = demucs_snapshot(settings, plan.requested_runtime.clone());
+    plan.steps.extend(side.steps);
+    for binding in side.output_bindings {
+        if matches!(
+            binding.artifact_role.as_str(),
+            "vocals" | "instrumental" | "analysis_vocal"
+        ) {
+            continue;
+        }
+        plan.output_bindings.push(binding);
     }
 }
 
@@ -480,9 +505,7 @@ pub fn is_placeholder_hash(value: &str) -> bool {
 #[allow(dead_code)]
 pub fn sha256_hex_ok(value: &str) -> bool {
     value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         && !is_placeholder_hash(value)
 }
 
@@ -579,7 +602,7 @@ const CATALOG_MODELS: &[(&str, &str, &str, &str, &str, &str)] = &[
 ];
 
 pub fn list_audio_models() -> Result<AudioModelCatalogSummary, String> {
-    list_audio_models_from_dir(&crate::cache::models_dir())
+    list_audio_models_from_dir(crate::cache::models_dir())
 }
 
 pub fn list_audio_models_from_dir(
@@ -596,7 +619,7 @@ pub fn list_audio_models_from_dir(
 }
 
 pub fn get_audio_model_status(model_id: &str) -> Result<AudioModelStatus, String> {
-    get_audio_model_status_from_dir(&crate::cache::models_dir(), model_id)
+    get_audio_model_status_from_dir(crate::cache::models_dir(), model_id)
 }
 
 pub fn get_audio_model_status_from_dir(
@@ -619,8 +642,6 @@ fn audio_model_status_from_disk(
     let manifest = directory.join("install-manifest.json");
     let state = if manifest.is_file() {
         "installed"
-    } else if directory.is_dir() {
-        "missing"
     } else {
         "missing"
     };
@@ -774,6 +795,50 @@ mod tests {
     }
 
     #[test]
+    fn karaoke_is_a_side_path_and_does_not_replace_the_chart_chain() {
+        let mut settings = AudioProcessingSettings::from_legacy_separator("karaoke");
+        settings.vocal_model_id = Some("bs_roformer_vocals_ep317".to_string());
+        settings.accompaniment_model_id = Some("melband_roformer_inst_v2".to_string());
+        settings.vocal_cleanup_chain = vec![
+            "melband_roformer_denoise_aufr33".to_string(),
+            "melband_roformer_dereverb_anvuew".to_string(),
+        ];
+        settings.karaoke_model_id = Some("melband_roformer_karaoke_aufr33_viperx".to_string());
+        let snapshot = AudioProcessingPlanSnapshot::from_settings(&settings);
+        let step_ids: Vec<&str> = snapshot
+            .steps
+            .iter()
+            .map(|step| step.step_id.as_str())
+            .collect();
+        assert_eq!(
+            step_ids,
+            vec![
+                "extract_vocals",
+                "denoise_vocals",
+                "dereverb_vocals",
+                "extract_accompaniment",
+                "extract_karaoke",
+            ]
+        );
+        assert!(
+            snapshot
+                .output_bindings
+                .iter()
+                .any(|binding| binding.artifact_role == "analysis_vocal"
+                    && binding.step_id == "dereverb_vocals")
+        );
+        assert!(
+            snapshot
+                .output_bindings
+                .iter()
+                .any(|binding| binding.artifact_role == "karaoke_instrumental")
+        );
+        assert!(!snapshot.output_bindings.iter().any(
+            |binding| binding.artifact_role == "vocals" && binding.step_id == "extract_karaoke"
+        ));
+    }
+
+    #[test]
     fn sha256_helpers_reject_placeholders() {
         assert!(sha256_hex_ok(
             "bf32e15105a09c0f7dddd2b67346146334d6f3ecb399ed7638eba2ab07cbf5f4"
@@ -784,8 +849,10 @@ mod tests {
 
     #[test]
     fn rejects_checkpoint_filenames() {
-        let mut settings = AudioProcessingSettings::default();
-        settings.vocal_model_id = Some("model_bs_roformer_ep_317_sdr_12.9755.ckpt".to_string());
+        let settings = AudioProcessingSettings {
+            vocal_model_id: Some("model_bs_roformer_ep_317_sdr_12.9755.ckpt".to_string()),
+            ..AudioProcessingSettings::default()
+        };
         assert!(validate_audio_processing_profile(&settings).is_err());
     }
 

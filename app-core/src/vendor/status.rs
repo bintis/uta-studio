@@ -408,17 +408,32 @@ pub(crate) fn model_install_statuses_for(
 /// from the real filesystem checks so this branching (which check(s) matter
 /// for which combination) is unit-testable without touching the real,
 /// process-global `models_dir()`.
+pub(crate) struct ModelAvailabilityChecks<'a> {
+    pub(crate) separator_ready: bool,
+    pub(crate) pitch_ready: bool,
+    pub(crate) asr_engine: &'a str,
+    pub(crate) backend: &'a str,
+    pub(crate) primary_asr_model_ready: bool,
+    pub(crate) language_detector_ready: bool,
+    pub(crate) align_backend: &'a str,
+    pub(crate) align_model_ready: bool,
+}
+
 pub(crate) fn node_model_availability_from_checks(
-    separator_ready: bool,
-    pitch_ready: bool,
-    asr_engine: &str,
-    backend: &str,
-    primary_asr_model_ready: bool,
-    language_detector_ready: bool,
-    align_backend: &str,
-    align_model_ready: bool,
+    checks: ModelAvailabilityChecks<'_>,
 ) -> std::collections::BTreeMap<crate::analysis_graph::AnalysisNodeId, bool> {
     use crate::analysis_graph::AnalysisNodeId;
+
+    let ModelAvailabilityChecks {
+        separator_ready,
+        pitch_ready,
+        asr_engine,
+        backend,
+        primary_asr_model_ready,
+        language_detector_ready,
+        align_backend,
+        align_model_ready,
+    } = checks;
 
     let mut map = std::collections::BTreeMap::new();
     map.insert(AnalysisNodeId::new("stems.separate"), separator_ready);
@@ -480,16 +495,16 @@ pub fn node_model_availability_for(
         "mms_karaoke" => mms_karaoke_alignment_model_ready(),
         _ => true,
     };
-    node_model_availability_from_checks(
+    node_model_availability_from_checks(ModelAvailabilityChecks {
         separator_ready,
         pitch_ready,
-        params.asr_engine,
-        params.backend,
+        asr_engine: params.asr_engine,
+        backend: params.backend,
         primary_asr_model_ready,
         language_detector_ready,
-        params.align_backend,
+        align_backend: params.align_backend,
         align_model_ready,
-    )
+    })
 }
 
 /// Builds `ModelAvailabilityParams` from a song's resolved analysis profile

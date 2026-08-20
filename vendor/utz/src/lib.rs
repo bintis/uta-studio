@@ -534,10 +534,10 @@ impl UtzManifest {
 }
 
 fn validate_v02_manifest(value: &ManifestV02) -> Result<()> {
-    if let Some(scoring) = &value.scoring {
-        if scoring.engine.trim().is_empty() || scoring.version == 0 {
-            return invalid("scoring hints need a non-empty engine and version");
-        }
+    if let Some(scoring) = &value.scoring
+        && (scoring.engine.trim().is_empty() || scoring.version == 0)
+    {
+        return invalid("scoring hints need a non-empty engine and version");
     }
     if let Some(loudness) = &value.audio.loudness {
         for lufs in [
@@ -746,10 +746,10 @@ impl VocalChartV1 {
         }
         // Assigned duet parts must be exactly 1..=N with no gaps, mirroring
         // the UltraStar voice numbering rule.
-        if let Some(max) = parts.last().copied() {
-            if parts.len() as u32 != max {
-                return invalid("duet parts must be contiguous starting at 1");
-            }
+        if let Some(max) = parts.last().copied()
+            && parts.len() as u32 != max
+        {
+            return invalid("duet parts must be contiguous starting at 1");
         }
         Ok(())
     }
@@ -1172,10 +1172,10 @@ fn validate_declared_files(
     if let Some(path) = declared.iter().find(|path| !files.contains_key(**path)) {
         return invalid(format!("manifest asset is missing: {path}"));
     }
-    if matches!(manifest, UtzManifest::V0_2(_)) {
-        if let Some(path) = files.keys().find(|path| !declared.contains(path.as_str())) {
-            return invalid(format!("UTZ 0.2 contains undeclared asset: {path}"));
-        }
+    if matches!(manifest, UtzManifest::V0_2(_))
+        && let Some(path) = files.keys().find(|path| !declared.contains(path.as_str()))
+    {
+        return invalid(format!("UTZ 0.2 contains undeclared asset: {path}"));
     }
     Ok(())
 }

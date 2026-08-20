@@ -1,5 +1,6 @@
 mod tests {
     use super::*;
+    use crate::studio::startup::{asset_root, studio_log_filter, studio_window};
 
     /// Builds an editable document from (start, end, midi, syllable) tuples.
     fn document_fixture(notes: &[(f64, f64, u8, &str)]) -> app_core::EditorDocument {
@@ -106,9 +107,9 @@ mod tests {
 
     #[test]
     fn navigation_skips_invisible_dismiss_backdrops() {
-        assert!(!action_is_navigation_target(&UiAction::CloseActivity));
-        assert!(!action_is_navigation_target(&UiAction::DismissSongContext));
-        assert!(action_is_navigation_target(&UiAction::OpenAbout));
+        assert!(!action_is_navigation_target(&UiAction::from(AppCommand::CloseActivity)));
+        assert!(!action_is_navigation_target(&UiAction::from(LibraryCommand::DismissSongContext)));
+        assert!(action_is_navigation_target(&UiAction::from(AppCommand::OpenAbout)));
     }
 
     #[test]
@@ -117,7 +118,7 @@ mod tests {
         let resting = theme.card.with_alpha(0.46);
         assert_eq!(
             button_background(
-                &UiAction::ToggleLibraryLayout,
+                &UiAction::from(LibraryCommand::ToggleLibraryLayout),
                 Interaction::None,
                 resting,
                 &theme,
@@ -126,7 +127,7 @@ mod tests {
         );
         assert_ne!(
             button_background(
-                &UiAction::ToggleLibraryLayout,
+                &UiAction::from(LibraryCommand::ToggleLibraryLayout),
                 Interaction::Hovered,
                 resting,
                 &theme,
@@ -135,7 +136,7 @@ mod tests {
         );
         assert_eq!(
             button_background(
-                &UiAction::CloseActivity,
+                &UiAction::from(AppCommand::CloseActivity),
                 Interaction::Hovered,
                 theme.background.with_alpha(0.54),
                 &theme,
@@ -146,7 +147,7 @@ mod tests {
 
     #[test]
     fn editor_audio_failure_does_not_block_chart_authoring() {
-        let status = editor_audio_status(Err("missing typefind".to_string()));
+        let status = editor::audition::editor_audio_status(Err("missing typefind".to_string()));
         assert!(!status.loaded);
         assert_eq!(status.error.as_deref(), Some("missing typefind"));
     }
@@ -305,11 +306,17 @@ mod tests {
             Some(index) => {
                 let note = chart_notes(&editor.document)[index].clone();
                 let length = (note.end - note.start).max(app_core::MIN_NOTE_SECONDS);
-                move_chart_note(&mut editor.document, index, at, at + length, note.midi);
+                editor::commands::move_chart_note(
+                    &mut editor.document,
+                    index,
+                    at,
+                    at + length,
+                    note.midi,
+                );
                 editor.tap.holding = Some((index, at));
             }
             None => {
-                let index = insert_chart_note(
+                let index = editor::commands::insert_chart_note(
                     &mut editor.document,
                     at,
                     at + app_core::MIN_NOTE_SECONDS,
@@ -321,7 +328,7 @@ mod tests {
             }
         }
         editor.visible_position = up;
-        finish_tap(editor);
+        editor::actions::finish_tap(editor);
     }
 
     #[test]
@@ -400,24 +407,30 @@ mod tests {
         editor.viewport_duration = 6.0;
         editor.selected_notes = BTreeSet::from([0, 1]);
 
-        let selection = audition_range(EditorAction::AuditionSelection, &editor).unwrap();
+        let selection =
+            editor::actions::audition_range(EditorAction::AuditionSelection, &editor).unwrap();
         assert!((selection.0 - 4.0).abs() < 1e-9);
         assert!((selection.1 - 6.0).abs() < 1e-9);
         // The lead-in stops where the selection starts, and the lead-out picks
         // up where it ends, so a transition is heard from both sides.
-        let before = audition_range(EditorAction::AuditionBeforeSelection, &editor).unwrap();
+        let before =
+            editor::actions::audition_range(EditorAction::AuditionBeforeSelection, &editor)
+                .unwrap();
         assert!((before.1 - 4.0).abs() < 1e-9);
         assert!(before.0 < before.1);
-        let after = audition_range(EditorAction::AuditionAfterSelection, &editor).unwrap();
+        let after = editor::actions::audition_range(EditorAction::AuditionAfterSelection, &editor)
+            .unwrap();
         assert!((after.0 - 6.0).abs() < 1e-9);
         assert!(after.1 > after.0);
         assert_eq!(
-            audition_range(EditorAction::AuditionVisible, &editor),
+            editor::actions::audition_range(EditorAction::AuditionVisible, &editor),
             Some((2.0, 8.0))
         );
 
         editor.selected_notes.clear();
-        assert!(audition_range(EditorAction::AuditionSelection, &editor).is_none());
+        assert!(
+            editor::actions::audition_range(EditorAction::AuditionSelection, &editor).is_none()
+        );
     }
 
     #[test]
@@ -429,7 +442,7 @@ mod tests {
             WaveformSource::Instrumental,
             "instrumental",
         );
-        let tones = pitch_tones(&editor.document, 3.5, 6.0);
+        let tones = editor::actions::pitch_tones(&editor.document, 3.5, 6.0);
         assert_eq!(tones.len(), 1);
         // Tones are positioned against the start of the audition, and clipped
         // to it, so the preview lines up with the transport.
@@ -511,11 +524,14 @@ mod tests {
     fn quantization_and_safe_repair_keep_valid_note_ranges() {
         let mut document =
             document_fixture(&[(1.023, 1.071, 60, "hello"), (1.2, 1.3, 61, "world")]);
-        assert_eq!(quantize_chart_notes(&mut document, None, 0.05), 2);
+        assert_eq!(
+            editor::commands::quantize_chart_notes(&mut document, None, 0.05),
+            2
+        );
         let notes = chart_notes(&document);
         assert!((notes[0].start - 1.0).abs() < 1e-9);
         assert!((notes[0].end - 1.05).abs() < 1e-9);
-        assert!(repair_editor_chart(&mut document));
+        assert!(editor::commands::repair_editor_chart(&mut document));
         let notes = chart_notes(&document);
         assert!(notes[0].end <= notes[1].start);
         assert!(!document.problems().blocks_saving());

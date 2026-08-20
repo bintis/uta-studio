@@ -216,9 +216,9 @@ pub(crate) fn spawn_node_io_workbench(
                         theme,
                         "Help",
                         8.0,
-                        UiAction::OpenDocumentation(Some(
+                        UiAction::from(AppCommand::OpenDocumentation(Some(
                             documentation_anchor_for_node(node_id).to_string(),
-                        )),
+                        ))),
                     );
                 });
 
@@ -252,7 +252,7 @@ pub(crate) fn spawn_node_io_workbench(
                                         label
                                     },
                                     8.0,
-                                    UiAction::SelectArtifactInspectorTab(tab),
+                                    UiAction::from(AnalysisCommand::SelectArtifactInspectorTab(tab)),
                                 );
                             }
                         });
@@ -581,7 +581,7 @@ pub(crate) fn spawn_artifact_lineage_panel(
                         theme,
                         label,
                         9.0,
-                        UiAction::SetArtifactLineageScope(scope),
+                        UiAction::from(AnalysisCommand::SetArtifactLineageScope(scope)),
                     );
                 }
                 spawn_text_button(
@@ -590,7 +590,7 @@ pub(crate) fn spawn_artifact_lineage_panel(
                     theme,
                     "Return to run view",
                     9.0,
-                    UiAction::CloseArtifactLineage,
+                    UiAction::from(AnalysisCommand::CloseArtifactLineage),
                 );
             });
             if let Ok(inspection) = app_core::inspect_artifact(&panel.selected) {
@@ -632,14 +632,14 @@ pub(crate) fn spawn_artifact_lineage_panel(
                         body,
                         font.clone(),
                         theme,
-                        &format!(
+                        format!(
                             "{}{:?} · {} · {short}",
                             "  ".repeat(node.depth),
                             node.artifact.kind,
                             node.artifact.producer_node
                         ),
                         9.0,
-                        UiAction::SelectArtifactLineageRevision(reference),
+                        UiAction::from(AnalysisCommand::SelectArtifactLineageRevision(reference)),
                     );
                 }
                 for missing in &panel.lineage.missing_revision_ids {
@@ -731,10 +731,10 @@ pub(crate) fn spawn_artifact_impact_panel(
                         theme,
                         "Queue this plan",
                         10.0,
-                        UiAction::ConfirmArtifactImpact,
+                        UiAction::from(AnalysisCommand::ConfirmArtifactImpact),
                     );
                 }
-                spawn_text_button(actions, font, theme, "Close", 10.0, UiAction::CloseArtifactImpact);
+                spawn_text_button(actions, font, theme, "Close", 10.0, UiAction::from(AnalysisCommand::CloseArtifactImpact));
             });
         });
 }
@@ -787,6 +787,10 @@ pub(crate) fn spawn_workbench_artifact_node(
 
     let mut entity = parent.spawn((
         Button,
+        UiPointerApi(&[
+            "ui.pointer.analysis_artifact.primary",
+            "ui.pointer.analysis_artifact.secondary",
+        ]),
         Node {
             position_type: PositionType::Absolute,
             left: px(bounds.x),
@@ -841,22 +845,25 @@ pub(crate) fn spawn_workbench_artifact_node(
 
     entity.observe(
         move |mut event: On<Pointer<Click>>,
-              mut session: ResMut<StudioSession>,
+              mut shell: ResMut<ShellState>,
+              library: Res<LibraryState>,
+              analysis: Res<AnalysisUiState>,
+              mut dialogs: ResMut<DialogState>,
               mut invalidated: ResMut<UiInvalidated>,
               lists: Query<(&ComputedNode, &UiGlobalTransform), With<LibrarySongList>>| {
             event.propagate(false);
             let Some(reference) = reference.clone() else {
                 if event.button == PointerButton::Primary {
-                    session.notice = Some(format!(
+                    shell.notice = Some(format!(
                         "{title_owned}: no persisted artifact revision is available yet."
                     ));
-                    invalidated.0 = true;
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
                 }
                 return;
             };
             match event.button {
                 PointerButton::Primary => {
-                    session.notice = Some(match app_core::inspect_artifact(&reference) {
+                    shell.notice = Some(match app_core::inspect_artifact(&reference) {
                         Ok(inspection) => format!(
                             "{title_owned} · {:?} · {:?}{}",
                             inspection.media_type,
@@ -865,13 +872,13 @@ pub(crate) fn spawn_workbench_artifact_node(
                         ),
                         Err(error) => error,
                     });
-                    session.analysis_artifact_context = None;
-                    if session.analysis_lineage_mode
+                    dialogs.analysis_artifact_context = None;
+                    if analysis.analysis_lineage_mode
                         && let Ok(lineage) = app_core::artifact_lineage(&reference)
                     {
-                        session.artifact_lineage = Some(ArtifactLineagePanel {
+                        dialogs.artifact_lineage = Some(ArtifactLineagePanel {
                             lineage,
-                            scope: session.analysis_lineage_scope,
+                            scope: analysis.analysis_lineage_scope,
                             selected: reference,
                         });
                     }
@@ -879,10 +886,10 @@ pub(crate) fn spawn_workbench_artifact_node(
                 PointerButton::Secondary => {
                     let menu_position = analysis_context_menu_position(
                         event.pointer_location.position,
-                        session.library_scroll_offset,
+                        library.library_scroll_offset,
                         &lists,
                     );
-                    session.analysis_artifact_context = Some(AnalysisArtifactContextMenu {
+                    dialogs.analysis_artifact_context = Some(AnalysisArtifactContextMenu {
                         reference,
                         label: title_owned.clone(),
                         position: menu_position,
@@ -891,7 +898,7 @@ pub(crate) fn spawn_workbench_artifact_node(
                 PointerButton::Middle => return,
             }
             let _ = &file_hash_owned;
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         },
     );
 }
@@ -943,6 +950,10 @@ pub(crate) fn spawn_workbench_export_node(
     let alpha = if lineage_dimmed { 0.28 } else { 1.0 };
     let mut entity = parent.spawn((
         Button,
+        UiPointerApi(&[
+            "ui.pointer.analysis_export.primary",
+            "ui.pointer.analysis_export.secondary",
+        ]),
         Node {
             position_type: PositionType::Absolute,
             left: px(bounds.x),
@@ -990,13 +1001,15 @@ pub(crate) fn spawn_workbench_export_node(
     });
     entity.observe(
         move |mut event: On<Pointer<Click>>,
-              mut session: ResMut<StudioSession>,
+              mut shell: ResMut<ShellState>,
+              library: Res<LibraryState>,
+              mut dialogs: ResMut<DialogState>,
               mut invalidated: ResMut<UiInvalidated>,
               lists: Query<(&ComputedNode, &UiGlobalTransform), With<LibrarySongList>>| {
             event.propagate(false);
             match event.button {
                 PointerButton::Primary => {
-                    session.notice = Some(
+                    shell.notice = Some(
                         match app_core::inspect_export_node(&file_hash_owned, kind) {
                             Ok(inspection) => {
                                 let dest = inspection
@@ -1016,15 +1029,15 @@ pub(crate) fn spawn_workbench_export_node(
                             Err(error) => error,
                         },
                     );
-                    session.analysis_export_context = None;
+                    dialogs.analysis_export_context = None;
                 }
                 PointerButton::Secondary => {
                     let menu_position = analysis_context_menu_position(
                         event.pointer_location.position,
-                        session.library_scroll_offset,
+                        library.library_scroll_offset,
                         &lists,
                     );
-                    session.analysis_export_context = Some(AnalysisExportContextMenu {
+                    dialogs.analysis_export_context = Some(AnalysisExportContextMenu {
                         file_hash: file_hash_owned.clone(),
                         kind,
                         label: title_owned.clone(),
@@ -1033,7 +1046,7 @@ pub(crate) fn spawn_workbench_export_node(
                 }
                 PointerButton::Middle => return,
             }
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         },
     );
 }
@@ -1047,7 +1060,7 @@ pub(crate) fn spawn_analysis_export_context_menu(
     let inspection = app_core::inspect_export_node(&context.file_hash, context.kind).ok();
     parent.spawn((
         Button,
-        UiAction::DismissAnalysisExportContext,
+        UiAction::from(AnalysisCommand::DismissAnalysisExportContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -1102,7 +1115,10 @@ pub(crate) fn spawn_analysis_export_context_menu(
                 theme,
                 "Validate export",
                 11.0,
-                UiAction::ValidateExportNode(context.file_hash.clone(), context.kind),
+                UiAction::from(AnalysisCommand::ValidateExportNode(
+                    context.file_hash.clone(),
+                    context.kind,
+                )),
             );
             spawn_text_button(
                 menu,
@@ -1112,10 +1128,10 @@ pub(crate) fn spawn_analysis_export_context_menu(
                 11.0,
                 match context.kind {
                     app_core::ExportPackageKind::Utz => {
-                        UiAction::ExportUtz(context.file_hash.clone())
+                        UiAction::from(LibraryCommand::ExportUtz(context.file_hash.clone()))
                     }
                     app_core::ExportPackageKind::UltraStar => {
-                        UiAction::ExportUltraStar(context.file_hash.clone())
+                        UiAction::from(LibraryCommand::ExportUltraStar(context.file_hash.clone()))
                     }
                 },
             );
@@ -1129,7 +1145,10 @@ pub(crate) fn spawn_analysis_export_context_menu(
                     theme,
                     "Reveal last export",
                     11.0,
-                    UiAction::RevealLastExport(context.file_hash.clone(), context.kind),
+                    UiAction::from(AnalysisCommand::RevealLastExport(
+                        context.file_hash.clone(),
+                        context.kind,
+                    )),
                 );
             }
             spawn_text_button(
@@ -1138,7 +1157,9 @@ pub(crate) fn spawn_analysis_export_context_menu(
                 theme,
                 "Export documentation",
                 11.0,
-                UiAction::OpenDocumentation(Some("guide:export".to_string())),
+                UiAction::from(AppCommand::OpenDocumentation(Some(
+                    "guide:export".to_string(),
+                ))),
             );
         });
 }
@@ -1156,7 +1177,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
 
     parent.spawn((
         Button,
-        UiAction::DismissAnalysisArtifactContext,
+        UiAction::from(AnalysisCommand::DismissAnalysisArtifactContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -1214,7 +1235,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Play",
                     11.0,
-                    UiAction::PlayArtifactRevision(revision.path.clone()),
+                    UiAction::from(LibraryCommand::PlayArtifactRevision(revision.path.clone())),
                 );
             } else {
                 spawn_text_button(
@@ -1223,7 +1244,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Preview",
                     11.0,
-                    UiAction::PreviewArtifactRevision(revision.path.clone()),
+                    UiAction::from(AnalysisCommand::PreviewArtifactRevision(
+                        revision.path.clone(),
+                    )),
                 );
             }
 
@@ -1240,7 +1263,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Open in compatible editor…",
                     11.0,
-                    UiAction::OpenArtifactCompatibleEditor(context.reference.clone()),
+                    UiAction::from(AnalysisCommand::OpenArtifactCompatibleEditor(
+                        context.reference.clone(),
+                    )),
                 );
             }
 
@@ -1254,7 +1279,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Set Active…",
                     11.0,
-                    UiAction::SetActiveArtifactRevision(revision.clone()),
+                    UiAction::from(AnalysisCommand::SetActiveArtifactRevision(revision.clone())),
                 );
             }
             if !revision.active
@@ -1267,10 +1292,10 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Compare with Active…",
                     11.0,
-                    UiAction::CompareArtifactRevisions(
+                    UiAction::from(AnalysisCommand::CompareArtifactRevisions(
                         revision.clone(),
                         artifact_ref_from_revision(&active),
-                    ),
+                    )),
                 );
             }
             if revision.kind == app_core::ArtifactKind::CandidateChart
@@ -1285,10 +1310,10 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Compare with Authored…",
                     11.0,
-                    UiAction::CompareArtifactRevisions(
+                    UiAction::from(AnalysisCommand::CompareArtifactRevisions(
                         revision.clone(),
                         artifact_ref_from_revision(&authored),
-                    ),
+                    )),
                 );
                 let candidate_ref = artifact_ref_from_revision(revision);
                 let authored_ref = artifact_ref_from_revision(&authored);
@@ -1312,11 +1337,11 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                         theme,
                         label,
                         11.0,
-                        UiAction::MergeCandidateChart(
+                        UiAction::from(AnalysisCommand::MergeCandidateChart(
                             candidate_ref.clone(),
                             authored_ref.clone(),
                             mode,
-                        ),
+                        )),
                     );
                 }
                 spawn_text_button(
@@ -1325,10 +1350,10 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Merge selected phrase…",
                     11.0,
-                    UiAction::MergeSelectedCandidatePhrase(
+                    UiAction::from(AnalysisCommand::MergeSelectedCandidatePhrase(
                         candidate_ref.clone(),
                         authored_ref.clone(),
-                    ),
+                    )),
                 );
                 spawn_text_button(
                     menu,
@@ -1336,10 +1361,10 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Merge selected note range…",
                     11.0,
-                    UiAction::MergeSelectedCandidateRange(
+                    UiAction::from(AnalysisCommand::MergeSelectedCandidateRange(
                         candidate_ref.clone(),
                         authored_ref.clone(),
-                    ),
+                    )),
                 );
                 spawn_text_button(
                     menu,
@@ -1347,7 +1372,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Replace Authored with this candidate…",
                     11.0,
-                    UiAction::RequestReplaceAuthoredChart(revision.file_hash.clone()),
+                    UiAction::from(AnalysisCommand::RequestReplaceAuthoredChart(
+                        revision.file_hash.clone(),
+                    )),
                 );
                 spawn_text_button(
                     menu,
@@ -1355,7 +1382,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Keep Authored",
                     11.0,
-                    UiAction::KeepAuthoredChart,
+                    UiAction::from(AnalysisCommand::KeepAuthoredChart),
                 );
             }
 
@@ -1365,7 +1392,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 if inspection.pinned { "Unpin" } else { "Pin" },
                 11.0,
-                UiAction::ToggleArtifactPinned(context.reference.clone()),
+                UiAction::from(AnalysisCommand::ToggleArtifactPinned(
+                    context.reference.clone(),
+                )),
             );
             spawn_text_button(
                 menu,
@@ -1373,7 +1402,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "Source",
                 11.0,
-                UiAction::ShowArtifactLineage(context.reference.clone()),
+                UiAction::from(AnalysisCommand::ShowArtifactLineage(
+                    context.reference.clone(),
+                )),
             );
             spawn_text_button(
                 menu,
@@ -1381,7 +1412,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "Impact",
                 11.0,
-                UiAction::ShowArtifactImpact(context.reference.clone()),
+                UiAction::from(AnalysisCommand::ShowArtifactImpact(
+                    context.reference.clone(),
+                )),
             );
             spawn_text_button(
                 menu,
@@ -1389,7 +1422,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "Inspect provenance",
                 11.0,
-                UiAction::InspectArtifactProvenance(revision.clone()),
+                UiAction::from(AnalysisCommand::InspectArtifactProvenance(revision.clone())),
             );
             spawn_text_button(
                 menu,
@@ -1397,7 +1430,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "Reveal",
                 11.0,
-                UiAction::RevealArtifactRevision(revision.path.clone()),
+                UiAction::from(AnalysisCommand::RevealArtifactRevision(
+                    revision.path.clone(),
+                )),
             );
             spawn_text_button(
                 menu,
@@ -1405,7 +1440,10 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "About this artifact",
                 11.0,
-                UiAction::OpenDocumentation(Some(format!("artifact:{:?}", revision.kind))),
+                UiAction::from(AppCommand::OpenDocumentation(Some(format!(
+                    "artifact:{:?}",
+                    revision.kind
+                )))),
             );
             if inspection
                 .capabilities
@@ -1417,7 +1455,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Invalidate…",
                     11.0,
-                    UiAction::RequestInvalidateArtifactRevision(revision.clone()),
+                    UiAction::from(AnalysisCommand::RequestInvalidateArtifactRevision(
+                        revision.clone(),
+                    )),
                 );
             }
             if !inspection.pinned {
@@ -1427,7 +1467,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Delete",
                     11.0,
-                    UiAction::RequestDeleteArtifactRevision(revision.clone()),
+                    UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(
+                        revision.clone(),
+                    )),
                 );
             }
         });
@@ -1544,7 +1586,7 @@ pub(crate) fn spawn_artifact_diff_panel(
                                 font,
                                 theme,
                                 "Close",
-                                UiAction::CloseArtifactDiff,
+                                UiAction::from(AnalysisCommand::CloseArtifactDiff),
                             );
                         });
                 });

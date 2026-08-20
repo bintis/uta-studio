@@ -67,7 +67,7 @@ pub(crate) fn spawn_folders(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
@@ -121,7 +121,7 @@ pub(crate) fn spawn_folders(
                     theme,
                     UiIcon::Repeat,
                     "Rescan all",
-                    UiAction::RescanLibrary,
+                    UiAction::from(LibraryCommand::RescanLibrary),
                     false,
                 );
                 spawn_toolbar_button(
@@ -131,7 +131,7 @@ pub(crate) fn spawn_folders(
                     theme,
                     UiIcon::Add,
                     "Add folder",
-                    UiAction::ChooseFolder,
+                    UiAction::from(LibraryCommand::ChooseFolder),
                     false,
                 );
             });
@@ -165,9 +165,13 @@ pub(crate) fn spawn_folders(
                     spawn_text(
                         roots,
                         font.clone(),
-                        format!(
-                            "WATCHED LOCATIONS · {}",
-                            session.config.library_paths().len()
+                        localized_message(
+                            session.config,
+                            UiMessage::WatchedLocations,
+                            &[(
+                                "{count}",
+                                &session.config.library_paths().len().to_string(),
+                            )],
                         ),
                         8.0,
                         theme.muted_foreground,
@@ -196,7 +200,7 @@ pub(crate) fn spawn_folders(
                             .with_children(|row| {
                                 row.spawn((
                                     Button,
-                                    UiAction::SelectFolderRoot(root.clone()),
+                                    UiAction::from(LibraryCommand::SelectFolderRoot(root.clone())),
                                     Node {
                                         min_width: px(0),
                                         height: percent(100),
@@ -228,7 +232,7 @@ pub(crate) fn spawn_folders(
                                     theme,
                                     "×",
                                     13.0,
-                                    UiAction::RequestRemoveFolder(root),
+                                    UiAction::from(LibraryCommand::RequestRemoveFolder(root)),
                                 );
                             });
                     }
@@ -281,7 +285,7 @@ pub(crate) fn spawn_folders(
                             .with_children(|row| {
                                 row.spawn((
                                     Button,
-                                    UiAction::SelectFolderRoot(path.clone()),
+                                    UiAction::from(LibraryCommand::SelectFolderRoot(path.clone())),
                                     Node {
                                         width: percent(100),
                                         min_height: px(52),
@@ -325,7 +329,7 @@ pub(crate) fn spawn_folders(
                         roots
                             .spawn((
                                 Button,
-                                UiAction::ChooseExportFolder,
+                                UiAction::from(LibraryCommand::ChooseExportFolder),
                                 Node {
                                     width: percent(100),
                                     min_height: px(52),
@@ -393,7 +397,7 @@ pub(crate) fn spawn_folders(
                                 icons.clone(),
                                 theme,
                                 UiIcon::ArrowLeft,
-                                UiAction::FolderUp,
+                                UiAction::from(LibraryCommand::FolderUp),
                                 false,
                                 false,
                                 32.0,
@@ -464,7 +468,11 @@ pub(crate) fn spawn_folders(
                                 spawn_wrapped_text(
                                     list,
                                     font.clone(),
-                                    format!("Could not read this folder: {error}"),
+                                    localized_message(
+                                        session.config,
+                                        UiMessage::FolderReadFailed,
+                                        &[("{error}", error)],
+                                    ),
                                     10.0,
                                     theme.destructive,
                                 );
@@ -542,6 +550,11 @@ pub(crate) fn spawn_folder_entry(
     parent
         .spawn((
             Button,
+            UiPointerApi(&[
+                "ui.pointer.folder_entry.primary",
+                "ui.pointer.folder_entry.double_primary",
+                "ui.pointer.folder_entry.secondary",
+            ]),
             Node {
                 width: percent(100),
                 min_height: px(38),
@@ -611,28 +624,29 @@ pub(crate) fn spawn_folder_entry(
         })
         .observe(
             move |mut event: On<Pointer<Click>>,
-                  mut session: ResMut<StudioSession>,
+                  mut shell: ResMut<ShellState>,
+                  mut library: ResMut<LibraryState>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
                 match event.button {
                     PointerButton::Primary => {
                         let path = PathBuf::from(&context_entry.path);
                         if context_entry.kind == "folder" {
-                            session.folder_browser.current = Some(path);
-                            session.folder_browser.context_menu = None;
-                            session.folder_browser.refresh();
-                            session.notice = None;
+                            library.folder_browser.current = Some(path);
+                            library.folder_browser.context_menu = None;
+                            library.folder_browser.refresh();
+                            shell.notice = None;
                         } else if event.count >= 2 {
-                            session.notice = Some(open_library_entry(&path, &session.config));
+                            shell.notice = Some(open_library_entry(&path, &shell.config));
                         }
-                        invalidated.0 = true;
+                        invalidated.invalidate(UiDirtyRegion::Library);
                     }
                     PointerButton::Secondary => {
-                        session.folder_browser.context_menu = Some(FolderContextMenu {
+                        library.folder_browser.context_menu = Some(FolderContextMenu {
                             entry: context_entry.clone(),
                             position: event.pointer_location.position,
                         });
-                        invalidated.0 = true;
+                        invalidated.invalidate(UiDirtyRegion::Library);
                     }
                     PointerButton::Middle => {}
                 }
@@ -648,7 +662,7 @@ pub(crate) fn spawn_folder_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissFolderContext,
+        UiAction::from(LibraryCommand::DismissFolderContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -697,7 +711,9 @@ pub(crate) fn spawn_folder_context_menu(
                     "Open"
                 },
                 11.0,
-                UiAction::OpenFolderEntry(PathBuf::from(&context.entry.path)),
+                UiAction::from(LibraryCommand::OpenFolderEntry(PathBuf::from(
+                    &context.entry.path,
+                ))),
             );
             spawn_text_button(
                 menu,
@@ -705,7 +721,9 @@ pub(crate) fn spawn_folder_context_menu(
                 theme,
                 "Reveal in folder",
                 11.0,
-                UiAction::RevealFolderEntry(PathBuf::from(&context.entry.path)),
+                UiAction::from(LibraryCommand::RevealFolderEntry(PathBuf::from(
+                    &context.entry.path,
+                ))),
             );
         });
 }
@@ -766,7 +784,7 @@ pub(crate) fn spawn_remove_folder_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelRemoveFolder,
+                            UiAction::from(LibraryCommand::CancelRemoveFolder),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -781,7 +799,7 @@ pub(crate) fn spawn_remove_folder_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmRemoveFolder,
+                            UiAction::from(LibraryCommand::ConfirmRemoveFolder),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -830,10 +848,10 @@ pub(crate) fn folder_entry_color(kind: &str, theme: &StudioTheme) -> Color {
 
 pub(crate) fn handle_folder_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    shell: Res<ShellState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<FolderEntryList>>,
 ) {
-    if session.route != StudioRoute::Folders {
+    if shell.route != StudioRoute::Folders {
         return;
     }
     let Ok((computed, mut position)) = lists.single_mut() else {

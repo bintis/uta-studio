@@ -1,6 +1,19 @@
 //! Editor audition: chart loading and native audio transport.
 
-use crate::studio::*;
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::Instant,
+};
+
+use bevy::prelude::{Res, ResMut, Time, default};
+
+use crate::studio::{
+    session::{NativeAudio, NativePitchAudition, StudioRoute},
+    state::{AsyncJobs, EditorUiState, ShellState},
+    ui_invalidation::{UiDirtyRegion, UiInvalidated},
+};
+
+use super::state::{EditorAudioSyncTimer, NativeEditor, NativeEditorLoadJob, WaveformSource};
 
 pub(crate) fn start_editor_load_job(
     file_hash: &str,
@@ -62,42 +75,40 @@ pub(crate) fn start_editor_merge_load_job(
 }
 
 pub(crate) fn poll_editor_load_job(
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut editor_state: ResMut<EditorUiState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    let result = session
-        .editor_load_job
-        .receiver
-        .as_ref()
-        .and_then(|receiver| {
-            receiver
-                .lock()
-                .ok()
-                .and_then(|receiver| match receiver.try_recv() {
-                    Ok(result) => Some(result),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        Some(Err("Chart editor loader exited unexpectedly.".to_string()))
-                    }
-                })
-        });
+    let result = jobs.editor_load_job.receiver.as_ref().and_then(|receiver| {
+        receiver
+            .lock()
+            .ok()
+            .and_then(|receiver| match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Chart editor loader exited unexpectedly.".to_string()))
+                }
+            })
+    });
     let Some(result) = result else {
         return;
     };
-    session.editor_load_job.receiver = None;
+    jobs.editor_load_job.receiver = None;
     match result {
         Ok(editor) => {
             bevy::log::info!("Switching the native UI to the loaded chart editor");
             let audio_notice = editor.audio_status.error.as_ref().map(|error| {
                 format!("Chart editing is available, but native audio is unavailable: {error}")
             });
-            session.editor = Some(editor);
-            session.route = StudioRoute::Editor;
-            session.notice = audio_notice;
+            editor_state.editor = Some(editor);
+            shell.route = StudioRoute::Editor;
+            shell.notice = audio_notice;
         }
-        Err(error) => session.notice = Some(error),
+        Err(error) => shell.notice = Some(error),
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 pub(crate) fn load_native_editor(
@@ -226,16 +237,17 @@ pub(crate) fn sync_editor_audio(
     mut timer: ResMut<EditorAudioSyncTimer>,
     audio: Res<NativeAudio>,
     tones: Res<NativePitchAudition>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut editor_state: ResMut<EditorUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if session.route != StudioRoute::Editor {
+    if shell.route != StudioRoute::Editor {
         return;
     }
     let mut status_error = None;
     let mut audition_finished = false;
     {
-        let Some(editor) = session.editor.as_mut() else {
+        let Some(editor) = editor_state.editor.as_mut() else {
             return;
         };
         if timer.0.tick(time.delta()).just_finished() {
@@ -276,13 +288,13 @@ pub(crate) fn sync_editor_audio(
         {
             editor.viewport_start =
                 (editor.visible_position - editor.viewport_duration * 0.28).max(0.0);
-            invalidated.0 = true;
+            invalidated.invalidate(UiDirtyRegion::Editor);
         }
     }
     if audition_finished {
         tones.0.stop();
         if let Ok(status) = audio.0.pause()
-            && let Some(editor) = session.editor.as_mut()
+            && let Some(editor) = editor_state.editor.as_mut()
         {
             editor.visible_position = status.position_secs;
             editor.audio_status = status;
@@ -290,16 +302,16 @@ pub(crate) fn sync_editor_audio(
         }
         // `PlayNoteVocal` may have temporarily switched playback to the
         // vocal stem; put the user's chosen source back now that it's done.
-        let restore = session
+        let restore = editor_state
             .editor
             .as_ref()
             .and_then(|editor| editor.audition_restore_source.clone());
         if let Some(source) = restore
-            && let Some(editor) = session.editor.as_ref()
+            && let Some(editor) = editor_state.editor.as_ref()
         {
             let file_hash = editor.chart.file_hash.clone();
             if let Ok(status) = audio.0.load(&file_hash, &source)
-                && let Some(editor) = session.editor.as_mut()
+                && let Some(editor) = editor_state.editor.as_mut()
             {
                 editor.audio_source = source;
                 editor.audio_status = status;
@@ -307,9 +319,9 @@ pub(crate) fn sync_editor_audio(
                 editor.audition_restore_source = None;
             }
         }
-        invalidated.0 = true;
+        invalidated.invalidate(UiDirtyRegion::Editor);
     }
     if status_error.is_some() {
-        session.notice = status_error;
+        shell.notice = status_error;
     }
 }

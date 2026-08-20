@@ -554,18 +554,13 @@ pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(),
 /// two escape hatches (skip a rerun entirely; or explicitly discard edits
 /// and replace) rather than to select between three different code paths
 /// today -- see `docs/analysis-dag-redesign.md` §6.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub enum ChartUpdatePolicy {
     KeepAuthoredChart,
+    #[default]
     CreateCandidate,
     ReplaceAfterConfirmation,
-}
-
-impl Default for ChartUpdatePolicy {
-    fn default() -> Self {
-        Self::CreateCandidate
-    }
 }
 
 /// Phase 5 §5.4 "查看 Candidate 与 Authored Chart 的摘要差异": counts, not a

@@ -1,4 +1,3 @@
-use super::*;
 mod play_artifact_revision_tests {
     //! §7.6 "Play audio artifact". `play_artifact_revision` itself drives
     //! real playback hardware once past the existence check, which is out

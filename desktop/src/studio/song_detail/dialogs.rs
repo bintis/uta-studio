@@ -61,7 +61,7 @@ pub(crate) fn spawn_cache_delete_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelDeleteSongCache,
+                            UiAction::from(AnalysisCommand::CancelDeleteSongCache),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 ..default()
@@ -75,7 +75,7 @@ pub(crate) fn spawn_cache_delete_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmDeleteSongCache,
+                            UiAction::from(AnalysisCommand::ConfirmDeleteSongCache),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -202,7 +202,7 @@ pub(crate) fn spawn_chart_replace_confirmation(
                                 theme,
                                 "Keep my chart",
                                 10.0,
-                                UiAction::KeepAuthoredChart,
+                                UiAction::from(AnalysisCommand::KeepAuthoredChart),
                             );
                             if pinned {
                                 spawn_text(
@@ -219,7 +219,7 @@ pub(crate) fn spawn_chart_replace_confirmation(
                                     theme,
                                     "Replace with candidate",
                                     10.0,
-                                    UiAction::ConfirmReplaceAuthoredChart,
+                                    UiAction::from(AnalysisCommand::ConfirmReplaceAuthoredChart),
                                 );
                             }
                         });
@@ -309,7 +309,7 @@ pub(crate) fn spawn_artifact_delete_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelDeleteArtifactRevision,
+                            UiAction::from(AnalysisCommand::CancelDeleteArtifactRevision),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 ..default()
@@ -323,7 +323,7 @@ pub(crate) fn spawn_artifact_delete_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmDeleteArtifactRevision,
+                            UiAction::from(AnalysisCommand::ConfirmDeleteArtifactRevision),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -427,7 +427,7 @@ pub(crate) fn spawn_artifact_invalidate_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelInvalidateArtifactRevision,
+                            UiAction::from(AnalysisCommand::CancelInvalidateArtifactRevision),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 ..default()
@@ -441,7 +441,7 @@ pub(crate) fn spawn_artifact_invalidate_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmInvalidateArtifactRevision,
+                            UiAction::from(AnalysisCommand::ConfirmInvalidateArtifactRevision),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -534,14 +534,14 @@ pub(crate) fn spawn_artifact_active_confirmation(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::CancelSetActiveArtifactRevision,
+                                UiAction::from(AnalysisCommand::CancelSetActiveArtifactRevision),
                             );
                             spawn_action_button(
                                 actions,
                                 font,
                                 theme,
                                 "Set Active",
-                                UiAction::ConfirmSetActiveArtifactRevision,
+                                UiAction::from(AnalysisCommand::ConfirmSetActiveArtifactRevision),
                             );
                         });
                 });
@@ -551,6 +551,7 @@ pub(crate) fn spawn_artifact_active_confirmation(
 pub(crate) fn spawn_intermediate_capture_confirmation(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    config: &AppConfig,
     theme: &StudioTheme,
     file_hash: &str,
 ) {
@@ -567,9 +568,13 @@ pub(crate) fn spawn_intermediate_capture_confirmation(
         })
         .map(|duration_ms| {
             let pcm_upper_bytes = duration_ms.saturating_mul(48);
-            format!(
-                "Estimated upper bound before FLAC compression: {:.1} MiB.",
-                pcm_upper_bytes as f64 / (1024.0 * 1024.0)
+            localized_message(
+                config,
+                UiMessage::FlacEstimatedUpperBound,
+                &[(
+                    "{size}",
+                    &format!("{:.1}", pcm_upper_bytes as f64 / (1024.0 * 1024.0)),
+                )],
             )
         })
         .unwrap_or_else(|| "Disk use will be measured after preprocessing.".to_string());
@@ -660,7 +665,7 @@ pub(crate) fn spawn_intermediate_capture_confirmation(
                                     theme,
                                     "Disable",
                                     10.0,
-                                    UiAction::ConfirmDisableIntermediateCapture,
+                                    UiAction::from(AnalysisCommand::ConfirmDisableIntermediateCapture),
                                 );
                             }
                             spawn_text_button(
@@ -669,7 +674,7 @@ pub(crate) fn spawn_intermediate_capture_confirmation(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::CancelCaptureIntermediate,
+                                UiAction::from(AnalysisCommand::CancelCaptureIntermediate),
                             );
                             spawn_text_button(
                                 actions,
@@ -677,14 +682,14 @@ pub(crate) fn spawn_intermediate_capture_confirmation(
                                 theme,
                                 "Every run",
                                 10.0,
-                                UiAction::ConfirmCaptureIntermediatePersistent,
+                                UiAction::from(AnalysisCommand::ConfirmCaptureIntermediatePersistent),
                             );
                             spawn_action_button(
                                 actions,
                                 font.clone(),
                                 theme,
                                 "Capture once",
-                                UiAction::ConfirmCaptureIntermediateOnce,
+                                UiAction::from(AnalysisCommand::ConfirmCaptureIntermediateOnce),
                             );
                         });
                 });
@@ -747,7 +752,7 @@ pub(crate) fn spawn_language_editor(
                     dialog
                         .spawn((
                             Button,
-                            UiAction::ToggleLanguagePicker,
+                            UiAction::from(EditorCommand::ToggleLanguagePicker),
                             Node {
                                 width: percent(100),
                                 height: px(40),
@@ -816,7 +821,7 @@ pub(crate) fn spawn_language_editor(
                                     options
                                         .spawn((
                                             Button,
-                                            UiAction::SelectAnalysisLanguage((*code).into()),
+                                            UiAction::from(EditorCommand::SelectAnalysisLanguage((*code).into())),
                                             Node {
                                                 width: percent(100),
                                                 min_height: px(30),
@@ -873,7 +878,7 @@ pub(crate) fn spawn_language_editor(
                             "Action: realign current lyrics"
                         },
                         10.0,
-                        UiAction::ToggleLanguageReprocess,
+                        UiAction::from(EditorCommand::ToggleLanguageReprocess),
                     );
                     if let Some(notice) = notice {
                         spawn_wrapped_text(
@@ -898,14 +903,14 @@ pub(crate) fn spawn_language_editor(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::CloseLanguageEditor,
+                                UiAction::from(EditorCommand::CloseLanguageEditor),
                             );
                             spawn_action_button(
                                 actions,
                                 font,
                                 theme,
                                 "Save & reprocess",
-                                UiAction::SaveLanguageEditor,
+                                UiAction::from(EditorCommand::SaveLanguageEditor),
                             );
                         });
                 });

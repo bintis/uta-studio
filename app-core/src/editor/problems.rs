@@ -184,7 +184,7 @@ fn report_track(document: &EditorDocument, track: usize, problems: &mut Vec<Char
                 note: Some(note.index),
                 lyric: None,
             });
-        } else if note.phrase != previous.phrase && note.start - previous.end < f64::EPSILON {
+        } else if note.phrase != previous.phrase && note.start < previous.end + f64::EPSILON {
             problems.push(ChartProblem {
                 track,
                 kind: ProblemKind::PhrasesTouch,

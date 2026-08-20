@@ -531,6 +531,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -548,6 +551,11 @@ jobs:
           set -euo pipefail
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
           test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+
+      - name: Attest release provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/*
 
       - name: Extract release notes
         shell: bash

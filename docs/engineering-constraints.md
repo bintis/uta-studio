@@ -27,7 +27,7 @@ Avoidable lossy generations are forbidden:
 | Lossless (FLAC, WAV/PCM, AIFF, ALAC, etc.) | FLAC |
 | Lossy (MP3, AAC, Opus, Vorbis, etc.) | MP3 |
 
-Editor audition uses native GStreamer playback through the in-process desktop command boundary and plays the selected source unchanged. Waveform visualization may read authorized local media while playback is stopped. An unsupported container may produce a cached compatibility preview, but it must follow the table and carry the correct MIME type. Exported UTZ/UltraStar assets must be real FLAC or MP3 data, never a renamed file with mismatched bytes.
+Editor audition uses native playback through the in-process desktop command boundary and plays the selected source unchanged. Linux uses GStreamer with the Wayland/PipeWire audio session; Windows uses the system WASAPI output through the embedded Rust decoder. Waveform visualization may read authorized local media while playback is stopped. An unsupported container may produce a cached compatibility preview, but it must follow the table and carry the correct MIME type. Exported UTZ/UltraStar assets must be real FLAC or MP3 data, never a renamed file with mismatched bytes.
 
 ## Feature APIs and diagnostics
 

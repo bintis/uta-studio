@@ -3,6 +3,8 @@
 **/target/
 **/node_modules/
 **/dist/
+/fuzz/artifacts/
+/fuzz/corpus/
 /result
 /result-*
 /.direnv/

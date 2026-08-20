@@ -51,6 +51,7 @@ pub(crate) fn spawn_editor_lyrics(
             ));
             row.spawn((
                 EditorLyricsSurface,
+                UiPointerApi(&["ui.pointer.editor_lane.primary"]),
                 Node {
                     position_type: PositionType::Relative,
                     min_width: px(0),
@@ -84,11 +85,16 @@ pub(crate) fn spawn_editor_lyrics(
                         && editor.visible_position < lyric.end;
                     lane.spawn((
                         Button,
-                        UiAction::SelectEditorWord(
+                        UiAction::from(EditorCommand::SelectEditorWord(
                             lyric.segment,
                             lyric.word,
                             (lyric.start.max(0.0) * 1000.0).round() as u64,
-                        ),
+                        )),
+                        UiPointerApi(&[
+                            "ui.pointer.editor_lyric.primary",
+                            "ui.pointer.editor_lyric.secondary",
+                            "ui.pointer.editor_lyric_drag",
+                        ]),
                         EditorLyricNode { selection },
                         Node {
                             position_type: PositionType::Absolute,
@@ -195,6 +201,7 @@ pub(crate) fn spawn_editor_lyrics(
                             ] {
                                 lyric_node.spawn((
                                     Button,
+                                    UiPointerApi(&["ui.pointer.editor_lyric_resize"]),
                                     EditorLyricResizeHandle { selection, edge },
                                     Node {
                                         position_type: PositionType::Absolute,
@@ -213,13 +220,13 @@ pub(crate) fn spawn_editor_lyrics(
                     })
                     .observe(
                         move |mut event: On<Pointer<Click>>,
-                              mut session: ResMut<StudioSession>,
+                              mut editor_state: ResMut<EditorUiState>,
                               mut invalidated: ResMut<UiInvalidated>| {
                             event.propagate(false);
                             open_lyric_from_click(
                                 &event,
                                 selection,
-                                &mut session,
+                                &mut editor_state,
                                 &mut invalidated,
                             );
                         },
@@ -230,16 +237,16 @@ pub(crate) fn spawn_editor_lyrics(
             })
             .observe(
                 |event: On<Pointer<Click>>,
-                 mut session: ResMut<StudioSession>,
+                 mut editor_state: ResMut<EditorUiState>,
                  mut invalidated: ResMut<UiInvalidated>| {
                     // Individual lyric words stop propagation on their own
                     // click, so only a click on the bare lane reaches here.
                     if event.button != PointerButton::Primary {
                         return;
                     }
-                    if let Some(editor) = session.editor.as_mut() {
+                    if let Some(editor) = editor_state.editor.as_mut() {
                         editor.clear_selection();
-                        invalidated.0 = true;
+                        invalidated.invalidate(UiDirtyRegion::Editor);
                     }
                 },
             );
@@ -252,13 +259,13 @@ pub(crate) fn spawn_editor_lyrics(
 pub(crate) fn open_note_from_click(
     event: &Pointer<Click>,
     note_index: usize,
-    session: &mut StudioSession,
+    state: &mut EditorUiState,
     invalidated: &mut UiInvalidated,
 ) {
     if event.button != PointerButton::Secondary {
         return;
     }
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     // Captured before selecting the note (below) replaces it: a syllable
@@ -274,7 +281,7 @@ pub(crate) fn open_note_from_click(
         position: event.pointer_location.position,
         continue_word,
     });
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 pub(crate) fn spawn_note_context_menu(
@@ -287,7 +294,7 @@ pub(crate) fn spawn_note_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissNoteContext,
+        UiAction::from(EditorCommand::DismissNoteContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -349,7 +356,7 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Continue syllable here",
                     10.0,
-                    UiAction::ExtendLyricOverNote(word, note_index),
+                    UiAction::from(EditorCommand::ExtendLyricOverNote(word, note_index)),
                 );
                 menu.spawn((
                     Node {
@@ -373,7 +380,7 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Edit lyric",
                     10.0,
-                    UiAction::Editor(EditorAction::EditNoteLyric),
+                    UiAction::from(EditorCommand::Editor(EditorAction::EditNoteLyric)),
                 );
             }
             spawn_text_button(
@@ -382,7 +389,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Play pitch",
                 10.0,
-                UiAction::Editor(EditorAction::PlayNotePitch),
+                UiAction::from(EditorCommand::Editor(EditorAction::PlayNotePitch)),
             );
             if editor.chart.audio.vocals.is_some() {
                 spawn_text_button(
@@ -391,7 +398,7 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Play vocal",
                     10.0,
-                    UiAction::Editor(EditorAction::PlayNoteVocal),
+                    UiAction::from(EditorCommand::Editor(EditorAction::PlayNoteVocal)),
                 );
             }
             spawn_text_button(
@@ -400,7 +407,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Split note",
                 10.0,
-                UiAction::Editor(EditorAction::SplitSelection),
+                UiAction::from(EditorCommand::Editor(EditorAction::SplitSelection)),
             );
             if count > 1 {
                 spawn_text_button(
@@ -409,7 +416,7 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Merge into one note",
                     10.0,
-                    UiAction::Editor(EditorAction::MergeSelection),
+                    UiAction::from(EditorCommand::Editor(EditorAction::MergeSelection)),
                 );
             }
             spawn_text_button(
@@ -418,7 +425,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Duplicate",
                 10.0,
-                UiAction::Editor(EditorAction::DuplicateNotes),
+                UiAction::from(EditorCommand::Editor(EditorAction::DuplicateNotes)),
             );
             spawn_text_button(
                 menu,
@@ -426,7 +433,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Copy",
                 10.0,
-                UiAction::Editor(EditorAction::CopyNotes),
+                UiAction::from(EditorCommand::Editor(EditorAction::CopyNotes)),
             );
             spawn_text_button(
                 menu,
@@ -434,7 +441,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Quantize",
                 10.0,
-                UiAction::Editor(EditorAction::QuantizeNotes),
+                UiAction::from(EditorCommand::Editor(EditorAction::QuantizeNotes)),
             );
             spawn_text_button(
                 menu,
@@ -442,7 +449,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Unbind from lyric",
                 10.0,
-                UiAction::Editor(EditorAction::UnbindSelection),
+                UiAction::from(EditorCommand::Editor(EditorAction::UnbindSelection)),
             );
             if let (Some(candidate), Some(authored)) = (
                 app_core::load_active_artifact(
@@ -471,10 +478,10 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Replace this phrase from candidate",
                     10.0,
-                    UiAction::MergeSelectedCandidatePhrase(
+                    UiAction::from(AnalysisCommand::MergeSelectedCandidatePhrase(
                         candidate_ref.clone(),
                         authored_ref.clone(),
-                    ),
+                    )),
                 );
                 spawn_text_button(
                     menu,
@@ -482,7 +489,10 @@ pub(crate) fn spawn_note_context_menu(
                     theme,
                     "Replace selected notes from candidate",
                     10.0,
-                    UiAction::MergeSelectedCandidateRange(candidate_ref, authored_ref),
+                    UiAction::from(AnalysisCommand::MergeSelectedCandidateRange(
+                        candidate_ref,
+                        authored_ref,
+                    )),
                 );
             }
             menu.spawn((
@@ -509,7 +519,7 @@ pub(crate) fn spawn_note_context_menu(
                     &kind.label().replace('_', " "),
                     current_kind == Some(kind),
                     true,
-                    UiAction::SetNoteKind(kind),
+                    UiAction::from(EditorCommand::SetNoteKind(kind)),
                 );
             }
             menu.spawn((
@@ -526,7 +536,7 @@ pub(crate) fn spawn_note_context_menu(
                 theme,
                 "Delete",
                 10.0,
-                UiAction::Editor(EditorAction::DeleteSelection),
+                UiAction::from(EditorCommand::Editor(EditorAction::DeleteSelection)),
             );
         });
 }
@@ -537,13 +547,13 @@ pub(crate) fn spawn_note_context_menu(
 pub(crate) fn open_lyric_from_click(
     event: &Pointer<Click>,
     selection: WordSelection,
-    session: &mut StudioSession,
+    state: &mut EditorUiState,
     invalidated: &mut UiInvalidated,
 ) {
     if event.button != PointerButton::Secondary {
         return;
     }
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     if editor.selected_word != Some(selection) && !editor.selected_words.contains(&selection) {
@@ -552,7 +562,7 @@ pub(crate) fn open_lyric_from_click(
     editor.lyric_context = Some(LyricContextMenu {
         position: event.pointer_location.position,
     });
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 pub(crate) fn spawn_lyric_context_menu(
@@ -565,7 +575,7 @@ pub(crate) fn spawn_lyric_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissLyricContext,
+        UiAction::from(EditorCommand::DismissLyricContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -623,7 +633,7 @@ pub(crate) fn spawn_lyric_context_menu(
                     "Merge with next word"
                 },
                 10.0,
-                UiAction::Editor(EditorAction::MergeLyrics),
+                UiAction::from(EditorCommand::Editor(EditorAction::MergeLyrics)),
             );
             spawn_text_button(
                 menu,
@@ -631,7 +641,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 theme,
                 "Split word",
                 10.0,
-                UiAction::Editor(EditorAction::SplitLyrics),
+                UiAction::from(EditorCommand::Editor(EditorAction::SplitLyrics)),
             );
             spawn_text_button(
                 menu,
@@ -639,7 +649,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 theme,
                 "Split into syllables",
                 10.0,
-                UiAction::Editor(EditorAction::SyllabizeLyrics),
+                UiAction::from(EditorCommand::Editor(EditorAction::SyllabizeLyrics)),
             );
             menu.spawn((
                 Node {
@@ -655,7 +665,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 theme,
                 "Bind to nearest note",
                 10.0,
-                UiAction::Editor(EditorAction::BindNearest),
+                UiAction::from(EditorCommand::Editor(EditorAction::BindNearest)),
             );
             if word_count == 1
                 && let Some(word) = editor.selected_word
@@ -667,7 +677,7 @@ pub(crate) fn spawn_lyric_context_menu(
                     theme,
                     "Extend onto next note",
                     10.0,
-                    UiAction::ExtendLyricOverNote(word, next_note),
+                    UiAction::from(EditorCommand::ExtendLyricOverNote(word, next_note)),
                 );
             }
             spawn_text_button(
@@ -676,7 +686,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 theme,
                 "Unbind from note",
                 10.0,
-                UiAction::Editor(EditorAction::UnbindSelection),
+                UiAction::from(EditorCommand::Editor(EditorAction::UnbindSelection)),
             );
             menu.spawn((
                 Node {
@@ -692,7 +702,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 theme,
                 "Delete",
                 10.0,
-                UiAction::Editor(EditorAction::DeleteLyrics),
+                UiAction::from(EditorCommand::Editor(EditorAction::DeleteLyrics)),
             );
         });
 }
@@ -763,21 +773,25 @@ pub(crate) fn spawn_editor_binding_guide(
     ));
 }
 
+type EditorAlignmentGuides<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut Node,
+    (
+        With<EditorAlignmentGuide>,
+        Without<EditorNoteNode>,
+        Without<EditorLyricNode>,
+    ),
+>;
+
 pub(crate) fn update_editor_geometry(
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     capture: Res<EditorPointerCapture>,
     mut note_nodes: Query<(&EditorNoteNode, &mut Node)>,
     mut lyric_nodes: Query<(&EditorLyricNode, &mut Node), Without<EditorNoteNode>>,
-    mut alignment_guides: Query<
-        &mut Node,
-        (
-            With<EditorAlignmentGuide>,
-            Without<EditorNoteNode>,
-            Without<EditorLyricNode>,
-        ),
-    >,
+    mut alignment_guides: EditorAlignmentGuides,
 ) {
-    let Some(editor) = session.editor.as_ref() else {
+    let Some(editor) = state.editor.as_ref() else {
         return;
     };
     let notes = chart_notes(&editor.document);
@@ -826,11 +840,11 @@ pub(crate) fn update_editor_geometry(
 }
 
 pub(crate) fn update_editor_playhead(
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     mut playheads: Query<&mut Node, With<EditorPlayhead>>,
     mut clocks: Query<&mut Text, With<EditorClockText>>,
 ) {
-    let Some(editor) = session.editor.as_ref() else {
+    let Some(editor) = state.editor.as_ref() else {
         return;
     };
     let position = time_percent(editor.visible_position, editor);
@@ -851,7 +865,7 @@ pub(crate) fn update_editor_playhead(
 /// uses for notes, lyrics, and the alignment guide. No world-space
 /// transform math.
 pub(crate) fn update_editor_binding_guides(
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     mut guides: Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>,
 ) {
     let hide =
@@ -860,7 +874,7 @@ pub(crate) fn update_editor_binding_guides(
                 node.display = Display::None;
             }
         };
-    let Some(editor) = session.editor.as_ref() else {
+    let Some(editor) = state.editor.as_ref() else {
         hide(&mut guides);
         return;
     };

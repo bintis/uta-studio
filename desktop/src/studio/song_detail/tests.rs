@@ -256,3 +256,72 @@ mod music_analysis_row_copy_tests {
         assert!(copy.contains("-12.4"));
     }
 }
+
+#[cfg(test)]
+mod view_song_analysis_tests {
+    use super::{completed_analysis_run_id, view_song_analysis_action};
+    use crate::studio::{AnalysisCommand, UiAction};
+    use app_core::{AnalysisProgressSnapshot, AnalysisRunHistory};
+
+    fn run(id: i64, file_hash: &str, status: &str) -> AnalysisRunHistory {
+        AnalysisRunHistory {
+            id,
+            file_hash: file_hash.to_string(),
+            title: "Test Song".to_string(),
+            artist: "Test Artist".to_string(),
+            status: status.to_string(),
+            started_at_ms: id * 100,
+            finished_at_ms: id * 100 + 50,
+            error_message: None,
+            snapshot: AnalysisProgressSnapshot {
+                stage: "complete".to_string(),
+                stage_progress: 100,
+                operation: String::new(),
+                detail: String::new(),
+                implementation: String::new(),
+                model: String::new(),
+                device: String::new(),
+                requested_device: String::new(),
+                fallback_from: None,
+                fallback_reason: None,
+                backend_fallback_from: None,
+                backend_fallback_reason: None,
+                stage_routes: Vec::new(),
+                node_id: None,
+                node_event: None,
+                artifact_reused_reason: None,
+            },
+        }
+    }
+
+    #[test]
+    fn song_detail_analysis_button_targets_the_clicked_song() {
+        assert_eq!(
+            view_song_analysis_action("song-a"),
+            UiAction::from(AnalysisCommand::OpenSongAnalysis("song-a".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicked_song_selects_its_newest_completed_analysis() {
+        let history = vec![
+            run(3, "song-a", "failed"),
+            run(2, "song-b", "completed"),
+            run(1, "song-a", "completed"),
+        ];
+
+        assert_eq!(completed_analysis_run_id(&history, "song-a"), Some(1));
+        assert_eq!(completed_analysis_run_id(&history, "song-b"), Some(2));
+    }
+
+    #[test]
+    fn clicked_song_does_not_open_an_unrelated_or_failed_analysis() {
+        let history = vec![
+            run(3, "song-a", "failed"),
+            run(2, "song-b", "completed"),
+        ];
+
+        assert_eq!(completed_analysis_run_id(&history, "song-a"), None);
+        assert_eq!(completed_analysis_run_id(&history, "missing"), None);
+    }
+}

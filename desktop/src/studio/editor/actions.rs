@@ -9,9 +9,37 @@
 //! the lane, opening a dock menu, jumping to a chart problem — stays on
 //! [`UiAction`] and is dispatched here alongside the registry actions.
 
-use app_core::{EditorActionDef, editor_action, editor_action_for_chord};
+use std::{collections::BTreeSet, time::Instant};
 
-use crate::studio::*;
+use app_core::{EditorActionDef, editor_action};
+use bevy::prelude::{ChildSpawnerCommands, Font, Handle};
+
+use crate::{
+    studio::{
+        commands::{EditorCommand, UiAction},
+        state::{DialogState, EditorUiState, ShellState},
+        ui_invalidation::{UiDirtyRegion, UiInvalidated},
+        widgets::{format_duration, spawn_action_button},
+    },
+    theme::StudioTheme,
+};
+
+use super::{
+    audition::toggle_editor_playback,
+    commands::{
+        add_lyric_to_editor_note, adjust_editor_word_boundary, bind_nearest_editor_selection,
+        copy_chart_notes, cycle_chart_note_kinds, delete_editor_words, insert_chart_note,
+        insert_editor_word, merge_chart_notes, merge_editor_phrase, merge_editor_word,
+        merge_selected_editor_words, move_chart_note, paste_chart_notes, quantize_chart_notes,
+        remove_chart_notes, repair_editor_chart, resize_chart_note, save_editor_chart,
+        shift_all_chart_timings, shift_chart_notes, shift_editor_word, split_chart_notes,
+        split_editor_phrase, split_selected_editor_words, unbind_editor_selection,
+    },
+    state::{
+        BindAlignment, NativeEditor, TapSession, WordSelection, all_editor_word_selections,
+        chart_lyrics, chart_notes, format_snap_grid, selected_editor_word, set_editor_pitch_span,
+    },
+};
 
 macro_rules! editor_actions {
     ($($variant:ident => $command:literal,)*) => {
@@ -159,7 +187,13 @@ pub(crate) fn spawn_editor_action_button(
         Some(chord) => format!("{label}  ·  {chord}"),
         None => label.to_string(),
     };
-    spawn_action_button(parent, font, theme, label, UiAction::Editor(action));
+    spawn_action_button(
+        parent,
+        font,
+        theme,
+        label,
+        UiAction::from(EditorCommand::Editor(action)),
+    );
 }
 
 /// Everything a command needs from the app: the chart under edit, the audio
@@ -169,15 +203,17 @@ pub(crate) struct EditorActionContext<'a> {
     /// The independent tone stream used by pitch audition. It never touches
     /// the song audio.
     pub(crate) tones: &'a uta_studio_audio::PitchAudition,
-    pub(crate) session: &'a mut StudioSession,
+    pub(crate) shell: &'a mut ShellState,
+    pub(crate) editor: &'a mut EditorUiState,
+    pub(crate) dialogs: &'a mut DialogState,
     pub(crate) invalidated: &'a mut UiInvalidated,
 }
 
 impl EditorActionContext<'_> {
     /// Seeks without changing whether the user was listening, as the editor
     /// interaction rules require.
-    fn seek(&mut self, target: f64) {
-        let Some(editor) = self.session.editor.as_mut() else {
+    pub(crate) fn seek(&mut self, target: f64) {
+        let Some(editor) = self.editor.editor.as_mut() else {
             return;
         };
         let was_playing = editor.audio_status.playing;
@@ -189,9 +225,9 @@ impl EditorActionContext<'_> {
                 editor.visible_position = status.position_secs;
                 editor.audio_status = status;
                 editor.last_audio_sync = Instant::now();
-                self.session.notice = None;
+                self.shell.notice = None;
             }
-            Err(error) => self.session.notice = Some(error),
+            Err(error) => self.shell.notice = Some(error),
         }
     }
 }
@@ -200,7 +236,7 @@ impl EditorActionContext<'_> {
 /// inspector button — arrives here.
 pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
-    if let Some(editor) = ctx.session.editor.as_mut() {
+    if let Some(editor) = ctx.editor.editor.as_mut() {
         editor.lyric_context = None;
         editor.note_context = None;
     }
@@ -249,15 +285,15 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
 /// counterpart explicitly instead of searching for the nearest one.
 fn run_bind_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
         BindNearest => {
             if editor.selected_word.is_none() && editor.selected_note.is_none() {
-                ctx.session.notice =
+                ctx.shell.notice =
                     Some("Select an unpitched lyric or a lyric-less note to bind.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             editor.checkpoint(action.label());
@@ -271,22 +307,22 @@ fn run_bind_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 Some(bound) => {
                     editor.select_only_note(bound);
                     editor.dirty = true;
-                    ctx.session.notice = Some(format!(
+                    ctx.shell.notice = Some(format!(
                         "Bound lyric to note, keeping {} timing.",
                         editor.bind_alignment.label()
                     ));
                 }
                 None => {
                     editor.undo.pop();
-                    ctx.session.notice =
+                    ctx.shell.notice =
                         Some("No unpitched lyric and lyric-less note nearby to bind.".to_string());
                 }
             }
         }
         UnbindSelection => {
             if editor.selected_word.is_none() && editor.selected_note.is_none() {
-                ctx.session.notice = Some("Select a bound note or lyric to unbind.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select a bound note or lyric to unbind.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             editor.checkpoint(action.label());
@@ -298,25 +334,25 @@ fn run_bind_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 Some(freed) => {
                     editor.select_only_word(freed);
                     editor.dirty = true;
-                    ctx.session.notice = Some("Unbound lyric from note.".to_string());
+                    ctx.shell.notice = Some("Unbound lyric from note.".to_string());
                 }
                 None => {
                     editor.undo.pop();
-                    ctx.session.notice =
+                    ctx.shell.notice =
                         Some("This note has no separable pitch and lyric to unbind.".to_string());
                 }
             }
         }
         ToggleBindAlignment => {
             editor.bind_alignment = editor.bind_alignment.toggled();
-            ctx.session.notice = Some(format!(
+            ctx.shell.notice = Some(format!(
                 "Bind will now keep {} timing.",
                 editor.bind_alignment.label()
             ));
         }
         _ => unreachable!(),
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 // -- chart ----------------------------------------------------------------
@@ -325,25 +361,25 @@ fn run_document_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
     match action {
         Save => {
-            if let Some(editor) = ctx.session.editor.as_mut() {
-                ctx.session.notice = Some(save_editor_chart(editor));
-                ctx.invalidated.0 = true;
+            if let Some(editor) = ctx.editor.editor.as_mut() {
+                ctx.shell.notice = Some(save_editor_chart(editor));
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         Undo => {
-            if let Some(label) = ctx.session.editor.as_mut().and_then(NativeEditor::undo) {
-                ctx.session.notice = Some(format!("Undid: {label}."));
-                ctx.invalidated.0 = true;
+            if let Some(label) = ctx.editor.editor.as_mut().and_then(NativeEditor::undo) {
+                ctx.shell.notice = Some(format!("Undid: {label}."));
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         Redo => {
-            if let Some(label) = ctx.session.editor.as_mut().and_then(NativeEditor::redo) {
-                ctx.session.notice = Some(format!("Redid: {label}."));
-                ctx.invalidated.0 = true;
+            if let Some(label) = ctx.editor.editor.as_mut().and_then(NativeEditor::redo) {
+                ctx.shell.notice = Some(format!("Redid: {label}."));
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         RepairChart => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             editor.checkpoint(action.label());
@@ -351,25 +387,25 @@ fn run_document_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if repaired {
                 editor.clear_selection();
                 editor.dirty = true;
-                ctx.session.notice = Some("Applied safe timing repairs.".to_string());
+                ctx.shell.notice = Some("Applied safe timing repairs.".to_string());
             } else {
                 editor.undo.pop();
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         ShiftChartEarlier | ShiftChartLater => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let earlier = action == ShiftChartEarlier;
             editor.checkpoint(action.label());
             shift_all_chart_timings(&mut editor.document, if earlier { -0.01 } else { 0.01 });
             editor.dirty = true;
-            ctx.session.notice = Some(format!(
+            ctx.shell.notice = Some(format!(
                 "Shifted the whole chart by {}10 ms.",
                 if earlier { "−" } else { "+" }
             ));
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         _ => unreachable!("not a chart action"),
     }
@@ -379,7 +415,7 @@ fn run_document_action(action: EditorAction, ctx: &mut EditorActionContext) {
 
 fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     let active = editor.document.active_track_index();
@@ -390,7 +426,7 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
             let index = editor.document.add_track(app_core::TrackRole::Lead);
             editor.clear_selection();
             editor.dirty = true;
-            ctx.session.notice = Some(format!(
+            ctx.shell.notice = Some(format!(
                 "Added track {}. It is saved once it has notes.",
                 index + 1
             ));
@@ -400,10 +436,10 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if editor.document.remove_track(active) {
                 editor.clear_selection();
                 editor.dirty = true;
-                ctx.session.notice = Some("Removed the active track.".to_string());
+                ctx.shell.notice = Some("Removed the active track.".to_string());
             } else {
                 editor.undo.pop();
-                ctx.session.notice = Some("A chart needs at least one track.".to_string());
+                ctx.shell.notice = Some("A chart needs at least one track.".to_string());
             }
         }
         CycleTrackRole => {
@@ -418,7 +454,7 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.checkpoint(action.label());
             if editor.document.set_track_role(active, role) {
                 editor.dirty = true;
-                ctx.session.notice = Some(format!("Track {} is now {}.", active + 1, role.label()));
+                ctx.shell.notice = Some(format!("Track {} is now {}.", active + 1, role.label()));
             } else {
                 editor.undo.pop();
             }
@@ -435,7 +471,7 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.checkpoint(action.label());
             if editor.document.set_track_scoring(active, enabled) {
                 editor.dirty = true;
-                ctx.session.notice = Some(if enabled {
+                ctx.shell.notice = Some(if enabled {
                     "This track is scored.".to_string()
                 } else {
                     "This track is sung but not scored.".to_string()
@@ -451,13 +487,13 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
             let next = (active + 1) % count;
             editor.document.set_active_track(next);
             editor.clear_selection();
-            ctx.session.notice = Some(format!("Editing track {}.", next + 1));
+            ctx.shell.notice = Some(format!("Editing track {}.", next + 1));
         }
         MoveSelectionToNextTrack => {
             if count < 2 {
-                ctx.session.notice =
+                ctx.shell.notice =
                     Some("Add a second track before moving notes to one.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             move_selection_to_track(action, (active + 1) % count, ctx);
@@ -465,19 +501,23 @@ fn run_track_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         _ => unreachable!("not a track action"),
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 /// Moves the note selection onto another track. This is the path the format
 /// recommends for two voices that would otherwise overlap.
-fn move_selection_to_track(action: EditorAction, target: usize, ctx: &mut EditorActionContext) {
-    let Some(editor) = ctx.session.editor.as_mut() else {
+pub(crate) fn move_selection_to_track(
+    action: EditorAction,
+    target: usize,
+    ctx: &mut EditorActionContext,
+) {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     let selected = editor.selected_note_indices();
     if selected.is_empty() {
-        ctx.session.notice = Some("Select notes to move to another track.".to_string());
-        ctx.invalidated.0 = true;
+        ctx.shell.notice = Some("Select notes to move to another track.".to_string());
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
     editor.checkpoint(action.label());
@@ -485,12 +525,12 @@ fn move_selection_to_track(action: EditorAction, target: usize, ctx: &mut Editor
     if moved > 0 {
         editor.clear_selection();
         editor.dirty = true;
-        ctx.session.notice = Some(format!("Moved {moved} note(s) to track {}.", target + 1));
+        ctx.shell.notice = Some(format!("Moved {moved} note(s) to track {}.", target + 1));
     } else {
         editor.undo.pop();
-        ctx.session.notice = Some("Those notes could not be moved.".to_string());
+        ctx.shell.notice = Some("Those notes could not be moved.".to_string());
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 // -- transport ------------------------------------------------------------
@@ -501,41 +541,40 @@ fn run_transport_action(action: EditorAction, ctx: &mut EditorActionContext) {
         TogglePlayback => {
             // Plain transport leaves ranged audition behind.
             stop_audition(ctx);
-            ctx.session.notice =
-                toggle_editor_playback(ctx.audio, ctx.session.editor.as_mut()).err();
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = toggle_editor_playback(ctx.audio, ctx.editor.editor.as_mut()).err();
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         SeekStart => {
-            if ctx.session.editor.is_some() {
+            if ctx.editor.editor.is_some() {
                 stop_audition(ctx);
                 ctx.seek(0.0);
-                ctx.invalidated.0 = true;
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         SeekEnd => {
-            if let Some(editor) = ctx.session.editor.as_ref() {
+            if let Some(editor) = ctx.editor.editor.as_ref() {
                 let end = editor
                     .audio_status
                     .duration_secs
                     .max(editor.waveform.duration_secs);
                 stop_audition(ctx);
                 ctx.seek(end);
-                ctx.invalidated.0 = true;
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
             }
         }
         StopAudition => {
             stop_audition(ctx);
             let _ = ctx.audio.pause();
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         CycleAuditionMode => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             editor.audition_mode = editor.audition_mode.cycle();
             let mode = editor.audition_mode;
-            ctx.session.notice = Some(format!("Auditioning {} .", mode.label()));
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some(format!("Auditioning {} .", mode.label()));
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         AuditionSelection | AuditionVisible | AuditionBeforeSelection | AuditionAfterSelection => {
             run_range_audition(action, ctx)
@@ -574,24 +613,25 @@ pub(crate) fn audition_range(action: EditorAction, editor: &NativeEditor) -> Opt
 }
 
 fn run_range_audition(action: EditorAction, ctx: &mut EditorActionContext) {
-    let Some(editor) = ctx.session.editor.as_ref() else {
+    let Some(editor) = ctx.editor.editor.as_ref() else {
         return;
     };
     let Some((start, end)) = audition_range(action, editor) else {
-        ctx.session.notice = Some("Select notes to audition them.".to_string());
-        ctx.invalidated.0 = true;
+        ctx.shell.notice = Some("Select notes to audition them.".to_string());
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     };
     if end <= start {
-        ctx.session.notice = Some("That range is empty.".to_string());
-        ctx.invalidated.0 = true;
+        ctx.shell.notice = Some("That range is empty.".to_string());
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
     let mode = editor.audition_mode;
-    let tones = mode
-        .plays_tones()
-        .then(|| pitch_tones(&editor.document, start, end))
-        .unwrap_or_default();
+    let tones = if mode.plays_tones() {
+        pitch_tones(&editor.document, start, end)
+    } else {
+        Default::default()
+    };
     let mut notice = None;
 
     ctx.tones.stop();
@@ -611,11 +651,11 @@ fn run_range_audition(action: EditorAction, ctx: &mut EditorActionContext) {
         let _ = ctx.audio.pause();
         ctx.seek(start);
     }
-    if let Some(editor) = ctx.session.editor.as_mut() {
+    if let Some(editor) = ctx.editor.editor.as_mut() {
         editor.audition_until = Some(end);
         editor.hold_manual_scroll();
     }
-    ctx.session.notice = notice.or_else(|| {
+    ctx.shell.notice = notice.or_else(|| {
         Some(format!(
             "Auditioning {} from {} to {} ({} mode).",
             if action == EditorAction::AuditionVisible {
@@ -628,7 +668,7 @@ fn run_range_audition(action: EditorAction, ctx: &mut EditorActionContext) {
             mode.label()
         ))
     });
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 /// Note targets in a range, positioned relative to its start.
@@ -652,7 +692,7 @@ pub(crate) fn pitch_tones(
 
 pub(crate) fn stop_audition(ctx: &mut EditorActionContext) {
     ctx.tones.stop();
-    if let Some(editor) = ctx.session.editor.as_mut() {
+    if let Some(editor) = ctx.editor.editor.as_mut() {
         editor.audition_until = None;
     }
     restore_audition_source(ctx);
@@ -661,7 +701,7 @@ pub(crate) fn stop_audition(ctx: &mut EditorActionContext) {
 /// Switches playback back to whatever source was active before `PlayNoteVocal`
 /// temporarily loaded the vocal stem, if it did. A no-op the rest of the time.
 fn restore_audition_source(ctx: &mut EditorActionContext) {
-    let Some(editor) = ctx.session.editor.as_ref() else {
+    let Some(editor) = ctx.editor.editor.as_ref() else {
         return;
     };
     let Some(source) = editor.audition_restore_source.clone() else {
@@ -669,7 +709,7 @@ fn restore_audition_source(ctx: &mut EditorActionContext) {
     };
     let file_hash = editor.chart.file_hash.clone();
     if let Ok(status) = ctx.audio.load(&file_hash, &source)
-        && let Some(editor) = ctx.session.editor.as_mut()
+        && let Some(editor) = ctx.editor.editor.as_mut()
     {
         editor.audio_source = source;
         editor.audio_status = status;
@@ -683,11 +723,11 @@ fn restore_audition_source(ctx: &mut EditorActionContext) {
 fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
     if action == ToggleTracks {
-        ctx.session.editor_tracks_open = !ctx.session.editor_tracks_open;
-        ctx.invalidated.0 = true;
+        ctx.editor.editor_tracks_open = !ctx.editor.editor_tracks_open;
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
@@ -703,7 +743,7 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
         ToggleShortcutsPanel => editor.shortcuts_panel_open = !editor.shortcuts_panel_open,
         ToggleLockMode => {
             editor.lock_mode = !editor.lock_mode;
-            ctx.session.notice = Some(if editor.lock_mode {
+            ctx.shell.notice = Some(if editor.lock_mode {
                 "Locked: notes and lyrics can no longer be dragged. Arrow keys still nudge them."
                     .to_string()
             } else {
@@ -712,7 +752,7 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         ToggleBeatGrid => {
             if editor.beats.is_empty() {
-                ctx.session.notice = Some(
+                ctx.shell.notice = Some(
                     "No beat data for this song yet — re-analyze it (Essentia must be installed) to generate a beat grid."
                         .to_string(),
                 );
@@ -749,9 +789,8 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 }
             }
             let Some((start, end)) = span else {
-                ctx.session.notice =
-                    Some("Select notes or lyrics to fit them in view.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select notes or lyrics to fit them in view.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             };
             let padding = ((end - start) * 0.15).max(0.5);
@@ -784,13 +823,13 @@ fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         _ => unreachable!("not a view action"),
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 // -- selection ------------------------------------------------------------
 
 fn run_selection_action(action: EditorAction, ctx: &mut EditorActionContext) {
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
@@ -804,7 +843,7 @@ fn run_selection_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.selected_note = None;
                 editor.selected_notes.clear();
                 editor.word_edit_focus = None;
-                ctx.session.notice = Some(format!("Selected {count} lyric word(s)."));
+                ctx.shell.notice = Some(format!("Selected {count} lyric word(s)."));
             } else {
                 let count = editor.document.note_count();
                 editor.selected_notes = (0..count).collect();
@@ -812,7 +851,7 @@ fn run_selection_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.selected_word = None;
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
-                ctx.session.notice = Some(format!("Selected {count} note(s)."));
+                ctx.shell.notice = Some(format!("Selected {count} note(s)."));
             }
         }
         EditorAction::SelectNextNote | EditorAction::SelectPreviousNote => {
@@ -832,14 +871,14 @@ fn run_selection_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         _ => unreachable!("not a selection action"),
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 // -- notes ----------------------------------------------------------------
 
 /// The note selection, or `None` when no chart is open.
 fn selected_notes(ctx: &EditorActionContext) -> Option<BTreeSet<usize>> {
-    ctx.session
+    ctx.editor
         .editor
         .as_ref()
         .map(NativeEditor::selected_note_indices)
@@ -849,7 +888,7 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
     match action {
         AddNote => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             // Arms the tool instead of inserting immediately: the next
@@ -857,16 +896,16 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             // `handle_editor_pointer_capture`) places the note where the
             // pointer goes down and sizes it to the drag.
             editor.note_insert_armed = true;
-            ctx.session.notice = Some("Click and drag on the canvas to place a note.".to_string());
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some("Click and drag on the canvas to place a note.".to_string());
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         EditNoteLyric => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let Some(note_index) = editor.selected_note else {
-                ctx.session.notice = Some("Select a note to give it a lyric.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select a note to give it a lyric.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             };
             editor.checkpoint(action.label());
@@ -875,24 +914,24 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
                     editor.select_only_word(word);
                     editor.word_edit_focus = Some(word);
                     editor.dirty = true;
-                    ctx.session.notice = Some("Type the syllable, then press Enter.".to_string());
+                    ctx.shell.notice = Some("Type the syllable, then press Enter.".to_string());
                 }
                 None => {
                     editor.undo.pop();
-                    ctx.session.notice = Some(
+                    ctx.shell.notice = Some(
                         "This note already has a lyric — edit it in the lyric lane.".to_string(),
                     );
                 }
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         PlayNotePitch => {
-            let Some(editor) = ctx.session.editor.as_ref() else {
+            let Some(editor) = ctx.editor.editor.as_ref() else {
                 return;
             };
             let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor) else {
-                ctx.session.notice = Some("Select a note to play its pitch.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select a note to play its pitch.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             };
             let tones = pitch_tones(&editor.document, start, end);
@@ -901,21 +940,21 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 Ok(()) => "Playing pitch.".to_string(),
                 Err(error) => format!("Pitch audition is unavailable: {error}"),
             };
-            ctx.session.notice = Some(notice);
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some(notice);
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         PlayNoteVocal => {
-            let Some(editor) = ctx.session.editor.as_ref() else {
+            let Some(editor) = ctx.editor.editor.as_ref() else {
                 return;
             };
             let Some((start, end)) = audition_range(EditorAction::AuditionSelection, editor) else {
-                ctx.session.notice = Some("Select a note to play its vocal.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select a note to play its vocal.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             };
             if editor.chart.audio.vocals.is_none() {
-                ctx.session.notice = Some("This chart has no separate vocal source.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("This chart has no separate vocal source.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             let file_hash = editor.chart.file_hash.clone();
@@ -935,15 +974,15 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 }
             }
             if notice.is_none()
-                && let Some(editor) = ctx.session.editor.as_mut()
+                && let Some(editor) = ctx.editor.editor.as_mut()
             {
                 editor.audio_source = "vocals".to_string();
                 editor.audition_until = Some(end);
                 editor.audition_restore_source = restore;
                 editor.hold_manual_scroll();
             }
-            ctx.session.notice = notice.or_else(|| Some("Playing the vocal.".to_string()));
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = notice.or_else(|| Some("Playing the vocal.".to_string()));
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         DeleteSelection => {
             let Some(selected) = selected_notes(ctx) else {
@@ -954,18 +993,18 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 run_lyric_action(DeleteLyrics, ctx);
                 return;
             }
-            let editor = ctx.session.editor.as_mut().expect("editor");
+            let editor = ctx.editor.editor.as_mut().expect("editor");
             editor.checkpoint(action.label());
             let removed = remove_chart_notes(&mut editor.document, &selected);
             if removed > 0 {
                 editor.selected_note = None;
                 editor.selected_notes.clear();
                 editor.dirty = true;
-                ctx.session.notice = Some(format!("Deleted {removed} note(s)."));
+                ctx.shell.notice = Some(format!("Deleted {removed} note(s)."));
             } else {
                 editor.undo.pop();
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         SplitSelection => {
             let Some(selected) = selected_notes(ctx) else {
@@ -975,69 +1014,68 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 run_lyric_action(SplitLyrics, ctx);
                 return;
             }
-            let editor = ctx.session.editor.as_mut().expect("editor");
+            let editor = ctx.editor.editor.as_mut().expect("editor");
             editor.checkpoint(action.label());
             let next = split_chart_notes(&mut editor.document, &selected, editor.visible_position);
             if next.is_empty() {
                 editor.undo.pop();
-                ctx.session.notice = Some(
+                ctx.shell.notice = Some(
                     "Move the playhead inside the selected note before splitting.".to_string(),
                 );
             } else {
                 editor.selected_note = next.iter().next().copied();
                 editor.selected_notes = next;
                 editor.dirty = true;
-                ctx.session.notice = Some("Split selected note(s).".to_string());
+                ctx.shell.notice = Some("Split selected note(s).".to_string());
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         MergeSelection => {
             let Some(selected) = selected_notes(ctx) else {
                 return;
             };
             if selected.len() < 2 {
-                let editor = ctx.session.editor.as_ref().expect("editor");
+                let editor = ctx.editor.editor.as_ref().expect("editor");
                 if editor.selected_word_indices().is_empty() {
-                    ctx.session.notice = Some("Select at least two notes to merge.".to_string());
-                    ctx.invalidated.0 = true;
+                    ctx.shell.notice = Some("Select at least two notes to merge.".to_string());
+                    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                     return;
                 }
                 run_lyric_action(MergeLyrics, ctx);
                 return;
             }
-            let editor = ctx.session.editor.as_mut().expect("editor");
+            let editor = ctx.editor.editor.as_mut().expect("editor");
             editor.checkpoint(action.label());
             if let Some(index) =
                 merge_chart_notes(&mut editor.document, &selected, editor.selected_note)
             {
                 editor.select_only_note(index);
                 editor.dirty = true;
-                ctx.session.notice = Some("Merged selected notes.".to_string());
+                ctx.shell.notice = Some("Merged selected notes.".to_string());
             } else {
                 editor.undo.pop();
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         QuantizeNotes => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
             if selected.is_empty() || editor.snap_seconds <= 0.0 {
-                ctx.session.notice =
-                    Some("Select notes and enable a timing grid first.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select notes and enable a timing grid first.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             editor.checkpoint(action.label());
             let changed =
                 quantize_chart_notes(&mut editor.document, Some(&selected), editor.snap_seconds);
             editor.dirty |= changed > 0;
-            ctx.session.notice = Some(format!("Quantized {changed} note(s)."));
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some(format!("Quantized {changed} note(s)."));
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         DuplicateNotes => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
@@ -1061,21 +1099,21 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.selected_note = inserted.iter().next().copied();
             editor.selected_notes = inserted;
             editor.dirty = true;
-            ctx.session.notice = Some("Duplicated selected note(s).".to_string());
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some("Duplicated selected note(s).".to_string());
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         CopyNotes => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
             editor.clipboard_notes = copy_chart_notes(&editor.document, &selected);
             let copied = editor.clipboard_notes.len();
-            ctx.session.notice = Some(format!("Copied {copied} note(s)."));
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some(format!("Copied {copied} note(s)."));
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         CutNotes => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
@@ -1088,11 +1126,11 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.selected_note = None;
             editor.selected_notes.clear();
             editor.dirty |= removed > 0;
-            ctx.session.notice = Some(format!("Cut {removed} note(s)."));
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some(format!("Cut {removed} note(s)."));
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         PasteNotes => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             if editor.clipboard_notes.is_empty() {
@@ -1107,11 +1145,11 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.selected_note = inserted.iter().next().copied();
             editor.selected_notes = inserted;
             editor.dirty = true;
-            ctx.session.notice = Some("Pasted note(s) at the playhead.".to_string());
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = Some("Pasted note(s) at the playhead.".to_string());
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         CycleNoteKind => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
@@ -1122,17 +1160,17 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             let changed = cycle_chart_note_kinds(&mut editor.document, &selected);
             if changed > 0 {
                 editor.dirty = true;
-                ctx.session.notice = Some("Changed selected note type(s).".to_string());
+                ctx.shell.notice = Some("Changed selected note type(s).".to_string());
             } else {
                 editor.undo.pop();
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         NudgeEarlier | NudgeLater | ShortenSelection | LengthenSelection => {
             run_nudge_action(action, ctx)
         }
         RaisePitch | LowerPitch | RaisePitchOctave | LowerPitchOctave => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
+            let Some(editor) = ctx.editor.editor.as_mut() else {
                 return;
             };
             let selected = editor.selected_note_indices();
@@ -1148,8 +1186,8 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
             editor.checkpoint(action.label());
             shift_chart_notes(&mut editor.document, &selected, 0.0, semitones, false);
             editor.dirty = true;
-            ctx.session.notice = None;
-            ctx.invalidated.0 = true;
+            ctx.shell.notice = None;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         _ => unreachable!("not a note action"),
     }
@@ -1158,7 +1196,7 @@ fn run_note_action(action: EditorAction, ctx: &mut EditorActionContext) {
 // -- tap to time ----------------------------------------------------------
 
 fn run_tap_action(action: EditorAction, ctx: &mut EditorActionContext) {
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
@@ -1171,7 +1209,7 @@ fn run_tap_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.tap.retimed = 0;
                 editor.tap.holding = None;
                 let queued = editor.tap.remaining();
-                ctx.session.notice = Some(if queued > 0 {
+                ctx.shell.notice = Some(if queued > 0 {
                     format!(
                         "Tap-to-time on. Hold {} while playing to re-time {queued} selected note(s).",
                         tap_key_hint()
@@ -1185,7 +1223,7 @@ fn run_tap_action(action: EditorAction, ctx: &mut EditorActionContext) {
             } else {
                 finish_tap(editor);
                 editor.tap = TapSession::default();
-                ctx.session.notice = Some("Tap-to-time off.".to_string());
+                ctx.shell.notice = Some("Tap-to-time off.".to_string());
             }
         }
         EditorAction::TapNote => {
@@ -1242,7 +1280,7 @@ fn run_tap_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         _ => unreachable!("not a tap action"),
     }
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 /// Closes the note under the finger at the current playhead.
@@ -1275,7 +1313,7 @@ fn run_nudge_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
     let earlier = matches!(action, NudgeEarlier | ShortenSelection);
     let resize = matches!(action, ShortenSelection | LengthenSelection);
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     let step = if editor.snap_seconds > 0.0 {
@@ -1289,8 +1327,8 @@ fn run_nudge_action(action: EditorAction, ctx: &mut EditorActionContext) {
         editor.checkpoint(action.label());
         shift_chart_notes(&mut editor.document, &selected, seconds, 0.0, resize);
         editor.dirty = true;
-        ctx.session.notice = None;
-        ctx.invalidated.0 = true;
+        ctx.shell.notice = None;
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
     let words = editor.selected_word_indices();
@@ -1302,7 +1340,7 @@ fn run_nudge_action(action: EditorAction, ctx: &mut EditorActionContext) {
             .count();
         if moved > 0 {
             editor.dirty = true;
-            ctx.session.notice = Some(format!(
+            ctx.shell.notice = Some(format!(
                 "Moved {moved} lyric word(s) {} by {}.",
                 if earlier { "earlier" } else { "later" },
                 format_snap_grid(step)
@@ -1310,19 +1348,19 @@ fn run_nudge_action(action: EditorAction, ctx: &mut EditorActionContext) {
         } else {
             editor.undo.pop();
         }
-        ctx.invalidated.0 = true;
+        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
     let target = editor.visible_position + if earlier { -2.0 } else { 2.0 };
     ctx.seek(target);
-    ctx.invalidated.0 = true;
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 // -- lyrics ---------------------------------------------------------------
 
 fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
-    let Some(editor) = ctx.session.editor.as_mut() else {
+    let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
@@ -1347,13 +1385,13 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.select_only_word(selection);
                 editor.inspector_open = true;
             } else {
-                ctx.session.notice = Some("This chart has no lyrics yet.".to_string());
+                ctx.shell.notice = Some("This chart has no lyrics yet.".to_string());
             }
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         EditAllLyrics => {
             editor.all_lyrics_editor_open = !editor.all_lyrics_editor_open;
-            ctx.invalidated.0 = true;
+            ctx.invalidated.invalidate(UiDirtyRegion::Editor);
         }
         AddLyric => {
             editor.checkpoint(action.label());
@@ -1366,20 +1404,20 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.word_edit_focus = Some(selection);
                 editor.inspector_open = true;
                 editor.dirty = true;
-                ctx.session.notice = Some(
+                ctx.shell.notice = Some(
                     "Added a lyric word at the playhead. Type in the inspector to replace its text."
                         .to_string(),
                 );
             } else {
                 editor.undo.pop();
-                ctx.session.notice = Some("Could not add a lyric word here.".to_string());
+                ctx.shell.notice = Some("Could not add a lyric word here.".to_string());
             }
         }
         DeleteLyrics => {
             let words = editor.selected_word_indices();
             if words.is_empty() {
-                ctx.session.notice = Some("Select lyric words to delete.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select lyric words to delete.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             editor.checkpoint(action.label());
@@ -1389,25 +1427,24 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
                 editor.dirty = true;
-                ctx.session.notice = Some(format!("Deleted {deleted} lyric word(s)."));
+                ctx.shell.notice = Some(format!("Deleted {deleted} lyric word(s)."));
             } else {
                 editor.undo.pop();
-                ctx.session.notice = Some("Could not delete the lyric selection.".to_string());
+                ctx.shell.notice = Some("Could not delete the lyric selection.".to_string());
             }
         }
         SyllabizeLyrics => {
             let words = editor.selected_word_indices();
             if words.is_empty() {
-                ctx.session.notice =
-                    Some("Select lyric words to split into syllables.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select lyric words to split into syllables.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             }
             editor.checkpoint(action.label());
             let produced = editor.document.syllabize_lyrics(&words);
             if produced.is_empty() {
                 editor.undo.pop();
-                ctx.session.notice = Some(
+                ctx.shell.notice = Some(
                     "Those words are already one syllable, or their notes are too short to divide."
                         .to_string(),
                 );
@@ -1416,7 +1453,7 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 editor.selected_words = produced.iter().copied().collect();
                 editor.word_edit_focus = None;
                 editor.dirty = true;
-                ctx.session.notice = Some(format!("Split into {} syllable(s).", produced.len()));
+                ctx.shell.notice = Some(format!("Split into {} syllable(s).", produced.len()));
             }
         }
         SplitLyrics => {
@@ -1429,14 +1466,14 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 split_selected_editor_words(&mut editor.document, &words, editor.visible_position);
             if next.is_empty() {
                 editor.undo.pop();
-                ctx.session.notice =
+                ctx.shell.notice =
                     Some("The selected lyric words are too short to split.".to_string());
             } else {
                 editor.selected_word = next.iter().next().copied();
                 editor.selected_words = next;
                 editor.word_edit_focus = None;
                 editor.dirty = true;
-                ctx.session.notice = Some("Split selected lyric word(s).".to_string());
+                ctx.shell.notice = Some("Split selected lyric word(s).".to_string());
             }
         }
         MergeLyrics => {
@@ -1456,10 +1493,10 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if let Some(selection) = merged {
                 editor.select_only_word(selection);
                 editor.dirty = true;
-                ctx.session.notice = Some("Merged selected lyric words.".to_string());
+                ctx.shell.notice = Some("Merged selected lyric words.".to_string());
             } else {
                 editor.undo.pop();
-                ctx.session.notice =
+                ctx.shell.notice =
                     Some("Select at least two words from the same phrase to merge.".to_string());
             }
         }
@@ -1482,7 +1519,7 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 .count();
             if moved > 0 {
                 editor.dirty = true;
-                ctx.session.notice = Some(format!(
+                ctx.shell.notice = Some(format!(
                     "Moved {moved} lyric word(s) {} 10 ms.",
                     if earlier { "earlier" } else { "later" }
                 ));
@@ -1509,9 +1546,8 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
         }
         RollLyricsLeft | RollLyricsRight => {
             let Some(selection) = editor.selected_word else {
-                ctx.session.notice =
-                    Some("Select a lyric word in the line to roll it.".to_string());
-                ctx.invalidated.0 = true;
+                ctx.shell.notice = Some("Select a lyric word in the line to roll it.".to_string());
+                ctx.invalidated.invalidate(UiDirtyRegion::Editor);
                 return;
             };
             editor.checkpoint(action.label());
@@ -1520,7 +1556,7 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 .roll_lyrics(selection.segment, action == RollLyricsRight)
             {
                 editor.dirty = true;
-                ctx.session.notice = Some(format!(
+                ctx.shell.notice = Some(format!(
                     "Rolled the line one note {}.",
                     if action == RollLyricsRight {
                         "later"
@@ -1530,7 +1566,7 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
                 ));
             } else {
                 editor.undo.pop();
-                ctx.session.notice =
+                ctx.shell.notice =
                     Some("This line has nothing to roll onto another note.".to_string());
             }
         }
@@ -1542,11 +1578,10 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if let Some(next) = split_editor_phrase(&mut editor.document, selection) {
                 editor.select_only_word(next);
                 editor.dirty = true;
-                ctx.session.notice = Some("Started a new lyric phrase.".to_string());
+                ctx.shell.notice = Some("Started a new lyric phrase.".to_string());
             } else {
                 editor.undo.pop();
-                ctx.session.notice =
-                    Some("Select a word before the end of its phrase.".to_string());
+                ctx.shell.notice = Some("Select a word before the end of its phrase.".to_string());
             }
         }
         MergePhrase => {
@@ -1557,330 +1592,13 @@ fn run_lyric_action(action: EditorAction, ctx: &mut EditorActionContext) {
             if let Some(next) = merge_editor_phrase(&mut editor.document, selection) {
                 editor.select_only_word(next);
                 editor.dirty = true;
-                ctx.session.notice = Some("Joined the following lyric phrase.".to_string());
+                ctx.shell.notice = Some("Joined the following lyric phrase.".to_string());
             } else {
                 editor.undo.pop();
-                ctx.session.notice = Some("There is no following phrase to join.".to_string());
+                ctx.shell.notice = Some("There is no following phrase to join.".to_string());
             }
         }
         _ => unreachable!("not a lyric action"),
     }
-    ctx.invalidated.0 = true;
-}
-
-// -- UI dispatch -----------------------------------------------------------
-
-/// Handles the editor's share of [`UiAction`]. Returns whether the action
-/// belonged to the editor.
-pub(crate) fn handle_editor_ui_action(
-    action: &UiAction,
-    keys: &ButtonInput<KeyCode>,
-    ctx: &mut EditorActionContext,
-) -> bool {
-    match action {
-        UiAction::Editor(action) => run_editor_action(*action, ctx),
-        UiAction::FocusChartProblem(track, millis) => {
-            let target = *millis as f64 / 1000.0;
-            if let Some(editor) = ctx.session.editor.as_mut() {
-                if editor.document.set_active_track(*track) {
-                    editor.clear_selection();
-                }
-                // Centre the problem so its neighbours are visible too.
-                editor.viewport_start = (target - editor.viewport_duration / 2.0).max(0.0);
-                editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-            } else {
-                return true;
-            }
-            ctx.seek(target);
-            ctx.invalidated.0 = true;
-        }
-        UiAction::OpenEditorSelect(kind) => {
-            ctx.session.open_editor_select = if ctx.session.open_editor_select == Some(*kind) {
-                None
-            } else {
-                Some(*kind)
-            };
-            ctx.invalidated.0 = true;
-        }
-        UiAction::SelectEditorValue(kind, value) => {
-            ctx.session.open_editor_select = None;
-            let Some(editor) = ctx.session.editor.as_mut() else {
-                return true;
-            };
-            match kind {
-                EditorDockSelectKind::AudioSource => {
-                    ctx.session.notice = select_editor_audio_source(ctx.audio, editor, value).err();
-                }
-                EditorDockSelectKind::AuditionMode => {
-                    editor.audition_mode = AuditionMode::from_label(value);
-                    ctx.session.notice = None;
-                }
-                EditorDockSelectKind::SnapGrid => {
-                    const GRIDS: [f64; 6] = [0.0, 0.01, 0.025, 0.05, 0.1, 0.25];
-                    match value.parse::<f64>() {
-                        Ok(value) if GRIDS.contains(&value) => {
-                            editor.snap_seconds = value;
-                            ctx.session.notice = None;
-                        }
-                        _ => {
-                            ctx.session.notice =
-                                Some("That timing grid is not supported.".to_string())
-                        }
-                    }
-                }
-            }
-            ctx.invalidated.0 = true;
-        }
-        UiAction::SelectEditorTrack(index) => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
-                return true;
-            };
-            if editor.document.set_active_track(*index) {
-                editor.clear_selection();
-                ctx.session.notice = Some(format!("Editing track {}.", index + 1));
-                ctx.invalidated.0 = true;
-            }
-        }
-        UiAction::MoveSelectionToTrack(index) => {
-            move_selection_to_track(EditorAction::MoveSelectionToNextTrack, *index, ctx);
-        }
-        UiAction::SetNoteKind(kind) => {
-            let Some(editor) = ctx.session.editor.as_mut() else {
-                return true;
-            };
-            let selected = editor.selected_note_indices();
-            if selected.is_empty() {
-                ctx.session.notice = Some("Select a note to change its type.".to_string());
-                ctx.invalidated.0 = true;
-                return true;
-            }
-            editor.checkpoint("Change note type");
-            let changed = editor.document.set_note_kind(&selected, *kind);
-            if changed > 0 {
-                editor.dirty = true;
-                ctx.session.notice = Some(format!("Set to {}.", kind.label().replace('_', " ")));
-            } else {
-                editor.undo.pop();
-            }
-            ctx.invalidated.0 = true;
-        }
-        UiAction::SelectEditorWord(segment, word, position_ms) => {
-            let selection = WordSelection {
-                segment: *segment,
-                word: *word,
-            };
-            let additive = keys.any_pressed([
-                KeyCode::ShiftLeft,
-                KeyCode::ShiftRight,
-                KeyCode::ControlLeft,
-                KeyCode::ControlRight,
-            ]);
-            ctx.seek(*position_ms as f64 / 1000.0);
-            if let Some(editor) = ctx.session.editor.as_mut() {
-                if additive {
-                    if editor.selected_words.remove(&selection) {
-                        editor.selected_word = editor.selected_words.iter().next().copied();
-                    } else {
-                        editor.selected_words.insert(selection);
-                        editor.selected_word = Some(selection);
-                    }
-                    editor.word_edit_focus = None;
-                    editor.selected_note = None;
-                    editor.selected_notes.clear();
-                } else if editor.word_edit_focus == Some(selection) {
-                    editor.select_only_word(selection);
-                    editor.word_edit_focus = Some(selection);
-                } else if editor.selected_words.len() > 1
-                    && editor.selected_words.contains(&selection)
-                {
-                    editor.selected_word = Some(selection);
-                    editor.selected_note = None;
-                    editor.selected_notes.clear();
-                } else {
-                    editor.select_only_word(selection);
-                }
-                editor.inspector_open = true;
-            }
-            ctx.invalidated.0 = true;
-        }
-        _ => return false,
-    }
-    true
-}
-
-// -- keyboard --------------------------------------------------------------
-
-/// Resolves a Bevy key press to the registry's spelling of the key.
-fn chord_key_name(key: KeyCode) -> Option<&'static str> {
-    Some(match key {
-        KeyCode::KeyA => "KeyA",
-        KeyCode::KeyC => "KeyC",
-        KeyCode::KeyD => "KeyD",
-        KeyCode::KeyF => "KeyF",
-        KeyCode::KeyH => "KeyH",
-        KeyCode::KeyL => "KeyL",
-        KeyCode::KeyM => "KeyM",
-        KeyCode::KeyQ => "KeyQ",
-        KeyCode::KeyS => "KeyS",
-        KeyCode::KeyT => "KeyT",
-        KeyCode::KeyV => "KeyV",
-        KeyCode::KeyX => "KeyX",
-        KeyCode::KeyY => "KeyY",
-        KeyCode::KeyZ => "KeyZ",
-        KeyCode::Space => "Space",
-        KeyCode::Tab => "Tab",
-        KeyCode::Escape => "Escape",
-        KeyCode::Delete => "Delete",
-        KeyCode::Backspace => "Backspace",
-        KeyCode::Home => "Home",
-        KeyCode::End => "End",
-        KeyCode::ArrowLeft => "ArrowLeft",
-        KeyCode::ArrowRight => "ArrowRight",
-        KeyCode::ArrowUp => "ArrowUp",
-        KeyCode::ArrowDown => "ArrowDown",
-        _ => return None,
-    })
-}
-
-/// The Bevy key a registry chord names, for the handlers that need to watch a
-/// specific key rather than react to a chord.
-pub(crate) fn chord_key_code(name: &str) -> Option<KeyCode> {
-    CHORD_KEYS
-        .iter()
-        .copied()
-        .find(|key| chord_key_name(*key) == Some(name))
-}
-
-/// Every key the registry can bind. Iterating this instead of the whole
-/// `KeyCode` space keeps the lookup to one pass over pressed keys.
-const CHORD_KEYS: &[KeyCode] = &[
-    KeyCode::KeyA,
-    KeyCode::KeyC,
-    KeyCode::KeyD,
-    KeyCode::KeyF,
-    KeyCode::KeyH,
-    KeyCode::KeyL,
-    KeyCode::KeyM,
-    KeyCode::KeyQ,
-    KeyCode::KeyS,
-    KeyCode::KeyT,
-    KeyCode::KeyV,
-    KeyCode::KeyX,
-    KeyCode::KeyY,
-    KeyCode::KeyZ,
-    KeyCode::Space,
-    KeyCode::Tab,
-    KeyCode::Escape,
-    KeyCode::Delete,
-    KeyCode::Backspace,
-    KeyCode::Home,
-    KeyCode::End,
-    KeyCode::ArrowLeft,
-    KeyCode::ArrowRight,
-    KeyCode::ArrowUp,
-    KeyCode::ArrowDown,
-];
-
-pub(crate) fn handle_editor_keyboard(
-    keys: Res<ButtonInput<KeyCode>>,
-    focus: Res<InputFocus>,
-    editable: Query<(), With<EditableText>>,
-    focusable: Query<(), With<UiAction>>,
-    audio: Res<NativeAudio>,
-    tones: Res<NativePitchAudition>,
-    mut session: ResMut<StudioSession>,
-    mut invalidated: ResMut<UiInvalidated>,
-) {
-    if session.route != StudioRoute::Editor {
-        return;
-    }
-    // Typing in a text field is never a shortcut.
-    if focus.get().is_some_and(|entity| editable.contains(entity)) {
-        return;
-    }
-    // A focused button owns Tab, Enter, and the arrow keys for navigation.
-    let navigating = focus.get().is_some_and(|entity| focusable.contains(entity))
-        && [
-            KeyCode::Tab,
-            KeyCode::Enter,
-            KeyCode::ArrowLeft,
-            KeyCode::ArrowRight,
-            KeyCode::ArrowUp,
-            KeyCode::ArrowDown,
-        ]
-        .iter()
-        .any(|key| keys.just_pressed(*key));
-    if navigating {
-        return;
-    }
-
-    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let Some(action) = CHORD_KEYS
-        .iter()
-        .filter(|key| keys.just_pressed(**key))
-        .filter_map(|key| chord_key_name(*key))
-        .find_map(|key| editor_action_for_chord(key, ctrl, shift))
-        .and_then(|def| EditorAction::from_command(def.command))
-    else {
-        return;
-    };
-    run_editor_action(
-        action,
-        &mut EditorActionContext {
-            audio: &audio.0,
-            tones: &tones.0,
-            session: &mut session,
-            invalidated: &mut invalidated,
-        },
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_registry_entry_has_a_dispatchable_action() {
-        for def in app_core::editor_actions() {
-            let action = EditorAction::from_command(def.command)
-                .unwrap_or_else(|| panic!("`{}` has no dispatch variant", def.command));
-            assert_eq!(action.command(), def.command);
-            assert_eq!(action.label(), def.label);
-        }
-    }
-
-    #[test]
-    fn every_action_has_a_registry_entry() {
-        assert_eq!(EditorAction::ALL.len(), app_core::editor_actions().len());
-        for action in EditorAction::ALL {
-            assert!(!action.label().is_empty());
-        }
-    }
-
-    #[test]
-    fn every_bound_chord_resolves_to_a_key_the_shell_reads() {
-        let readable = CHORD_KEYS
-            .iter()
-            .filter_map(|key| chord_key_name(*key))
-            .collect::<Vec<_>>();
-        for def in app_core::editor_actions() {
-            for chord in def.shortcuts {
-                assert!(
-                    readable.contains(&chord.key),
-                    "`{}` binds {}, which the shell cannot read",
-                    def.command,
-                    chord.describe()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn undo_history_labels_come_from_the_registry() {
-        // The label a command records in history is the label the menu shows.
-        assert_eq!(EditorAction::PasteNotes.label(), "Paste notes");
-        assert_eq!(EditorAction::DeleteSelection.label(), "Delete selection");
-        assert_eq!(EditorAction::Save.shortcut().as_deref(), Some("Ctrl+S"));
-    }
+    ctx.invalidated.invalidate(UiDirtyRegion::Editor);
 }

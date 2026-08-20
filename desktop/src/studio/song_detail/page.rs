@@ -1,13 +1,17 @@
 use super::*;
 use crate::studio::*;
 
+pub(crate) fn view_song_analysis_action(file_hash: &str) -> UiAction {
+    UiAction::from(AnalysisCommand::OpenSongAnalysis(file_hash.to_string()))
+}
+
 pub(crate) fn spawn_song_detail(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
     local_images: &mut LocalImages,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let Some(song) = session.selected_song() else {
@@ -36,7 +40,13 @@ pub(crate) fn spawn_song_detail(
                     11.0,
                     theme.muted_foreground,
                 );
-                spawn_action_button(empty, font, theme, "Back to library", UiAction::Home);
+                spawn_action_button(
+                    empty,
+                    font,
+                    theme,
+                    "Back to library",
+                    UiAction::from(AppCommand::Home),
+                );
             });
         return;
     };
@@ -171,9 +181,9 @@ pub(crate) fn spawn_song_detail(
                                     "Play original"
                                 },
                                 if current {
-                                    UiAction::ToggleLibraryPlayback
+                                    UiAction::from(LibraryCommand::ToggleLibraryPlayback)
                                 } else {
-                                    UiAction::PlayLibrarySong(song.file_hash.clone())
+                                    UiAction::from(LibraryCommand::PlayLibrarySong(song.file_hash.clone()))
                                 },
                             );
                             spawn_song_primary_actions(actions, font.clone(), &song, session, theme);
@@ -182,7 +192,7 @@ pub(crate) fn spawn_song_detail(
                                 font.clone(),
                                 theme,
                                 "View in Analysis",
-                                UiAction::SetLibraryView(LibraryView::Queue),
+                                view_song_analysis_action(&song.file_hash),
                             );
                             // Secondary actions (phase plan §8.1: "次级操作 Play
                             // original / Export / Song metadata / More").
@@ -194,7 +204,7 @@ pub(crate) fn spawn_song_detail(
                                 font.clone(),
                                 theme,
                                 "Settings",
-                                UiAction::OpenSongSettings(song.file_hash.clone()),
+                                UiAction::from(EditorCommand::OpenSongSettings(song.file_hash.clone())),
                             );
                         });
                 });
@@ -266,7 +276,7 @@ pub(crate) fn spawn_song_detail(
                                 theme,
                                 "Analysis defaults",
                                 "Tune separator, transcription, alignment, pitch, batching, and sensitivity. These settings only affect the next analysis; existing chart data will not change immediately.",
-                                Some(("Open analysis settings", UiAction::SettingsTab(SettingsTab::Analysis))),
+                                Some(("Open analysis settings", UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Analysis)))),
                             );
                             if analyzed_and_native {
                                 spawn_setting_row(
@@ -277,7 +287,7 @@ pub(crate) fn spawn_song_detail(
                                     "Recreate stems, lyrics, timing, detected key, musical BPM, and pitch assets.",
                                     Some((
                                         "Reanalyze all",
-                                        UiAction::ReanalyzeFull(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::ReanalyzeFull(song.file_hash.clone())),
                                     )),
                                 );
                                 if matches!(
@@ -292,9 +302,9 @@ pub(crate) fn spawn_song_detail(
                                         "A newer analysis result differs from your saved chart. Compare and choose whether to replace it.",
                                         Some((
                                             "Compare & replace…",
-                                            UiAction::RequestReplaceAuthoredChart(
+                                            UiAction::from(AnalysisCommand::RequestReplaceAuthoredChart(
                                                 song.file_hash.clone(),
-                                            ),
+                                            )),
                                         )),
                                     );
                                 }
@@ -318,7 +328,7 @@ pub(crate) fn spawn_song_detail(
                                 if native_source {
                                     Some((
                                         "Edit lyrics…".to_string(),
-                                        UiAction::OpenLyricsEditor(song.file_hash.clone()),
+                                        UiAction::from(EditorCommand::OpenLyricsEditor(song.file_hash.clone())),
                                     ))
                                 } else {
                                     None
@@ -336,7 +346,7 @@ pub(crate) fn spawn_song_detail(
                                     ),
                                     Some((
                                         "Change language…",
-                                        UiAction::OpenLanguageEditor(song.file_hash.clone()),
+                                        UiAction::from(EditorCommand::OpenLanguageEditor(song.file_hash.clone())),
                                     )),
                                 );
                             }
@@ -349,7 +359,7 @@ pub(crate) fn spawn_song_detail(
                                     "Rebuild timings from current lyrics using the selected alignment backend.",
                                     Some((
                                         "Realign",
-                                        UiAction::RealignSong(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::RealignSong(song.file_hash.clone())),
                                     )),
                                 );
                                 spawn_setting_row(
@@ -360,7 +370,7 @@ pub(crate) fn spawn_song_detail(
                                     "Refetch lyrics and align, or force a fresh transcription from the vocals.",
                                     Some((
                                         "Refetch & align",
-                                        UiAction::ReanalyzeTranscript(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::ReanalyzeTranscript(song.file_hash.clone())),
                                     )),
                                 );
                                 spawn_setting_row(
@@ -371,7 +381,7 @@ pub(crate) fn spawn_song_detail(
                                     "Ignore online lyrics and transcribe the vocals again.",
                                     Some((
                                         "Force transcribe",
-                                        UiAction::ForceTranscribe(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::ForceTranscribe(song.file_hash.clone())),
                                     )),
                                 );
                             }
@@ -407,8 +417,8 @@ pub(crate) fn spawn_song_detail(
                                         .or(song.key.as_ref())
                                         .cloned()
                                         .unwrap_or_else(|| "—".to_string()),
-                                    UiAction::ShiftSongKey(song.file_hash.clone(), -1),
-                                    UiAction::ShiftSongKey(song.file_hash.clone(), 1),
+                                    UiAction::from(EditorCommand::ShiftSongKey(song.file_hash.clone(), -1)),
+                                    UiAction::from(EditorCommand::ShiftSongKey(song.file_hash.clone(), 1)),
                                 );
                                 // This is the export-speed multiplier, not
                                 // the detected Musical BPM (shown in Song
@@ -421,8 +431,8 @@ pub(crate) fn spawn_song_detail(
                                     "Playback / export speed",
                                     "Create an export-speed variant in 0.1× steps.",
                                     format!("{:.1}×", song.tempo),
-                                    UiAction::ShiftSongTempo(song.file_hash.clone(), -1),
-                                    UiAction::ShiftSongTempo(song.file_hash.clone(), 1),
+                                    UiAction::from(EditorCommand::ShiftSongTempo(song.file_hash.clone(), -1)),
+                                    UiAction::from(EditorCommand::ShiftSongTempo(song.file_hash.clone(), 1)),
                                 );
                                 spawn_setting_row(
                                     audio,
@@ -432,7 +442,7 @@ pub(crate) fn spawn_song_detail(
                                     "Generate or repair the editable pitch guide.",
                                     Some((
                                         "Analyze pitch",
-                                        UiAction::ReanalyzePitch(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::ReanalyzePitch(song.file_hash.clone())),
                                     )),
                                 );
                             } else {
@@ -469,7 +479,7 @@ pub(crate) fn spawn_song_detail(
                                     "Export the full editable project file for Uta Studio.",
                                     Some((
                                         "Export UTZ",
-                                        UiAction::ExportUtz(song.file_hash.clone()),
+                                        UiAction::from(LibraryCommand::ExportUtz(song.file_hash.clone())),
                                     )),
                                 );
                                 spawn_setting_row(
@@ -480,7 +490,7 @@ pub(crate) fn spawn_song_detail(
                                     "Export a chart compatible with UltraStar-format karaoke games.",
                                     Some((
                                         "Export UltraStar",
-                                        UiAction::ExportUltraStar(song.file_hash.clone()),
+                                        UiAction::from(LibraryCommand::ExportUltraStar(song.file_hash.clone())),
                                     )),
                                 );
                             } else {
@@ -512,7 +522,7 @@ pub(crate) fn spawn_song_detail(
                                     "Delete generated cache for this song. Source media is never changed.",
                                     Some((
                                         "Delete cache…",
-                                        UiAction::RequestDeleteSongCache(song.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::RequestDeleteSongCache(song.file_hash.clone())),
                                     )),
                                 );
                             } else {
@@ -542,6 +552,7 @@ pub(crate) fn spawn_song_detail(
                 spawn_lyrics_editor(
                     detail,
                     font.clone(),
+                    session.config,
                     theme,
                     editor,
                     session.notice.as_deref(),
@@ -566,6 +577,7 @@ pub(crate) fn spawn_song_detail(
 fn spawn_timed_transcript_structure(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    config: &AppConfig,
     theme: &StudioTheme,
     editor: &NativeLyricsEditor,
 ) {
@@ -603,7 +615,14 @@ fn spawn_timed_transcript_structure(
                 spawn_text(
                     list,
                     font.clone(),
-                    format!("AUDIO WAVEFORM · {}", format_duration(editor.waveform.duration_secs)),
+                    localized_message(
+                        config,
+                        UiMessage::AudioWaveform,
+                        &[(
+                            "{duration}",
+                            &format_duration(editor.waveform.duration_secs),
+                        )],
+                    ),
                     7.5,
                     theme.muted_foreground,
                 );
@@ -656,14 +675,14 @@ fn spawn_timed_transcript_structure(
                 })
                 .with_children(|row| {
                     spawn_text(row, font.clone(), format!("S{}", segment_index + 1), 8.0, theme.muted_foreground);
-                    spawn_text_button(row, font.clone(), theme, &format!("▶ {start:.3}s"), 8.0, UiAction::PreviewTranscriptAt(editor.file_hash.clone(), (start * 1000.0).round() as i64));
+                    spawn_text_button(row, font.clone(), theme, format!("▶ {start:.3}s"), 8.0, UiAction::from(EditorCommand::PreviewTranscriptAt(editor.file_hash.clone(), (start * 1000.0).round() as i64)));
                     for (label, edge, delta) in [
                         ("start −10", TranscriptBoundaryEdge::Start, -10),
                         ("start +10", TranscriptBoundaryEdge::Start, 10),
                         ("end −10", TranscriptBoundaryEdge::End, -10),
                         ("end +10", TranscriptBoundaryEdge::End, 10),
                     ] {
-                        spawn_text_button(row, font.clone(), theme, label, 7.5, UiAction::AdjustTranscriptBoundary(TranscriptBoundaryTarget::Segment(segment_index), edge, delta));
+                        spawn_text_button(row, font.clone(), theme, label, 7.5, UiAction::from(EditorCommand::AdjustTranscriptBoundary(TranscriptBoundaryTarget::Segment(segment_index), edge, delta)));
                     }
                     spawn_transcript_drag_handle(row, font.clone(), theme, "drag start ↔", TranscriptBoundaryTarget::Segment(segment_index), TranscriptBoundaryEdge::Start);
                     spawn_transcript_drag_handle(row, font.clone(), theme, "drag end ↔", TranscriptBoundaryTarget::Segment(segment_index), TranscriptBoundaryEdge::End);
@@ -681,14 +700,14 @@ fn spawn_timed_transcript_structure(
                             align_items: AlignItems::Center, flex_wrap: FlexWrap::Wrap,
                             column_gap: px(4), row_gap: px(3), ..default()
                         }).with_children(|row| {
-                            spawn_text_button(row, font.clone(), theme, &format!("▶ {start:.3}s"), 7.5, UiAction::PreviewTranscriptAt(editor.file_hash.clone(), (start * 1000.0).round() as i64));
+                            spawn_text_button(row, font.clone(), theme, format!("▶ {start:.3}s"), 7.5, UiAction::from(EditorCommand::PreviewTranscriptAt(editor.file_hash.clone(), (start * 1000.0).round() as i64)));
                             for (label, edge, delta) in [
                                 ("S−", TranscriptBoundaryEdge::Start, -10),
                                 ("S+", TranscriptBoundaryEdge::Start, 10),
                                 ("E−", TranscriptBoundaryEdge::End, -10),
                                 ("E+", TranscriptBoundaryEdge::End, 10),
                             ] {
-                                spawn_text_button(row, font.clone(), theme, label, 7.0, UiAction::AdjustTranscriptBoundary(TranscriptBoundaryTarget::Word { segment: segment_index, word: word_index }, edge, delta));
+                                spawn_text_button(row, font.clone(), theme, label, 7.0, UiAction::from(EditorCommand::AdjustTranscriptBoundary(TranscriptBoundaryTarget::Word { segment: segment_index, word: word_index }, edge, delta)));
                             }
                             spawn_transcript_drag_handle(row, font.clone(), theme, "drag S ↔", TranscriptBoundaryTarget::Word { segment: segment_index, word: word_index }, TranscriptBoundaryEdge::Start);
                             spawn_transcript_drag_handle(row, font.clone(), theme, "drag E ↔", TranscriptBoundaryTarget::Word { segment: segment_index, word: word_index }, TranscriptBoundaryEdge::End);
@@ -714,6 +733,7 @@ fn spawn_transcript_drag_handle(
     parent
         .spawn((
             Button,
+            UiPointerApi(&["ui.pointer.transcript_boundary_drag"]),
             Node {
                 padding: UiRect::axes(px(5), px(3)),
                 border: UiRect::all(px(1)),
@@ -731,7 +751,8 @@ fn spawn_transcript_drag_handle(
         .observe(
             move |mut drag: On<Pointer<Drag>>,
                   ui_scale: Res<UiScale>,
-                  mut session: ResMut<StudioSession>,
+                  mut shell: ResMut<ShellState>,
+                  mut dialogs: ResMut<DialogState>,
                   mut inputs: Query<&mut EditableText, With<LyricsEditorInput>>| {
                 if drag.button != PointerButton::Primary || drag.delta.x.abs() < f32::EPSILON {
                     return;
@@ -749,9 +770,10 @@ fn spawn_transcript_drag_handle(
                             target,
                             edge,
                             f64::from(drag.delta.x / ui_scale.0) * 0.005,
+                            &shell.config,
                         )?;
                         let rendered = serde_json::to_string_pretty(&value).unwrap_or_default();
-                        let editor = session
+                        let editor = dialogs
                             .lyrics_editor
                             .as_mut()
                             .ok_or_else(|| "TimedTranscript editor is closed.".to_string())?;
@@ -765,19 +787,19 @@ fn spawn_transcript_drag_handle(
                         input.editor_mut().set_text(&rendered);
                         Ok(())
                     });
-                session.notice = result.err();
+                shell.notice = result.err();
             },
         )
         .observe(
             |mut release: On<Pointer<DragEnd>>, mut invalidated: ResMut<UiInvalidated>| {
                 release.propagate(false);
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Library);
             },
         )
         .observe(
             |mut cancel: On<Pointer<Cancel>>, mut invalidated: ResMut<UiInvalidated>| {
                 cancel.propagate(false);
-                invalidated.0 = true;
+                invalidated.invalidate(UiDirtyRegion::Library);
             },
         );
 }
@@ -785,6 +807,7 @@ fn spawn_transcript_drag_handle(
 pub(crate) fn spawn_lyrics_editor(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    config: &AppConfig,
     theme: &StudioTheme,
     editor: &NativeLyricsEditor,
     notice: Option<&str>,
@@ -872,7 +895,7 @@ pub(crate) fn spawn_lyrics_editor(
                                     "Use timed LRC"
                                 },
                                 10.0,
-                                UiAction::ToggleLyricsInputMode,
+                                UiAction::from(EditorCommand::ToggleLyricsInputMode),
                             );
                             if editor.mode == LyricsInputMode::TimedLrc {
                                 spawn_text_button(
@@ -885,7 +908,7 @@ pub(crate) fn spawn_lyrics_editor(
                                         "Author on original mix"
                                     },
                                     10.0,
-                                    UiAction::ToggleLyricsSeparateStems,
+                                    UiAction::from(EditorCommand::ToggleLyricsSeparateStems),
                                 );
                             }
                             spawn_text_button(
@@ -900,7 +923,7 @@ pub(crate) fn spawn_lyrics_editor(
                                     "Search LRCLIB again"
                                 },
                                 10.0,
-                                UiAction::SearchLrclibLyrics,
+                                UiAction::from(EditorCommand::SearchLrclibLyrics),
                             );
                         });
                     }
@@ -951,7 +974,7 @@ pub(crate) fn spawn_lyrics_editor(
                                                 theme,
                                                 "Previous",
                                                 9.0,
-                                                UiAction::PreviousLrclibCandidate,
+                                                UiAction::from(EditorCommand::PreviousLrclibCandidate),
                                             );
                                             spawn_text_button(
                                                 header,
@@ -959,7 +982,7 @@ pub(crate) fn spawn_lyrics_editor(
                                                 theme,
                                                 "Next",
                                                 9.0,
-                                                UiAction::NextLrclibCandidate,
+                                                UiAction::from(EditorCommand::NextLrclibCandidate),
                                             );
                                         }
                                     });
@@ -1001,7 +1024,7 @@ pub(crate) fn spawn_lyrics_editor(
                                                 font.clone(),
                                                 theme,
                                                 "Use timed LRC",
-                                                UiAction::UseLrclibTimed,
+                                                UiAction::from(EditorCommand::UseLrclibTimed),
                                             );
                                         }
                                         if !candidate.lines.is_empty() {
@@ -1011,14 +1034,20 @@ pub(crate) fn spawn_lyrics_editor(
                                                 theme,
                                                 "Use as plain lyrics",
                                                 9.0,
-                                                UiAction::UseLrclibPlain,
+                                                UiAction::from(EditorCommand::UseLrclibPlain),
                                             );
                                         }
                                     });
                             });
                     }
                     if editor.mode == LyricsInputMode::StructuredTimedTranscript {
-                        spawn_timed_transcript_structure(dialog, font.clone(), theme, editor);
+                        spawn_timed_transcript_structure(
+                            dialog,
+                            font.clone(),
+                            config,
+                            theme,
+                            editor,
+                        );
                     }
                     dialog.spawn((
                         LyricsEditorInput,
@@ -1097,7 +1126,7 @@ pub(crate) fn spawn_lyrics_editor(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::CloseLyricsEditor,
+                                UiAction::from(EditorCommand::CloseLyricsEditor),
                             );
                             if editor.artifact_draft.is_some() {
                                 spawn_text_button(
@@ -1106,14 +1135,14 @@ pub(crate) fn spawn_lyrics_editor(
                                     theme,
                                     "Save Only",
                                     10.0,
-                                    UiAction::SaveLyricsEditor,
+                                    UiAction::from(EditorCommand::SaveLyricsEditor),
                                 );
                                 spawn_action_button(
                                     actions,
                                     font,
                                     theme,
                                     "Save and Run Downstream",
-                                    UiAction::SaveLyricsEditorAndRunDownstream,
+                                    UiAction::from(EditorCommand::SaveLyricsEditorAndRunDownstream),
                                 );
                             } else {
                                 spawn_action_button(
@@ -1121,7 +1150,7 @@ pub(crate) fn spawn_lyrics_editor(
                                     font,
                                     theme,
                                     "Save lyrics",
-                                    UiAction::SaveLyricsEditor,
+                                    UiAction::from(EditorCommand::SaveLyricsEditor),
                                 );
                             }
                         });

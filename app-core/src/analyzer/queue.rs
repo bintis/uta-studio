@@ -1,23 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
 use ts_rs::TS;
 
-use crate::cache::{CacheDir, models_dir};
-use crate::config::AppConfig;
-use crate::error::UtaStudioError;
+use crate::cache::CacheDir;
 use crate::library_db;
-use crate::library_model::LibraryMenuFilters;
-use crate::lyrics::{fetch_lrclib_lyrics, write_lyrics_file};
-use crate::song::{Song, TranscriptSource, read_transcript_meta};
 
 // ─── Analysis queue (persisted to disk) ──────────────────────────────
 
@@ -566,8 +555,6 @@ impl AnalysisQueue {
         let _ = library_db::analysis_queue_clear();
     }
 }
-use crate::vendor::{analyzer_dir, ffmpeg_path, python_path, silent_command};
-
 // ─── Server process ──────────────────────────────────────────────────
 
 pub(crate) static SERVER_PID: AtomicU32 = AtomicU32::new(0);

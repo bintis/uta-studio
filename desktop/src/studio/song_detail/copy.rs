@@ -1,11 +1,10 @@
-use super::*;
 use crate::studio::*;
 
 pub(crate) fn spawn_song_primary_actions(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     song: &Song,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let state = app_core::resolve_song_authoring_state(&song.file_hash)
@@ -24,7 +23,13 @@ pub(crate) fn spawn_song_primary_actions(
                     app_core::QueuedStatus::Failed(_) => "Analyzing".to_string(),
                 })
                 .unwrap_or_else(|| "Analyzing".to_string());
-            spawn_action_button(parent, font, theme, label, UiAction::ToggleActivity);
+            spawn_action_button(
+                parent,
+                font,
+                theme,
+                label,
+                UiAction::from(AppCommand::ToggleActivity),
+            );
         }
         app_core::SongAuthoringState::RetryFailedNode => {
             spawn_action_button(
@@ -32,7 +37,7 @@ pub(crate) fn spawn_song_primary_actions(
                 font,
                 theme,
                 "Retry failed analysis",
-                UiAction::AnalyzeSong(song.file_hash.clone()),
+                UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
             );
         }
         app_core::SongAuthoringState::AnalyzeSong => {
@@ -42,7 +47,7 @@ pub(crate) fn spawn_song_primary_actions(
                     font,
                     theme,
                     "Analyze song",
-                    UiAction::AnalyzeSong(song.file_hash.clone()),
+                    UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
                 );
             } else {
                 spawn_action_button(
@@ -50,7 +55,7 @@ pub(crate) fn spawn_song_primary_actions(
                     font,
                     theme,
                     "Set up analysis",
-                    UiAction::SettingsTab(SettingsTab::Models),
+                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                 );
             }
         }
@@ -60,7 +65,7 @@ pub(crate) fn spawn_song_primary_actions(
                 font,
                 theme,
                 "Open editor",
-                UiAction::OpenEditor(song.file_hash.clone()),
+                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
             );
         }
         app_core::SongAuthoringState::FixChartIssues => {
@@ -69,7 +74,7 @@ pub(crate) fn spawn_song_primary_actions(
                 font,
                 theme,
                 "Fix chart issues",
-                UiAction::OpenEditor(song.file_hash.clone()),
+                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
             );
         }
         app_core::SongAuthoringState::EditChart => {
@@ -78,7 +83,7 @@ pub(crate) fn spawn_song_primary_actions(
                 font,
                 theme,
                 "Edit chart",
-                UiAction::OpenEditor(song.file_hash.clone()),
+                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
             );
         }
     }

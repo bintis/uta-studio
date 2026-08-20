@@ -12,7 +12,7 @@ pub use control::*;
 pub use queue::*;
 pub use reanalyze::*;
 pub use run::*;
-pub use server::*;
+pub(crate) use server::*;
 
 #[cfg(test)]
 include!("tests.rs");

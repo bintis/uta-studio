@@ -298,6 +298,55 @@ def build_chart_analysis_plan(
     )
 
 
+def _is_demucs_chart_path(settings: Mapping[str, Any]) -> bool:
+    return settings.get("legacy_profile") == "legacy_htdemucs" or (
+        settings.get("multistem_model_id") == "htdemucs_6s" and not settings.get("vocal_model_id")
+    )
+
+
+def build_settings_plan(
+    catalog: AudioModelCatalog,
+    settings: Mapping[str, Any],
+    *,
+    global_overrides: Mapping[str, Any] | None = None,
+    song_overrides: Mapping[str, Any] | None = None,
+    run_overrides: Mapping[str, Any] | None = None,
+) -> AudioProcessingPlanSnapshot:
+    """Compose the chart path plus optional karaoke/six-stem side paths."""
+    kwargs = {
+        "global_overrides": global_overrides,
+        "song_overrides": song_overrides,
+        "run_overrides": run_overrides,
+    }
+    if _is_demucs_chart_path(settings):
+        return build_multistem_plan(catalog, settings, **kwargs)
+    plan = build_chart_analysis_plan(catalog, settings, **kwargs)
+    extra_steps = list(plan.steps)
+    extra_bindings = list(plan.output_bindings)
+    if settings.get("karaoke_model_id"):
+        karaoke = build_karaoke_plan(catalog, settings, **kwargs)
+        extra_steps.extend(karaoke.steps)
+        extra_bindings.append(
+            AudioOutputBinding("karaoke_instrumental", "extract_karaoke", "karaoke_instrumental")
+        )
+    if settings.get("multistem_model_id"):
+        multi = build_multistem_plan(catalog, settings, **kwargs)
+        extra_steps.extend(multi.steps)
+        extra_bindings.extend(
+            binding
+            for binding in multi.output_bindings
+            if binding.artifact_role not in {"vocals", "instrumental", "analysis_vocal"}
+        )
+    return AudioProcessingPlanSnapshot(
+        schema_version=plan.schema_version,
+        catalog_version=plan.catalog_version,
+        steps=tuple(extra_steps),
+        output_bindings=tuple(extra_bindings),
+        requested_runtime=plan.requested_runtime,
+        profile_id=plan.profile_id,
+    )
+
+
 def build_karaoke_plan(
     catalog: AudioModelCatalog,
     settings: Mapping[str, Any],

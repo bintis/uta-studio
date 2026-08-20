@@ -1,6 +1,61 @@
 use super::*;
 use crate::studio::*;
 
+pub(crate) fn spawn_analysis_graph_lane_band(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    band: LayoutLaneBand,
+    zoom: f32,
+) {
+    let bounds = zoomed_box(band.rect, zoom);
+    let accent = match band.kind {
+        LayoutLaneKind::Music => theme.primary,
+        LayoutLaneKind::VocalsAndPitch => theme.pitch_contour,
+        LayoutLaneKind::LyricsAndTiming => theme.editor_warning,
+    };
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bounds.x),
+                top: px(bounds.y),
+                width: px(bounds.width),
+                height: px(bounds.height),
+                padding: UiRect::axes(px(10.0 * zoom), px(3.0 * zoom)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(9)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.16)),
+            BorderColor::all(accent.with_alpha(0.18)),
+            ZIndex(-1),
+            Pickable::IGNORE,
+        ))
+        .with_children(|lane| {
+            lane.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(0),
+                    top: px(9.0 * zoom),
+                    bottom: px(9.0 * zoom),
+                    width: px(2),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(accent.with_alpha(0.7)),
+                Pickable::IGNORE,
+            ));
+            spawn_text(
+                lane,
+                font,
+                band.kind.label(),
+                (6.5 * zoom).clamp(6.0, 8.0),
+                accent.with_alpha(0.78),
+            );
+        });
+}
+
 pub(crate) fn analysis_graph_route_summary(
     task: &app_core::AnalysisTask,
     node_id: &str,
@@ -33,28 +88,47 @@ pub(crate) fn analysis_graph_route_summary(
             )
         })
         .unwrap_or_else(|| route.implementation.clone());
-    let model = (!route.model.trim().is_empty())
-        .then(|| route.model.as_str())
-        .unwrap_or("default");
+    let model = if !route.model.trim().is_empty() {
+        route.model.as_str()
+    } else {
+        "default"
+    };
     (format!("{implementation} · {model}"), warning)
+}
+
+pub(crate) struct AnalysisStageNodeSpec<'a> {
+    pub(crate) bounds: AnalysisGraphBox,
+    pub(crate) index: usize,
+    pub(crate) stage_id: &'a str,
+    pub(crate) node_id: &'a str,
+    pub(crate) file_hash: &'a str,
+    pub(crate) label: &'a str,
+    pub(crate) state: AnalysisGraphStageState,
+    pub(crate) selected: bool,
+    pub(crate) route: &'a str,
+    pub(crate) warning: bool,
+    pub(crate) dimmed: bool,
 }
 
 pub(crate) fn spawn_analysis_stage_node(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    bounds: AnalysisGraphBox,
-    index: usize,
-    stage_id: &str,
-    node_id: &str,
-    file_hash: &str,
-    label: &str,
-    state: AnalysisGraphStageState,
-    selected: bool,
-    route: &str,
-    warning: bool,
-    dimmed: bool,
+    spec: AnalysisStageNodeSpec,
 ) {
+    let AnalysisStageNodeSpec {
+        bounds,
+        index,
+        stage_id,
+        node_id,
+        file_hash,
+        label,
+        state,
+        selected,
+        route,
+        warning,
+        dimmed,
+    } = spec;
     let (status, progress, status_color) = match state {
         AnalysisGraphStageState::Waiting => ("WAITING", 0, theme.muted_foreground),
         AnalysisGraphStageState::Running(progress) => ("RUNNING", progress, theme.primary),
@@ -69,6 +143,10 @@ pub(crate) fn spawn_analysis_stage_node(
     parent
         .spawn((
             Button,
+            UiPointerApi(&[
+                "ui.pointer.analysis_node.primary",
+                "ui.pointer.analysis_node.secondary",
+            ]),
             Node {
                 position_type: PositionType::Absolute,
                 left: px(bounds.x),
@@ -95,7 +173,9 @@ pub(crate) fn spawn_analysis_stage_node(
             } else if running {
                 theme.primary.with_alpha(if dimmed { 0.22 } else { 0.62 })
             } else if complete {
-                theme.pitch_contour.with_alpha(if dimmed { 0.16 } else { 0.42 })
+                theme
+                    .pitch_contour
+                    .with_alpha(if dimmed { 0.16 } else { 0.42 })
             } else {
                 theme.border.with_alpha(if dimmed { 0.28 } else { 0.68 })
             }),
@@ -224,31 +304,29 @@ pub(crate) fn spawn_analysis_stage_node(
             );
         })
         .observe(
-            move |mut event: On<Pointer<Click>>,
-                  mut session: ResMut<StudioSession>,
-                  mut invalidated: ResMut<UiInvalidated>,
-                  lists: Query<(&ComputedNode, &UiGlobalTransform), With<LibrarySongList>>| {
+            move |mut event: On<Pointer<Press>>,
+                  mut analysis: ResMut<AnalysisUiState>,
+                  mut dialogs: ResMut<DialogState>,
+                  mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                let menu_position = analysis_context_menu_position(
+                open_analysis_node_from_pointer(
+                    event.button,
                     event.pointer_location.position,
-                    session.library_scroll_offset,
-                    &lists,
-                );
-                open_analysis_node_from_click(
-                    &event,
-                    menu_position,
-                    &context_node_id,
-                    &context_label,
-                    &context_file_hash,
-                    &context_stage_id,
-                    &mut session,
+                    AnalysisNodeClickTarget {
+                        node_id: &context_node_id,
+                        label: &context_label,
+                        file_hash: &context_file_hash,
+                        stage_id: &context_stage_id,
+                    },
+                    &mut analysis,
+                    &mut dialogs,
                     &mut invalidated,
                 );
             },
         );
 }
 
-/// The click position `open_analysis_node_from_click` needs, converted from
+/// The pointer position `open_analysis_node_from_pointer` needs, converted from
 /// raw window pixels into `LibrarySongList`'s own local space -- the
 /// analysis node context menu is spawned as a direct absolute-positioned
 /// child of that same list (`spawn_analysis_node_context_menu`), so that is
@@ -292,7 +370,7 @@ pub(crate) fn analysis_context_menu_position(
 /// Artifact/Export box is never itself a real `AnalysisGraphSpec` node --
 /// see `build_render_graph`'s doc comment) -- clicking it opens the same
 /// node context menu (right-click) / inspector selection (left-click) as
-/// that real node, via `open_analysis_node_from_click`, so "Run this node
+/// that real node, via `open_analysis_node_from_pointer`, so "Run this node
 /// only" etc. on an output box runs the compute step that actually produces
 /// it.
 #[allow(clippy::too_many_arguments)]
@@ -314,7 +392,6 @@ pub(crate) fn spawn_analysis_artifact_node(
     } else {
         theme.pitch_contour
     };
-    let clickable = click_target.is_some();
     let mut entity = parent.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -343,8 +420,14 @@ pub(crate) fn spawn_analysis_artifact_node(
         }),
         ZIndex(2),
     ));
-    if clickable {
-        entity.insert(Button);
+    if click_target.is_some() {
+        entity.insert((
+            Button,
+            UiPointerApi(&[
+                "ui.pointer.analysis_artifact.primary",
+                "ui.pointer.analysis_artifact.secondary",
+            ]),
+        ));
     }
     entity.with_children(|node| {
         spawn_analysis_graph_ports(node, theme, ready);
@@ -371,24 +454,22 @@ pub(crate) fn spawn_analysis_artifact_node(
     });
     if let Some((node_id, label, file_hash, stage_id)) = click_target {
         entity.observe(
-            move |mut event: On<Pointer<Click>>,
-                  mut session: ResMut<StudioSession>,
-                  mut invalidated: ResMut<UiInvalidated>,
-                  lists: Query<(&ComputedNode, &UiGlobalTransform), With<LibrarySongList>>| {
+            move |mut event: On<Pointer<Press>>,
+                  mut analysis: ResMut<AnalysisUiState>,
+                  mut dialogs: ResMut<DialogState>,
+                  mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                let menu_position = analysis_context_menu_position(
+                open_analysis_node_from_pointer(
+                    event.button,
                     event.pointer_location.position,
-                    session.library_scroll_offset,
-                    &lists,
-                );
-                open_analysis_node_from_click(
-                    &event,
-                    menu_position,
-                    &node_id,
-                    &label,
-                    &file_hash,
-                    &stage_id,
-                    &mut session,
+                    AnalysisNodeClickTarget {
+                        node_id: &node_id,
+                        label: &label,
+                        file_hash: &file_hash,
+                        stage_id: &stage_id,
+                    },
+                    &mut analysis,
+                    &mut dialogs,
                     &mut invalidated,
                 );
             },
@@ -477,11 +558,11 @@ pub(crate) fn spawn_analysis_graph_binding_path(
     };
     color = color.with_alpha(alpha);
     let thickness = if selected {
-        4.0
+        3.5
     } else if matches!(edge.role, RenderEdgeRole::ExportTarget) {
-        2.5
+        2.0
     } else {
-        3.0
+        2.25
     };
     spawn_analysis_graph_segments(parent, points, color, thickness, true);
 
@@ -501,6 +582,7 @@ pub(crate) fn spawn_analysis_graph_binding_path(
         parent
             .spawn((
                 Button,
+                UiPointerApi(&["ui.pointer.analysis_edge.primary"]),
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(hit_left),
@@ -514,7 +596,10 @@ pub(crate) fn spawn_analysis_graph_binding_path(
             ))
             .observe(
                 move |mut event: On<Pointer<Click>>,
-                      mut session: ResMut<StudioSession>,
+                      mut shell: ResMut<ShellState>,
+                      library: Res<LibraryState>,
+                      mut analysis: ResMut<AnalysisUiState>,
+                      mut dialogs: ResMut<DialogState>,
                       mut invalidated: ResMut<UiInvalidated>| {
                     event.propagate(false);
                     if event.button != PointerButton::Primary {
@@ -537,88 +622,88 @@ pub(crate) fn spawn_analysis_graph_binding_path(
                         .kind
                         .map(|kind| format!("{kind:?}"))
                         .unwrap_or_else(|| "compute".to_string());
-                    session.notice = Some(format!(
+                    shell.notice = Some(format!(
                         "{kind} · {} · {short}",
                         edge_binding_style_copy(click_edge.state)
                     ));
-                    session.selected_graph_edge = Some(click_edge.clone());
+                    analysis.selected_graph_edge = Some(click_edge.clone());
                     if let Some(revision_id) = click_edge.revision_id.as_ref()
                         && let Some(kind) = click_edge.kind
                     {
                         let reference = app_core::ArtifactRef {
-                            file_hash: session
+                            file_hash: analysis
                                 .selected_analysis_history
                                 .and_then(|id| {
-                                    session
+                                    analysis
                                         .analysis_history
                                         .iter()
                                         .find(|history| history.id == id)
                                         .map(|history| history.file_hash.clone())
                                 })
-                                .or_else(|| session.selected_song.clone())
+                                .or_else(|| library.selected_song.clone())
                                 .unwrap_or_default(),
                             kind,
                             revision_id: revision_id.clone(),
                         };
-                        if session.analysis_lineage_mode {
-                            if let Ok(lineage) = app_core::artifact_lineage(&reference) {
-                                session.artifact_lineage = Some(ArtifactLineagePanel {
-                                    lineage,
-                                    scope: session.analysis_lineage_scope,
-                                    selected: reference,
-                                });
-                            }
+                        if analysis.analysis_lineage_mode
+                            && let Ok(lineage) = app_core::artifact_lineage(&reference)
+                        {
+                            dialogs.artifact_lineage = Some(ArtifactLineagePanel {
+                                lineage,
+                                scope: analysis.analysis_lineage_scope,
+                                selected: reference,
+                            });
                         }
                     }
-                    invalidated.0 = true;
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
                 },
             );
     }
 
-    if show_label || selected {
-        if let Some(mid) = points.get(points.len() / 2) {
-            let kind = edge
-                .artifact_kind
-                .map(|kind| format!("{kind:?}"))
-                .unwrap_or_else(|| "edge".to_string());
-            let short = binding
-                .and_then(|item| item.artifact_ref.as_ref())
-                .map(|reference| {
-                    reference
-                        .revision_id
-                        .chars()
-                        .rev()
-                        .take(8)
-                        .collect::<String>()
-                        .chars()
-                        .rev()
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
-            let label = if short.is_empty() {
-                format!("{kind} · {}", edge_binding_style_copy(state))
-            } else {
-                format!("{kind} · {short}")
-            };
-            parent
-                .spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(mid.x - 46.0),
-                        top: px(mid.y - 10.0),
-                        max_width: px(120.0),
-                        padding: UiRect::axes(px(4), px(2)),
-                        border_radius: BorderRadius::all(px(3)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.card.with_alpha(0.92)),
-                    ZIndex(3),
-                    Pickable::IGNORE,
-                ))
-                .with_children(|chip| {
-                    spawn_text(chip, font, label, 6.5, theme.muted_foreground);
-                });
-        }
+    if (show_label || selected)
+        && let Some(mid) = points.get(points.len() / 2)
+    {
+        let kind = edge
+            .artifact_kind
+            .map(|kind| format!("{kind:?}"))
+            .unwrap_or_else(|| "edge".to_string());
+        let short = binding
+            .and_then(|item| item.artifact_ref.as_ref())
+            .map(|reference| {
+                reference
+                    .revision_id
+                    .chars()
+                    .rev()
+                    .take(8)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let label = if short.is_empty() {
+            format!("{kind} · {}", edge_binding_style_copy(state))
+        } else {
+            format!("{kind} · {short}")
+        };
+        parent
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(mid.x - 46.0),
+                    top: px(mid.y - 10.0),
+                    max_width: px(120.0),
+                    padding: UiRect::axes(px(4), px(2)),
+                    border_radius: BorderRadius::all(px(3)),
+                    ..default()
+                },
+                BackgroundColor(theme.card.with_alpha(0.92)),
+                ZIndex(3),
+                Pickable::IGNORE,
+            ))
+            .with_children(|chip| {
+                spawn_text(chip, font, label, 6.5, theme.muted_foreground);
+            });
     }
 }
 

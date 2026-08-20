@@ -1,15 +1,26 @@
 use crate::studio::*;
 
+pub(crate) type LibrarySearchInputs<'w, 's> = Query<
+    'w,
+    's,
+    &'static EditableText,
+    (
+        With<LibrarySearchInput>,
+        Without<LyricsEditorInput>,
+        Without<LanguageEditorInput>,
+    ),
+>;
+
+type NavigationTargets<'w, 's> =
+    Query<'w, 's, (Entity, &'static UiAction), (Added<UiAction>, With<Button>)>;
+
 pub(crate) const NAVIGATION_INITIAL_REPEAT: Duration = Duration::from_millis(400);
 
 pub(crate) const NAVIGATION_REPEAT_RATE: Duration = Duration::from_millis(80);
 
 pub(crate) const NAVIGATION_STICK_DEADZONE: f32 = 0.5;
 
-pub(crate) fn register_navigation_targets(
-    mut commands: Commands,
-    targets: Query<(Entity, &UiAction), (Added<UiAction>, With<Button>)>,
-) {
+pub(crate) fn register_navigation_targets(mut commands: Commands, targets: NavigationTargets) {
     for (entity, action) in &targets {
         if !action_is_navigation_target(action) {
             continue;
@@ -22,19 +33,19 @@ pub(crate) fn register_navigation_targets(
 
 pub(crate) fn action_is_navigation_target(action: &UiAction) -> bool {
     !matches!(
-        action,
-        UiAction::CloseActivity
-            | UiAction::DismissFolderContext
-            | UiAction::DismissSongContext
-            | UiAction::DismissLyricContext
-            | UiAction::DismissNoteContext
-            | UiAction::DismissWaveformContext
-            | UiAction::DismissProblemsPanel
-            | UiAction::DismissShortcutsPanel
-            | UiAction::DismissAnalysisNodeContext
-            | UiAction::DismissAnalysisExportContext
-            | UiAction::ClosePlanPreview
-            | UiAction::CloseAppLogViewer
+        &action.0,
+        UiCommand::App(AppCommand::CloseActivity)
+            | UiCommand::Library(LibraryCommand::DismissFolderContext)
+            | UiCommand::Library(LibraryCommand::DismissSongContext)
+            | UiCommand::Editor(EditorCommand::DismissLyricContext)
+            | UiCommand::Editor(EditorCommand::DismissNoteContext)
+            | UiCommand::Editor(EditorCommand::DismissWaveformContext)
+            | UiCommand::Editor(EditorCommand::DismissProblemsPanel)
+            | UiCommand::Editor(EditorCommand::DismissShortcutsPanel)
+            | UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext)
+            | UiCommand::Analysis(AnalysisCommand::DismissAnalysisExportContext)
+            | UiCommand::Analysis(AnalysisCommand::ClosePlanPreview)
+            | UiCommand::Analysis(AnalysisCommand::CloseAppLogViewer)
     )
 }
 
@@ -60,96 +71,104 @@ pub(crate) fn navigation_repeat(
     None
 }
 
-pub(crate) fn navigation_back_action(session: &StudioSession) -> Option<UiAction> {
+pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<UiAction> {
     if session.artifact_impact.is_some() {
-        return Some(UiAction::CloseArtifactImpact);
+        return Some(UiAction::from(AnalysisCommand::CloseArtifactImpact));
     }
     if session.artifact_lineage.is_some() || session.analysis_lineage_mode {
-        return Some(UiAction::CloseArtifactLineage);
+        return Some(UiAction::from(AnalysisCommand::CloseArtifactLineage));
     }
     if session.analysis_export_context.is_some() {
-        return Some(UiAction::DismissAnalysisExportContext);
+        return Some(UiAction::from(
+            AnalysisCommand::DismissAnalysisExportContext,
+        ));
     }
     if session.pending_leave.is_some() {
-        return Some(UiAction::CancelLeave);
+        return Some(UiAction::from(AppCommand::CancelLeave));
     }
     if session.pending_setup.is_some() {
-        return Some(UiAction::CancelSetup);
+        return Some(UiAction::from(SettingsCommand::CancelSetup));
     }
     if session.pending_cache_clear.is_some() {
-        return Some(UiAction::CancelClearCache);
+        return Some(UiAction::from(SettingsCommand::CancelClearCache));
     }
     if session.pending_cache_delete.is_some() {
-        return Some(UiAction::CancelDeleteSongCache);
+        return Some(UiAction::from(AnalysisCommand::CancelDeleteSongCache));
     }
     if session.pending_artifact_delete.is_some() {
-        return Some(UiAction::CancelDeleteArtifactRevision);
+        return Some(UiAction::from(
+            AnalysisCommand::CancelDeleteArtifactRevision,
+        ));
     }
     if session.pending_artifact_invalidate.is_some() {
-        return Some(UiAction::CancelInvalidateArtifactRevision);
+        return Some(UiAction::from(
+            AnalysisCommand::CancelInvalidateArtifactRevision,
+        ));
     }
     if session.pending_intermediate_capture.is_some() {
-        return Some(UiAction::CancelCaptureIntermediate);
+        return Some(UiAction::from(AnalysisCommand::CancelCaptureIntermediate));
     }
     if session.pending_chart_replace.is_some() {
-        return Some(UiAction::CancelReplaceAuthoredChart);
+        return Some(UiAction::from(AnalysisCommand::CancelReplaceAuthoredChart));
     }
     if session.pending_analysis_history_clear {
-        return Some(UiAction::CancelClearAnalysisHistory);
+        return Some(UiAction::from(AnalysisCommand::CancelClearAnalysisHistory));
     }
     if session.lyrics_editor.is_some() {
-        return Some(UiAction::CloseLyricsEditor);
+        return Some(UiAction::from(EditorCommand::CloseLyricsEditor));
     }
     if session.language_editor.is_some() {
-        return Some(UiAction::CloseLanguageEditor);
+        return Some(UiAction::from(EditorCommand::CloseLanguageEditor));
     }
     if session.song_settings.is_some() {
-        return Some(UiAction::CloseSongSettings);
+        return Some(UiAction::from(EditorCommand::CloseSongSettings));
     }
     if session.about_open {
-        return Some(UiAction::CloseAbout);
+        return Some(UiAction::from(AppCommand::CloseAbout));
     }
     if session.activity_open {
-        return Some(UiAction::CloseActivity);
+        return Some(UiAction::from(AppCommand::CloseActivity));
     }
     if session.search_open {
-        return Some(UiAction::ToggleGlobalSearch);
+        return Some(UiAction::from(AppCommand::ToggleGlobalSearch));
     }
     if session.song_context.is_some() {
-        return Some(UiAction::DismissSongContext);
+        return Some(UiAction::from(LibraryCommand::DismissSongContext));
     }
     if session.analysis_node_context.is_some() {
-        return Some(UiAction::DismissAnalysisNodeContext);
+        return Some(UiAction::from(AnalysisCommand::DismissAnalysisNodeContext));
     }
     if session.folder_browser.context_menu.is_some() {
-        return Some(UiAction::DismissFolderContext);
+        return Some(UiAction::from(LibraryCommand::DismissFolderContext));
     }
     if let Some(kind) = session.open_settings_select {
-        return Some(UiAction::OpenSettingsSelect(kind));
+        return Some(UiAction::from(SettingsCommand::OpenSettingsSelect(kind)));
     }
     if let Some(kind) = session.open_library_select {
-        return Some(UiAction::OpenLibrarySelect(kind));
+        return Some(UiAction::from(LibraryCommand::OpenLibrarySelect(kind)));
     }
     if session.export_all_open {
-        return Some(UiAction::ToggleExportAllMenu);
+        return Some(UiAction::from(LibraryCommand::ToggleExportAllMenu));
     }
     if let Some(kind) = session.open_editor_select {
-        return Some(UiAction::OpenEditorSelect(kind));
+        return Some(UiAction::from(EditorCommand::OpenEditorSelect(kind)));
     }
     if session.library_playback.queue_open {
-        return Some(UiAction::ToggleLibraryQueue);
+        return Some(UiAction::from(LibraryCommand::ToggleLibraryQueue));
     }
     if session
         .editor
         .as_ref()
         .is_some_and(|editor| editor.inspector_open)
     {
-        return Some(UiAction::Editor(EditorAction::ToggleInspector));
+        return Some(UiAction::from(EditorCommand::Editor(
+            EditorAction::ToggleInspector,
+        )));
     }
     if session.route == StudioRoute::Documentation {
-        Some(UiAction::DocumentationBack)
+        Some(UiAction::from(AppCommand::DocumentationBack))
     } else {
-        (session.route != StudioRoute::Library).then_some(UiAction::Back)
+        (session.route != StudioRoute::Library).then_some(UiAction::from(AppCommand::Back))
     }
 }
 
@@ -161,10 +180,11 @@ pub(crate) fn handle_accessible_navigation(
     mut state: ResMut<NavigationInputState>,
     mut focus: ResMut<InputFocus>,
     mut focus_visible: ResMut<InputFocusVisible>,
-    session: Res<StudioSession>,
+    studio: StudioStateRead,
     editable: Query<(), With<EditableText>>,
     mut targets: Query<(Entity, &UiAction, &mut Interaction), With<Button>>,
 ) {
+    let session = studio.view();
     if let Some(entity) = state.activated.take()
         && let Ok((_, _, mut interaction)) = targets.get_mut(entity)
         && *interaction == Interaction::Pressed

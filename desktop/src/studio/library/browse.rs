@@ -6,7 +6,7 @@ pub(crate) fn spawn_export_all_menu(
     font: Handle<Font>,
     icons: Handle<Image>,
     theme: &StudioTheme,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
 ) {
     let open = session.export_all_open;
     parent
@@ -24,7 +24,7 @@ pub(crate) fn spawn_export_all_menu(
             control
                 .spawn((
                     Button,
-                    UiAction::ToggleExportAllMenu,
+                    UiAction::from(LibraryCommand::ToggleExportAllMenu),
                     Node {
                         width: percent(100),
                         height: px(34),
@@ -97,12 +97,12 @@ pub(crate) fn spawn_export_all_menu(
                             (
                                 "UTZ packages",
                                 "One validated .utz per ready chart",
-                                UiAction::ExportAllUtz,
+                                UiAction::from(LibraryCommand::ExportAllUtz),
                             ),
                             (
                                 "UltraStar bundles",
                                 "One .txt bundle per ready chart",
-                                UiAction::ExportAllUltraStar,
+                                UiAction::from(LibraryCommand::ExportAllUltraStar),
                             ),
                         ] {
                             menu.spawn((
@@ -141,10 +141,11 @@ pub(crate) fn spawn_library_collection(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let artists = session.library_view == LibraryView::Artists;
+    debug_assert!(artists || session.library_view == LibraryView::Albums);
     let (title, description, icon, items) = if artists {
         (
             "Artists",
@@ -220,7 +221,7 @@ pub(crate) fn spawn_library_collection(
                     };
                     list.spawn((
                         Button,
-                        UiAction::SetLibraryFacet(facet),
+                        UiAction::from(LibraryCommand::SetLibraryFacet(facet)),
                         Node {
                             width: px(230),
                             min_height: px(72),
@@ -295,6 +296,10 @@ pub(crate) fn spawn_library_collection(
         });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this declarative route renderer receives the shared UI asset set"
+)]
 pub(crate) fn spawn_library(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -302,7 +307,7 @@ pub(crate) fn spawn_library(
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
     local_images: &mut LocalImages,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
@@ -466,7 +471,7 @@ pub(crate) fn spawn_library(
                                         theme,
                                         "Cancel",
                                         8.0,
-                                        UiAction::CancelClearAnalysisHistory,
+                                        UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
                                     );
                                     spawn_text_button(
                                         history,
@@ -474,7 +479,7 @@ pub(crate) fn spawn_library(
                                         theme,
                                         "Delete history",
                                         8.0,
-                                        UiAction::ConfirmClearAnalysisHistory,
+                                        UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
                                     );
                                 } else {
                                     spawn_text_button(
@@ -483,7 +488,7 @@ pub(crate) fn spawn_library(
                                         theme,
                                         "Clear history…",
                                         8.0,
-                                        UiAction::RequestClearAnalysisHistory,
+                                        UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
                                     );
                                 }
                                 for item in session.analysis_history.iter().take(5) {
@@ -498,7 +503,7 @@ pub(crate) fn spawn_library(
                                             item.title.clone()
                                         },
                                         8.0,
-                                        UiAction::SelectAnalysisHistory(Some(item.id)),
+                                        UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(item.id))),
                                     );
                                 }
                             });
@@ -533,7 +538,7 @@ pub(crate) fn spawn_library(
                                     } else {
                                         "Rescan library"
                                     },
-                                    UiAction::RescanLibrary,
+                                    UiAction::from(LibraryCommand::RescanLibrary),
                                     false,
                                 );
                             }
@@ -568,7 +573,7 @@ pub(crate) fn spawn_library(
                                     theme,
                                     UiIcon::Sparkles,
                                     "Analyze all",
-                                    UiAction::AnalyzeAll,
+                                    UiAction::from(LibraryCommand::AnalyzeAll),
                                     false,
                                 );
                             } else {
@@ -579,7 +584,7 @@ pub(crate) fn spawn_library(
                                     theme,
                                     UiIcon::Repair,
                                     "Set up analysis",
-                                    UiAction::SettingsTab(SettingsTab::Models),
+                                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                                     false,
                                 );
                             }
@@ -598,7 +603,7 @@ pub(crate) fn spawn_library(
                                 } else {
                                     "Grid view"
                                 },
-                                UiAction::ToggleLibraryLayout,
+                                UiAction::from(LibraryCommand::ToggleLibraryLayout),
                                 false,
                             );
                         });
@@ -718,7 +723,7 @@ pub(crate) fn spawn_library(
                                 session.songs.processed.len(),
                                 session.songs.count
                             ),
-                            UiAction::LoadMoreSongs,
+                            UiAction::from(LibraryCommand::LoadMoreSongs),
                         );
                     }
                 });
@@ -737,7 +742,7 @@ pub(crate) fn spawn_song_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissSongContext,
+        UiAction::from(LibraryCommand::DismissSongContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -794,7 +799,9 @@ pub(crate) fn spawn_song_context_menu(
                 theme,
                 "Play original",
                 11.0,
-                UiAction::PlayLibrarySong(context.song.file_hash.clone()),
+                UiAction::from(LibraryCommand::PlayLibrarySong(
+                    context.song.file_hash.clone(),
+                )),
             );
             if context.song.editor_ready {
                 spawn_text_button(
@@ -803,7 +810,7 @@ pub(crate) fn spawn_song_context_menu(
                     theme,
                     "Edit chart",
                     11.0,
-                    UiAction::OpenEditor(context.song.file_hash.clone()),
+                    UiAction::from(LibraryCommand::OpenEditor(context.song.file_hash.clone())),
                 );
             } else if !context.song.authoring_ready {
                 spawn_text_button(
@@ -812,7 +819,7 @@ pub(crate) fn spawn_song_context_menu(
                     theme,
                     "Analyze song",
                     11.0,
-                    UiAction::AnalyzeSong(context.song.file_hash.clone()),
+                    UiAction::from(LibraryCommand::AnalyzeSong(context.song.file_hash.clone())),
                 );
             }
             spawn_text_button(
@@ -821,7 +828,7 @@ pub(crate) fn spawn_song_context_menu(
                 theme,
                 "Open track page",
                 11.0,
-                UiAction::OpenSong(context.song.file_hash.clone()),
+                UiAction::from(LibraryCommand::OpenSong(context.song.file_hash.clone())),
             );
             if context.song.authoring_ready {
                 spawn_text_button(
@@ -830,7 +837,7 @@ pub(crate) fn spawn_song_context_menu(
                     theme,
                     "Export Uta package (.utz)",
                     11.0,
-                    UiAction::ExportUtz(context.song.file_hash.clone()),
+                    UiAction::from(LibraryCommand::ExportUtz(context.song.file_hash.clone())),
                 );
                 spawn_text_button(
                     menu,
@@ -838,7 +845,9 @@ pub(crate) fn spawn_song_context_menu(
                     theme,
                     "Export UltraStar (.txt)",
                     11.0,
-                    UiAction::ExportUltraStar(context.song.file_hash.clone()),
+                    UiAction::from(LibraryCommand::ExportUltraStar(
+                        context.song.file_hash.clone(),
+                    )),
                 );
             }
             spawn_text_button(
@@ -847,7 +856,7 @@ pub(crate) fn spawn_song_context_menu(
                 theme,
                 "Open with default app",
                 11.0,
-                UiAction::OpenSource(context.song.path.clone()),
+                UiAction::from(LibraryCommand::OpenSource(context.song.path.clone())),
             );
             spawn_text_button(
                 menu,
@@ -855,7 +864,7 @@ pub(crate) fn spawn_song_context_menu(
                 theme,
                 "Show in file manager",
                 11.0,
-                UiAction::RevealSource(context.song.path.clone()),
+                UiAction::from(LibraryCommand::RevealSource(context.song.path.clone())),
             );
         });
 }
@@ -889,6 +898,7 @@ pub(crate) fn spawn_library_song_row(
     parent
         .spawn((
             Button,
+            UiPointerApi(&["ui.pointer.song.primary", "ui.pointer.song.secondary"]),
             Node {
                 width: percent(100),
                 min_height: px(60),
@@ -1020,11 +1030,21 @@ pub(crate) fn spawn_library_song_row(
             });
         })
         .observe(
-            move |mut event: On<Pointer<Click>>,
-                  mut session: ResMut<StudioSession>,
+            move |mut event: On<Pointer<Press>>,
+                  mut shell: ResMut<ShellState>,
+                  mut library: ResMut<LibraryState>,
+                  mut dialogs: ResMut<DialogState>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                open_song_from_click(&event, &context_song, &mut session, &mut invalidated);
+                open_song_from_pointer(
+                    event.button,
+                    event.pointer_location.position,
+                    &context_song,
+                    &mut shell,
+                    &mut library,
+                    &mut dialogs,
+                    &mut invalidated,
+                );
             },
         );
 }
@@ -1042,6 +1062,7 @@ pub(crate) fn spawn_library_song_card(
     parent
         .spawn((
             Button,
+            UiPointerApi(&["ui.pointer.song.primary", "ui.pointer.song.secondary"]),
             Node {
                 width: px(172),
                 min_height: px(226),
@@ -1092,35 +1113,48 @@ pub(crate) fn spawn_library_song_card(
             }
         })
         .observe(
-            move |mut event: On<Pointer<Click>>,
-                  mut session: ResMut<StudioSession>,
+            move |mut event: On<Pointer<Press>>,
+                  mut shell: ResMut<ShellState>,
+                  mut library: ResMut<LibraryState>,
+                  mut dialogs: ResMut<DialogState>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
-                open_song_from_click(&event, &context_song, &mut session, &mut invalidated);
+                open_song_from_pointer(
+                    event.button,
+                    event.pointer_location.position,
+                    &context_song,
+                    &mut shell,
+                    &mut library,
+                    &mut dialogs,
+                    &mut invalidated,
+                );
             },
         );
 }
 
-pub(crate) fn open_song_from_click(
-    event: &Pointer<Click>,
+pub(crate) fn open_song_from_pointer(
+    button: PointerButton,
+    position: Vec2,
     song: &Song,
-    session: &mut StudioSession,
+    shell: &mut ShellState,
+    library: &mut LibraryState,
+    dialogs: &mut DialogState,
     invalidated: &mut UiInvalidated,
 ) {
-    match event.button {
+    match button {
         PointerButton::Primary => {
-            session.selected_song = Some(song.file_hash.clone());
-            session.route = StudioRoute::SongDetail;
-            session.song_context = None;
-            session.notice = None;
+            library.selected_song = Some(song.file_hash.clone());
+            shell.route = StudioRoute::SongDetail;
+            dialogs.song_context = None;
+            shell.notice = None;
         }
         PointerButton::Secondary => {
-            session.song_context = Some(SongContextMenu {
+            dialogs.song_context = Some(SongContextMenu {
                 song: song.clone(),
-                position: event.pointer_location.position,
+                position,
             });
         }
         PointerButton::Middle => return,
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Library);
 }

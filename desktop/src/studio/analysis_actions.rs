@@ -15,7 +15,7 @@ pub(crate) struct AnalysisGraphViewport {
 pub(crate) struct AppLogViewerScroll;
 
 /// §7.5 "Node Context Menu" for a compute node, opened on secondary-click
-/// (`open_analysis_node_from_click`). `retry_action` reuses the same
+/// (`open_analysis_node_from_pointer`). `retry_action` reuses the same
 /// coarse-grained `Reanalyze*`/`RealignSong` commands Song Detail already
 /// calls (`analysis_node_retry_action`). "Run this node only" and "Disable
 /// for this run" go through Phase 4's generic per-node executor
@@ -270,7 +270,7 @@ pub(crate) fn spawn_app_log_viewer(
     // out of reach in the first place (see below).
     parent.spawn((
         Button,
-        UiAction::CloseAppLogViewer,
+        UiAction::from(AnalysisCommand::CloseAppLogViewer),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -404,7 +404,7 @@ pub(crate) fn spawn_app_log_viewer(
                                     theme,
                                     "Open log file",
                                     10.0,
-                                    UiAction::OpenAppLogFile,
+                                    UiAction::from(AnalysisCommand::OpenAppLogFile),
                                 );
                             }
                             spawn_action_button(
@@ -412,7 +412,7 @@ pub(crate) fn spawn_app_log_viewer(
                                 font,
                                 theme,
                                 "Close",
-                                UiAction::CloseAppLogViewer,
+                                UiAction::from(AnalysisCommand::CloseAppLogViewer),
                             );
                         });
                 });
@@ -508,7 +508,7 @@ pub(crate) fn spawn_node_config_dialog(
                     let current_label = settings_select_label(kind, &dialog.value);
                     body.spawn((
                         Button,
-                        UiAction::ToggleNodeConfigPicker,
+                        UiAction::from(AnalysisCommand::ToggleNodeConfigPicker),
                         Node {
                             width: percent(100),
                             height: px(40),
@@ -560,7 +560,7 @@ pub(crate) fn spawn_node_config_dialog(
                                 picker
                                     .spawn((
                                         Button,
-                                        UiAction::SelectNodeConfigValue((*value).into()),
+                                        UiAction::from(AnalysisCommand::SelectNodeConfigValue((*value).into())),
                                         Node {
                                             width: percent(100),
                                             min_height: px(30),
@@ -607,14 +607,14 @@ pub(crate) fn spawn_node_config_dialog(
                             theme,
                             "Cancel",
                             10.0,
-                            UiAction::CloseNodeConfigDialog,
+                            UiAction::from(AnalysisCommand::CloseNodeConfigDialog),
                         );
                         spawn_action_button(
                             actions,
                             font,
                             theme,
                             "Run with this configuration",
-                            UiAction::RunNodeConfigDialog,
+                            UiAction::from(AnalysisCommand::RunNodeConfigDialog),
                         );
                     });
                 });
@@ -625,18 +625,18 @@ pub(crate) fn spawn_node_config_dialog(
 /// `handle_library_search_keyboard`'s Escape-closes-search handling.
 pub(crate) fn handle_plan_preview_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
-    mut session: ResMut<StudioSession>,
+    mut dialogs: ResMut<DialogState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if session.plan_preview_draft.is_some() {
-        session.plan_preview_draft = None;
-        invalidated.0 = true;
-    } else if session.app_log_viewer.is_some() {
-        session.app_log_viewer = None;
-        invalidated.0 = true;
+    if dialogs.plan_preview_draft.is_some() {
+        dialogs.plan_preview_draft = None;
+        invalidated.invalidate(UiDirtyRegion::Analysis);
+    } else if dialogs.app_log_viewer.is_some() {
+        dialogs.app_log_viewer = None;
+        invalidated.invalidate(UiDirtyRegion::Analysis);
     }
 }
 
@@ -648,10 +648,10 @@ pub(crate) fn handle_plan_preview_keyboard(
 pub(crate) fn handle_app_log_viewer_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
-    session: Res<StudioSession>,
+    dialogs: Res<DialogState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AppLogViewerScroll>>,
 ) {
-    if session.app_log_viewer.is_none() {
+    if dialogs.app_log_viewer.is_none() {
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
@@ -707,7 +707,7 @@ pub(crate) fn spawn_plan_preview_dialog(
     // swallow clicks meant for this backdrop outside the 520px panel.
     parent.spawn((
         Button,
-        UiAction::ClosePlanPreview,
+        UiAction::from(AnalysisCommand::ClosePlanPreview),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -775,7 +775,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                             .contains(&app_core::AnalysisNodeId::new(*node_id));
                         body.spawn((
                             Button,
-                            UiAction::TogglePlanPreviewDisabledNode((*node_id).to_string()),
+                            UiAction::from(AnalysisCommand::TogglePlanPreviewDisabledNode((*node_id).to_string())),
                             Node {
                                 width: percent(100),
                                 min_height: px(36),
@@ -860,14 +860,14 @@ pub(crate) fn spawn_plan_preview_dialog(
                             theme,
                             "Cancel",
                             10.0,
-                            UiAction::ClosePlanPreview,
+                            UiAction::from(AnalysisCommand::ClosePlanPreview),
                         );
                         spawn_action_button(
                             actions,
                             font,
                             theme,
                             "Run this plan",
-                            UiAction::RunPlanPreviewDraft,
+                            UiAction::from(AnalysisCommand::RunPlanPreviewDraft),
                         );
                     });
                 });
@@ -882,10 +882,12 @@ pub(crate) fn spawn_plan_preview_dialog(
 /// without a finer existing command.
 pub(crate) fn analysis_node_retry_action(node_id: &str, file_hash: &str) -> UiAction {
     match node_id {
-        "pitch.extract" => UiAction::ReanalyzePitch(file_hash.to_string()),
-        "lyrics.align" => UiAction::RealignSong(file_hash.to_string()),
-        "lyrics.transcribe" => UiAction::ReanalyzeTranscript(file_hash.to_string()),
-        _ => UiAction::ReanalyzeFull(file_hash.to_string()),
+        "pitch.extract" => UiAction::from(AnalysisCommand::ReanalyzePitch(file_hash.to_string())),
+        "lyrics.align" => UiAction::from(AnalysisCommand::RealignSong(file_hash.to_string())),
+        "lyrics.transcribe" => {
+            UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))
+        }
+        _ => UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
     }
 }
 
@@ -907,7 +909,7 @@ pub(crate) fn node_can_refetch_and_align(node_id: &str) -> bool {
 
 /// `(button label, action)` for the compound-node expand/collapse toggle,
 /// or `None` when `node_id` isn't a compound node at all. Shared by the
-/// real click path (`open_analysis_node_from_click`) and the
+/// real pointer path (`open_analysis_node_from_pointer`) and the
 /// `UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT` debug-injection path in
 /// `desktop/src/studio/mod.rs`, so the two can't drift.
 pub(crate) fn analysis_node_compound_toggle_action(
@@ -927,7 +929,9 @@ pub(crate) fn analysis_node_compound_toggle_action(
     };
     Some((
         label,
-        UiAction::ToggleAnalysisCompoundNode(node_id.to_string()),
+        UiAction::from(AnalysisCommand::ToggleAnalysisCompoundNode(
+            node_id.to_string(),
+        )),
     ))
 }
 
@@ -1000,97 +1004,113 @@ pub(crate) fn overlay_stale_candidate_chart(
     plan
 }
 
-/// `menu_position` is the click already converted into the analysis list's
-/// own local space (`LibrarySongList`'s `UiGlobalTransform`) -- the context
-/// menu is spawned as a direct absolute-positioned child of that same list,
-/// so this is the coordinate space its `left`/`top` actually need, not raw
-/// window pixels (which used to be corrected with a hand-tuned
-/// `SIDEBAR_WIDTH`/header-height guess that drifted out of sync with the
-/// real layout).
-pub(crate) fn open_analysis_node_from_click(
-    event: &Pointer<Click>,
+pub(crate) struct AnalysisNodeClickTarget<'a> {
+    pub(crate) node_id: &'a str,
+    pub(crate) label: &'a str,
+    pub(crate) file_hash: &'a str,
+    pub(crate) stage_id: &'a str,
+}
+
+pub(crate) fn open_analysis_node_from_pointer(
+    button: PointerButton,
     menu_position: Vec2,
-    node_id: &str,
-    label: &str,
-    file_hash: &str,
-    stage_id: &str,
-    session: &mut StudioSession,
+    target: AnalysisNodeClickTarget,
+    analysis: &mut AnalysisUiState,
+    dialogs: &mut DialogState,
     invalidated: &mut UiInvalidated,
 ) {
-    match event.button {
+    let AnalysisNodeClickTarget {
+        node_id,
+        label,
+        file_hash,
+        stage_id,
+    } = target;
+    match button {
         PointerButton::Primary => {
-            session.selected_analysis_stage = Some(stage_id.to_string());
-            session.analysis_node_context = None;
+            analysis.selected_analysis_stage = Some(stage_id.to_string());
+            dialogs.analysis_node_context = None;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         PointerButton::Secondary => {
-            let is_expanded = session
+            let is_expanded = analysis
                 .expanded_compound_nodes
                 .contains(&app_core::AnalysisNodeId::new(node_id));
-            session.analysis_node_context = Some(AnalysisNodeContextMenu {
+            dialogs.analysis_node_context = Some(AnalysisNodeContextMenu {
                 node_id: node_id.to_string(),
                 stage_id: stage_id.to_string(),
                 label: label.to_string(),
                 retry_action: analysis_node_retry_action(node_id, file_hash),
-                run_node_only_action: UiAction::RunAnalysisNodeOnly(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                ),
-                run_downstream_action: UiAction::RunAnalysisNodeDownstream(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                ),
-                disable_node_action: app_core::node_can_be_disabled_for_run(node_id).then(|| {
-                    UiAction::DisableAnalysisNodeForRun(file_hash.to_string(), node_id.to_string())
-                }),
-                freeze_node_action: app_core::node_can_be_frozen_for_run(file_hash, node_id).then(
-                    || {
-                        UiAction::FreezeAnalysisNodeOutputs(
-                            file_hash.to_string(),
-                            node_id.to_string(),
-                        )
-                    },
-                ),
-                bypass_node_action: app_core::node_can_be_bypassed_for_run(node_id).then(|| {
-                    UiAction::BypassAnalysisNodeWithOriginalMix(
-                        file_hash.to_string(),
-                        node_id.to_string(),
-                    )
-                }),
-                compare_node_action: session.selected_analysis_history.map(|run_id| {
-                    UiAction::CompareNodeAttemptWithPrevious(
-                        file_hash.to_string(),
-                        node_id.to_string(),
-                        run_id,
-                    )
-                }),
-                save_as_song_profile_action: app_core::node_can_be_configured_for_run(node_id)
-                    .then(|| {
-                        UiAction::SaveNodeConfigAsSongProfile(
-                            file_hash.to_string(),
-                            node_id.to_string(),
-                        )
-                    }),
-                open_configure_dialog_action: app_core::node_can_be_configured_for_run(node_id)
-                    .then(|| {
-                        UiAction::OpenNodeConfigDialog(file_hash.to_string(), node_id.to_string())
-                    }),
-                force_transcribe_action: node_can_force_transcribe(node_id)
-                    .then(|| UiAction::ForceTranscribe(file_hash.to_string())),
-                refetch_align_action: node_can_refetch_and_align(node_id)
-                    .then(|| UiAction::ReanalyzeTranscript(file_hash.to_string())),
-                capture_intermediate_action: (node_id == "lyrics.preprocess")
-                    .then(|| UiAction::RequestCaptureIntermediate(file_hash.to_string())),
-                view_logs_action: Some(UiAction::OpenAppLogViewer(
+                run_node_only_action: UiAction::from(AnalysisCommand::RunAnalysisNodeOnly(
                     file_hash.to_string(),
                     node_id.to_string(),
                 )),
+                run_downstream_action: UiAction::from(AnalysisCommand::RunAnalysisNodeDownstream(
+                    file_hash.to_string(),
+                    node_id.to_string(),
+                )),
+                disable_node_action: app_core::node_can_be_disabled_for_run(node_id).then(|| {
+                    UiAction::from(AnalysisCommand::DisableAnalysisNodeForRun(
+                        file_hash.to_string(),
+                        node_id.to_string(),
+                    ))
+                }),
+                freeze_node_action: app_core::node_can_be_frozen_for_run(file_hash, node_id).then(
+                    || {
+                        UiAction::from(AnalysisCommand::FreezeAnalysisNodeOutputs(
+                            file_hash.to_string(),
+                            node_id.to_string(),
+                        ))
+                    },
+                ),
+                bypass_node_action: app_core::node_can_be_bypassed_for_run(node_id).then(|| {
+                    UiAction::from(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
+                        file_hash.to_string(),
+                        node_id.to_string(),
+                    ))
+                }),
+                compare_node_action: analysis.selected_analysis_history.map(|run_id| {
+                    UiAction::from(AnalysisCommand::CompareNodeAttemptWithPrevious(
+                        file_hash.to_string(),
+                        node_id.to_string(),
+                        run_id,
+                    ))
+                }),
+                save_as_song_profile_action: app_core::node_can_be_configured_for_run(node_id)
+                    .then(|| {
+                        UiAction::from(AnalysisCommand::SaveNodeConfigAsSongProfile(
+                            file_hash.to_string(),
+                            node_id.to_string(),
+                        ))
+                    }),
+                open_configure_dialog_action: app_core::node_can_be_configured_for_run(node_id)
+                    .then(|| {
+                        UiAction::from(AnalysisCommand::OpenNodeConfigDialog(
+                            file_hash.to_string(),
+                            node_id.to_string(),
+                        ))
+                    }),
+                force_transcribe_action: node_can_force_transcribe(node_id).then(|| {
+                    UiAction::from(AnalysisCommand::ForceTranscribe(file_hash.to_string()))
+                }),
+                refetch_align_action: node_can_refetch_and_align(node_id).then(|| {
+                    UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))
+                }),
+                capture_intermediate_action: (node_id == "lyrics.preprocess").then(|| {
+                    UiAction::from(AnalysisCommand::RequestCaptureIntermediate(
+                        file_hash.to_string(),
+                    ))
+                }),
+                view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAppLogViewer(
+                    file_hash.to_string(),
+                    node_id.to_string(),
+                ))),
                 compound_toggle: analysis_node_compound_toggle_action(node_id, is_expanded),
                 position: menu_position,
             });
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         PointerButton::Middle => return,
     }
-    invalidated.0 = true;
 }
 
 pub(crate) fn spawn_analysis_node_context_menu(
@@ -1101,7 +1121,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissAnalysisNodeContext,
+        UiAction::from(AnalysisCommand::DismissAnalysisNodeContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -1113,10 +1133,8 @@ pub(crate) fn spawn_analysis_node_context_menu(
         BackgroundColor(Color::NONE),
         ZIndex(40),
     ));
-    // `context.position` already arrived in the list's own local space
-    // (see `open_analysis_node_from_click`'s doc comment) -- this is a
-    // direct absolute-positioned child of that same list, so no further
-    // correction is needed here.
+    // Node context menus live in the window-sized overlay region, so the
+    // raw window position can be used directly without rebuilding the DAG.
     let left = context.position.x.max(8.0);
     let top = context.position.y.max(8.0);
     parent
@@ -1163,7 +1181,9 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 theme,
                 "Inspect view",
                 11.0,
-                UiAction::OpenAnalysisInspect(context.stage_id.clone()),
+                UiAction::from(AnalysisCommand::OpenAnalysisInspect(
+                    context.stage_id.clone(),
+                )),
             );
             spawn_menu_text_button(
                 menu,
@@ -1280,7 +1300,14 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 );
             }
             if let Some((toggle_label, toggle_action)) = context.compound_toggle.clone() {
-                spawn_menu_text_button(menu, font.clone(), theme, toggle_label, 11.0, toggle_action);
+                spawn_menu_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    toggle_label,
+                    11.0,
+                    toggle_action,
+                );
             }
             spawn_menu_text_button(
                 menu,
@@ -1288,9 +1315,9 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 theme,
                 "Open node documentation",
                 11.0,
-                UiAction::OpenDocumentation(Some(
+                UiAction::from(AppCommand::OpenDocumentation(Some(
                     documentation_anchor_for_node(&context.node_id).to_string(),
-                )),
+                ))),
             );
             if let Some(view_logs_action) = context.view_logs_action.clone() {
                 spawn_menu_text_button(

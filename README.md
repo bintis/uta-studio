@@ -40,6 +40,15 @@ repository-level [`AGENTS.md`](AGENTS.md).
 
 The native interface supports English, Simplified Chinese, and Japanese. Select the language in **Settings > General > Interface language**; English remains the fallback for untranslated copy.
 
+## Supported platforms
+
+- **Linux:** supported on native Wayland desktops. Editor and library audition use the packaged GStreamer runtime with PipeWire/Pulse output.
+- **Windows 10/11 x86-64:** supported by the portable ZIP. Editor and library audition use the system WASAPI output; FLAC, MP3, WAV, Ogg/Vorbis, and common AAC/MP4 inputs are decoded in process, with no separately installed codec pack.
+
+Analysis tools and models are installed only after explicit confirmation in
+**Settings > Models & runtime**. A platform package being present never starts
+an automatic runtime or model download.
+
 ## Build
 
 ```sh

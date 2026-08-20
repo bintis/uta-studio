@@ -225,7 +225,7 @@ pub(crate) fn spawn_setup_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelSetup,
+                            UiAction::from(SettingsCommand::CancelSetup),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -240,7 +240,7 @@ pub(crate) fn spawn_setup_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmSetup,
+                            UiAction::from(SettingsCommand::ConfirmSetup),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),
@@ -327,7 +327,7 @@ pub(crate) fn spawn_global_cache_confirmation(
                     children![
                         (
                             Button,
-                            UiAction::CancelClearCache,
+                            UiAction::from(SettingsCommand::CancelClearCache),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 ..default()
@@ -341,7 +341,7 @@ pub(crate) fn spawn_global_cache_confirmation(
                         ),
                         (
                             Button,
-                            UiAction::ConfirmClearCache,
+                            UiAction::from(SettingsCommand::ConfirmClearCache),
                             Node {
                                 padding: UiRect::axes(px(13), px(8)),
                                 border_radius: BorderRadius::all(px(5)),

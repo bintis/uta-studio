@@ -921,6 +921,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Build a validated in-memory Authored working copy from exact Candidate and Authored revisions without mutating either source"
     ),
     capability!(
+        "desktop ui",
+        "ui_interaction_capabilities",
+        "read",
+        true,
+        "List every button, menu, context-menu, and direct pointer interaction exposed by the native shell"
+    ),
+    capability!(
+        "desktop ui",
+        "dispatch_ui_interaction",
+        "mutation",
+        true,
+        "Dispatch a structured native-shell interaction request through the same typed command used by pointer and keyboard input"
+    ),
+    capability!(
         "diagnostics",
         "api_capabilities",
         "read",

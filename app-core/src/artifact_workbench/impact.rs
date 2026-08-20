@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    analysis_graph::baseline_graph_spec,
+    analysis_plan::{AnalysisPlan, AnalysisRequest, NodeState},
+};
 
 pub(crate) fn request_fingerprint(request: &AnalysisRequest) -> String {
     serde_json::to_string(&(

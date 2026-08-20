@@ -4,7 +4,11 @@ use crate::studio::*;
 pub(crate) fn open_library_entry(path: &std::path::Path, config: &AppConfig) -> String {
     match validate_source_path(path, config) {
         Ok(path) => match open::that_detached(&path) {
-            Ok(()) => format!("Opened {}", path.display()),
+            Ok(()) => localized_message(
+                config,
+                UiMessage::PathOpened,
+                &[("{path}", &path.display().to_string())],
+            ),
             Err(error) => format!("Could not open {}: {error}", path.display()),
         },
         Err(error) => format!("Could not open this library item: {error}"),
@@ -53,11 +57,15 @@ pub(crate) fn validate_cache_path(
 /// `reveal_artifact_entry` already uses. Opens the artifact file itself
 /// (whatever the OS's default handler for its extension is), not its
 /// containing folder.
-pub(crate) fn open_artifact_entry(path: &std::path::Path) -> String {
+pub(crate) fn open_artifact_entry(path: &std::path::Path, config: &AppConfig) -> String {
     let cache_root = app_core::CacheDir::new().path;
     match validate_cache_path(path, &cache_root) {
         Ok(path) => match open::that_detached(&path) {
-            Ok(()) => format!("Opened {}", path.display()),
+            Ok(()) => localized_message(
+                config,
+                UiMessage::PathOpened,
+                &[("{path}", &path.display().to_string())],
+            ),
             Err(error) => format!("Could not open {}: {error}", path.display()),
         },
         Err(error) => format!("Could not open this artifact: {error}"),
@@ -251,28 +259,28 @@ pub(crate) fn safe_file_stem(value: &str) -> String {
 pub(crate) fn refresh_library_while_scanning(
     time: Res<Time>,
     mut timer: ResMut<LibraryRefreshTimer>,
-    mut session: ResMut<StudioSession>,
+    mut library: ResMut<LibraryState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if !session.scanning || !timer.0.tick(time.delta()).just_finished() {
+    if !library.scanning || !timer.0.tick(time.delta()).just_finished() {
         return;
     }
     let previous = (
-        session.meta.processed_count,
-        session.meta.songs_count,
-        session.meta.videos_count,
+        library.meta.processed_count,
+        library.meta.songs_count,
+        library.meta.videos_count,
     );
-    session.refresh_library();
+    library.refresh();
     let current = (
-        session.meta.processed_count,
-        session.meta.songs_count,
-        session.meta.videos_count,
+        library.meta.processed_count,
+        library.meta.songs_count,
+        library.meta.videos_count,
     );
     if current != previous {
-        invalidated.0 = true;
+        invalidated.invalidate(UiDirtyRegion::Library);
     }
-    if session.meta.processed_count >= session.meta.count && session.meta.count > 0 {
-        session.scanning = false;
-        invalidated.0 = true;
+    if library.meta.processed_count >= library.meta.count && library.meta.count > 0 {
+        library.scanning = false;
+        invalidated.invalidate(UiDirtyRegion::Library);
     }
 }

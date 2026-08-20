@@ -1,4 +1,3 @@
-use super::*;
 use crate::studio::*;
 
 #[derive(Clone, Copy)]
@@ -17,14 +16,6 @@ impl AnalysisGraphBox {
             width,
             height,
         }
-    }
-
-    pub(crate) fn left_port(self) -> Vec2 {
-        Vec2::new(self.x, self.y + self.height / 2.0)
-    }
-
-    pub(crate) fn right_port(self) -> Vec2 {
-        Vec2::new(self.x + self.width, self.y + self.height / 2.0)
     }
 }
 
@@ -145,12 +136,12 @@ pub(crate) fn spawn_activity_center(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent.spawn((
         Button,
-        UiAction::CloseActivity,
+        UiAction::from(AppCommand::CloseActivity),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -201,7 +192,7 @@ pub(crate) fn spawn_activity_center(
                         theme,
                         "Close",
                         10.0,
-                        UiAction::CloseActivity,
+                        UiAction::from(AppCommand::CloseActivity),
                     );
                 });
             spawn_wrapped_text(
@@ -322,7 +313,9 @@ pub(crate) fn spawn_activity_center(
                                         theme,
                                         "Cancel",
                                         9.0,
-                                        UiAction::CancelAnalysisRun(task.file_hash.clone()),
+                                        UiAction::from(AnalysisCommand::CancelAnalysisRun(
+                                            task.file_hash.clone(),
+                                        )),
                                     );
                                 }
                             });
@@ -382,7 +375,7 @@ pub(crate) fn spawn_activity_center(
                 font,
                 theme,
                 "Open analysis queue",
-                UiAction::SetLibraryView(LibraryView::Queue),
+                UiAction::from(LibraryCommand::SetLibraryView(LibraryView::Queue)),
             );
         });
 }
@@ -433,7 +426,14 @@ pub(crate) fn analysis_node_stage_index(node_id: &str) -> Option<usize> {
         "preflight" | "music.analysis" | "music.key" | "music.rhythm" | "music.descriptors" => {
             Some(0)
         }
-        "stems.separate" => Some(1),
+        "stems.separate"
+        | "stems.vocals"
+        | "vocals.denoise"
+        | "vocals.dereverb"
+        | "stems.instrumental"
+        | "stems.karaoke"
+        | "stems.multistem"
+        | "stems.bind_analysis_outputs" => Some(1),
         "pitch.extract" => Some(2),
         "lyrics.preprocess" => Some(3),
         "lyrics.transcribe" => Some(4),
@@ -599,8 +599,8 @@ pub(crate) fn format_artifact_provenance(revision: &app_core::ArtifactRevision) 
         revision.kind,
         revision.producer_node,
         revision.algorithm_version,
-        &revision.config_hash.chars().take(12).collect::<String>(),
-        &revision.content_hash.chars().take(12).collect::<String>(),
+        revision.config_hash.chars().take(12).collect::<String>(),
+        revision.content_hash.chars().take(12).collect::<String>(),
         input_summary,
         format_epoch_ms(revision.created_at_ms),
     )
@@ -734,7 +734,7 @@ pub(crate) fn node_state_copy(state: app_core::NodeState) -> &'static str {
 }
 
 /// The canonical bucket-string id `analysis_stage_details`/
-/// `analysis_stage_matches`/`UiAction::SelectAnalysisStage` already key
+/// `analysis_stage_matches` and graph-node actions already key
 /// selection and copy off of. Exact inverse of `analysis_stage_index`'s
 /// primary (non-alias) branch for each bucket.
 pub(crate) fn bucket_stage_id(bucket: usize) -> &'static str {
@@ -841,6 +841,7 @@ pub(crate) fn find_matching_route<'a>(
 /// Complete case; Running/Waiting/etc. keep the route/task-derived number,
 /// which is already correct and more granular (0-99%) than a node state
 /// alone can be.
+#[cfg(test)]
 pub(crate) fn selected_progress_and_status(
     render_state: Option<GraphNodeState>,
     route_progress: usize,

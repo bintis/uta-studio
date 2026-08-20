@@ -19,7 +19,7 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 
 - Do not introduce avoidable lossy generations. Lossless source or generated audio is stored/exported as FLAC; lossy audio is stored/exported as MP3.
 - Never label lossy bytes as FLAC or a MIME type that does not match the actual payload.
-- The editor auditions supported sources through the local in-process command boundary with native GStreamer playback. It plays the chosen source unchanged; unsupported containers may get a cached FLAC/MP3 compatibility preview following the rule above. Waveform visualization may read authorized local media separately while playback is stopped.
+- The editor auditions supported sources through the local in-process command boundary with native GStreamer playback on Linux and WASAPI playback on Windows. It plays the chosen source unchanged; unsupported containers may get a cached FLAC/MP3 compatibility preview following the rule above. Waveform visualization may read authorized local media separately while playback is stopped.
 - Every export is atomic, validates its target extension, does not silently overwrite user files, and cleans failed temporary output.
 - UTZ and UltraStar are both first-class outputs. Changes to chart authoring must be covered by both exporters where relevant.
 

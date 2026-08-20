@@ -44,7 +44,7 @@ pub use analysis_capture_requests::{
     analysis_capture_request_upsert,
 };
 pub use analysis_history::{
-    analysis_history_clear, analysis_history_insert, analysis_history_load,
+    NewAnalysisHistory, analysis_history_clear, analysis_history_insert, analysis_history_load,
     analysis_history_set_error,
 };
 pub use analysis_node_artifacts::{

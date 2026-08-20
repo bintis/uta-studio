@@ -1,0 +1,38 @@
+[package]
+name = "uta-studio-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+uta-studio-core = { path = "../app-core" }
+utz = { path = "../vendor/utz" }
+
+[[bin]]
+name = "utz_package"
+path = "fuzz_targets/utz_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vocal_chart_json"
+path = "fuzz_targets/vocal_chart_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ultrastar_text"
+path = "fuzz_targets/ultrastar_text.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

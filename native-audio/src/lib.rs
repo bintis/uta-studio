@@ -1,8 +1,9 @@
 //! Native, UI-framework-independent audition playback for Uta Studio.
 //!
-//! The editor deliberately uses GStreamer on Linux instead of a UI toolkit's
-//! media element. Keeping this crate independent from Bevy makes transport and
-//! accurate-seek behavior directly testable without the UI runtime.
+//! The editor deliberately uses platform-native output instead of a UI
+//! toolkit's media element: GStreamer/PipeWire on Linux and WASAPI on Windows.
+//! Keeping this crate independent from Bevy makes transport and accurate-seek
+//! behavior directly testable without the UI runtime.
 
 use std::sync::Mutex;
 
@@ -23,152 +24,89 @@ pub struct EditorAudioStatus {
 }
 
 pub struct EditorAudioPlayer {
-    #[cfg(target_os = "linux")]
-    inner: Mutex<linux::PlayerInner>,
-    initialization_error: Option<String>,
+    backend: Mutex<BackendState>,
+}
+
+trait AudioBackend: Send {
+    fn name(&self) -> &'static str;
+    fn load(&mut self, path: &std::path::Path) -> Result<EditorAudioStatus, String>;
+    fn play(&mut self) -> Result<EditorAudioStatus, String>;
+    fn pause(&mut self) -> Result<EditorAudioStatus, String>;
+    fn seek(&mut self, position_secs: f64) -> Result<EditorAudioStatus, String>;
+    fn set_volume(&mut self, volume: f64) -> Result<EditorAudioStatus, String>;
+    fn status(&mut self) -> Result<EditorAudioStatus, String>;
+    fn stop(&mut self) -> Result<EditorAudioStatus, String>;
+}
+
+enum BackendState {
+    Ready(Box<dyn AudioBackend>),
+    Unavailable(String),
 }
 
 impl EditorAudioPlayer {
     pub fn new() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            let initialization_error = match gstreamer::init() {
-                Ok(()) => linux::required_plugins_error(),
-                Err(error) => Some(format!("Could not initialize native audio: {error}")),
-            };
-            Self {
-                inner: Mutex::new(linux::PlayerInner::default()),
-                initialization_error,
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Self {
-                initialization_error: Some(
-                    "Native editor audio is currently available in the Linux package".to_string(),
-                ),
-            }
+        let backend = match platform_backend() {
+            Ok(backend) => BackendState::Ready(backend),
+            Err(error) => BackendState::Unavailable(error),
+        };
+        Self {
+            backend: Mutex::new(backend),
         }
     }
 
-    fn ready(&self) -> Result<(), String> {
-        match &self.initialization_error {
-            Some(error) => Err(error.clone()),
-            None => Ok(()),
+    fn with_backend<T>(
+        &self,
+        operation: impl FnOnce(&mut dyn AudioBackend) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self
+            .backend
+            .lock()
+            .map_err(|_| "Native audio player lock is poisoned".to_string())?;
+        match &mut *state {
+            BackendState::Ready(backend) => operation(backend.as_mut()),
+            BackendState::Unavailable(error) => Err(error.clone()),
         }
     }
 
     pub fn load(&self, file_hash: &str, source: &str) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            let path = audio_path(file_hash, source)?;
-            self.load_path(&path)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (file_hash, source);
-            unreachable!("ready() returns the unsupported-platform error")
-        }
+        let path = audio_path(file_hash, source)?;
+        self.load_path(&path)
     }
 
     /// Load an already-authorized local source without creating a converted
     /// preview. The desktop library player only passes indexed song paths.
     pub fn load_path(&self, path: &std::path::Path) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            self.lock()?.load(path)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = path;
-            unreachable!("ready() returns the unsupported-platform error")
-        }
+        self.with_backend(|backend| backend.load(path))
     }
 
     pub fn play(&self) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            self.lock()?.play()
-        }
-        #[cfg(not(target_os = "linux"))]
-        unreachable!("ready() returns the unsupported-platform error")
+        self.with_backend(|backend| backend.play())
     }
 
     pub fn pause(&self) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            self.lock()?.pause()
-        }
-        #[cfg(not(target_os = "linux"))]
-        unreachable!("ready() returns the unsupported-platform error")
+        self.with_backend(|backend| backend.pause())
     }
 
     pub fn seek(&self, position_secs: f64) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            self.lock()?.seek(position_secs)
+        if !position_secs.is_finite() {
+            return Err("Audio seek position must be finite".to_string());
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = position_secs;
-            unreachable!("ready() returns the unsupported-platform error")
-        }
+        self.with_backend(|backend| backend.seek(position_secs))
     }
 
     pub fn set_volume(&self, volume: f64) -> Result<EditorAudioStatus, String> {
         if !volume.is_finite() {
             return Err("Audio volume must be finite".to_string());
         }
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            self.lock()?.set_volume(volume)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = volume;
-            unreachable!("ready() returns the unsupported-platform error")
-        }
+        self.with_backend(|backend| backend.set_volume(volume))
     }
 
     pub fn status(&self) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            Ok(self.lock()?.status())
-        }
-        #[cfg(not(target_os = "linux"))]
-        unreachable!("ready() returns the unsupported-platform error")
+        self.with_backend(|backend| backend.status())
     }
 
     pub fn stop(&self) -> Result<EditorAudioStatus, String> {
-        self.ready()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            Ok(self.lock()?.stop())
-        }
-        #[cfg(not(target_os = "linux"))]
-        unreachable!("ready() returns the unsupported-platform error")
-    }
-
-    #[cfg(target_os = "linux")]
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, linux::PlayerInner>, String> {
-        self.inner
-            .lock()
-            .map_err(|_| "Native audio player lock is poisoned".to_string())
+        self.with_backend(|backend| backend.stop())
     }
 }
 
@@ -176,6 +114,25 @@ impl Default for EditorAudioPlayer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_backend() -> Result<Box<dyn AudioBackend>, String> {
+    gstreamer::init().map_err(|error| format!("Could not initialize native audio: {error}"))?;
+    if let Some(error) = linux::required_plugins_error() {
+        return Err(error);
+    }
+    Ok(Box::new(linux::PlayerInner::default()))
+}
+
+#[cfg(target_os = "windows")]
+fn platform_backend() -> Result<Box<dyn AudioBackend>, String> {
+    Ok(Box::new(windows::PlayerInner::default()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn platform_backend() -> Result<Box<dyn AudioBackend>, String> {
+    Err("Native editor audio is supported on Linux and Windows".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -454,6 +411,270 @@ mod linux {
             self.stop();
         }
     }
+
+    impl super::AudioBackend for PlayerInner {
+        fn name(&self) -> &'static str {
+            "GStreamer"
+        }
+
+        fn load(&mut self, path: &Path) -> Result<EditorAudioStatus, String> {
+            PlayerInner::load(self, path)
+        }
+
+        fn play(&mut self) -> Result<EditorAudioStatus, String> {
+            PlayerInner::play(self)
+        }
+
+        fn pause(&mut self) -> Result<EditorAudioStatus, String> {
+            PlayerInner::pause(self)
+        }
+
+        fn seek(&mut self, position_secs: f64) -> Result<EditorAudioStatus, String> {
+            PlayerInner::seek(self, position_secs)
+        }
+
+        fn set_volume(&mut self, volume: f64) -> Result<EditorAudioStatus, String> {
+            PlayerInner::set_volume(self, volume)
+        }
+
+        fn status(&mut self) -> Result<EditorAudioStatus, String> {
+            Ok(PlayerInner::status(self))
+        }
+
+        fn stop(&mut self) -> Result<EditorAudioStatus, String> {
+            Ok(PlayerInner::stop(self))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::{
+        fs::File,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+
+    use super::{AudioBackend, EditorAudioStatus};
+
+    pub struct PlayerInner {
+        // Drop the player before its device sink so its source queue cannot
+        // outlive the WASAPI stream it feeds.
+        player: Option<Player>,
+        device_sink: Option<MixerDeviceSink>,
+        path: Option<PathBuf>,
+        duration_secs: f64,
+        ended: bool,
+        volume: f32,
+        stream_error: Arc<Mutex<Option<String>>>,
+    }
+
+    impl Default for PlayerInner {
+        fn default() -> Self {
+            Self {
+                player: None,
+                device_sink: None,
+                path: None,
+                duration_secs: 0.0,
+                ended: false,
+                volume: 1.0,
+                stream_error: Arc::new(Mutex::new(None)),
+            }
+        }
+    }
+
+    impl PlayerInner {
+        pub(super) fn load_source(
+            path: &Path,
+        ) -> Result<(Decoder<std::io::BufReader<File>>, f64), String> {
+            if !path.is_file() {
+                return Err(format!("Chart audio does not exist: {}", path.display()));
+            }
+            let file = File::open(path).map_err(|error| {
+                format!("Could not open chart audio {}: {error}", path.display())
+            })?;
+            let source = Decoder::try_from(file).map_err(|error| {
+                format!("Could not decode chart audio {}: {error}", path.display())
+            })?;
+            let duration_secs = source
+                .total_duration()
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(0.0);
+            Ok((source, duration_secs))
+        }
+
+        fn load(&mut self, path: &Path) -> Result<EditorAudioStatus, String> {
+            self.stop();
+            // Decode first so a malformed or unsupported file fails without
+            // opening the user's output device.
+            let (source, duration_secs) = Self::load_source(path)?;
+            let stream_error = Arc::clone(&self.stream_error);
+            let builder = DeviceSinkBuilder::from_default_device()
+                .map_err(|error| format!("Could not open the Windows audio output: {error}"))?
+                .with_error_callback(move |error| {
+                    if let Ok(mut current) = stream_error.lock() {
+                        *current = Some(format!("Windows audio output stopped: {error}"));
+                    }
+                });
+            let mut device_sink = builder
+                .open_sink_or_fallback()
+                .map_err(|error| format!("Could not open the Windows audio output: {error}"))?;
+            device_sink.log_on_drop(false);
+            let player = Player::connect_new(device_sink.mixer());
+            player.pause();
+            player.set_volume(self.volume);
+            player.append(source);
+
+            self.player = Some(player);
+            self.device_sink = Some(device_sink);
+            self.path = Some(path.to_path_buf());
+            self.duration_secs = duration_secs;
+            self.ended = false;
+            self.status()
+        }
+
+        fn play(&mut self) -> Result<EditorAudioStatus, String> {
+            if self.ended {
+                let path = self
+                    .path
+                    .clone()
+                    .ok_or_else(|| "Load chart audio before playing".to_string())?;
+                self.load(&path)?;
+            }
+            let player = self
+                .player
+                .as_ref()
+                .ok_or_else(|| "Load chart audio before playing".to_string())?;
+            player.play();
+            self.status()
+        }
+
+        fn pause(&mut self) -> Result<EditorAudioStatus, String> {
+            let player = self
+                .player
+                .as_ref()
+                .ok_or_else(|| "Load chart audio before pausing".to_string())?;
+            player.pause();
+            self.status()
+        }
+
+        fn seek(&mut self, position_secs: f64) -> Result<EditorAudioStatus, String> {
+            if !position_secs.is_finite() {
+                return Err("Audio seek position must be finite".to_string());
+            }
+            if self.ended {
+                let path = self
+                    .path
+                    .clone()
+                    .ok_or_else(|| "Load chart audio before seeking".to_string())?;
+                self.load(&path)?;
+            }
+            let player = self
+                .player
+                .as_ref()
+                .ok_or_else(|| "Load chart audio before seeking".to_string())?;
+            let position = if self.duration_secs > 0.0 {
+                position_secs.clamp(0.0, self.duration_secs)
+            } else {
+                position_secs.max(0.0)
+            };
+            player
+                .try_seek(Duration::from_secs_f64(position))
+                .map_err(|error| format!("Could not seek chart audio: {error}"))?;
+            self.ended = false;
+            self.status()
+        }
+
+        fn set_volume(&mut self, volume: f64) -> Result<EditorAudioStatus, String> {
+            if !volume.is_finite() {
+                return Err("Audio volume must be finite".to_string());
+            }
+            self.volume = volume.clamp(0.0, 1.0) as f32;
+            let player = self
+                .player
+                .as_ref()
+                .ok_or_else(|| "Load chart audio before setting volume".to_string())?;
+            player.set_volume(self.volume);
+            self.status()
+        }
+
+        fn status(&mut self) -> Result<EditorAudioStatus, String> {
+            let Some(player) = self.player.as_ref() else {
+                return Ok(EditorAudioStatus::default());
+            };
+            self.ended = player.empty();
+            let error = self
+                .stream_error
+                .lock()
+                .map_err(|_| "Windows audio error state lock is poisoned".to_string())?
+                .clone();
+            Ok(EditorAudioStatus {
+                loaded: self.path.is_some(),
+                playing: !player.is_paused() && !self.ended && error.is_none(),
+                position_secs: player.get_pos().as_secs_f64(),
+                duration_secs: self.duration_secs,
+                ended: self.ended,
+                error,
+            })
+        }
+
+        fn stop(&mut self) -> EditorAudioStatus {
+            if let Some(player) = self.player.take() {
+                player.stop();
+            }
+            self.device_sink = None;
+            self.path = None;
+            self.duration_secs = 0.0;
+            self.ended = false;
+            if let Ok(mut error) = self.stream_error.lock() {
+                *error = None;
+            }
+            EditorAudioStatus::default()
+        }
+    }
+
+    impl Drop for PlayerInner {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    impl AudioBackend for PlayerInner {
+        fn name(&self) -> &'static str {
+            "WASAPI"
+        }
+
+        fn load(&mut self, path: &Path) -> Result<EditorAudioStatus, String> {
+            PlayerInner::load(self, path)
+        }
+
+        fn play(&mut self) -> Result<EditorAudioStatus, String> {
+            PlayerInner::play(self)
+        }
+
+        fn pause(&mut self) -> Result<EditorAudioStatus, String> {
+            PlayerInner::pause(self)
+        }
+
+        fn seek(&mut self, position_secs: f64) -> Result<EditorAudioStatus, String> {
+            PlayerInner::seek(self, position_secs)
+        }
+
+        fn set_volume(&mut self, volume: f64) -> Result<EditorAudioStatus, String> {
+            PlayerInner::set_volume(self, volume)
+        }
+
+        fn status(&mut self) -> Result<EditorAudioStatus, String> {
+            PlayerInner::status(self)
+        }
+
+        fn stop(&mut self) -> Result<EditorAudioStatus, String> {
+            Ok(PlayerInner::stop(self))
+        }
+    }
 }
 
 fn audio_path(file_hash: &str, source: &str) -> Result<std::path::PathBuf, String> {
@@ -483,25 +704,17 @@ fn audio_path(file_hash: &str, source: &str) -> Result<std::path::PathBuf, Strin
 }
 
 pub fn probe_audio(path: &std::path::Path) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        gstreamer::init().map_err(|error| format!("Could not initialize native audio: {error}"))?;
-        let mut player = linux::PlayerInner::default();
-        let status = player.load(path)?;
-        if !status.loaded {
-            return Err("Native audio pipeline did not retain the selected source".to_string());
-        }
-        player.stop();
-        Ok(format!(
-            "Native GStreamer pipeline prepared {}",
-            path.display()
-        ))
+    let mut backend = platform_backend()?;
+    let status = backend.load(path)?;
+    if !status.loaded {
+        return Err("Native audio pipeline did not retain the selected source".to_string());
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = path;
-        Err("Native editor audio probe is currently available in the Linux package".to_string())
-    }
+    let backend_name = backend.name();
+    backend.stop()?;
+    Ok(format!(
+        "Native {backend_name} pipeline prepared {}",
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -529,6 +742,52 @@ mod tests {
             player.set_volume(f64::NAN).unwrap_err(),
             "Audio volume must be finite"
         );
+    }
+
+    #[test]
+    fn non_finite_seek_is_rejected_before_backend_access() {
+        let player = EditorAudioPlayer::new();
+        assert_eq!(
+            player.seek(f64::INFINITY).unwrap_err(),
+            "Audio seek position must be finite"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_decoder_prepares_pcm_without_an_output_device() {
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-windows-decoder-{}-{}.wav",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let samples = [0_i16, 500, -500, 1_000, -1_000, 500, -500, 0];
+        let data_len = (samples.len() * std::mem::size_of::<i16>()) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&path, wav).unwrap();
+
+        let result = windows::PlayerInner::load_source(&path);
+        let _ = std::fs::remove_file(&path);
+        let (_, duration_secs) = result.expect("embedded WAV must decode on Windows");
+        assert!(duration_secs > 0.0);
     }
 
     #[cfg(target_os = "linux")]

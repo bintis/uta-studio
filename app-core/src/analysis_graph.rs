@@ -289,6 +289,10 @@ impl AnalysisGraphSpec {
     }
 }
 
+// A graph node is a declarative record with eight independent schema fields;
+// grouping them would only hide names at the call sites without reducing
+// runtime coupling.
+#[allow(clippy::too_many_arguments)]
 fn spec(
     id: &str,
     label: &str,
@@ -403,7 +407,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
             "stems.vocals",
             "Vocal Extraction",
             &[SourceMedia],
-            &[RawVocalStem],
+            &[RawVocalStem, InstrumentalStem],
             Optional,
             Generalized,
             "1",
@@ -422,7 +426,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         spec(
             "vocals.dereverb",
             "Vocal Dereverb",
-            &[DenoisedVocalStem],
+            &[RawVocalStem, DenoisedVocalStem],
             &[DereverbedVocalStem],
             Optional,
             Generalized,
@@ -479,7 +483,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         spec(
             "pitch.extract",
             "Pitch Extraction",
-            &[VocalStem],
+            &[AnalysisVocalStem],
             &[PitchTrack, PitchNoteCandidates],
             Optional,
             Generalized,
@@ -488,8 +492,8 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         ),
         spec(
             "lyrics.preprocess",
-            "Lyrics Preprocessing",
-            &[VocalStem],
+            "Vocal Preprocessing",
+            &[AnalysisVocalStem],
             &[PreprocessedAudio],
             Optional,
             Generalized,
@@ -549,12 +553,14 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         edge("preflight", "stems.karaoke"),
         edge("preflight", "stems.multistem"),
         edge("stems.vocals", "vocals.denoise"),
+        edge("stems.vocals", "vocals.dereverb"),
+        edge("stems.vocals", "stems.bind_analysis_outputs"),
         edge("vocals.denoise", "vocals.dereverb"),
+        edge("vocals.denoise", "stems.bind_analysis_outputs"),
         edge("vocals.dereverb", "stems.bind_analysis_outputs"),
         edge("stems.instrumental", "stems.bind_analysis_outputs"),
-        edge("stems.separate", "stems.bind_analysis_outputs"),
-        edge("stems.separate", "pitch.extract"),
-        edge("stems.separate", "lyrics.preprocess"),
+        edge("stems.bind_analysis_outputs", "pitch.extract"),
+        edge("stems.bind_analysis_outputs", "lyrics.preprocess"),
         edge("lyrics.preprocess", "lyrics.transcribe"),
         edge("lyrics.preprocess", "lyrics.align"),
         edge("lyrics.transcribe", "lyrics.align"),
@@ -588,6 +594,71 @@ pub fn lyrics_route_node_ids() -> BTreeSet<AnalysisNodeId> {
     .into_iter()
     .map(AnalysisNodeId::new)
     .collect()
+}
+
+/// Optional stem-pipeline nodes that a settings snapshot can leave out of
+/// the plan universe. `stems.bind_analysis_outputs` stays required for
+/// charting; `stems.separate` stays as the MINI/compat shell.
+pub fn optional_stem_node_ids() -> BTreeSet<AnalysisNodeId> {
+    [
+        "stems.vocals",
+        "vocals.denoise",
+        "vocals.dereverb",
+        "stems.instrumental",
+        "stems.karaoke",
+        "stems.multistem",
+    ]
+    .into_iter()
+    .map(AnalysisNodeId::new)
+    .collect()
+}
+
+/// Default chart path when a request does not carry a settings snapshot:
+/// dedicated vocal extract plus bind, no cleanup or side paths.
+pub fn default_active_stem_nodes() -> BTreeSet<AnalysisNodeId> {
+    ["stems.vocals", "stems.bind_analysis_outputs"]
+        .into_iter()
+        .map(AnalysisNodeId::new)
+        .collect()
+}
+
+/// Compound shell plus every stem child. Disabling or bypassing
+/// `stems.separate` applies to this whole group so pitch/lyrics still see
+/// a single gate even though bind is the real ancestor.
+pub fn stem_group_node_ids() -> BTreeSet<AnalysisNodeId> {
+    let mut ids = optional_stem_node_ids();
+    ids.insert(AnalysisNodeId::new("stems.separate"));
+    ids.insert(AnalysisNodeId::new("stems.bind_analysis_outputs"));
+    ids
+}
+
+pub fn active_stem_nodes_from_settings(
+    settings: &crate::audio_processing::AudioProcessingSettings,
+) -> BTreeSet<AnalysisNodeId> {
+    let mut nodes = BTreeSet::new();
+    nodes.insert(AnalysisNodeId::new("stems.bind_analysis_outputs"));
+    if crate::audio_processing::is_demucs_chart_path(settings) {
+        nodes.insert(AnalysisNodeId::new("stems.multistem"));
+        return nodes;
+    }
+    nodes.insert(AnalysisNodeId::new("stems.vocals"));
+    for model_id in &settings.vocal_cleanup_chain {
+        if model_id.contains("denoise") {
+            nodes.insert(AnalysisNodeId::new("vocals.denoise"));
+        } else {
+            nodes.insert(AnalysisNodeId::new("vocals.dereverb"));
+        }
+    }
+    if settings.accompaniment_model_id.is_some() {
+        nodes.insert(AnalysisNodeId::new("stems.instrumental"));
+    }
+    if settings.karaoke_model_id.is_some() {
+        nodes.insert(AnalysisNodeId::new("stems.karaoke"));
+    }
+    if settings.multistem_model_id.is_some() {
+        nodes.insert(AnalysisNodeId::new("stems.multistem"));
+    }
+    nodes
 }
 
 #[cfg(test)]
@@ -627,9 +698,11 @@ mod tests {
     #[test]
     fn cycle_is_rejected() {
         let mut graph = baseline_graph_spec();
-        // pitch.extract already depends on stems.separate; force the reverse
-        // edge too so the two form a 2-cycle.
-        graph.edges.push(edge("pitch.extract", "stems.separate"));
+        // pitch.extract already depends on bind; force the reverse edge
+        // too so the two form a 2-cycle.
+        graph
+            .edges
+            .push(edge("pitch.extract", "stems.bind_analysis_outputs"));
         assert!(matches!(
             graph.validate(),
             Err(GraphValidationError::Cycle(_))
@@ -642,7 +715,8 @@ mod tests {
         let deps = graph.dependencies_of(&AnalysisNodeId::new("chart.build_candidate"));
         for expected in [
             "preflight",
-            "stems.separate",
+            "stems.vocals",
+            "stems.bind_analysis_outputs",
             "pitch.extract",
             "lyrics.preprocess",
             "lyrics.align",
@@ -654,26 +728,27 @@ mod tests {
                 "expected {expected} in dependency closure of chart.build_candidate"
             );
         }
-        // music.analysis and stems.separate are independent siblings under
-        // preflight (docs/analysis-dag-redesign.md §5) -- neither depends on
-        // the other, so chart.build_candidate's closure via stems must not
-        // pull in music.analysis.
+        // music.analysis is an independent sibling under preflight --
+        // chart.build_candidate's closure via stems must not pull it in.
         assert!(!deps.contains(&AnalysisNodeId::new("music.analysis")));
+        // stems.separate is only the MINI/compat shell, not an ancestor of
+        // the charting path.
+        assert!(!deps.contains(&AnalysisNodeId::new("stems.separate")));
     }
 
     #[test]
     fn music_analysis_and_stems_are_independent_siblings() {
         let graph = baseline_graph_spec();
         let music_deps = graph.dependencies_of(&AnalysisNodeId::new("music.analysis"));
-        let stems_deps = graph.dependencies_of(&AnalysisNodeId::new("stems.separate"));
-        assert!(!music_deps.contains(&AnalysisNodeId::new("stems.separate")));
+        let stems_deps = graph.dependencies_of(&AnalysisNodeId::new("stems.bind_analysis_outputs"));
+        assert!(!music_deps.contains(&AnalysisNodeId::new("stems.bind_analysis_outputs")));
         assert!(!stems_deps.contains(&AnalysisNodeId::new("music.analysis")));
     }
 
     #[test]
-    fn dependents_of_stems_separate_cover_pitch_and_lyrics_but_not_music_analysis() {
+    fn dependents_of_bind_cover_pitch_and_lyrics_but_not_music_analysis() {
         let graph = baseline_graph_spec();
-        let dependents = graph.dependents_of(&AnalysisNodeId::new("stems.separate"));
+        let dependents = graph.dependents_of(&AnalysisNodeId::new("stems.bind_analysis_outputs"));
         assert!(dependents.contains(&AnalysisNodeId::new("pitch.extract")));
         assert!(dependents.contains(&AnalysisNodeId::new("lyrics.preprocess")));
         assert!(dependents.contains(&AnalysisNodeId::new("chart.build_candidate")));

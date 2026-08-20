@@ -148,15 +148,15 @@ pub(crate) fn spawn_editor_inspector(
                     theme.muted_foreground,
                 );
                 for (label, action) in [
-                    ("Move selection −10 ms", UiAction::Editor(EditorAction::ShiftLyricEarlier)),
-                    ("Move selection +10 ms", UiAction::Editor(EditorAction::ShiftLyricLater)),
+                    ("Move selection −10 ms", UiAction::from(EditorCommand::Editor(EditorAction::ShiftLyricEarlier))),
+                    ("Move selection +10 ms", UiAction::from(EditorCommand::Editor(EditorAction::ShiftLyricLater))),
                     (
                         "Split into syllables",
-                        UiAction::Editor(EditorAction::SyllabizeLyrics),
+                        UiAction::from(EditorCommand::Editor(EditorAction::SyllabizeLyrics)),
                     ),
-                    ("Split selected words", UiAction::Editor(EditorAction::SplitLyrics)),
-                    ("Merge selected words", UiAction::Editor(EditorAction::MergeLyrics)),
-                    ("Delete selected words", UiAction::Editor(EditorAction::DeleteLyrics)),
+                    ("Split selected words", UiAction::from(EditorCommand::Editor(EditorAction::SplitLyrics))),
+                    ("Merge selected words", UiAction::from(EditorCommand::Editor(EditorAction::MergeLyrics))),
+                    ("Delete selected words", UiAction::from(EditorCommand::Editor(EditorAction::DeleteLyrics))),
                 ] {
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
@@ -223,22 +223,22 @@ pub(crate) fn spawn_editor_inspector(
                     theme.muted_foreground,
                 );
                 for (label, action) in [
-                    ("Add word at playhead", UiAction::Editor(EditorAction::AddLyric)),
-                    ("Move word −10 ms", UiAction::Editor(EditorAction::ShiftLyricEarlier)),
-                    ("Move word +10 ms", UiAction::Editor(EditorAction::ShiftLyricLater)),
-                    ("Start −10 ms", UiAction::Editor(EditorAction::LyricStartEarlier)),
-                    ("Start +10 ms", UiAction::Editor(EditorAction::LyricStartLater)),
-                    ("End −10 ms", UiAction::Editor(EditorAction::LyricEndEarlier)),
-                    ("End +10 ms", UiAction::Editor(EditorAction::LyricEndLater)),
+                    ("Add word at playhead", UiAction::from(EditorCommand::Editor(EditorAction::AddLyric))),
+                    ("Move word −10 ms", UiAction::from(EditorCommand::Editor(EditorAction::ShiftLyricEarlier))),
+                    ("Move word +10 ms", UiAction::from(EditorCommand::Editor(EditorAction::ShiftLyricLater))),
+                    ("Start −10 ms", UiAction::from(EditorCommand::Editor(EditorAction::LyricStartEarlier))),
+                    ("Start +10 ms", UiAction::from(EditorCommand::Editor(EditorAction::LyricStartLater))),
+                    ("End −10 ms", UiAction::from(EditorCommand::Editor(EditorAction::LyricEndEarlier))),
+                    ("End +10 ms", UiAction::from(EditorCommand::Editor(EditorAction::LyricEndLater))),
                     (
                         "Split into syllables",
-                        UiAction::Editor(EditorAction::SyllabizeLyrics),
+                        UiAction::from(EditorCommand::Editor(EditorAction::SyllabizeLyrics)),
                     ),
-                    ("Split word", UiAction::Editor(EditorAction::SplitLyrics)),
-                    ("Merge next word", UiAction::Editor(EditorAction::MergeLyrics)),
-                    ("New phrase here", UiAction::Editor(EditorAction::SplitPhrase)),
-                    ("Join next phrase", UiAction::Editor(EditorAction::MergePhrase)),
-                    ("Delete word", UiAction::Editor(EditorAction::DeleteLyrics)),
+                    ("Split word", UiAction::from(EditorCommand::Editor(EditorAction::SplitLyrics))),
+                    ("Merge next word", UiAction::from(EditorCommand::Editor(EditorAction::MergeLyrics))),
+                    ("New phrase here", UiAction::from(EditorCommand::Editor(EditorAction::SplitPhrase))),
+                    ("Join next phrase", UiAction::from(EditorCommand::Editor(EditorAction::MergePhrase))),
+                    ("Delete word", UiAction::from(EditorCommand::Editor(EditorAction::DeleteLyrics))),
                 ] {
                     spawn_action_button(inspector, font.clone(), theme, label, action);
                 }
@@ -351,7 +351,7 @@ pub(crate) fn spawn_editor_inspector(
                 "Undo",
                 EditorAction::Undo,
             );
-            spawn_action_button(inspector, font, theme, "Redo", UiAction::Editor(EditorAction::Redo));
+            spawn_action_button(inspector, font, theme, "Redo", UiAction::from(EditorCommand::Editor(EditorAction::Redo)));
         });
 }
 
@@ -405,7 +405,7 @@ pub(crate) fn spawn_shortcuts_panel(
     if editor.shortcuts_panel_open {
         parent.spawn((
             Button,
-            UiAction::DismissShortcutsPanel,
+            UiAction::from(EditorCommand::DismissShortcutsPanel),
             Node {
                 position_type: PositionType::Absolute,
                 left: px(0),
@@ -476,8 +476,8 @@ pub(crate) fn spawn_shortcuts_panel(
 /// Keeps `editor.problems_cache` current. Runs every frame, but the check
 /// itself is a cheap integer compare — the expensive `problems()` pass only
 /// runs again once the document's revision has actually moved.
-pub(crate) fn refresh_editor_problems_cache(mut session: ResMut<StudioSession>) {
-    let Some(editor) = session.editor.as_mut() else {
+pub(crate) fn refresh_editor_problems_cache(mut state: ResMut<EditorUiState>) {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     editor.refresh_problems();
@@ -494,7 +494,7 @@ pub(crate) fn spawn_problems_panel(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissProblemsPanel,
+        UiAction::from(EditorCommand::DismissProblemsPanel),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -571,7 +571,7 @@ pub(crate) fn spawn_problems_panel(
                             filter.label(),
                             editor.problems_filter == filter,
                             true,
-                            UiAction::SetProblemsFilter(filter),
+                            UiAction::from(EditorCommand::SetProblemsFilter(filter)),
                         );
                     }
                 });
@@ -613,10 +613,10 @@ pub(crate) fn spawn_problems_panel(
                                 // Jumping to a problem also switches to the
                                 // track it is on, so the note it points at is
                                 // the editable one.
-                                UiAction::FocusChartProblem(
+                                UiAction::from(EditorCommand::FocusChartProblem(
                                     problem.track,
                                     (problem.time * 1000.0).max(0.0) as u64,
-                                ),
+                                )),
                                 Node {
                                     width: percent(100),
                                     padding: UiRect::all(px(4)),
@@ -664,10 +664,10 @@ pub(crate) fn spawn_problems_panel(
 /// same way `handle_folder_scroll` drives the folder browser's list.
 pub(crate) fn handle_problems_panel_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<EditorProblemsList>>,
 ) {
-    let open = session
+    let open = state
         .editor
         .as_ref()
         .is_some_and(|editor| editor.problems_panel_open);
@@ -698,11 +698,11 @@ pub(crate) fn handle_problems_panel_scroll(
 /// is hovered, or while pinned open (`editor.shortcuts_panel_open`, toggled
 /// by the H key or a click on the hint).
 pub(crate) fn update_editor_shortcuts_panel_visibility(
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     triggers: Query<&Interaction, With<EditorShortcutsHoverTrigger>>,
     mut panels: Query<(&Interaction, &mut Node), With<EditorShortcutsPanel>>,
 ) {
-    let pinned = session
+    let pinned = state
         .editor
         .as_ref()
         .is_some_and(|editor| editor.shortcuts_panel_open);
@@ -722,10 +722,10 @@ pub(crate) fn update_editor_shortcuts_panel_visibility(
 /// Scrolls the shortcuts panel with the mouse wheel.
 pub(crate) fn handle_shortcuts_panel_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    state: Res<EditorUiState>,
     mut panels: Query<(&ComputedNode, &mut ScrollPosition), With<EditorShortcutsPanel>>,
 ) {
-    let open = session
+    let open = state
         .editor
         .as_ref()
         .is_some_and(|editor| editor.shortcuts_panel_open);
@@ -779,7 +779,7 @@ fn spawn_phrase_editor(
             // instead of showing them — this wraps and grows up to 6 lines,
             // scrolling if a line is somehow longer than that.
             visible_lines: Some(6.0),
-            ..EditableText::new(&editor.document.phrase_token_text(phrase))
+            ..EditableText::new(editor.document.phrase_token_text(phrase))
         },
         Node {
             width: percent(100),
@@ -931,7 +931,7 @@ pub(crate) fn spawn_all_lyrics_panel(
                                 theme,
                                 "Cancel",
                                 10.0,
-                                UiAction::Editor(EditorAction::EditAllLyrics),
+                                UiAction::from(EditorCommand::Editor(EditorAction::EditAllLyrics)),
                             );
                             spawn_text_button(
                                 row,
@@ -939,7 +939,7 @@ pub(crate) fn spawn_all_lyrics_panel(
                                 theme,
                                 "Apply",
                                 10.0,
-                                UiAction::ApplyAllLyricsEdit,
+                                UiAction::from(EditorCommand::ApplyAllLyricsEdit),
                             );
                         });
                 });
@@ -949,9 +949,9 @@ pub(crate) fn spawn_all_lyrics_panel(
 /// Applies a retyped line back onto the notes it belongs to.
 pub(crate) fn sync_editor_phrase_input(
     inputs: Query<(Ref<EditableText>, &EditorPhraseInput)>,
-    mut session: ResMut<StudioSession>,
+    mut state: ResMut<EditorUiState>,
 ) {
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     for (input, marker) in &inputs {

@@ -100,6 +100,11 @@ pub(crate) fn spawn_editor_timeline(
             });
             row.spawn((
                 Button,
+                UiPointerApi(&[
+                    "ui.pointer.editor_timeline.primary",
+                    "ui.pointer.editor_waveform.secondary",
+                    "ui.pointer.editor_viewport_pan",
+                ]),
                 EditorTimelineSurface,
                 Node {
                     position_type: PositionType::Relative,
@@ -215,9 +220,7 @@ pub(crate) fn spawn_editor_timeline(
                     let start_index = editor
                         .beats
                         .partition_point(|&beat| beat < editor.viewport_start);
-                    let end_index = editor
-                        .beats
-                        .partition_point(|&beat| beat <= viewport_end);
+                    let end_index = editor.beats.partition_point(|&beat| beat <= viewport_end);
                     let visible = &editor.beats[start_index..end_index];
                     let stride = visible.len().div_ceil(MAX_VISIBLE_BEATS).max(1);
                     for &beat in visible.iter().step_by(stride) {
@@ -397,7 +400,8 @@ pub(crate) fn spawn_editor_timeline(
                             ..default()
                         },
                         BackgroundColor(
-                            editor_note_color(ghost.kind, ghost.placeholder, theme).with_alpha(0.16),
+                            editor_note_color(ghost.kind, ghost.placeholder, theme)
+                                .with_alpha(0.16),
                         ),
                         BorderColor::all(
                             editor_note_color(ghost.kind, ghost.placeholder, theme).with_alpha(0.4),
@@ -426,6 +430,10 @@ pub(crate) fn spawn_editor_timeline(
                     canvas
                         .spawn((
                             Button,
+                            UiPointerApi(&[
+                                "ui.pointer.editor_note.secondary",
+                                "ui.pointer.editor_note_drag",
+                            ]),
                             EditorNoteNode(note.index),
                             Node {
                                 position_type: PositionType::Absolute,
@@ -470,7 +478,11 @@ pub(crate) fn spawn_editor_timeline(
                                 px(-2),
                             ),
                             UiTransform::from_xy(px(0), px(-9)),
-                            ZIndex(if selected || bound_highlight || active { 2 } else { 1 }),
+                            ZIndex(if selected || bound_highlight || active {
+                                2
+                            } else {
+                                1
+                            }),
                         ))
                         .with_children(|note_node| {
                             if width >= 2.6 {
@@ -513,6 +525,7 @@ pub(crate) fn spawn_editor_timeline(
                             ] {
                                 note_node.spawn((
                                     Button,
+                                    UiPointerApi(&["ui.pointer.editor_note_resize"]),
                                     EditorNoteResizeHandle {
                                         index: note.index,
                                         edge,
@@ -538,10 +551,15 @@ pub(crate) fn spawn_editor_timeline(
                         .observe({
                             let note_index = note.index;
                             move |mut event: On<Pointer<Click>>,
-                                  mut session: ResMut<StudioSession>,
+                                  mut editor_state: ResMut<EditorUiState>,
                                   mut invalidated: ResMut<UiInvalidated>| {
                                 event.propagate(false);
-                                open_note_from_click(&event, note_index, &mut session, &mut invalidated);
+                                open_note_from_click(
+                                    &event,
+                                    note_index,
+                                    &mut editor_state,
+                                    &mut invalidated,
+                                );
                             }
                         });
                 }
@@ -584,13 +602,18 @@ pub(crate) fn spawn_editor_timeline(
             })
             .observe(
                 move |mut event: On<Pointer<Click>>,
-                      mut session: ResMut<StudioSession>,
+                      mut editor_state: ResMut<EditorUiState>,
                       mut invalidated: ResMut<UiInvalidated>,
                       canvas: Query<
                     (&ComputedNode, &UiGlobalTransform),
                     With<EditorTimelineSurface>,
                 >| {
-                    open_waveform_menu_from_click(&event, &canvas, &mut session, &mut invalidated);
+                    open_waveform_menu_from_click(
+                        &event,
+                        &canvas,
+                        &mut editor_state,
+                        &mut invalidated,
+                    );
                     event.propagate(false);
                 },
             );
@@ -604,7 +627,7 @@ pub(crate) fn spawn_editor_timeline(
 pub(crate) fn open_waveform_menu_from_click(
     event: &Pointer<Click>,
     canvas: &Query<(&ComputedNode, &UiGlobalTransform), With<EditorTimelineSurface>>,
-    session: &mut StudioSession,
+    state: &mut EditorUiState,
     invalidated: &mut UiInvalidated,
 ) {
     if event.button != PointerButton::Secondary {
@@ -625,13 +648,13 @@ pub(crate) fn open_waveform_menu_from_click(
     if fraction_y * 100.0 > EDITOR_PITCH_TOP_PERCENT {
         return;
     }
-    let Some(editor) = session.editor.as_mut() else {
+    let Some(editor) = state.editor.as_mut() else {
         return;
     };
     editor.waveform_context = Some(WaveformContextMenu {
         position: event.pointer_location.position,
     });
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Editor);
 }
 
 /// Anchors a context menu at `pointer` (window coordinates — the editor has
@@ -662,7 +685,7 @@ pub(crate) fn spawn_waveform_context_menu(
 ) {
     parent.spawn((
         Button,
-        UiAction::DismissWaveformContext,
+        UiAction::from(EditorCommand::DismissWaveformContext),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -716,7 +739,7 @@ pub(crate) fn spawn_waveform_context_menu(
                     label,
                     active,
                     available,
-                    UiAction::SelectWaveformSource(source),
+                    UiAction::from(EditorCommand::SelectWaveformSource(source)),
                 );
             }
             menu.spawn((
@@ -746,7 +769,7 @@ pub(crate) fn spawn_waveform_context_menu(
                     label,
                     editor.waveform_style == style,
                     true,
-                    UiAction::SelectWaveformStyle(style),
+                    UiAction::from(EditorCommand::SelectWaveformStyle(style)),
                 );
             }
         });

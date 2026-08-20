@@ -70,7 +70,9 @@ pub(crate) fn start_tempo_shift(
 
 pub(crate) fn poll_authoring_job(
     mut job: ResMut<NativeAuthoringJob>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut library: ResMut<LibraryState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let result = job.receiver.as_ref().and_then(|receiver| {
@@ -89,30 +91,32 @@ pub(crate) fn poll_authoring_job(
         return;
     };
     job.receiver = None;
-    session.authoring_busy = false;
+    jobs.authoring_busy = false;
     match result {
         Ok(event) => match event.result {
             Ok(rendered) => {
-                session.notice = Some(format!(
+                shell.notice = Some(format!(
                     "Song {} shifted successfully · key {} · {:.1}× tempo.",
                     event.kind, rendered.key, rendered.tempo
                 ));
-                session.refresh_library();
+                library.refresh();
             }
             Err(error) => {
-                session.notice = Some(format!("Could not render {} variant: {error}", event.kind))
+                shell.notice = Some(format!("Could not render {} variant: {error}", event.kind))
             }
         },
-        Err(error) => session.notice = Some(error),
+        Err(error) => shell.notice = Some(error),
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Library);
 }
 
 pub(crate) fn poll_lyrics_search_job(
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut dialogs: ResMut<DialogState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    let result = session
+    let result = jobs
         .lyrics_search_job
         .receiver
         .as_ref()
@@ -131,15 +135,15 @@ pub(crate) fn poll_lyrics_search_job(
     let Some(result) = result else {
         return;
     };
-    session.lyrics_search_job.receiver = None;
+    jobs.lyrics_search_job.receiver = None;
     match result {
         Ok(candidates) => {
             let count = candidates.len();
-            if let Some(editor) = session.lyrics_editor.as_mut() {
+            if let Some(editor) = dialogs.lyrics_editor.as_mut() {
                 editor.searching = false;
                 editor.candidates = candidates;
                 editor.candidate_index = 0;
-                session.notice = Some(if count == 0 {
+                shell.notice = Some(if count == 0 {
                     "LRCLIB did not return a matching lyric.".to_string()
                 } else {
                     format!("Found {count} LRCLIB lyric candidate(s). Review before applying.")
@@ -147,20 +151,22 @@ pub(crate) fn poll_lyrics_search_job(
             }
         }
         Err(error) => {
-            if let Some(editor) = session.lyrics_editor.as_mut() {
+            if let Some(editor) = dialogs.lyrics_editor.as_mut() {
                 editor.searching = false;
             }
-            session.notice = Some(error);
+            shell.notice = Some(error);
         }
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Library);
 }
 
 pub(crate) fn poll_lyrics_waveform_job(
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut dialogs: ResMut<DialogState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    let result = session
+    let result = jobs
         .lyrics_waveform_job
         .receiver
         .as_ref()
@@ -180,8 +186,8 @@ pub(crate) fn poll_lyrics_waveform_job(
     let Some((file_hash, result)) = result else {
         return;
     };
-    session.lyrics_waveform_job.receiver = None;
-    if let Some(editor) = session
+    jobs.lyrics_waveform_job.receiver = None;
+    if let Some(editor) = dialogs
         .lyrics_editor
         .as_mut()
         .filter(|editor| editor.file_hash == file_hash)
@@ -189,10 +195,14 @@ pub(crate) fn poll_lyrics_waveform_job(
         match result {
             Ok(waveform) => editor.waveform = waveform,
             Err(error) => {
-                session.notice = Some(format!("Could not load transcript waveform: {error}"))
+                shell.notice = Some(localized_message(
+                    &shell.config,
+                    UiMessage::TranscriptWaveformFailed,
+                    &[("{error}", &error)],
+                ))
             }
         }
-        invalidated.0 = true;
+        invalidated.invalidate(UiDirtyRegion::Library);
     }
 }
 
@@ -263,10 +273,11 @@ pub(crate) fn run_analysis_action_checked(
 
 pub(crate) fn handle_song_detail_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    shell: Res<ShellState>,
+    dialogs: Res<DialogState>,
     mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SongDetailContent>>,
 ) {
-    if session.route != StudioRoute::SongDetail || session.lyrics_editor.is_some() {
+    if shell.route != StudioRoute::SongDetail || dialogs.lyrics_editor.is_some() {
         return;
     }
     let Ok((computed, mut position)) = contents.single_mut() else {

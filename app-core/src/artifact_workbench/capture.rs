@@ -1,28 +1,56 @@
 use super::*;
+use crate::{
+    analysis_artifact::{
+        hash_file_contents, load_analysis_artifacts, load_artifact_revisions,
+        migrate_artifact_revisions_to_store,
+    },
+    analysis_graph::baseline_graph_spec,
+    cache::CacheDir,
+};
 
 pub(crate) fn committed_kind(value: &str) -> Option<ArtifactKind> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
 }
 
-pub(crate) fn relation(
+struct ArtifactRelationBinding {
+    slot: String,
+    kind: ArtifactKind,
+    revision_id: Option<String>,
+    binding_kind: &'static str,
+}
+
+impl ArtifactRelationBinding {
+    fn new(
+        slot: String,
+        kind: ArtifactKind,
+        revision_id: Option<String>,
+        binding_kind: &'static str,
+    ) -> Self {
+        Self {
+            slot,
+            kind,
+            revision_id,
+            binding_kind,
+        }
+    }
+}
+
+fn relation(
     run_id: i64,
     attempt_id: Option<i64>,
     node_id: &str,
     direction: &str,
-    slot: String,
-    kind: ArtifactKind,
-    revision_id: Option<String>,
-    binding_kind: &str,
+    binding: ArtifactRelationBinding,
 ) -> Result<(), String> {
     library_db::analysis_node_artifact_upsert(&library_db::AnalysisNodeArtifactRow {
         run_id,
         attempt_id,
         node_id: node_id.to_string(),
         direction: direction.to_string(),
-        slot,
-        artifact_kind: kind_string(kind),
-        revision_id,
-        binding_kind: binding_kind.to_string(),
+        slot: binding.slot,
+        artifact_kind: kind_string(binding.kind),
+        revision_id: binding.revision_id,
+        binding_kind: binding.binding_kind.to_string(),
     })
     .map_err(|e| e.to_string())
 }
@@ -94,10 +122,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    None,
-                    "source",
+                    ArtifactRelationBinding::new(slot, kind, None, "source"),
                 )?;
             } else if kind == ArtifactKind::PreprocessedAudio {
                 relation(
@@ -105,10 +130,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    None,
-                    "ephemeral",
+                    ArtifactRelationBinding::new(slot, kind, None, "ephemeral"),
                 )?;
             } else if let Some(revision_id) = route
                 .and_then(|route| route.input_revision_ids.get(index))
@@ -133,10 +155,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    Some(revision.id.clone()),
-                    "revision",
+                    ArtifactRelationBinding::new(slot, kind, Some(revision.id.clone()), "revision"),
                 )?;
             } else if route.is_some_and(|route| route.input_revision_ids.len() > index) {
                 relation(
@@ -144,10 +163,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    None,
-                    "missing",
+                    ArtifactRelationBinding::new(slot, kind, None, "missing"),
                 )?;
             } else if let Some(revision) = latest.get(&kind) {
                 // Compatibility adapter for history captured before exact
@@ -158,10 +174,12 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    Some(revision.id.clone()),
-                    "legacy_untracked",
+                    ArtifactRelationBinding::new(
+                        slot,
+                        kind,
+                        Some(revision.id.clone()),
+                        "legacy_untracked",
+                    ),
                 )?;
             } else {
                 relation(
@@ -169,10 +187,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "input",
-                    slot,
-                    kind,
-                    None,
-                    "missing",
+                    ArtifactRelationBinding::new(slot, kind, None, "missing"),
                 )?;
             }
         }
@@ -185,10 +200,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "output",
-                    slot,
-                    kind,
-                    None,
-                    "ephemeral",
+                    ArtifactRelationBinding::new(slot, kind, None, "ephemeral"),
                 )?;
                 continue;
             };
@@ -203,10 +215,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
                     Some(attempt.id),
                     node_id.as_str(),
                     "output",
-                    slot,
-                    kind,
-                    None,
-                    "missing",
+                    ArtifactRelationBinding::new(slot, kind, None, "missing"),
                 )?;
                 continue;
             };

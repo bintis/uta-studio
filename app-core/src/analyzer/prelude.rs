@@ -3,13 +3,12 @@ pub(crate) use std::io::{BufRead, BufReader, BufWriter, Write};
 pub(crate) use std::net::{Shutdown, SocketAddr, TcpStream};
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::{Child, Command, Stdio};
-pub(crate) use std::sync::atomic::{AtomicU32, Ordering};
+pub(crate) use std::sync::atomic::Ordering;
 pub(crate) use std::sync::{Arc, LazyLock, Mutex};
 pub(crate) use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(crate) use serde::{Deserialize, Serialize};
+pub(crate) use serde::Deserialize;
 pub(crate) use tracing::{info, warn};
-pub(crate) use ts_rs::TS;
 
 pub(crate) use crate::cache::{CacheDir, models_dir};
 pub(crate) use crate::config::AppConfig;

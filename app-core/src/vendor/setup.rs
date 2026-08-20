@@ -1,5 +1,4 @@
 use std::{
-    env,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -8,12 +7,11 @@ use std::{
 use super::*;
 use crate::{
     cache::{
-        CachePaths, models_dir, normalized_target_path, relocate_app_data_path,
-        relocate_directory_contents, same_path, songs_cache_dir, uta_studio_dir, vendor_dir,
+        models_dir, relocate_app_data_path, same_path, songs_cache_dir, uta_studio_dir, vendor_dir,
     },
     vendor_scripts,
 };
-use tracing::{info, warn};
+use tracing::info;
 
 pub fn run_vendor_setup(
     folders: SetupFolders,
@@ -703,7 +701,7 @@ const TORCH_PACKAGE: &str = "torch==2.8.0";
 const TORCHAUDIO_PACKAGE: &str = "torchaudio==2.8.0";
 const TORCHVISION_PACKAGE: &str = "torchvision==0.23.0";
 
-pub(crate) fn install_torch_runtime(
+fn install_torch_runtime(
     uv: &Path,
     py: &str,
     gpu: &GpuInfo,
@@ -798,7 +796,7 @@ print(f"Uta Studio runtime verified: backend={backend}, device={name}, torch={to
     Ok(())
 }
 
-pub(crate) fn detect_gpu(backend: ComputeBackend) -> Result<GpuInfo, String> {
+fn detect_gpu(backend: ComputeBackend) -> Result<GpuInfo, String> {
     #[cfg(target_os = "macos")]
     {
         if backend == ComputeBackend::Intel {

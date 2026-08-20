@@ -32,6 +32,7 @@ from .plan import (
     build_chart_analysis_plan,
     build_karaoke_plan,
     build_multistem_plan,
+    build_settings_plan,
     legacy_plan_from_separator,
     plan_from_json,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "build_chart_analysis_plan",
     "build_karaoke_plan",
     "build_multistem_plan",
+    "build_settings_plan",
     "catalog_path",
     "installed_model_dir",
     "legacy_plan_from_separator",

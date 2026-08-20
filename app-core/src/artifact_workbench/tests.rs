@@ -1,5 +1,10 @@
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use crate::{
+        ArtifactStore, CacheDir, NodeState, record_artifact_revision,
+    };
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -161,7 +166,7 @@ mod tests {
             impact
                 .will_reuse
                 .iter()
-                .any(|id| id.as_str() == "stems.separate")
+                .any(|id| id.as_str() == "stems.bind_analysis_outputs")
         );
     }
 

@@ -5,7 +5,7 @@ pub(crate) fn spawn_model_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     native_setup: &NativeSetup,
     theme: &StudioTheme,
 ) {
@@ -21,7 +21,7 @@ pub(crate) fn spawn_model_settings(
         spawn_setup_progress_panel(parent, font.clone(), icons.clone(), native_setup, theme);
     }
     let status = app_core::analysis_runtime_status();
-    spawn_model_runtime_status_row(parent, font.clone(), theme, &status);
+    spawn_model_runtime_status_row(parent, font.clone(), theme, &session.config, &status);
     spawn_select_setting_row(
         parent,
         font.clone(),
@@ -44,7 +44,7 @@ pub(crate) fn spawn_model_settings(
             } else {
                 "Set up…"
             },
-            UiAction::RequestSetup(None),
+            UiAction::from(SettingsCommand::RequestSetup(None)),
         )),
     );
     spawn_settings_section(
@@ -117,7 +117,7 @@ pub(crate) fn spawn_audio_catalog_models(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    _session: &StudioSession,
+    _session: &StudioSessionView<'_>,
 ) {
     spawn_settings_section(
         parent,
@@ -162,9 +162,9 @@ pub(crate) fn spawn_audio_catalog_models(
                 }
                 .to_string(),
                 if model.state == "installed" {
-                    UiAction::RemoveAudioModel(model.model_id.clone())
+                    UiAction::from(SettingsCommand::RemoveAudioModel(model.model_id.clone()))
                 } else {
-                    UiAction::InstallAudioModel(model.model_id.clone())
+                    UiAction::from(SettingsCommand::InstallAudioModel(model.model_id.clone()))
                 },
             )),
         );
@@ -185,7 +185,7 @@ pub(crate) fn spawn_model_stage(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     models: &[app_core::ModelInstallStatus],
     eyebrow: &'static str,
     title: &'static str,
@@ -207,7 +207,7 @@ pub(crate) fn spawn_model_stage(
         None,
         Some((
             "Configure in Analysis…".to_string(),
-            UiAction::SettingsTab(SettingsTab::Analysis),
+            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Analysis)),
         )),
     );
     for model in models
@@ -242,7 +242,7 @@ pub(crate) fn spawn_model_install_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     model: &app_core::ModelInstallStatus,
     stage: &'static str,
 ) {
@@ -333,7 +333,7 @@ pub(crate) fn spawn_model_install_row(
                     } else {
                         "Download…"
                     },
-                    UiAction::RequestSetup(Some(model.target)),
+                    UiAction::from(SettingsCommand::RequestSetup(Some(model.target))),
                 );
             });
         });
@@ -343,6 +343,7 @@ pub(crate) fn spawn_model_runtime_status_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
+    config: &AppConfig,
     status: &app_core::AnalysisRuntimeStatus,
 ) {
     let (headline, badge, status_color, status_hint) = if status.ready
@@ -449,7 +450,11 @@ pub(crate) fn spawn_model_runtime_status_row(
                                 spawn_wrapped_text(
                                     status_copy,
                                     font.clone(),
-                                    format!("Missing components: {}", status.missing.join(" · ")),
+                                    localized_message(
+                                        config,
+                                        UiMessage::RuntimeMissingComponents,
+                                        &[("{components}", &status.missing.join(" · "))],
+                                    ),
                                     8.5,
                                     theme.destructive,
                                 );
@@ -459,7 +464,10 @@ pub(crate) fn spawn_model_runtime_status_row(
                         status_row,
                         font.clone(),
                         theme,
-                        vec![("Check again".to_string(), UiAction::RefreshRuntimeStatus)],
+                        vec![(
+                            "Check again".to_string(),
+                            UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+                        )],
                     );
                 });
             panel
@@ -687,7 +695,7 @@ pub(crate) fn spawn_analysis_pipeline(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     status: &app_core::AnalysisRuntimeStatus,
 ) {
     parent

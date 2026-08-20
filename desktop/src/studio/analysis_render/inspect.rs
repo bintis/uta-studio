@@ -7,7 +7,7 @@ pub(crate) struct AnalysisInspectPage;
 pub(crate) fn spawn_analysis_inspect_page(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let current = current_analysis_header(session);
@@ -73,10 +73,10 @@ pub(crate) fn spawn_analysis_inspect_page(
 
 pub(crate) fn handle_analysis_inspect_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    session: Res<StudioSession>,
+    shell: Res<ShellState>,
     mut pages: Query<(&ComputedNode, &mut ScrollPosition), With<AnalysisInspectPage>>,
 ) {
-    if session.route != StudioRoute::AnalysisInspect {
+    if shell.route != StudioRoute::AnalysisInspect {
         return;
     }
     let Ok((computed, mut position)) = pages.single_mut() else {

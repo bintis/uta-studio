@@ -1,6 +1,6 @@
 mod tests {
     use super::*;
-    use std::collections::{BTreeSet, HashSet};
+    use std::collections::BTreeSet;
 
     use utz::{
         DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
@@ -1130,5 +1130,54 @@ mod tests {
         let chart = document.to_chart();
         assert_eq!(chart.tracks.len(), 1);
         chart.validate().expect("valid chart");
+    }
+
+    #[test]
+    fn generated_transpose_cases_are_reversible_without_midi_clamping() {
+        for midi in (24_u8..=103).step_by(7) {
+            for semitones in -12_i8..=12 {
+                let mut document = document(&[(0.0, 1.0, midi, "tone")]);
+                let original = document.notes()[0].midi;
+                document.shift_notes(&selection(&[0]), 0.0, f64::from(semitones), false);
+                document.shift_notes(&selection(&[0]), 0.0, -f64::from(semitones), false);
+                assert_eq!(document.notes()[0].midi, original, "midi={midi}, shift={semitones}");
+                document.to_chart().validate().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn generated_split_merge_cases_preserve_the_time_span() {
+        for duration_tenths in 2_u32..=40 {
+            let duration = f64::from(duration_tenths) / 10.0;
+            for split_percent in [20_u32, 35, 50, 65, 80] {
+                let mut document = document(&[(1.0, 1.0 + duration, 60, "held")]);
+                let before = document.notes()[0].clone();
+                let split_at = before.start + duration * f64::from(split_percent) / 100.0;
+                let selected = document.split_notes(&selection(&[0]), split_at);
+                assert_eq!(selected.len(), 2);
+                document.merge_notes(&selected, None).unwrap();
+                let after = &document.notes()[0];
+                assert!((after.start - before.start).abs() < 1e-9);
+                assert!((after.end - before.end).abs() < 1e-9);
+                document.to_chart().validate().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn generated_repairs_remove_every_same_track_overlap() {
+        for overlap_hundredths in 1_u32..=95 {
+            let overlap = f64::from(overlap_hundredths) / 100.0;
+            let mut document = document(&[
+                (0.0, 1.0, 60, "a"),
+                (1.0 - overlap, 2.0, 62, "b"),
+                (2.0 - overlap, 3.0, 64, "c"),
+            ]);
+            document.repair();
+            let notes = document.notes();
+            assert!(notes.windows(2).all(|pair| pair[0].end <= pair[1].start));
+            document.to_chart().validate().unwrap();
+        }
     }
 }

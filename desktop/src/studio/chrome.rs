@@ -5,7 +5,7 @@ pub(crate) fn spawn_sidebar(
     font: Handle<Font>,
     icons: Handle<Image>,
     banner: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
@@ -33,7 +33,7 @@ pub(crate) fn spawn_sidebar(
                     header
                         .spawn((
                             Button,
-                            UiAction::OpenAbout,
+                            UiAction::from(AppCommand::OpenAbout),
                             Node {
                                 height: px(68),
                                 align_items: AlignItems::Center,
@@ -67,7 +67,7 @@ pub(crate) fn spawn_sidebar(
                         icons.clone(),
                         theme,
                         UiIcon::Settings,
-                        UiAction::Settings,
+                        UiAction::from(AppCommand::Settings),
                         false,
                         false,
                         30.0,
@@ -98,10 +98,27 @@ pub(crate) fn spawn_sidebar(
                     "Analysis",
                     analysis_count,
                 ),
+            ] {
+                spawn_sidebar_filter_item(
+                    sidebar,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    Some(icon),
+                    label,
+                    count,
+                    UiAction::from(LibraryCommand::SetLibraryView(view)),
+                    (session.route == StudioRoute::Library && session.library_view == view)
+                        || (view == LibraryView::Queue
+                            && session.route == StudioRoute::AnalysisInspect),
+                );
+            }
+            spawn_section_label(sidebar, font.clone(), theme, "MY LIBRARY");
+            for (view, icon, label, count) in [
                 (
                     LibraryView::Completed,
                     UiIcon::CircleCheck,
-                    "Completed Charts",
+                    "Charts",
                     session.meta.analyzed_count,
                 ),
                 (
@@ -119,37 +136,10 @@ pub(crate) fn spawn_sidebar(
                     Some(icon),
                     label,
                     count,
-                    UiAction::SetLibraryView(view),
-                    (session.route == StudioRoute::Library && session.library_view == view)
-                        || (view == LibraryView::Queue
-                            && session.route == StudioRoute::AnalysisInspect),
+                    UiAction::from(LibraryCommand::SetLibraryView(view)),
+                    session.route == StudioRoute::Library && session.library_view == view,
                 );
             }
-            spawn_section_label(sidebar, font.clone(), theme, "MY LIBRARY");
-            spawn_sidebar_nav_item(
-                sidebar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                UiIcon::Artists,
-                "Artists",
-                UiAction::SetLibraryView(LibraryView::Artists),
-                session.route == StudioRoute::Library
-                    && session.library_view == LibraryView::Artists
-                    && session.library_facet.is_none(),
-            );
-            spawn_sidebar_nav_item(
-                sidebar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                UiIcon::Albums,
-                "Albums",
-                UiAction::SetLibraryView(LibraryView::Albums),
-                session.route == StudioRoute::Library
-                    && session.library_view == LibraryView::Albums
-                    && session.library_facet.is_none(),
-            );
             if !session.menu_items.playlists.is_empty() {
                 spawn_sidebar_item(
                     sidebar,
@@ -173,7 +163,7 @@ pub(crate) fn spawn_sidebar(
                         None,
                         format!("  {}", item.label),
                         item.count.try_into().unwrap_or(usize::MAX),
-                        UiAction::SetLibraryFacet(facet.clone()),
+                        UiAction::from(LibraryCommand::SetLibraryFacet(facet.clone())),
                         session.route == StudioRoute::Library
                             && session.library_facet.as_ref() == Some(&facet),
                     );
@@ -186,7 +176,7 @@ pub(crate) fn spawn_sidebar(
                 theme,
                 UiIcon::Folder,
                 "Folders",
-                UiAction::Folders,
+                UiAction::from(AppCommand::Folders),
                 session.route == StudioRoute::Folders,
             );
             sidebar.spawn(Node {
@@ -196,7 +186,7 @@ pub(crate) fn spawn_sidebar(
             });
             sidebar.spawn((
                 Button,
-                UiAction::OpenAbout,
+                UiAction::from(AppCommand::OpenAbout),
                 Node {
                     width: percent(100),
                     // Banner.png is a fixed 4:3 image (1448x1086) -- sized
@@ -408,7 +398,7 @@ pub(crate) fn spawn_workspace(
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
     local_images: &mut LocalImages,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     native_setup: &NativeSetup,
     cache_stats: &CacheStatsJob,
     icons: Handle<Image>,
@@ -493,7 +483,7 @@ pub(crate) fn spawn_workspace(
         });
 }
 
-fn analysis_workspace_open(session: &StudioSession) -> bool {
+fn analysis_workspace_open(session: &StudioSessionView<'_>) -> bool {
     (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
         || session.route == StudioRoute::AnalysisInspect
 }
@@ -502,7 +492,7 @@ fn analysis_workspace_open(session: &StudioSession) -> bool {
 /// analysis pages. The page title no longer carries a second progress bar.
 fn spawn_analysis_boundary_progress(
     parent: &mut ChildSpawnerCommands,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     if !analysis_workspace_open(session) {
@@ -540,7 +530,7 @@ pub(crate) fn spawn_top_bar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    session: &StudioSession,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
@@ -571,7 +561,7 @@ pub(crate) fn spawn_top_bar(
                 icons.clone(),
                 theme,
                 UiIcon::ArrowLeft,
-                UiAction::Back,
+                UiAction::from(AppCommand::Back),
                 false,
                 false,
                 34.0,
@@ -603,7 +593,7 @@ pub(crate) fn spawn_top_bar(
                     icons.clone(),
                     theme,
                     UiIcon::Search,
-                    UiAction::ToggleGlobalSearch,
+                    UiAction::from(AppCommand::ToggleGlobalSearch),
                     session.search_open || session.library_search.is_some(),
                     false,
                     34.0,
@@ -692,7 +682,7 @@ pub(crate) fn spawn_top_bar(
                                             theme,
                                             "Clear",
                                             9.0,
-                                            UiAction::ClearLibrarySearch,
+                                            UiAction::from(LibraryCommand::ClearLibrarySearch),
                                         );
                                     }
                                     spawn_text_button(
@@ -701,7 +691,7 @@ pub(crate) fn spawn_top_bar(
                                         theme,
                                         "Search",
                                         9.0,
-                                        UiAction::ApplyLibrarySearch,
+                                        UiAction::from(LibraryCommand::ApplyLibrarySearch),
                                     );
                                 });
                         });
@@ -727,11 +717,12 @@ pub(crate) fn spawn_about_dialog(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     logo: Handle<Image>,
+    config: &AppConfig,
     theme: &StudioTheme,
 ) {
     parent.spawn((
         Button,
-        UiAction::CloseAbout,
+        UiAction::from(AppCommand::CloseAbout),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -806,13 +797,17 @@ pub(crate) fn spawn_about_dialog(
                         theme,
                         "Close",
                         10.0,
-                        UiAction::CloseAbout,
+                        UiAction::from(AppCommand::CloseAbout),
                     );
                 });
             spawn_text(
                 dialog,
                 font.clone(),
-                format!("Version {}", env!("CARGO_PKG_VERSION")),
+                localized_message(
+                    config,
+                    UiMessage::AppVersion,
+                    &[("{version}", env!("CARGO_PKG_VERSION"))],
+                ),
                 11.0,
                 theme.foreground,
             );
@@ -852,13 +847,21 @@ pub(crate) fn spawn_about_dialog(
         });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(SystemParam)]
+pub(crate) struct CloseRequestState<'w> {
+    library: Res<'w, LibraryState>,
+    analysis: Res<'w, AnalysisUiState>,
+    editor: Res<'w, EditorUiState>,
+    dialogs: ResMut<'w, DialogState>,
+    jobs: Res<'w, AsyncJobs>,
+}
+
 pub(crate) fn handle_window_close_requests(
     mut requests: MessageReader<bevy::window::WindowCloseRequested>,
     mut commands: Commands,
     audio: Res<NativeAudio>,
     library_audio: Res<NativeLibraryAudio>,
-    mut session: ResMut<StudioSession>,
+    mut state: CloseRequestState,
     setup: Res<NativeSetup>,
     diagnostics: Res<NativeDiagnostics>,
     mut invalidated: ResMut<UiInvalidated>,
@@ -866,23 +869,27 @@ pub(crate) fn handle_window_close_requests(
     let Some(request) = requests.read().next() else {
         return;
     };
-    let has_unsaved_edits = session.editor.as_ref().is_some_and(|editor| editor.dirty);
-    let background_work = session.scanning
-        || session.authoring_busy
+    let has_unsaved_edits = state
+        .editor
+        .editor
+        .as_ref()
+        .is_some_and(|editor| editor.dirty);
+    let background_work = state.library.scanning
+        || state.jobs.authoring_busy
         || setup.receiver.is_some()
         || diagnostics.receiver.is_some()
-        || session.export_job.receiver.is_some()
-        || session.editor_load_job.receiver.is_some()
-        || session.lyrics_search_job.receiver.is_some()
-        || session.analysis_tasks.iter().any(|task| {
+        || state.jobs.export_job.receiver.is_some()
+        || state.jobs.editor_load_job.receiver.is_some()
+        || state.jobs.lyrics_search_job.receiver.is_some()
+        || state.analysis.analysis_tasks.iter().any(|task| {
             matches!(
                 task.status,
                 app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
             )
         });
     if has_unsaved_edits || background_work {
-        session.pending_leave = Some(PendingLeave::Exit);
-        invalidated.0 = true;
+        state.dialogs.pending_leave = Some(PendingLeave::Exit);
+        invalidated.invalidate(UiDirtyRegion::Dialog);
     } else {
         let _ = audio.0.stop();
         let _ = library_audio.0.stop();

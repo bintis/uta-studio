@@ -17,12 +17,12 @@ pub(crate) fn start_cache_stats_job(cache_stats: &mut CacheStatsJob) {
 
 pub(crate) fn handle_cache_stats_request(
     mut cache_stats: ResMut<CacheStatsJob>,
-    mut session: ResMut<StudioSession>,
+    mut jobs: ResMut<AsyncJobs>,
 ) {
-    if !session.request_cache_stats_refresh {
+    if !jobs.request_cache_stats_refresh {
         return;
     }
-    session.request_cache_stats_refresh = false;
+    jobs.request_cache_stats_refresh = false;
     if cache_stats.current.is_none() && cache_stats.receiver.is_none() {
         start_cache_stats_job(&mut cache_stats);
     }
@@ -56,7 +56,7 @@ pub(crate) fn poll_cache_stats(
         }
         Err(error) => cache_stats.error = Some(error),
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Settings);
 }
 
 pub(crate) fn start_native_setup(
@@ -110,7 +110,7 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
 
 pub(crate) fn poll_native_setup(
     mut setup: ResMut<NativeSetup>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let mut events = Vec::new();
@@ -139,8 +139,8 @@ pub(crate) fn poll_native_setup(
         setup.receiver = None;
         setup.progress = None;
         setup.last_ui_refresh = None;
-        session.notice = Some("Analysis setup status channel was poisoned.".to_string());
-        invalidated.0 = true;
+        shell.notice = Some("Analysis setup status channel was poisoned.".to_string());
+        invalidated.invalidate(UiDirtyRegion::Settings);
         return;
     }
     if events.is_empty() {
@@ -150,7 +150,7 @@ pub(crate) fn poll_native_setup(
     for event in events {
         match event {
             SetupEvent::Progress(progress) => {
-                session.notice = Some(format!("{} · {}%", progress.action, progress.percent));
+                shell.notice = Some(format!("{} · {}%", progress.action, progress.percent));
                 setup.progress = Some(progress);
             }
             SetupEvent::Log(line) => {
@@ -164,8 +164,8 @@ pub(crate) fn poll_native_setup(
                 setup.receiver = None;
                 setup.progress = None;
                 setup.last_ui_refresh = None;
-                session.config = AppConfig::load();
-                session.notice = Some(match result {
+                shell.config = AppConfig::load();
+                shell.notice = Some(match result {
                     Ok(()) => "Analysis runtime setup completed.".to_string(),
                     Err(error) => format!("Analysis runtime setup failed: {error}"),
                 });
@@ -183,13 +183,14 @@ pub(crate) fn poll_native_setup(
         .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(280));
     if finished || due {
         setup.last_ui_refresh = Some(now);
-        invalidated.0 = true;
+        invalidated.invalidate(UiDirtyRegion::Settings);
     }
 }
 
 pub(crate) fn poll_native_diagnostics(
     mut diagnostics: ResMut<NativeDiagnostics>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
+    mut dialogs: ResMut<DialogState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let result = diagnostics
@@ -213,26 +214,26 @@ pub(crate) fn poll_native_diagnostics(
     diagnostics.receiver = None;
     match result {
         Ok(report) => {
-            session.notice = Some(format!(
+            shell.notice = Some(format!(
                 "Diagnostics {}: {} passed, {} failed, {} skipped.",
                 if report.ok { "passed" } else { "completed" },
                 report.passed,
                 report.failed,
                 report.skipped,
             ));
-            session.diagnostic_report = Some(report);
+            dialogs.diagnostic_report = Some(report);
         }
-        Err(error) => session.notice = Some(error),
+        Err(error) => shell.notice = Some(error),
     }
-    invalidated.0 = true;
+    invalidated.invalidate(UiDirtyRegion::Settings);
 }
 
 pub(crate) fn handle_settings_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    mut session: ResMut<StudioSession>,
+    mut shell: ResMut<ShellState>,
     mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SettingsContent>>,
 ) {
-    if session.route != StudioRoute::Settings {
+    if shell.route != StudioRoute::Settings {
         return;
     }
     let Ok((computed, mut position)) = contents.single_mut() else {
@@ -251,6 +252,6 @@ pub(crate) fn handle_settings_scroll(
     let size = computed.size() * computed.inverse_scale_factor();
     let content = computed.content_size() * computed.inverse_scale_factor();
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
-    let tab_index = session.settings_tab.index();
-    session.settings_scroll_offsets[tab_index] = position.y;
+    let tab_index = shell.settings_tab.index();
+    shell.settings_scroll_offsets[tab_index] = position.y;
 }
