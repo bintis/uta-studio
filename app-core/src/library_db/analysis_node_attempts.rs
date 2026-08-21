@@ -158,6 +158,7 @@ mod tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
 
@@ -222,6 +223,7 @@ mod tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
         analysis_node_attempts_insert_batch(
@@ -266,6 +268,7 @@ mod tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
         analysis_node_attempts_insert_batch(
@@ -339,6 +342,7 @@ mod tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
         analysis_node_attempts_insert_batch(run_id, "songC", &[]).expect("empty batch is ok");
@@ -362,6 +366,7 @@ mod tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
         analysis_node_attempts_insert_batch(

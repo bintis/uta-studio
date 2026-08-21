@@ -25,7 +25,9 @@ import os
 import secrets
 import socket
 import sys
+import threading
 import time
+from contextlib import contextmanager
 
 if os.name == "nt":
     import huggingface_hub.file_download as _hf_dl
@@ -83,6 +85,216 @@ STAGE_RANGES = {
     "complete": (100, 100),
 }
 
+NODE_STAGES = {
+    "preflight": "preparing",
+    "music.analysis": "key_detection",
+    "music.key": "key_detection",
+    "music.rhythm": "key_detection",
+    "music.descriptors": "key_detection",
+    "stems.separate": "separation",
+    "stems.vocals": "separation",
+    "vocals.denoise": "separation",
+    "vocals.dereverb": "separation",
+    "stems.instrumental": "separation",
+    "instrumental.denoise": "separation",
+    "instrumental.dereverb": "separation",
+    "stems.karaoke": "separation",
+    "stems.multistem": "separation",
+    "stems.bind_analysis_outputs": "separation",
+    "pitch.extract": "pitch",
+    "lyrics.preprocess": "audio_preprocessing",
+    "lyrics.transcribe": "transcription",
+    "lyrics.align": "alignment",
+    "lyrics.import_timed": "alignment",
+    "chart.build_candidate": "finalizing",
+}
+
+NODE_OPERATIONS = {
+    "preflight": "Source and runtime validation",
+    "music.analysis": "Music analysis",
+    "music.key": "Musical key detection",
+    "music.rhythm": "Tempo and beat analysis",
+    "music.descriptors": "Audio descriptor analysis",
+    "stems.separate": "Stem processing plan",
+    "stems.vocals": "Vocal extraction",
+    "vocals.denoise": "Vocal denoise",
+    "vocals.dereverb": "Vocal dereverb",
+    "stems.instrumental": "Accompaniment extraction",
+    "instrumental.denoise": "BGM denoise",
+    "instrumental.dereverb": "BGM dereverb",
+    "stems.karaoke": "Karaoke accompaniment extraction",
+    "stems.multistem": "Multi-stem separation",
+    "stems.bind_analysis_outputs": "Analysis audio binding",
+    "pitch.extract": "Reference pitch extraction",
+    "lyrics.preprocess": "Vocal-region preprocessing",
+    "lyrics.transcribe": "Speech transcription",
+    "lyrics.align": "Word timing alignment",
+    "lyrics.import_timed": "Timed lyrics import",
+    "chart.build_candidate": "Candidate chart commit",
+}
+
+# Relative cold-run cost used only until real per-node duration history is
+# available on the native side. Compound compatibility shells deliberately
+# have zero weight: their children are the work shown in Full DAG view.
+DEFAULT_NODE_WEIGHTS = {
+    "preflight": 1,
+    "music.analysis": 0,
+    "music.key": 1,
+    "music.rhythm": 1,
+    "music.descriptors": 1,
+    "stems.separate": 0,
+    "stems.vocals": 12,
+    "vocals.denoise": 8,
+    "vocals.dereverb": 8,
+    "stems.instrumental": 12,
+    "instrumental.denoise": 8,
+    "instrumental.dereverb": 8,
+    "stems.karaoke": 12,
+    "stems.multistem": 12,
+    "stems.bind_analysis_outputs": 1,
+    "pitch.extract": 5,
+    "lyrics.preprocess": 2,
+    "lyrics.transcribe": 9,
+    "lyrics.align": 7,
+    "lyrics.import_timed": 1,
+    "chart.build_candidate": 1,
+}
+
+TERMINAL_NODE_EVENTS = {
+    "completed",
+    "reused",
+    "skipped",
+    "failed",
+    "cancelled",
+}
+
+
+def _canonical_node_event(event):
+    return {
+        "node_started": "started",
+        "node_progress": "progress",
+        "node_completed": "completed",
+        "artifact_reused": "reused",
+        "node_skipped": "skipped",
+        "node_failed": "failed",
+        "node_cancelled": "cancelled",
+    }.get(event, event)
+
+
+def _planned_node_weights(cmd):
+    weights = {
+        node_id: DEFAULT_NODE_WEIGHTS[node_id]
+        for node_id in ("preflight", "music.key", "music.rhythm", "music.descriptors")
+    }
+    if not bool(cmd.get("skip_separation", False)):
+        audio_processing = cmd.get("audio_processing") or {}
+        step_ids = [str(step.get("step_id") or "") for step in audio_processing.get("steps") or []]
+        node_for_step = {
+            "extract_vocals": "stems.vocals",
+            "denoise_vocals": "vocals.denoise",
+            "dereverb_vocals": "vocals.dereverb",
+            "extract_accompaniment": "stems.instrumental",
+            "denoise_accompaniment": "instrumental.denoise",
+            "dereverb_accompaniment": "instrumental.dereverb",
+            "extract_karaoke": "stems.karaoke",
+            "separate_6s": "stems.multistem",
+            "legacy_htdemucs": "stems.multistem",
+        }
+        planned_stems = {node_for_step[step] for step in step_ids if step in node_for_step}
+        if not planned_stems:
+            planned_stems.add("stems.multistem")
+        for node_id in planned_stems:
+            weights[node_id] = DEFAULT_NODE_WEIGHTS[node_id]
+        weights["stems.bind_analysis_outputs"] = DEFAULT_NODE_WEIGHTS["stems.bind_analysis_outputs"]
+    if not bool(cmd.get("skip_pitch", False)):
+        weights["pitch.extract"] = DEFAULT_NODE_WEIGHTS["pitch.extract"]
+    if not bool(cmd.get("skip_transcription", False)):
+        weights["lyrics.preprocess"] = DEFAULT_NODE_WEIGHTS["lyrics.preprocess"]
+        if cmd.get("lyrics"):
+            weights["lyrics.align"] = DEFAULT_NODE_WEIGHTS["lyrics.align"]
+        else:
+            weights["lyrics.transcribe"] = DEFAULT_NODE_WEIGHTS["lyrics.transcribe"]
+            if cmd.get("engine", "whisper") != "parakeet":
+                weights["lyrics.align"] = DEFAULT_NODE_WEIGHTS["lyrics.align"]
+    weights["chart.build_candidate"] = DEFAULT_NODE_WEIGHTS["chart.build_candidate"]
+    historical = cmd.get("node_weights") or {}
+    # Compatibility for command payloads written by older native clients.
+    if isinstance(historical, dict):
+        for node_id in list(weights):
+            measured = historical.get(node_id)
+            if isinstance(measured, (int, float)) and measured > 0:
+                weights[node_id] = measured
+    return weights
+
+
+def _apply_matching_historical_weights(cmd, routes, weights, runtime_state):
+    samples = cmd.get("node_weights") or []
+    if not isinstance(samples, list):
+        return
+    matched = runtime_state.setdefault("matched_historical_weights", {})
+    for route in routes:
+        node_id = route.get("node_id")
+        implementation = route.get("implementation")
+        actual_device = route.get("actual_device")
+        if not node_id or not implementation or not actual_device:
+            continue
+        signature = (implementation, actual_device)
+        if matched.get(node_id) == signature:
+            continue
+        sample = next(
+            (
+                item
+                for item in samples
+                if item.get("node_id") == node_id
+                and item.get("implementation") == implementation
+                and item.get("actual_device") == actual_device
+                and isinstance(item.get("duration_ms"), (int, float))
+                and item["duration_ms"] > 0
+            ),
+            None,
+        )
+        weights[node_id] = (
+            sample["duration_ms"]
+            if sample is not None
+            else DEFAULT_NODE_WEIGHTS.get(node_id, weights.get(node_id, 1))
+        )
+        matched[node_id] = signature
+
+
+def _aggregate_overall_progress(cmd, routes, runtime_state):
+    weights = runtime_state.setdefault("node_weights", _planned_node_weights(cmd))
+    _apply_matching_historical_weights(cmd, routes, weights, runtime_state)
+    by_node = {
+        route.get("node_id"): route
+        for route in routes
+        if route.get("node_id")
+    }
+    # A fallback route can appear at runtime (for example Parakeet falling
+    # back to Whisper alignment). Add that real work to the denominator.
+    for node_id in by_node:
+        if node_id not in weights and node_id in DEFAULT_NODE_WEIGHTS:
+            weights[node_id] = DEFAULT_NODE_WEIGHTS[node_id]
+    total_weight = sum(max(0, weight) for weight in weights.values()) or 1
+    completed = 0.0
+    # Terminal means the node no longer has work left in this attempt, not
+    # that it necessarily succeeded.  Pitch/descriptors are allowed to fail
+    # without aborting the chart, so leaving their weight permanently at zero
+    # would make an otherwise completed run jump from a stale percentage to
+    # 100 only when Rust receives `done`.
+    for node_id, weight in weights.items():
+        route = by_node.get(node_id)
+        if route is None:
+            continue
+        node_progress = route.get("stage_progress", 0)
+        if _canonical_node_event(route.get("node_event")) in TERMINAL_NODE_EVENTS:
+            node_progress = 100
+        completed += max(0, weight) * min(max(int(node_progress), 0), 100) / 100.0
+    calculated = min(99, int(completed * 100 / total_weight))
+    previous = int(runtime_state.get("overall_progress", 0))
+    overall = max(previous, calculated)
+    runtime_state["overall_progress"] = overall
+    return overall
+
 
 def _classify_progress(pct, message):
     text = str(message).lower()
@@ -137,9 +349,39 @@ def _classify_progress(pct, message):
 def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=None):
     metadata = metadata or {}
     runtime_state = runtime_state if runtime_state is not None else {}
-    stage, operation = _classify_progress(int(pct), message)
+    runtime_state["reported_pct"] = int(pct)
+    node_id = metadata.get("node_id")
+    node_event = _canonical_node_event(metadata.get("event"))
+    if node_id is None and runtime_state.get("active_node_id"):
+        node_id = runtime_state["active_node_id"]
+        node_event = "progress"
+        metadata = dict(metadata)
+        metadata["node_id"] = node_id
+        metadata["event"] = node_event
+    if node_id is not None and node_event in ("started", "progress"):
+        runtime_state["active_node_id"] = node_id
+    elif (
+        node_id is not None
+        and node_event in TERMINAL_NODE_EVENTS
+        and runtime_state.get("active_node_id") == node_id
+    ):
+        runtime_state.pop("active_node_id", None)
+
+    classified_stage, classified_operation = _classify_progress(int(pct), message)
+    stage = NODE_STAGES.get(node_id, classified_stage)
+    operation = NODE_OPERATIONS.get(node_id, classified_operation)
     start, end = STAGE_RANGES.get(stage, (0, 100))
     stage_progress = 100 if end <= start else round((int(pct) - start) * 100 / (end - start))
+    if metadata.get("node_progress_pct") is not None:
+        stage_progress = int(metadata["node_progress_pct"])
+    work_completed = metadata.get("work_units_completed")
+    work_total = metadata.get("work_units_total")
+    if (
+        isinstance(work_completed, (int, float))
+        and isinstance(work_total, (int, float))
+        and work_total > 0
+    ):
+        stage_progress = round(work_completed * 100 / work_total)
     stage_progress = min(max(stage_progress, 0), 100)
     separator_impl, separator_model = SEPARATOR_DETAILS.get(
         cmd.get("separator", "karaoke"), (cmd.get("separator", "karaoke"), "")
@@ -166,32 +408,22 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     else:
         implementation, model = "FFmpeg + Uta Studio", "Source preparation"
 
-    # A progress event may be the first event for a new stage. Clear the
-    # previous stage's sticky execution metadata before resolving defaults,
-    # otherwise the new route inherits (and then permanently stores) the old
-    # implementation/model pair.
-    if runtime_state.get("stage") != stage:
-        for key in (
-            "actual_device",
-            "requested_device",
-            "fallback_from",
-            "fallback_reason",
-            "implementation",
-            "model",
-            "backend_fallback_from",
-            "backend_fallback_reason",
-        ):
-            runtime_state.pop(key, None)
-        runtime_state["stage"] = stage
+    stage_routes = runtime_state.setdefault("stage_routes", {})
+    route_key = node_id or stage
+    existing_route = stage_routes.get(route_key, {})
 
     implementation = str(
         metadata.get("implementation")
-        or runtime_state.get("implementation")
+        or existing_route.get("implementation")
         or implementation
     )
-    model = str(metadata.get("model") or runtime_state.get("model") or model)
+    model = str(metadata.get("model") or existing_route.get("model") or model)
 
-    requested_device = str(metadata.get("requested_device") or device)
+    requested_device = str(
+        metadata.get("requested_device")
+        or existing_route.get("requested_device")
+        or device
+    )
     default_device = "cpu" if stage in (
         "preparing",
         "key_detection",
@@ -201,33 +433,19 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     ) else device
     effective_device = str(
         metadata.get("actual_device")
-        or runtime_state.get("actual_device")
+        or existing_route.get("actual_device")
         or default_device
     )
-    fallback_from = metadata.get("fallback_from") or runtime_state.get("fallback_from")
-    fallback_reason = metadata.get("fallback_reason") or runtime_state.get("fallback_reason")
+    fallback_from = metadata.get("fallback_from") or existing_route.get("fallback_from")
+    fallback_reason = metadata.get("fallback_reason") or existing_route.get("fallback_reason")
     backend_fallback_from = (
         metadata.get("backend_fallback_from")
-        or runtime_state.get("backend_fallback_from")
+        or existing_route.get("backend_fallback_from")
     )
     backend_fallback_reason = (
         metadata.get("backend_fallback_reason")
-        or runtime_state.get("backend_fallback_reason")
+        or existing_route.get("backend_fallback_reason")
     )
-
-    # Keep the execution route attached to all later events in this stage.
-    runtime_state["actual_device"] = effective_device
-    runtime_state["requested_device"] = requested_device
-    runtime_state["implementation"] = implementation
-    runtime_state["model"] = model
-    if fallback_from:
-        runtime_state["fallback_from"] = str(fallback_from)
-    if fallback_reason:
-        runtime_state["fallback_reason"] = str(fallback_reason)
-    if backend_fallback_from:
-        runtime_state["backend_fallback_from"] = str(backend_fallback_from)
-    if backend_fallback_reason:
-        runtime_state["backend_fallback_reason"] = str(backend_fallback_reason)
 
     # Keyed by the real node id when the call site has migrated to
     # `progress_node`/`artifact_reused` (analysis DAG redesign Phase 3),
@@ -238,9 +456,6 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     # entry, silently losing all but the last child's route. Each real node
     # id now keeps its own entry regardless of how many nodes share a
     # bucket.
-    node_id = metadata.get("node_id")
-    node_event = metadata.get("event")
-    stage_routes = runtime_state.setdefault("stage_routes", {})
     # Phase 3 gap closed: per-node Start/Finish timestamps. The route dict
     # is fully replaced (not merged) on every call, so `started_at_ms` has
     # to be read back from whatever was already recorded or it would reset
@@ -248,29 +463,28 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
     # Wall-clock time here (not something threaded from Rust) because this
     # runs in the same process as the actual node work -- it measures real
     # execution time, not socket/IPC latency. `artifact_reused` has no
-    # `node_started` before it (a cache hit never "starts"), so its own
+    # `started` before it (a cache hit never "starts"), so its own
     # single event stamps both fields at once.
-    existing_route = stage_routes.get(node_id or stage, {})
     event_at_ms = int(time.time() * 1000)
     started_at_ms = existing_route.get("started_at_ms")
-    if started_at_ms is None or node_event in ("node_started", "artifact_reused"):
+    if started_at_ms is None or node_event in ("started", "reused"):
         started_at_ms = event_at_ms
     finished_at_ms = existing_route.get("finished_at_ms")
-    if node_event in ("node_completed", "node_failed", "artifact_reused"):
+    if node_event in TERMINAL_NODE_EVENTS:
         finished_at_ms = event_at_ms
     committed_outputs = metadata.get("artifacts")
     if committed_outputs is None:
         committed_outputs = existing_route.get("committed_outputs", [])
     if not isinstance(committed_outputs, list):
         committed_outputs = []
-    stage_routes[node_id or stage] = {
+    stage_routes[route_key] = {
         "stage": stage,
         "node_id": node_id,
         "node_event": node_event,
         "binding_kind": (
             metadata.get("reason")
-            if node_event == "artifact_reused"
-            else "bypassed" if node_event == "node_skipped" else None
+            if node_event == "reused"
+            else "bypassed" if node_event == "skipped" else None
         ),
         "committed_outputs": committed_outputs,
         "operation": operation,
@@ -285,11 +499,18 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
         "backend_fallback_reason": str(backend_fallback_reason) if backend_fallback_reason else None,
         "started_at_ms": started_at_ms,
         "finished_at_ms": finished_at_ms,
+        "event_at_ms": event_at_ms,
+        "work_units_completed": metadata.get("work_units_completed"),
+        "work_units_total": metadata.get("work_units_total"),
     }
 
+    overall_progress = _aggregate_overall_progress(
+        cmd, list(stage_routes.values()), runtime_state
+    )
     payload = {
         "type": "progress",
-        "pct": int(pct),
+        "pct": overall_progress,
+        "reported_pct": int(pct),
         "msg": str(message),
         "stage": stage,
         "stage_progress": stage_progress,
@@ -311,8 +532,13 @@ def _progress_payload(cmd, device, pct, message, metadata=None, runtime_state=No
         "node_id": node_id,
         "event": node_event,
     }
-    if node_event == "artifact_reused":
+    if node_event == "reused":
         payload["artifact_reused_reason"] = metadata.get("reason")
+    if metadata.get("work_units_completed") is not None:
+        payload["work_units_completed"] = metadata["work_units_completed"]
+    if metadata.get("work_units_total") is not None:
+        payload["work_units_total"] = metadata["work_units_total"]
+    payload["event_at_ms"] = event_at_ms
     return payload
 
 
@@ -326,6 +552,7 @@ def process_song(cmd, device):
     separator = cmd.get("separator", "karaoke")
     separator_options = cmd.get("separator_options") or {}
     audio_processing = cmd.get("audio_processing")
+    run_work_dir = cmd.get("run_work_dir")
     engine = cmd.get("engine", "whisper")
     lyrics_path = cmd.get("lyrics")
     language_override = _normalize_language(cmd.get("language"))
@@ -353,6 +580,7 @@ def process_song(cmd, device):
             separator=separator,
             separator_options=separator_options,
             audio_processing=audio_processing,
+            run_work_dir=run_work_dir,
             engine=engine,
             lyrics_path=lyrics_path,
             language_override=language_override,
@@ -370,6 +598,117 @@ def process_song(cmd, device):
     finally:
         end_of_song_cleanup()
         log_vram("song_end")
+
+
+class _AnalysisLog:
+    def __init__(self, handle):
+        self.handle = handle
+        self.lock = threading.Lock()
+        self.active_node = None
+
+    def write(self, record_type, **fields):
+        if self.handle is None:
+            return
+        record = {
+            "timestamp_ms": int(time.time() * 1000),
+            "record_type": record_type,
+            **fields,
+        }
+        with self.lock:
+            self.handle.write(
+                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            )
+            self.handle.flush()
+
+    def event(self, payload):
+        logged = dict(payload)
+        logged.pop("stage_routes", None)
+        self.write("node_event", **logged)
+        event = _canonical_node_event(payload.get("event"))
+        with self.lock:
+            if event in ("started", "progress"):
+                self.active_node = payload.get("node_id")
+            elif event in TERMINAL_NODE_EVENTS and self.active_node == payload.get("node_id"):
+                self.active_node = None
+
+    def process_output(self, stream, message):
+        with self.lock:
+            node_id = self.active_node
+        self.write(
+            "process_output",
+            node_id=node_id,
+            stream=stream,
+            message=message.rstrip("\r\n"),
+        )
+
+    def terminal(self, status, message=""):
+        self.write("run_terminal", status=status, message=str(message))
+
+
+def _capture_fd_lines(read_fd, analysis_log, stream):
+    with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as reader:
+        for line in reader:
+            analysis_log.process_output(stream, line)
+
+
+@contextmanager
+def _analysis_log(cmd):
+    path = cmd.get("analysis_log_path")
+    if not path:
+        yield _AnalysisLog(None)
+        return
+    path = os.path.abspath(os.fspath(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle = open(path, "a", encoding="utf-8", buffering=1)
+    analysis_log = _AnalysisLog(handle)
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    stdout_read, stdout_write = os.pipe()
+    stderr_read, stderr_write = os.pipe()
+    stdout_thread = threading.Thread(
+        target=_capture_fd_lines,
+        args=(stdout_read, analysis_log, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_capture_fd_lines,
+        args=(stderr_read, analysis_log, "stderr"),
+        daemon=True,
+    )
+    try:
+        analysis_log.write(
+            "python_attached",
+            device=cmd.get("_resolved_device", ""),
+            engine=cmd.get("engine", "whisper"),
+            separator=cmd.get("separator", "karaoke"),
+        )
+        config_snapshot = {
+            key: value
+            for key, value in cmd.items()
+            if key not in {"analysis_log_path", "run_work_dir"}
+        }
+        analysis_log.write("config_summary", config=config_snapshot)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        stdout_thread.start()
+        stderr_thread.start()
+        os.dup2(stdout_write, 1)
+        os.dup2(stderr_write, 2)
+        os.close(stdout_write)
+        os.close(stderr_write)
+        yield analysis_log
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            handle.close()
 
 
 def _send(wfile, payload):
@@ -435,38 +774,54 @@ def main():
             if ctype == "quit":
                 break
             if ctype == "analyze":
-                try:
-                    progress_state = {}
-                    set_progress_sink(
-                        lambda pct, msg, metadata=None, current=cmd, state=progress_state: _send(
-                            wfile,
-                            _progress_payload(
-                                current,
-                                device,
-                                pct,
-                                msg,
-                                metadata,
-                                state,
-                            ),
-                        )
-                    )
-                    process_song(cmd, device)
-                    _send(wfile, {"type": "done", "hash": cmd.get("hash", "")})
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc(file=sys.stderr)
-                    err_str = str(e)
-                    if is_oom(err_str):
-                        snap = vram_snapshot()
-                        if snap:
-                            print(
-                                f"[uta-studio:LOG] OOM in process_song; vram={snap}",
-                                file=sys.stderr, flush=True,
+                cmd["_resolved_device"] = device
+                with _analysis_log(cmd) as analysis_log:
+                    try:
+                        progress_state = {}
+
+                        def send_progress(pct, msg, metadata=None, current=cmd, state=progress_state):
+                            payload = _progress_payload(
+                                current, device, pct, msg, metadata, state
                             )
-                        end_of_song_cleanup()
-                        _send(wfile, {"type": "error", "kind": "oom", "msg": err_str})
-                    else:
-                        _send(wfile, {"type": "error", "kind": "generic", "msg": err_str})
+                            analysis_log.event(payload)
+                            _send(wfile, payload)
+
+                        set_progress_sink(send_progress)
+                        process_song(cmd, device)
+                        analysis_log.terminal("completed")
+                        _send(wfile, {"type": "done", "hash": cmd.get("hash", "")})
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc(file=sys.stderr)
+                        err_str = str(e)
+                        active_node = progress_state.get("active_node_id")
+                        if active_node:
+                            failed_payload = _progress_payload(
+                                cmd,
+                                device,
+                                progress_state.get("reported_pct", 0),
+                                err_str,
+                                {
+                                    "node_id": active_node,
+                                    "event": "failed",
+                                },
+                                progress_state,
+                            )
+                            analysis_log.event(failed_payload)
+                            _send(wfile, failed_payload)
+                        if is_oom(err_str):
+                            snap = vram_snapshot()
+                            if snap:
+                                print(
+                                    f"[uta-studio:LOG] OOM in process_song; vram={snap}",
+                                    file=sys.stderr, flush=True,
+                                )
+                            end_of_song_cleanup()
+                            analysis_log.terminal("oom", err_str)
+                            _send(wfile, {"type": "error", "kind": "oom", "msg": err_str})
+                        else:
+                            analysis_log.terminal("failed", err_str)
+                            _send(wfile, {"type": "error", "kind": "generic", "msg": err_str})
             else:
                 _send(wfile, {"type": "error", "kind": "generic", "msg": f"Unknown command: {ctype!r}"})
     finally:

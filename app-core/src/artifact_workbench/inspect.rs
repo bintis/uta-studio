@@ -22,6 +22,8 @@ pub(crate) fn media_type(kind: ArtifactKind) -> ArtifactMediaType {
         | ArtifactKind::DereverbedVocalStem
         | ArtifactKind::AnalysisVocalStem
         | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::DenoisedInstrumentalStem
+        | ArtifactKind::DereverbedInstrumentalStem
         | ArtifactKind::KaraokeInstrumentalStem
         | ArtifactKind::DrumStem
         | ArtifactKind::BassStem
@@ -299,6 +301,8 @@ pub fn artifact_capabilities(revision: &ArtifactRevision) -> Vec<ArtifactCapabil
         | ArtifactKind::DereverbedVocalStem
         | ArtifactKind::AnalysisVocalStem
         | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::DenoisedInstrumentalStem
+        | ArtifactKind::DereverbedInstrumentalStem
         | ArtifactKind::KaraokeInstrumentalStem
         | ArtifactKind::DrumStem
         | ArtifactKind::BassStem

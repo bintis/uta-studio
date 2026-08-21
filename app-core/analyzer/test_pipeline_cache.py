@@ -13,8 +13,10 @@ later phases are implemented on top of it.
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import pipeline  # type: ignore[import]
@@ -31,6 +33,18 @@ except Exception as exc:  # pragma: no cover - environment-specific dependency i
     server_import_error = exc
 else:
     server_import_error = None
+
+
+@unittest.skipUnless(pipeline is not None, f"pipeline import failed: {pipeline_import_error}")
+class AudioStepNodeMappingTests(unittest.TestCase):
+    def test_every_supported_step_maps_to_a_real_non_aggregate_node(self):
+        for step_id in pipeline._AUDIO_STEP_NODES:
+            node_id = pipeline._audio_node_for_step(step_id)
+            self.assertNotIn(node_id, {"stems.separate", "music.analysis"})
+
+    def test_unknown_steps_do_not_emit_events_on_the_stem_aggregate(self):
+        with self.assertRaisesRegex(RuntimeError, "no authoritative DAG node mapping"):
+            pipeline._audio_node_for_step("future_audio_step")
 
 
 @unittest.skipUnless(pipeline is not None, f"pipeline import failed: {pipeline_import_error}")
@@ -128,6 +142,41 @@ class LegacyStemCacheDiscoveryTests(unittest.TestCase):
             self.assertIsNone(result)
 
 
+@unittest.skipUnless(pipeline is not None, f"pipeline import failed: {pipeline_import_error}")
+class AtomicCacheAudioTests(unittest.TestCase):
+    def test_failed_conversion_preserves_committed_output_and_source(self):
+        with _tmp_dir() as output_dir:
+            source = Path(output_dir) / "source.wav"
+            destination = Path(output_dir) / "vocals.flac"
+            source.write_bytes(b"unfinished source")
+            destination.write_bytes(b"previous committed output")
+            with mock.patch.object(
+                pipeline.subprocess,
+                "run",
+                side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]),
+            ):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    pipeline.convert_to_cache_audio(str(source), str(destination), lossless=True)
+            self.assertEqual(destination.read_bytes(), b"previous committed output")
+            self.assertEqual(source.read_bytes(), b"unfinished source")
+            self.assertEqual(list(Path(output_dir).glob(".vocals.flac.*.tmp.flac")), [])
+
+    def test_successful_conversion_atomically_replaces_output(self):
+        with _tmp_dir() as output_dir:
+            source = Path(output_dir) / "source.wav"
+            destination = Path(output_dir) / "vocals.flac"
+            source.write_bytes(b"source")
+            destination.write_bytes(b"old")
+
+            def write_converted(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"new lossless output")
+
+            with mock.patch.object(pipeline.subprocess, "run", side_effect=write_converted):
+                pipeline.convert_to_cache_audio(str(source), str(destination), lossless=True)
+            self.assertEqual(destination.read_bytes(), b"new lossless output")
+            self.assertFalse(source.exists())
+            self.assertEqual(list(Path(output_dir).glob(".vocals.flac.*.tmp.flac")), [])
+
 @unittest.skipUnless(server is not None, f"server import failed: {server_import_error}")
 class ClassifyProgressStageBaselineTests(unittest.TestCase):
     """Locks the current text-classification stage mapping (server.py::
@@ -167,6 +216,16 @@ class ClassifyProgressStageBaselineTests(unittest.TestCase):
         # breaks silently.
         for _pct, message, expected_stage in self.CASES:
             self.assertIn(expected_stage, server.STAGE_RANGES)
+
+    def test_structured_model_progress_overrides_stage_heuristic(self):
+        payload = server._progress_payload(
+            {"separator": "karaoke"},
+            "cpu",
+            20,
+            "model batch",
+            {"node_id": "stems.vocals", "node_progress_pct": 73},
+        )
+        self.assertEqual(payload["stage_progress"], 73)
 
 
 def _tmp_dir():

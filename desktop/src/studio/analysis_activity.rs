@@ -1,178 +1,58 @@
 use crate::studio::*;
 
-#[allow(dead_code)]
-pub(crate) fn spawn_analysis_history_list(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    session: &StudioSessionView<'_>,
-    theme: &StudioTheme,
-) {
-    if session.analysis_history.is_empty() {
-        return;
-    }
-    parent
-        .spawn(Node {
-            width: percent(100),
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::axes(px(30), px(18)),
-            row_gap: px(8),
-            border: UiRect::bottom(px(1)),
-            ..default()
+pub(crate) fn active_analysis_task_count(tasks: &[app_core::AnalysisTask]) -> usize {
+    tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status,
+                app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
+            )
         })
-        .with_children(|history_list| {
-            history_list
-                .spawn(Node {
-                    width: percent(100),
-                    align_items: AlignItems::Center,
-                    column_gap: px(10),
-                    ..default()
-                })
-                .with_children(|header| {
-                    spawn_text(
-                        header,
-                        font.clone(),
-                        format!("ANALYSIS HISTORY · {}", session.analysis_history.len()),
-                        9.0,
-                        theme.muted_foreground,
-                    );
-                    header.spawn(Node {
-                        flex_grow: 1.0,
-                        ..default()
-                    });
-                    if !session.pending_analysis_history_clear {
-                        spawn_text_button(
-                            header,
-                            font.clone(),
-                            theme,
-                            "Clear history…",
-                            8.0,
-                            UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
-                        );
-                    }
-                });
-            if session.pending_analysis_history_clear {
-                history_list
-                    .spawn((
-                        Node {
-                            width: percent(100),
-                            align_items: AlignItems::Center,
-                            flex_wrap: FlexWrap::Wrap,
-                            padding: UiRect::all(px(11)),
-                            column_gap: px(9),
-                            row_gap: px(7),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(5)),
-                            ..default()
-                        },
-                        BackgroundColor(theme.destructive.with_alpha(0.06)),
-                        BorderColor::all(theme.destructive.with_alpha(0.46)),
-                    ))
-                    .with_children(|confirmation| {
-                        spawn_wrapped_text(
-                            confirmation,
-                            font.clone(),
-                            "Delete every saved analysis session? Songs, charts, models, generated assets, and the active queue are not affected.",
-                            9.0,
-                            theme.muted_foreground,
-                        );
-                        confirmation.spawn(Node {
-                            flex_grow: 1.0,
-                            ..default()
-                        });
-                        spawn_text_button(
-                            confirmation,
-                            font.clone(),
-                            theme,
-                            "Cancel",
-                            8.0,
-                            UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
-                        );
-                        spawn_text_button(
-                            confirmation,
-                            font.clone(),
-                            theme,
-                            "Delete history",
-                            8.0,
-                            UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
-                        );
-                    });
-            }
-            for history in session.analysis_history.iter().take(20) {
-                let selected = session.selected_analysis_history == Some(history.id);
-                let duration_seconds =
-                    ((history.finished_at_ms - history.started_at_ms).max(0) / 1000) as u64;
-                history_list
-                    .spawn((
-                        Button,
-                        UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(history.id))),
-                        Node {
-                            width: percent(100),
-                            min_height: px(48),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::axes(px(13), px(9)),
-                            column_gap: px(12),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(5)),
-                            ..default()
-                        },
-                        BackgroundColor(if selected {
-                            theme.primary.with_alpha(0.10)
-                        } else {
-                            theme.background.with_alpha(0.24)
-                        }),
-                        BorderColor::all(if selected {
-                            theme.primary.with_alpha(0.58)
-                        } else {
-                            theme.border.with_alpha(0.42)
-                        }),
-                    ))
-                    .with_children(|row| {
-                        row.spawn(Node {
-                            min_width: px(0),
-                            flex_grow: 1.0,
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(2),
-                            ..default()
-                        })
-                        .with_children(|copy| {
-                            spawn_text(
-                                copy,
-                                font.clone(),
-                                history.title.clone(),
-                                10.0,
-                                theme.foreground,
-                            );
-                            spawn_text(
-                                copy,
-                                font.clone(),
-                                history.artist.clone(),
-                                8.0,
-                                theme.muted_foreground,
-                            );
-                        });
-                        spawn_text(
-                            row,
-                            font.clone(),
-                            format!("{}:{:02}", duration_seconds / 60, duration_seconds % 60),
-                            8.0,
-                            theme.muted_foreground,
-                        );
-                        spawn_text(
-                            row,
-                            font.clone(),
-                            history.status.to_ascii_uppercase(),
-                            8.0,
-                            if history.status == "completed" {
-                                theme.pitch_contour
-                            } else {
-                                theme.destructive
-                            },
-                        );
-                    });
-            }
-        });
+        .count()
 }
 
+pub(crate) fn handle_analysis_model_panel_scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    analysis: Res<AnalysisUiState>,
+    mut panels: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        With<AnalysisModelPanelScroll>,
+    >,
+) {
+    if !analysis.analysis_model_panel_open {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        return;
+    };
+    let Ok((computed, transform, mut position)) = panels.single_mut() else {
+        return;
+    };
+    if !ui_node_contains_pointer(computed, transform, pointer) {
+        return;
+    }
+    let mut delta = 0.0;
+    for event in wheel.read() {
+        let scale = match event.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => 24.0,
+            bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+        };
+        delta -= event.y * scale;
+    }
+    if delta.abs() < f32::EPSILON {
+        return;
+    }
+    let size = computed.size() * computed.inverse_scale_factor();
+    let content = computed.content_size() * computed.inverse_scale_factor();
+    position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_analysis_graph_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -225,6 +105,8 @@ pub(crate) fn handle_analysis_graph_scroll(
         let zoomed = clamp_analysis_graph_zoom(analysis.analysis_graph_zoom + zoom_delta);
         if (zoomed - analysis.analysis_graph_zoom).abs() > f32::EPSILON {
             analysis.analysis_graph_zoom = zoomed;
+            analysis.analysis_graph_needs_fit = false;
+            analysis.analysis_graph_fit_active = false;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
     }
@@ -252,6 +134,8 @@ pub(crate) fn refresh_analysis_activity(
     if tasks == analysis.analysis_tasks && history == analysis.analysis_history {
         return;
     }
+    let sidebar_count_changed =
+        active_analysis_task_count(&analysis.analysis_tasks) != active_analysis_task_count(&tasks);
     analysis.analysis_tasks = tasks;
     analysis.analysis_history = history;
     if (shell.route == StudioRoute::Library && library.library_view == LibraryView::Queue)
@@ -260,6 +144,11 @@ pub(crate) fn refresh_analysis_activity(
         library.refresh();
     }
     invalidated.invalidate(UiDirtyRegion::Analysis);
+    if sidebar_count_changed {
+        // The Analysis badge and the Activity indicator live in the persistent
+        // chrome, outside the analysis workspace rebuilt above.
+        invalidated.invalidate(UiDirtyRegion::Chrome);
+    }
 }
 
 fn analysis_page_is_open(route: StudioRoute, library_view: LibraryView) -> bool {
@@ -323,9 +212,7 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     mut invalidated: ResMut<UiInvalidated>,
     viewports: Query<(&ComputedNode, &AnalysisGraphViewport)>,
 ) {
-    if !analysis.analysis_graph_needs_fit
-        || !analysis_page_is_open(shell.route, library.library_view)
-    {
+    if !analysis_page_is_open(shell.route, library.library_view) {
         return;
     }
     let Ok((computed, canvas)) = viewports.single() else {
@@ -339,16 +226,68 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     {
         return;
     }
+    let viewport_changed = (analysis.analysis_graph_viewport_width - viewport.x).abs() > 1.0
+        || (analysis.analysis_graph_viewport_height - viewport.y).abs() > 1.0;
+    if !analysis.analysis_graph_needs_fit
+        && !(analysis.analysis_graph_fit_active && viewport_changed)
+    {
+        if viewport_changed {
+            analysis.analysis_graph_viewport_width = viewport.x;
+            analysis.analysis_graph_viewport_height = viewport.y;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        return;
+    }
     let fitted = analysis_graph_fit_zoom(
         canvas.unscaled_width,
         canvas.unscaled_height,
         viewport.x,
         viewport.y,
     );
+    // `ComputedNode::size` is in the scaled UI coordinate space. The graph
+    // geometry and zoom helpers use logical pixels, so persist the same
+    // inverse-scaled width used by Fit above. Mixing the two spaces expands
+    // the next canvas by the display/UI scale and clips the output phase.
+    let layout_width = viewport.x;
+    analysis.analysis_graph_viewport_width = layout_width;
+    analysis.analysis_graph_viewport_height = viewport.y;
     analysis.analysis_graph_needs_fit = false;
     analysis.analysis_graph_scroll_offset = 0.0;
-    if (fitted - analysis.analysis_graph_zoom).abs() > 0.01 {
+    analysis.analysis_graph_vertical_scroll_offset = 0.0;
+    if (fitted - analysis.analysis_graph_zoom).abs() > 0.01 || viewport_changed {
         analysis.analysis_graph_zoom = fitted;
         invalidated.invalidate(UiDirtyRegion::Analysis);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(status: app_core::QueuedStatus) -> app_core::AnalysisTask {
+        app_core::AnalysisTask {
+            file_hash: "song".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            status,
+            live: None,
+        }
+    }
+
+    #[test]
+    fn active_task_count_tracks_only_sidebar_badge_jobs() {
+        let tasks = [
+            task(app_core::QueuedStatus::Queued),
+            task(app_core::QueuedStatus::Analyzing(42)),
+            task(app_core::QueuedStatus::Failed("failed".to_string())),
+        ];
+
+        assert_eq!(active_analysis_task_count(&tasks), 2);
+        assert_eq!(
+            active_analysis_task_count(&[task(app_core::QueuedStatus::Failed(
+                "failed".to_string()
+            ))]),
+            0
+        );
     }
 }

@@ -94,6 +94,9 @@ editor_actions! {
     StopAudition => "stop_audition",
     CycleAuditionMode => "cycle_audition_mode",
     ToggleLyrics => "toggle_lyrics",
+    ToggleSpectrum => "toggle_spectrum",
+    ToggleDock => "toggle_editor_dock",
+    ToggleStatus => "toggle_editor_status",
     ToggleTracks => "toggle_tracks",
     ToggleInspector => "toggle_inspector",
     CloseInspector => "close_inspector",
@@ -259,11 +262,10 @@ pub(crate) fn run_editor_action(action: EditorAction, ctx: &mut EditorActionCont
         | AuditionAfterSelection
         | StopAudition
         | CycleAuditionMode => run_transport_action(action, ctx),
-        ToggleLyrics | ToggleTracks | ToggleInspector | CloseInspector | ToggleProblemsPanel
-        | ToggleShortcutsPanel | ToggleLockMode | ToggleBeatGrid | ZoomInTime | ZoomOutTime
-        | FitSelection | FitSong | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => {
-            run_view_action(action, ctx)
-        }
+        ToggleLyrics | ToggleSpectrum | ToggleDock | ToggleStatus | ToggleTracks
+        | ToggleInspector | CloseInspector | ToggleProblemsPanel | ToggleShortcutsPanel
+        | ToggleLockMode | ToggleBeatGrid | ZoomInTime | ZoomOutTime | FitSelection | FitSong
+        | ZoomInPitch | ZoomOutPitch | PanPitchUp | PanPitchDown => run_view_action(action, ctx),
         SelectAll | SelectNextNote | SelectPreviousNote => run_selection_action(action, ctx),
         ToggleTapMode | TapNote => run_tap_action(action, ctx),
         AddNote | EditNoteLyric | PlayNotePitch | PlayNoteVocal | DeleteSelection
@@ -722,16 +724,15 @@ fn restore_audition_source(ctx: &mut EditorActionContext) {
 
 fn run_view_action(action: EditorAction, ctx: &mut EditorActionContext) {
     use EditorAction::*;
-    if action == ToggleTracks {
-        ctx.editor.editor_tracks_open = !ctx.editor.editor_tracks_open;
-        ctx.invalidated.invalidate(UiDirtyRegion::Editor);
-        return;
-    }
     let Some(editor) = ctx.editor.editor.as_mut() else {
         return;
     };
     match action {
         ToggleLyrics => editor.lyrics_hidden = !editor.lyrics_hidden,
+        ToggleSpectrum => editor.spectrum_hidden = !editor.spectrum_hidden,
+        ToggleDock => editor.dock_hidden = !editor.dock_hidden,
+        ToggleStatus => editor.status_hidden = !editor.status_hidden,
+        ToggleTracks => editor.tracks_hidden = !editor.tracks_hidden,
         ToggleInspector => editor.inspector_open = !editor.inspector_open,
         CloseInspector => {
             if !editor.inspector_open {

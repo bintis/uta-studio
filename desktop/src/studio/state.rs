@@ -12,15 +12,15 @@ use bevy::{
 
 use super::{
     ANALYSIS_GRAPH_ZOOM_DEFAULT, AnalysisAdvancedSection, AnalysisArtifactContextMenu,
-    AnalysisCommand, AnalysisExportContextMenu, AnalysisNodeContextMenu, AppLogViewerState,
-    ArtifactInspectorTab, ArtifactLineagePanel, CacheClearScope, DocumentationState,
-    EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback, LibrarySelectKind,
-    LibraryView, LineageScope, NativeEditor, NativeEditorLoadJob, NativeExportJob,
-    NativeLanguageEditor, NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
-    NativeNodeConfigDialog, NativeSongSettings, PendingLeave, PlanPreviewDraft, SelectedGraphEdge,
-    SettingsSelectKind, SettingsTab, SetupRequest, SongContextMenu, StudioRoute, UiAction,
-    analysis_node_compound_toggle_action, analysis_node_retry_action, analysis_node_stage_index,
-    bucket_stage_id, load_songs, node_can_force_transcribe, node_can_refetch_and_align,
+    AnalysisExportContextMenu, AnalysisLogViewerState, AnalysisModelCategory,
+    AnalysisNodeContextMenu, ArtifactInspectorTab, ArtifactLineagePanel, CacheClearScope,
+    DocumentationState, EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback,
+    LibrarySelectKind, LibraryView, LineageScope, NativeEditor, NativeEditorLoadJob,
+    NativeExportJob, NativeLanguageEditor, NativeLyricsEditor, NativeLyricsSearchJob,
+    NativeLyricsWaveformJob, NativeNodeConfigDialog, NativeSongSettings, PendingLeave,
+    PlanPreviewDraft, SelectedGraphEdge, SettingsSelectKind, SettingsTab, SetupRequest,
+    SongContextMenu, StudioRoute, analysis_graph_node_label, analysis_node_stage_index,
+    bucket_stage_id, build_analysis_node_context_menu, load_songs,
 };
 
 #[derive(Resource)]
@@ -90,21 +90,27 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_lineage_mode: bool,
     pub(crate) analysis_lineage_scope: LineageScope,
     pub(crate) analysis_graph_scroll_offset: f32,
+    pub(crate) analysis_graph_vertical_scroll_offset: f32,
     pub(crate) analysis_graph_zoom: f32,
+    pub(crate) analysis_graph_viewport_width: f32,
+    pub(crate) analysis_graph_viewport_height: f32,
     pub(crate) analysis_graph_needs_fit: bool,
+    pub(crate) analysis_graph_fit_active: bool,
     pub(crate) analysis_graph_follow_node: Option<String>,
     pub(crate) analysis_tasks: Vec<AnalysisTask>,
     pub(crate) analysis_history: Vec<AnalysisRunHistory>,
     pub(crate) selected_analysis_history: Option<i64>,
     pub(crate) selected_analysis_stage: Option<String>,
+    pub(crate) selected_analysis_node: Option<String>,
     pub(crate) expanded_compound_nodes: BTreeSet<AnalysisNodeId>,
     pub(crate) analysis_mini_view: bool,
+    pub(crate) analysis_model_panel_open: bool,
+    pub(crate) analysis_model_category: AnalysisModelCategory,
 }
 
 #[derive(Resource)]
 pub(crate) struct EditorUiState {
     pub(crate) editor: Option<NativeEditor>,
-    pub(crate) editor_tracks_open: bool,
 }
 
 #[derive(Resource)]
@@ -128,7 +134,7 @@ pub(crate) struct DialogState {
     pub(crate) language_editor: Option<NativeLanguageEditor>,
     pub(crate) node_config_dialog: Option<NativeNodeConfigDialog>,
     pub(crate) plan_preview_draft: Option<PlanPreviewDraft>,
-    pub(crate) app_log_viewer: Option<AppLogViewerState>,
+    pub(crate) analysis_log_viewer: Option<AnalysisLogViewerState>,
     pub(crate) song_settings: Option<NativeSongSettings>,
     pub(crate) pending_cache_clear: Option<CacheClearScope>,
     pub(crate) pending_leave: Option<PendingLeave>,
@@ -213,6 +219,13 @@ impl StudioStateBundle {
         {
             config.font_scale_percent = Some(percent.clamp(80, 140));
         }
+        if let Ok(theme) = std::env::var("UTA_STUDIO_DEBUG_THEME") {
+            config.dark_mode = match theme.trim().to_ascii_lowercase().as_str() {
+                "dark" => Some(true),
+                "light" => Some(false),
+                _ => config.dark_mode,
+            };
+        }
         let folder_browser = FolderBrowser::new(&config);
         Self {
             shell: ShellState {
@@ -243,20 +256,24 @@ impl StudioStateBundle {
                 analysis_lineage_mode: false,
                 analysis_lineage_scope: LineageScope::Full,
                 analysis_graph_scroll_offset: 0.0,
+                analysis_graph_vertical_scroll_offset: 0.0,
                 analysis_graph_zoom: ANALYSIS_GRAPH_ZOOM_DEFAULT,
+                analysis_graph_viewport_width: 0.0,
+                analysis_graph_viewport_height: 0.0,
                 analysis_graph_needs_fit: true,
+                analysis_graph_fit_active: true,
                 analysis_graph_follow_node: None,
                 analysis_tasks: app_core::load_analysis_tasks(),
                 analysis_history: app_core::load_analysis_history(100),
                 selected_analysis_history: None,
                 selected_analysis_stage: None,
+                selected_analysis_node: None,
                 expanded_compound_nodes: BTreeSet::new(),
                 analysis_mini_view: false,
+                analysis_model_panel_open: false,
+                analysis_model_category: AnalysisModelCategory::default(),
             },
-            editor: EditorUiState {
-                editor: None,
-                editor_tracks_open: false,
-            },
+            editor: EditorUiState { editor: None },
             dialogs: DialogState {
                 song_context: None,
                 analysis_node_context: None,
@@ -277,7 +294,7 @@ impl StudioStateBundle {
                 language_editor: None,
                 node_config_dialog: None,
                 plan_preview_draft: None,
-                app_log_viewer: None,
+                analysis_log_viewer: None,
                 song_settings: None,
                 pending_cache_clear: None,
                 pending_leave: None,
@@ -318,6 +335,13 @@ impl StudioStateBundle {
         if let Ok(stage) = std::env::var("UTA_STUDIO_DEBUG_SELECT_STAGE") {
             self.analysis.selected_analysis_stage = Some(stage);
         }
+        if let Ok(node) = std::env::var("UTA_STUDIO_DEBUG_SELECT_NODE") {
+            self.analysis.selected_analysis_node = Some(node);
+        }
+        if std::env::var("UTA_STUDIO_DEBUG_OPEN_INSPECT").is_ok() {
+            self.shell.route = StudioRoute::AnalysisInspect;
+            self.library.library_view = LibraryView::Queue;
+        }
         if let Ok(offset) = std::env::var("UTA_STUDIO_DEBUG_SCROLL_OFFSET")
             && let Ok(offset) = offset.parse::<f32>()
         {
@@ -327,6 +351,14 @@ impl StudioStateBundle {
             && let Ok(zoom) = zoom.parse::<f32>()
         {
             self.analysis.analysis_graph_zoom = zoom;
+            self.analysis.analysis_graph_needs_fit = false;
+            self.analysis.analysis_graph_fit_active = false;
+        }
+        if std::env::var("UTA_STUDIO_DEBUG_OPEN_MODEL_PANEL").is_ok() {
+            self.analysis.analysis_model_panel_open = true;
+        }
+        if std::env::var("UTA_STUDIO_DEBUG_MINI_VIEW").is_ok() {
+            self.analysis.analysis_mini_view = true;
         }
         if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_EXPAND_COMPOUND") {
             self.analysis
@@ -343,87 +375,18 @@ impl StudioStateBundle {
         {
             let stage_id =
                 bucket_stage_id(analysis_node_stage_index(&node_id).unwrap_or(0)).to_string();
-            self.dialogs.analysis_node_context = Some(AnalysisNodeContextMenu {
-                node_id: node_id.clone(),
-                stage_id,
-                label: node_id.clone(),
-                retry_action: analysis_node_retry_action(&node_id, &history.file_hash),
-                run_node_only_action: UiAction::from(AnalysisCommand::RunAnalysisNodeOnly(
-                    history.file_hash.clone(),
-                    node_id.clone(),
-                )),
-                run_downstream_action: UiAction::from(AnalysisCommand::RunAnalysisNodeDownstream(
-                    history.file_hash.clone(),
-                    node_id.clone(),
-                )),
-                disable_node_action: app_core::node_can_be_disabled_for_run(&node_id).then(|| {
-                    UiAction::from(AnalysisCommand::DisableAnalysisNodeForRun(
-                        history.file_hash.clone(),
-                        node_id.clone(),
-                    ))
-                }),
-                freeze_node_action: app_core::node_can_be_frozen_for_run(
-                    &history.file_hash,
-                    &node_id,
-                )
-                .then(|| {
-                    UiAction::from(AnalysisCommand::FreezeAnalysisNodeOutputs(
-                        history.file_hash.clone(),
-                        node_id.clone(),
-                    ))
-                }),
-                bypass_node_action: app_core::node_can_be_bypassed_for_run(&node_id).then(|| {
-                    UiAction::from(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
-                        history.file_hash.clone(),
-                        node_id.clone(),
-                    ))
-                }),
-                compare_node_action: Some(UiAction::from(
-                    AnalysisCommand::CompareNodeAttemptWithPrevious(
-                        history.file_hash.clone(),
-                        node_id.clone(),
-                        history.id,
-                    ),
-                )),
-                save_as_song_profile_action: app_core::node_can_be_configured_for_run(&node_id)
-                    .then(|| {
-                        UiAction::from(AnalysisCommand::SaveNodeConfigAsSongProfile(
-                            history.file_hash.clone(),
-                            node_id.clone(),
-                        ))
-                    }),
-                open_configure_dialog_action: app_core::node_can_be_configured_for_run(&node_id)
-                    .then(|| {
-                        UiAction::from(AnalysisCommand::OpenNodeConfigDialog(
-                            history.file_hash.clone(),
-                            node_id.clone(),
-                        ))
-                    }),
-                force_transcribe_action: node_can_force_transcribe(&node_id).then(|| {
-                    UiAction::from(AnalysisCommand::ForceTranscribe(history.file_hash.clone()))
-                }),
-                refetch_align_action: node_can_refetch_and_align(&node_id).then(|| {
-                    UiAction::from(AnalysisCommand::ReanalyzeTranscript(
-                        history.file_hash.clone(),
-                    ))
-                }),
-                capture_intermediate_action: (node_id == "lyrics.preprocess").then(|| {
-                    UiAction::from(AnalysisCommand::RequestCaptureIntermediate(
-                        history.file_hash.clone(),
-                    ))
-                }),
-                view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAppLogViewer(
-                    history.file_hash.clone(),
-                    node_id.clone(),
-                ))),
-                compound_toggle: analysis_node_compound_toggle_action(
-                    &node_id,
-                    self.analysis
-                        .expanded_compound_nodes
-                        .contains(&AnalysisNodeId::new(node_id.clone())),
-                ),
-                position: Vec2::new(420.0, 340.0),
-            });
+            let label = analysis_graph_node_label(&node_id, &node_id).to_string();
+            self.dialogs.analysis_node_context = Some(build_analysis_node_context_menu(
+                &node_id,
+                &stage_id,
+                &label,
+                &history.file_hash,
+                Some(history.id),
+                self.analysis
+                    .expanded_compound_nodes
+                    .contains(&AnalysisNodeId::new(node_id.clone())),
+                Vec2::new(420.0, 40.0),
+            ));
         }
         self
     }
@@ -472,7 +435,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) language_editor: &'a Option<NativeLanguageEditor>,
     pub(crate) node_config_dialog: &'a Option<NativeNodeConfigDialog>,
     pub(crate) plan_preview_draft: &'a Option<PlanPreviewDraft>,
-    pub(crate) app_log_viewer: &'a Option<AppLogViewerState>,
+    pub(crate) analysis_log_viewer: &'a Option<AnalysisLogViewerState>,
     pub(crate) song_settings: &'a Option<NativeSongSettings>,
     pub(crate) pending_cache_clear: Option<CacheClearScope>,
     pub(crate) pending_leave: Option<PendingLeave>,
@@ -481,17 +444,23 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) settings_scroll_offsets: [f32; 4],
     pub(crate) library_scroll_offset: f32,
     pub(crate) analysis_graph_scroll_offset: f32,
+    pub(crate) analysis_graph_vertical_scroll_offset: f32,
     pub(crate) analysis_graph_zoom: f32,
+    pub(crate) analysis_graph_viewport_width: f32,
+    pub(crate) analysis_graph_viewport_height: f32,
+    pub(crate) analysis_graph_fit_active: bool,
     pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
-    pub(crate) editor_tracks_open: bool,
     pub(crate) analysis_tasks: &'a [AnalysisTask],
     pub(crate) analysis_history: &'a [AnalysisRunHistory],
     pub(crate) selected_analysis_history: Option<i64>,
     pub(crate) selected_analysis_stage: &'a Option<String>,
+    pub(crate) selected_analysis_node: &'a Option<String>,
     pub(crate) expanded_compound_nodes: &'a BTreeSet<AnalysisNodeId>,
     pub(crate) analysis_mini_view: bool,
+    pub(crate) analysis_model_panel_open: bool,
+    pub(crate) analysis_model_category: AnalysisModelCategory,
     pub(crate) pending_analysis_history_clear: bool,
     pub(crate) search_open: bool,
     pub(crate) activity_open: bool,
@@ -551,7 +520,7 @@ impl<'a> StudioSessionView<'a> {
             language_editor: &dialogs.language_editor,
             node_config_dialog: &dialogs.node_config_dialog,
             plan_preview_draft: &dialogs.plan_preview_draft,
-            app_log_viewer: &dialogs.app_log_viewer,
+            analysis_log_viewer: &dialogs.analysis_log_viewer,
             song_settings: &dialogs.song_settings,
             pending_cache_clear: dialogs.pending_cache_clear,
             pending_leave: dialogs.pending_leave,
@@ -560,17 +529,23 @@ impl<'a> StudioSessionView<'a> {
             settings_scroll_offsets: shell.settings_scroll_offsets,
             library_scroll_offset: library.library_scroll_offset,
             analysis_graph_scroll_offset: analysis.analysis_graph_scroll_offset,
+            analysis_graph_vertical_scroll_offset: analysis.analysis_graph_vertical_scroll_offset,
             analysis_graph_zoom: analysis.analysis_graph_zoom,
+            analysis_graph_viewport_width: analysis.analysis_graph_viewport_width,
+            analysis_graph_viewport_height: analysis.analysis_graph_viewport_height,
+            analysis_graph_fit_active: analysis.analysis_graph_fit_active,
             open_library_select: dialogs.open_library_select,
             export_all_open: dialogs.export_all_open,
             open_editor_select: dialogs.open_editor_select,
-            editor_tracks_open: editor.editor_tracks_open,
             analysis_tasks: &analysis.analysis_tasks,
             analysis_history: &analysis.analysis_history,
             selected_analysis_history: analysis.selected_analysis_history,
             selected_analysis_stage: &analysis.selected_analysis_stage,
+            selected_analysis_node: &analysis.selected_analysis_node,
             expanded_compound_nodes: &analysis.expanded_compound_nodes,
             analysis_mini_view: analysis.analysis_mini_view,
+            analysis_model_panel_open: analysis.analysis_model_panel_open,
+            analysis_model_category: analysis.analysis_model_category,
             pending_analysis_history_clear: dialogs.pending_analysis_history_clear,
             search_open: dialogs.search_open,
             activity_open: dialogs.activity_open,
@@ -583,7 +558,12 @@ impl<'a> StudioSessionView<'a> {
 
     pub(crate) fn selected_song(&self) -> Option<Song> {
         let hash = self.selected_song.as_deref()?;
-        app_core::load_song_by_hash(hash).ok().flatten()
+        self.songs
+            .processed
+            .iter()
+            .find(|song| song.file_hash == hash)
+            .cloned()
+            .or_else(|| app_core::load_song_by_hash(hash).ok().flatten())
     }
 
     pub(crate) fn library_title(&self) -> &str {

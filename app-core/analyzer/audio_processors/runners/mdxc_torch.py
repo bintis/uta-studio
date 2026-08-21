@@ -20,6 +20,8 @@ from audio_processors.runners.base import (
     run_with_whole_model_fallback,
 )
 
+_ISOLATED_XPU_RESOURCES: list[object] = []
+
 
 def _torch_device(backend: str):
     import torch
@@ -49,12 +51,14 @@ class MdxcTorchRunner:
                 f"{model_spec.id} is not an MDXC model",
                 model_id=model_spec.id,
             )
-        models_dir = installed_dir.parent.parent if installed_dir is not None else Path()
         if installed_dir is None:
             raise ModelConfigurationError("installed_dir is required", model_id=model_spec.id)
         models_root = installed_dir.parent.parent
 
         def execute(backend: str) -> ProcessorResult:
+            attempt_dir = work_dir / backend
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            precision_policy = str(parameters.get("runtime.precisionPolicy", "fp32"))
             checkpoint = resolve_installed_file(
                 models_root, model_spec, model_spec.file("checkpoint")
             )
@@ -71,19 +75,46 @@ class MdxcTorchRunner:
                 actual_backend=backend,
             )
             descriptor = descriptor_from_spec(model_spec, step_id)
-            named = _separate_offline(
-                model_spec=model_spec,
-                checkpoint=checkpoint,
-                config_path=config_path,
-                input_path=input_path,
-                work_dir=work_dir,
-                parameters=parameters,
-                backend=backend,
-                descriptor_names=dict(descriptor.output_names),
-            )
+            descriptor_names = dict(descriptor.output_names)
+            if backend == "torch_xpu":
+                from audio_processors.xpu_worker import run_isolated_xpu
+                from audio_processors.xpu_segmented import run_segmented_mdxc_xpu
+
+                request = {
+                    "runner": "mdxc_torch",
+                    "model_id": model_spec.id,
+                    "checkpoint": str(checkpoint),
+                    "config_path": str(config_path),
+                    "input_path": str(input_path),
+                    "work_dir": str(attempt_dir),
+                    "parameters": parameters.as_map(),
+                    "precision_policy": precision_policy,
+                    "descriptor_names": descriptor_names,
+                }
+                named = run_segmented_mdxc_xpu(
+                    request=request,
+                    input_path=input_path,
+                    attempt_dir=attempt_dir,
+                    descriptor_names=descriptor_names,
+                    expected_stems=model_spec.expected_stems,
+                    run_worker=run_isolated_xpu,
+                    progress_sink=progress_sink,
+                )
+            else:
+                named = _separate_offline(
+                    model_spec=model_spec,
+                    checkpoint=checkpoint,
+                    config_path=config_path,
+                    input_path=input_path,
+                    work_dir=attempt_dir,
+                    parameters=parameters,
+                    backend=backend,
+                    precision_policy=precision_policy,
+                    descriptor_names=descriptor_names,
+                )
             artifacts = map_named_outputs(
                 model_spec,
-                {stem: path_for_stem(work_dir, descriptor, stem) if stem not in named else named[stem]
+                {stem: path_for_stem(attempt_dir, descriptor, stem) if stem not in named else named[stem]
                  for stem in model_spec.expected_stems},
                 sample_rate=44100,
                 channels=2,
@@ -95,7 +126,7 @@ class MdxcTorchRunner:
                 artifacts=artifacts,
                 requested_backend=requested_backend_for(model_spec, runtime_request),
                 actual_backend=backend,
-                precision=str(parameters.get("runtime.precisionPolicy", "fp32")),
+                precision=_actual_precision(backend, precision_policy),
                 effective_parameters=parameters.as_map(),
             )
 
@@ -117,7 +148,10 @@ def _separate_offline(
     work_dir: Path,
     parameters: ResolvedParameters,
     backend: str,
+    precision_policy: str,
     descriptor_names: dict[str, str],
+    process_isolated: bool = False,
+    require_all_outputs: bool = True,
 ) -> dict[str, Path]:
     from audio_separator_adapter import OfflineSeparator, apply_torch_device
 
@@ -130,44 +164,82 @@ def _separate_offline(
         "overlap": overlap_count if overlap_policy == "overlap_count" else 8,
         "pitch_shift": int(parameters.get("mdxc.pitchShiftSemitones", 0)),
     }
-    separator = OfflineSeparator(
-        model_file_dir=str(checkpoint.parent),
-        output_dir=str(work_dir),
-        normalization_threshold=float(parameters.get("common.normalizationThreshold", 0.9)),
-        output_format="WAV",
-        mdxc_params=mdxc_params,
-        torch_backend=backend,
-    )
-    separator.load_model_from_spec(
-        model_path=str(checkpoint),
-        architecture=model_spec.architecture,
-        config_path=str(config_path),
-    )
-    apply_torch_device(separator, backend)
-    custom_names = descriptor_names
-    if backend == "torch_xpu":
-        output_files = _separate_on_xpu(separator, input_path, custom_names)
-    else:
-        output_files = separator.separate(str(input_path), custom_output_names=custom_names)
-    named: dict[str, Path] = {}
-    for stem, token in custom_names.items():
-        matched = match_named_file(work_dir, token, output_files)
-        if matched is not None:
-            named[stem] = matched
-    if len(named) < len(model_spec.expected_stems):
-        raise RuntimeError(
-            f"{model_spec.id} did not write deterministic stem names {custom_names}"
+    separator = None
+    try:
+        separator = OfflineSeparator(
+            model_file_dir=str(checkpoint.parent),
+            output_dir=str(work_dir),
+            normalization_threshold=float(parameters.get("common.normalizationThreshold", 0.9)),
+            output_format="WAV",
+            mdxc_params=mdxc_params,
+            torch_backend=backend,
+            process_isolated=process_isolated,
         )
-    return named
+        separator.load_model_from_spec(
+            model_path=str(checkpoint),
+            architecture=model_spec.architecture,
+            config_path=str(config_path),
+        )
+        apply_torch_device(separator, backend)
+        custom_names = descriptor_names
+        if backend == "torch_xpu":
+            output_files = _separate_on_xpu(
+                separator,
+                input_path,
+                custom_names,
+                precision_policy=precision_policy,
+            )
+        else:
+            output_files = separator.separate(str(input_path), custom_output_names=custom_names)
+        named: dict[str, Path] = {}
+        for stem, token in custom_names.items():
+            matched = match_named_file(work_dir, token, output_files)
+            if matched is not None:
+                named[stem] = matched
+        if require_all_outputs and len(named) < len(model_spec.expected_stems):
+            raise RuntimeError(
+                f"{model_spec.id} did not write deterministic stem names {custom_names}"
+            )
+        if not named:
+            raise RuntimeError(f"{model_spec.id} did not write any deterministic stem")
+        return named
+    finally:
+        if separator is not None:
+            if process_isolated:
+                # Keep every XPU-owned object alive until xpu_worker calls
+                # os._exit(). Running Python or C++ destructors here can issue
+                # more commands into an already fragile Level Zero context.
+                _ISOLATED_XPU_RESOURCES.append(separator)
+            else:
+                from gpu import hard_free_gpu, move_to_cpu
+
+                # OfflineSeparator -> Separator -> model_instance -> model_run
+                # is a nested ownership chain that upstream keeps alive after
+                # separate(). Move the model to host memory before freeing the
+                # in-process caching allocator.
+                move_to_cpu(separator)
+                separator = None
+                hard_free_gpu(f"audio-model:{model_spec.id}:{backend}")
 
 
-def _separate_on_xpu(separator, input_path, custom_names):
+def _actual_precision(backend: str, precision_policy: str) -> str:
+    if backend != "torch_xpu":
+        return "fp32"
+    if precision_policy == "auto":
+        return "bf16"
+    if precision_policy in {"bf16", "fp16"}:
+        return precision_policy
+    return "fp32"
+
+
+def _separate_on_xpu(separator, input_path, custom_names, *, precision_policy: str):
     import torch
     from audio_processors.runners.demucs_torch import _matmul_sdpa
 
     original_sdpa = torch.nn.functional.scaled_dot_product_attention
     original_stft = torch.stft
     original_istft = torch.istft
+    original_view_as_complex = torch.view_as_complex
 
     def cpu_stft(input_tensor, *args, **kwargs):
         if getattr(input_tensor, "device", None) is not None and input_tensor.device.type == "xpu":
@@ -185,12 +257,37 @@ def _separate_on_xpu(separator, input_path, custom_names):
             return original_istft(input_tensor.cpu(), *args, **kwargs).to(input_tensor.device)
         return original_istft(input_tensor, *args, **kwargs)
 
+    def xpu_view_as_complex(input_tensor):
+        if (
+            getattr(input_tensor, "device", None) is not None
+            and input_tensor.device.type == "xpu"
+            and input_tensor.dtype == torch.bfloat16
+        ):
+            # PyTorch accepts FP16/FP32/FP64 pairs here but rejects BF16.
+            # Keep RoFormer activations in BF16 and promote only this final
+            # real/imaginary mask boundary to FP32 complex values.
+            input_tensor = input_tensor.to(torch.float32)
+        return original_view_as_complex(input_tensor)
+
     torch.nn.functional.scaled_dot_product_attention = _matmul_sdpa
     torch.stft = cpu_stft
     torch.istft = cpu_istft
+    torch.view_as_complex = xpu_view_as_complex
     try:
-        return separator.separate(str(input_path), custom_output_names=custom_names)
+        precision = _actual_precision("torch_xpu", precision_policy)
+        dtype = {
+            "bf16": torch.bfloat16,
+            "fp16": torch.float16,
+        }.get(precision)
+        if dtype is None:
+            return separator.separate(str(input_path), custom_output_names=custom_names)
+        # The plan previously reported bf16/fp16 while audio-separator ran
+        # with its default use_autocast=False. Honor the requested precision
+        # so RoFormer activations do not consume FP32-sized XPU allocations.
+        with torch.autocast(device_type="xpu", dtype=dtype):
+            return separator.separate(str(input_path), custom_output_names=custom_names)
     finally:
         torch.nn.functional.scaled_dot_product_attention = original_sdpa
         torch.stft = original_stft
         torch.istft = original_istft
+        torch.view_as_complex = original_view_as_complex

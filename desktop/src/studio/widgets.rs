@@ -40,7 +40,7 @@ pub(crate) enum UiIcon {
     Undo = 15,
     Redo = 16,
     PanelRight = 17,
-    PanelBottom = 18,
+    Duet = 18,
     Save = 19,
     Play = 20,
     Pause = 21,
@@ -58,12 +58,19 @@ pub(crate) enum UiIcon {
     Close = 34,
     Music = 35,
     Repair = 36,
+    Warning = 37,
     Check = 38,
     Previous = 40,
     Next = 41,
     Shuffle = 42,
     Repeat = 43,
     Volume = 44,
+    Analyze = 45,
+    Fit = 46,
+    MiniView = 47,
+    Plan = 48,
+    ModelTune = 49,
+    Focus = 50,
 }
 
 impl UiIcon {
@@ -146,86 +153,6 @@ pub(crate) fn spawn_icon_button(
             }),
         ))
         .with_children(|button| spawn_icon(button, atlas, icon, 16.0, color));
-}
-
-/// A toolbar toggle for anything about multiple singers on one chart (the
-/// duet/harmony track strip). Drawn from plain shapes — two overlapping
-/// head-and-shoulders silhouettes — rather than a sprite: the generic list
-/// icon this used to share with other "show a strip" toggles didn't read as
-/// "more than one voice" at a glance.
-pub(crate) fn spawn_duet_icon_button(
-    parent: &mut ChildSpawnerCommands,
-    theme: &StudioTheme,
-    action: UiAction,
-    active: bool,
-    destructive: bool,
-    size: f32,
-) {
-    let color = if destructive {
-        theme.destructive
-    } else if active {
-        theme.foreground
-    } else {
-        theme.muted_foreground
-    };
-    parent
-        .spawn((
-            Button,
-            action,
-            Node {
-                width: px(size),
-                height: px(size),
-                flex_shrink: 0.0,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                border_radius: BorderRadius::all(px(6)),
-                ..default()
-            },
-            BackgroundColor(if active {
-                theme.foreground.with_alpha(0.07)
-            } else {
-                Color::NONE
-            }),
-        ))
-        .with_children(|button| {
-            button
-                .spawn(Node {
-                    position_type: PositionType::Relative,
-                    width: px(17),
-                    height: px(11),
-                    ..default()
-                })
-                .with_children(|glyph| {
-                    for (left, z) in [(0.0_f32, 0), (6.0_f32, 1)] {
-                        glyph.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: px(left + 2.0),
-                                top: px(0),
-                                width: px(7),
-                                height: px(7),
-                                border_radius: BorderRadius::MAX,
-                                ..default()
-                            },
-                            BackgroundColor(color),
-                            ZIndex(z),
-                        ));
-                        glyph.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: px(left),
-                                top: px(6),
-                                width: px(11),
-                                height: px(5),
-                                border_radius: BorderRadius::px(5.0, 5.0, 0.0, 0.0),
-                                ..default()
-                            },
-                            BackgroundColor(color),
-                            ZIndex(z),
-                        ));
-                    }
-                });
-        });
 }
 
 pub(crate) fn spawn_activity_button(

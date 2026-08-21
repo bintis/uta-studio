@@ -161,6 +161,8 @@ pub(crate) struct NativeEditor {
     /// Whether the beat grid draws at all, independent of whether `beats`
     /// has data. User-toggleable; on by default when there is data to show.
     pub(crate) beat_grid_visible: bool,
+    /// Whether the analyzer pitch contour and waveform spectrum layer is shown.
+    pub(crate) spectrum_hidden: bool,
     /// The last-computed chart-checks report, alongside the document
     /// revision it was computed from. `refresh_editor_problems_cache`
     /// recomputes it only when the revision has moved, since a full
@@ -180,8 +182,13 @@ pub(crate) struct NativeEditor {
     pub(crate) viewport_duration: f64,
     pub(crate) pitch_min: f64,
     pub(crate) pitch_max: f64,
+    pub(crate) tracks_hidden: bool,
     pub(crate) lyrics_hidden: bool,
+    pub(crate) dock_hidden: bool,
+    pub(crate) status_hidden: bool,
     pub(crate) inspector_open: bool,
+    pub(crate) layout_menu_open: bool,
+    pub(crate) file_menu_open: bool,
     pub(crate) selected_note: Option<usize>,
     pub(crate) selected_notes: BTreeSet<usize>,
     pub(crate) selected_word: Option<WordSelection>,
@@ -325,9 +332,11 @@ impl NativeEditor {
         audio_source: impl Into<String>,
     ) -> Self {
         let document = app_core::EditorDocument::new(chart.vocal_chart.clone());
-        let pitch_frames = chart_pitch_frames(&chart);
+        let mut pitch_frames = chart_pitch_frames(&chart);
+        pitch_frames.sort_by(|left, right| left.time.total_cmp(&right.time));
         let beats = load_editor_beats(&chart.file_hash);
         let problems_cache = (document.revision(), document.problems());
+        let tracks_hidden = document.track_count() <= 1;
         let notes = document.notes();
         let pitch_min = notes
             .iter()
@@ -351,6 +360,7 @@ impl NativeEditor {
             document,
             pitch_frames,
             beat_grid_visible: !beats.is_empty(),
+            spectrum_hidden: false,
             beats,
             problems_cache,
             waveform,
@@ -365,8 +375,13 @@ impl NativeEditor {
             viewport_duration: 12.0,
             pitch_min,
             pitch_max: pitch_max.max(pitch_min + 12.0),
+            tracks_hidden,
             lyrics_hidden: false,
+            dock_hidden: false,
+            status_hidden: false,
             inspector_open: false,
+            layout_menu_open: false,
+            file_menu_open: false,
             selected_note: None,
             selected_notes: BTreeSet::new(),
             selected_word: None,
@@ -553,6 +568,41 @@ pub(crate) struct ChartLyricView {
 
 #[derive(Resource)]
 pub(crate) struct EditorAudioSyncTimer(pub(crate) Timer);
+
+/// Limits expensive editor-tree rebuilds from high-frequency wheel/trackpad
+/// events. Live note and lyric geometry still follows every input frame; the
+/// waveform, grid, rulers, and newly visible entities catch up at a bounded
+/// cadence instead of being despawned and recreated for every wheel message.
+#[derive(Resource, Default)]
+pub(crate) struct EditorViewportRebuildThrottle {
+    next_rebuild: Option<Instant>,
+    pending: bool,
+}
+
+impl EditorViewportRebuildThrottle {
+    const INTERVAL: Duration = Duration::from_millis(120);
+
+    pub(crate) fn request(&mut self, now: Instant) -> bool {
+        if self.next_rebuild.is_none_or(|deadline| now >= deadline) {
+            self.next_rebuild = Some(now + Self::INTERVAL);
+            self.pending = false;
+            true
+        } else {
+            self.pending = true;
+            false
+        }
+    }
+
+    pub(crate) fn take_due(&mut self, now: Instant) -> bool {
+        if self.pending && self.next_rebuild.is_some_and(|deadline| now >= deadline) {
+            self.next_rebuild = Some(now + Self::INTERVAL);
+            self.pending = false;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct NativeEditorLoadJob {
@@ -917,14 +967,27 @@ pub(crate) fn time_percent(time: f64, editor: &NativeEditor) -> f32 {
     (((time - editor.viewport_start) / editor.viewport_duration) * 100.0).clamp(0.0, 100.0) as f32
 }
 
+pub(crate) fn editor_pitch_top_percent(editor: &NativeEditor) -> f32 {
+    if editor.spectrum_hidden {
+        0.0
+    } else {
+        EDITOR_PITCH_TOP_PERCENT
+    }
+}
+
+pub(crate) fn editor_pitch_height_percent(editor: &NativeEditor) -> f32 {
+    if editor.spectrum_hidden {
+        EDITOR_PITCH_TOP_PERCENT + EDITOR_PITCH_HEIGHT_PERCENT
+    } else {
+        EDITOR_PITCH_HEIGHT_PERCENT
+    }
+}
+
 pub(crate) fn pitch_percent(midi: f64, editor: &NativeEditor) -> f32 {
     let span = (editor.pitch_max - editor.pitch_min).max(1.0);
-    (EDITOR_PITCH_TOP_PERCENT
-        + (((editor.pitch_max - midi) / span) as f32 * EDITOR_PITCH_HEIGHT_PERCENT))
-        .clamp(
-            EDITOR_PITCH_TOP_PERCENT,
-            EDITOR_PITCH_TOP_PERCENT + EDITOR_PITCH_HEIGHT_PERCENT,
-        )
+    let top = editor_pitch_top_percent(editor);
+    let height = editor_pitch_height_percent(editor);
+    (top + (((editor.pitch_max - midi) / span) as f32 * height)).clamp(top, top + height)
 }
 
 pub(crate) fn midi_note_name(midi: f64) -> String {
@@ -978,9 +1041,18 @@ pub(crate) fn format_snap_grid(seconds: f64) -> String {
     }
 }
 
-pub(crate) fn surface_pitch_fraction(surface_fraction: f32) -> f32 {
-    ((surface_fraction * 100.0 - EDITOR_PITCH_TOP_PERCENT) / EDITOR_PITCH_HEIGHT_PERCENT)
-        .clamp(0.0, 1.0)
+pub(crate) fn surface_pitch_fraction(surface_fraction: f32, spectrum_hidden: bool) -> f32 {
+    let top = if spectrum_hidden {
+        0.0
+    } else {
+        EDITOR_PITCH_TOP_PERCENT
+    };
+    let height = if spectrum_hidden {
+        EDITOR_PITCH_TOP_PERCENT + EDITOR_PITCH_HEIGHT_PERCENT
+    } else {
+        EDITOR_PITCH_HEIGHT_PERCENT
+    };
+    ((surface_fraction * 100.0 - top) / height).clamp(0.0, 1.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1038,4 +1110,21 @@ pub(crate) fn nearest_note_boundary(
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
         .map(|(_, boundary)| boundary)
+}
+
+#[cfg(test)]
+mod viewport_rebuild_throttle_tests {
+    use super::*;
+
+    #[test]
+    fn continuous_input_is_bounded_and_gets_a_trailing_rebuild() {
+        let start = Instant::now();
+        let mut throttle = EditorViewportRebuildThrottle::default();
+
+        assert!(throttle.request(start));
+        assert!(!throttle.request(start + Duration::from_millis(20)));
+        assert!(!throttle.take_due(start + Duration::from_millis(119)));
+        assert!(throttle.take_due(start + Duration::from_millis(120)));
+        assert!(!throttle.take_due(start + Duration::from_millis(240)));
+    }
 }

@@ -1,6 +1,19 @@
 use super::*;
 use crate::studio::*;
 
+pub(crate) fn analysis_start_unavailable(file_hash: &str) -> Option<String> {
+    if !app_core::is_ready() {
+        return Some("Start unavailable · set up Models & runtime in Settings".to_string());
+    }
+    match app_core::preview_full_analysis_plan(file_hash) {
+        Ok(plan) => plan
+            .warnings
+            .first()
+            .map(|warning| format!("Start unavailable · {}", warning.message)),
+        Err(error) => Some(format!("Start unavailable · {error}")),
+    }
+}
+
 pub(crate) fn current_analysis_header(
     session: &StudioSessionView<'_>,
 ) -> Option<(String, String, usize)> {
@@ -32,7 +45,7 @@ pub(crate) fn current_analysis_header(
         let progress = if history.status == "completed" {
             100
         } else {
-            0
+            history.snapshot.overall_progress.clamp(0, 100)
         };
         return Some((history.title.clone(), history.artist.clone(), progress));
     }
@@ -45,19 +58,103 @@ pub(crate) fn current_analysis_header(
     })
 }
 
+pub(crate) fn current_analysis_eyebrow(session: &StudioSessionView<'_>) -> &'static str {
+    let selected_history_status = session
+        .selected_analysis_history
+        .and_then(|id| {
+            session
+                .analysis_history
+                .iter()
+                .find(|history| history.id == id)
+        })
+        .map(|history| history.status.as_str());
+    let has_active_task = session.analysis_tasks.iter().any(|task| {
+        matches!(
+            task.status,
+            app_core::QueuedStatus::Analyzing(_) | app_core::QueuedStatus::Queued
+        )
+    });
+    analysis_eyebrow_label(
+        has_active_task,
+        selected_history_status,
+        session
+            .analysis_history
+            .first()
+            .map(|history| history.status.as_str()),
+    )
+}
+
+pub(crate) fn analysis_eyebrow_label(
+    has_active_task: bool,
+    selected_history_status: Option<&str>,
+    newest_history_status: Option<&str>,
+) -> &'static str {
+    if selected_history_status.is_some() {
+        return if selected_history_status == Some("completed") {
+            "ANALYSIS COMPLETE"
+        } else {
+            "ANALYSIS HISTORY"
+        };
+    }
+    if has_active_task {
+        return "IN PROGRESS";
+    }
+    if newest_history_status == Some("completed") {
+        "ANALYSIS COMPLETE"
+    } else {
+        "ANALYSIS HISTORY"
+    }
+}
+
+pub(crate) fn current_analysis_file_hash(session: &StudioSessionView<'_>) -> Option<String> {
+    let active_task = session
+        .analysis_tasks
+        .iter()
+        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+        .or_else(|| {
+            session
+                .analysis_tasks
+                .iter()
+                .find(|task| matches!(task.status, app_core::QueuedStatus::Queued))
+        });
+    session
+        .selected_analysis_history
+        .and_then(|id| {
+            session
+                .analysis_history
+                .iter()
+                .find(|history| history.id == id)
+        })
+        .or_else(|| {
+            active_task
+                .is_none()
+                .then(|| session.analysis_history.first())
+                .flatten()
+        })
+        .map(|history| history.file_hash.clone())
+        .or_else(|| active_task.map(|task| task.file_hash.clone()))
+        .or_else(|| session.selected_song.clone())
+}
+
 fn spawn_analysis_empty_canvas(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     parent
         .spawn((
             Node {
+                position_type: PositionType::Relative,
                 width: percent(100),
+                min_width: px(0),
+                max_width: percent(100),
                 min_height: px(0),
                 flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                row_gap: px(12),
                 padding: UiRect::all(px(28)),
                 ..default()
             },
@@ -66,11 +163,164 @@ fn spawn_analysis_empty_canvas(
         .with_children(|empty| {
             spawn_wrapped_text(
                 empty,
-                font,
+                font.clone(),
                 "Choose an unanalyzed song to start. The live graph fills this page once a run is queued.",
                 13.0,
                 theme.muted_foreground,
             );
+            if let Some(file_hash) = session.selected_song.as_ref() {
+                if let Some(reason) = analysis_start_unavailable(file_hash) {
+                    spawn_wrapped_text(
+                        empty,
+                        font.clone(),
+                        reason,
+                        9.0,
+                        theme.muted_foreground,
+                    );
+                } else {
+                    spawn_action_button(
+                        empty,
+                        font.clone(),
+                        theme,
+                        "Start analysis",
+                        UiAction::from(AnalysisCommand::StartAnalysis(file_hash.clone())),
+                    );
+                }
+            }
+        });
+}
+
+fn spawn_analysis_history_below_graph(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+    live_available: bool,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                margin: UiRect::top(vh(10.0)),
+                padding: UiRect::axes(px(10), px(8)),
+                row_gap: px(7),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.24)),
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|history| {
+            history
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::Center,
+                    column_gap: px(8),
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(5),
+                    ..default()
+                })
+                .with_children(|heading| {
+                    spawn_text(
+                        heading,
+                        font.clone(),
+                        "ANALYSIS HISTORY",
+                        8.0,
+                        theme.primary,
+                    );
+                    heading.spawn(Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    });
+                    if live_available && session.selected_analysis_history.is_some() {
+                        spawn_text_button(
+                            heading,
+                            font.clone(),
+                            theme,
+                            "View live",
+                            8.0,
+                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(None)),
+                        );
+                    }
+                    if session.pending_analysis_history_clear {
+                        spawn_text(
+                            heading,
+                            font.clone(),
+                            "Delete all saved sessions?",
+                            8.0,
+                            theme.destructive,
+                        );
+                        spawn_text_button(
+                            heading,
+                            font.clone(),
+                            theme,
+                            "Cancel",
+                            8.0,
+                            UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
+                        );
+                        spawn_text_button(
+                            heading,
+                            font.clone(),
+                            theme,
+                            "Delete history",
+                            8.0,
+                            UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
+                        );
+                    } else if !session.analysis_history.is_empty() {
+                        spawn_text_button(
+                            heading,
+                            font.clone(),
+                            theme,
+                            "Clear history…",
+                            8.0,
+                            UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
+                        );
+                    }
+                });
+            if session.analysis_history.is_empty() {
+                spawn_text(
+                    history,
+                    font,
+                    "No completed, stopped, or failed sessions yet.",
+                    9.0,
+                    theme.muted_foreground,
+                );
+                return;
+            }
+            history
+                .spawn(Node {
+                    width: percent(100),
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: px(6),
+                    row_gap: px(6),
+                    ..default()
+                })
+                .with_children(|items| {
+                    for item in session.analysis_history.iter().take(8) {
+                        let selected = session.selected_analysis_history == Some(item.id);
+                        let progress = if item.status == "completed" {
+                            100
+                        } else {
+                            item.snapshot.overall_progress.clamp(0, 100)
+                        };
+                        spawn_text_button(
+                            items,
+                            font.clone(),
+                            theme,
+                            format!(
+                                "{}{} · {} · {}%",
+                                if selected { "• " } else { "" },
+                                item.title,
+                                item.status.to_ascii_uppercase(),
+                                progress
+                            ),
+                            8.0,
+                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(item.id))),
+                        );
+                    }
+                });
         });
 }
 
@@ -136,7 +386,7 @@ fn spawn_analysis_session_surface(
     });
     let Some(task) = history_task.as_ref().or(active_task) else {
         if !inspect_only {
-            spawn_analysis_empty_canvas(parent, font, theme);
+            spawn_analysis_empty_canvas(parent, font, session, theme);
         }
         return;
     };
@@ -158,11 +408,6 @@ fn spawn_analysis_session_surface(
         .as_ref()
         .map(|live| live.operation.as_str())
         .unwrap_or("Waiting for the analysis runtime");
-    let detail = task
-        .live
-        .as_ref()
-        .map(|live| live.detail.as_str())
-        .unwrap_or("The task is queued and will start when the current analysis completes.");
     let selected_stage = session.selected_analysis_stage.as_deref().unwrap_or(stage);
     let selected_stage_index = analysis_stage_index(selected_stage);
     // Real node id for the selected bucket (Phase 3/7 wire-protocol fix):
@@ -172,30 +417,50 @@ fn spawn_analysis_session_surface(
     // compound child is individually clickable yet -- see
     // `expanded_compound_nodes` further down), so this is already the
     // precise node id for anything actually selectable right now.
-    let (selected_node_id, _) = stage_primary_node_and_artifact(selected_stage_index);
+    let (fallback_selected_node_id, _) = stage_primary_node_and_artifact(selected_stage_index);
+    let selected_node_id = session
+        .selected_analysis_node
+        .as_deref()
+        .filter(|node_id| analysis_node_stage_index(node_id) == Some(selected_stage_index))
+        .unwrap_or(fallback_selected_node_id);
     let selected_route = task
         .live
         .as_ref()
         .and_then(|live| find_matching_route(&live.stage_routes, selected_node_id, selected_stage));
-    let selected_is_current = analysis_stage_matches(stage, selected_stage);
-    let selected_progress = selected_route
-        .map(|route| route.stage_progress.clamp(0, 100))
-        .or_else(|| {
-            selected_is_current.then(|| {
-                task.live
-                    .as_ref()
-                    .map(|live| live.stage_progress.clamp(0, 100))
-                    .unwrap_or(0)
-            })
-        })
-        .unwrap_or({
-            if selected_stage_index < stage_index {
-                100
-            } else {
-                0
-            }
-        });
-    let selected_trace_missing = selected_route.is_none() && selected_progress >= 100;
+    let has_structured_runtime = task.live.as_ref().is_some_and(|live| {
+        live.node_id.is_some()
+            || live
+                .stage_routes
+                .iter()
+                .any(|route| route.node_id.is_some())
+    });
+    let selected_is_current = if has_structured_runtime {
+        live_node_id == Some(selected_node_id)
+    } else {
+        analysis_stage_matches(stage, selected_stage)
+    };
+    let selected_event = selected_route.and_then(|route| route.node_event.as_deref());
+    let route_selected_progress = if matches!(
+        selected_event,
+        Some("completed" | "reused" | "node_completed" | "artifact_reused")
+    ) {
+        100
+    } else if let Some(route) = selected_route {
+        route.stage_progress.clamp(0, 100)
+    } else if has_structured_runtime {
+        0
+    } else if selected_is_current {
+        task.live
+            .as_ref()
+            .map(|live| live.stage_progress.clamp(0, 100))
+            .unwrap_or(0)
+    } else if selected_stage_index < stage_index {
+        100
+    } else {
+        0
+    };
+    let selected_trace_missing =
+        !has_structured_runtime && selected_route.is_none() && route_selected_progress >= 100;
     let selected_pending_copy = if selected_trace_missing {
         "Not recorded in this analysis session"
     } else {
@@ -203,14 +468,15 @@ fn spawn_analysis_session_surface(
     };
     let (selected_label, selected_purpose, selected_input, selected_output) =
         analysis_stage_details(selected_stage);
-    let selected_status = if selected_progress >= 100 {
-        "COMPLETE"
-    } else if selected_is_current {
-        "RUNNING"
-    } else if selected_stage_index < stage_index {
-        "COMPLETE"
-    } else {
-        "WAITING"
+    let route_selected_status = match selected_event {
+        Some("completed" | "reused" | "node_completed" | "artifact_reused") => "COMPLETE",
+        Some("started" | "progress" | "node_started" | "node_progress") => "RUNNING",
+        Some("failed" | "node_failed") => "FAILED",
+        Some("cancelled" | "node_cancelled") => "CANCELLED",
+        Some("skipped" | "node_skipped") => "BYPASSED",
+        _ if selected_is_current => "RUNNING",
+        _ if !has_structured_runtime && selected_stage_index < stage_index => "COMPLETE",
+        _ => "WAITING",
     };
     let selected_operation = selected_route
         .map(|route| route.operation.as_str())
@@ -280,16 +546,23 @@ fn spawn_analysis_session_surface(
     // (docs/analysis-dag-redesign.md Phase 7 "node inspector" item).
     let plan_node_id = selected_node_id;
     let (_, plan_artifact_kind) = stage_primary_node_and_artifact(selected_stage_index);
-    let plan_preview = app_core::preview_full_analysis_plan(&task.file_hash)
-        .ok()
-        .map(|plan| {
-            let attempts = history
-                .map(|history| app_core::load_analysis_node_attempts(history.id))
-                .unwrap_or_default();
-            let plan = overlay_failed_node_attempts(plan, &attempts);
-            let candidate_status = app_core::candidate_chart_status(&task.file_hash);
-            overlay_stale_candidate_chart(plan, &candidate_status)
-        });
+    let plan_preview =
+        analysis_graph_plan_preview(&task.file_hash, history.map(|history| history.id));
+    let graph_view = analysis_graph_view_for_run(
+        plan_preview.as_ref(),
+        task.live.as_ref(),
+        progress,
+        session.expanded_compound_nodes,
+        session.analysis_mini_view,
+    );
+    let selected_render_state = graph_view
+        .node(&app_core::AnalysisNodeId::new(selected_node_id))
+        .map(|node| node.state);
+    let (selected_progress, selected_status) = selected_progress_and_status(
+        selected_render_state,
+        route_selected_progress,
+        route_selected_status,
+    );
     // Single real read of on-disk artifact presence for this render, reused
     // by both the inspector panel below and the DAG canvas's node/edge
     // readiness -- was previously two separate calls to the same function.
@@ -378,6 +651,13 @@ fn spawn_analysis_session_surface(
                 flex_direction: FlexDirection::Column,
                 padding: if inspect_only {
                     UiRect::axes(px(22), px(14))
+                } else if session.analysis_model_panel_open {
+                    UiRect::new(
+                        px(16),
+                        px(ANALYSIS_MODEL_PANEL_WIDTH + 12.0),
+                        px(8),
+                        px(8),
+                    )
                 } else {
                     UiRect::axes(px(16), px(8))
                 },
@@ -389,43 +669,10 @@ fn spawn_analysis_session_surface(
             BorderColor::all(theme.border.with_alpha(0.4)),
         ))
         .with_children(|session_card| {
-            if !inspect_only {
-            session_card
-                .spawn(Node {
-                    width: percent(100),
-                    align_items: AlignItems::Center,
-                    column_gap: px(10),
-                    flex_wrap: FlexWrap::Wrap,
-                    row_gap: px(4),
-                    ..default()
-                })
-                .with_children(|current| {
-                    spawn_text(
-                        current,
-                        font.clone(),
-                        if viewing_history {
-                            "HISTORY"
-                        } else {
-                            "LIVE"
-                        },
-                        8.0,
-                        theme.primary,
-                    );
-                    spawn_text(current, font.clone(), operation, 12.0, theme.foreground);
-                    spawn_text(current, font.clone(), detail, 9.0, theme.muted_foreground);
-                    if viewing_history && active_task.is_some() {
-                        spawn_text_button(
-                            current,
-                            font.clone(),
-                            theme,
-                            "View live",
-                            9.0,
-                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(None)),
-                        );
-                    }
-                });
-            if let Some(live) = task.live.as_ref()
-                && let Some(fallback_from) = live.fallback_from.as_deref() {
+            if !inspect_only
+                && let Some(live) = task.live.as_ref()
+                && let Some(fallback_from) = live.fallback_from.as_deref()
+            {
                     session_card
                         .spawn(Node {
                             width: percent(100),
@@ -462,7 +709,6 @@ fn spawn_analysis_session_surface(
                                 );
                             }
                         });
-                }
             }
 
             let active_stage_progress = task
@@ -470,6 +716,11 @@ fn spawn_analysis_session_surface(
                 .as_ref()
                 .map(|live| live.stage_progress.clamp(0, 100))
                 .unwrap_or(0);
+            let stage_complete = |index: usize| {
+                index < stage_index
+                    || (index == stage_index && active_stage_progress >= 100)
+                    || progress >= 100
+            };
             if !inspect_only {
 
             // GraphViewModel + auto-layout (docs/analysis-dag-redesign.md
@@ -482,11 +733,6 @@ fn spawn_analysis_session_surface(
             // action -- music.analysis renders collapsed with a "N
             // sub-checks not shown" note by default, and as separate boxes
             // once expanded.
-            let stage_complete = |index: usize| {
-                index < stage_index
-                    || (index == stage_index && active_stage_progress >= 100)
-                    || progress >= 100
-            };
             let graph_spec = app_core::baseline_graph_spec();
             // MINI view (`session.analysis_mini_view`, toggled by the "VIEW"
             // row's MINI/Full button) shows only the top-level, model-backed
@@ -494,28 +740,12 @@ fn spawn_analysis_session_surface(
             // of what the user individually expanded in the full view. That
             // per-node state (`expanded_compound_nodes`) is left untouched
             // either way, so switching back to Full restores it exactly.
-            let no_expanded = std::collections::BTreeSet::new();
-            let mut full_expanded = session.expanded_compound_nodes.clone();
-            // Stem children are the real selected pipeline; always show them
-            // in Full view instead of the stems.separate shell.
-            full_expanded.insert(app_core::AnalysisNodeId::new("stems.separate"));
-            let expanded = if session.analysis_mini_view {
-                &no_expanded
-            } else {
-                &full_expanded
-            };
-            let graph_view = build_graph_view_model(
-                &graph_spec,
-                plan_preview.as_ref(),
-                live_node_id,
-                stage_index,
-                expanded,
-                &analysis_node_stage_index,
-                &stage_complete,
-            );
-            let render_graph = build_render_graph(&graph_spec, &graph_view, &|kind| {
+            let mut render_graph = build_render_graph(&graph_spec, &graph_view, &|kind| {
                 app_core::artifact_present(&artifact_presence, kind)
             });
+            if !session.analysis_mini_view {
+                polish_reference_overview(&mut render_graph);
+            }
             // MINI view drops the synthetic Artifact/Export boxes too --
             // "只显示以模型为基础的大节点" means the real compute/model
             // stages only, not the data-file decoration `build_render_graph`
@@ -525,7 +755,9 @@ fn spawn_analysis_session_surface(
             // place, and the corner mini-map -- which reads the same
             // `render_graph.nodes` -- gets the same filtering for free.
             let render_graph = if session.analysis_mini_view {
-                filter_render_graph_for_mini_view(render_graph)
+                let mut mini = filter_render_graph_for_mini_view(render_graph);
+                polish_mini_reference_overview(&mut mini);
+                mini
             } else {
                 render_graph
             };
@@ -549,196 +781,96 @@ fn spawn_analysis_session_surface(
                 .is_some_and(GraphLineageHighlight::is_active);
             let render_ids: Vec<app_core::AnalysisNodeId> =
                 render_graph.nodes.iter().map(|n| n.id.clone()).collect();
-            let routed = layered_layout_from_edges(
-                &render_ids,
-                &render_graph.edge_pairs(),
-                LayoutSpacing::canvas(),
-            )
-            .map(|layout| {
-                route_layered_edges(&layout, &render_graph.edge_pairs(), LayoutSpacing::canvas())
+            let edge_pairs = render_graph.edge_pairs();
+            let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
+            let base_routed = cached_canvas_routed_layout(&render_ids, &edge_pairs);
+            let base_canvas_width = base_routed
+                .as_ref()
+                .map_or(780.0, |routed| routed.layout.canvas_width)
+                .max(780.0);
+            let base_canvas_height = base_routed
+                .as_ref()
+                .map_or(450.0, |routed| routed.layout.canvas_height)
+                .max(450.0);
+            // The CSS viewport is sized from the real client height below;
+            // use its previous computed height for routing and Fit. The
+            // first frame uses a close reference fallback, then the layout
+            // system records the exact value and rebuilds once.
+            let graph_viewport_height = if session.analysis_graph_viewport_height > 16.0 {
+                session.analysis_graph_viewport_height
+            } else {
+                780.0
+            };
+            // Node and edge geometry must not be recomputed from the user's
+            // current zoom. Doing that made the non-limiting axis collapse
+            // as soon as Fit was left, so a zoom gesture visibly rerouted
+            // lines even though the graph itself had not changed. Build one
+            // viewport-shaped reference layout, then apply `zoom` uniformly
+            // to its nodes, bands, and paths below.
+            let layout_reference_zoom = analysis_graph_fit_zoom(
+                base_canvas_width,
+                base_canvas_height,
+                session.analysis_graph_viewport_width,
+                graph_viewport_height,
+            );
+            let target_canvas_width = if session.analysis_graph_viewport_width > 16.0 {
+                ((session.analysis_graph_viewport_width - ANALYSIS_GRAPH_FIT_PADDING)
+                    / layout_reference_zoom)
+                    .max(0.0)
+            } else {
+                0.0
+            };
+            let target_canvas_height = if graph_viewport_height > 16.0 {
+                graph_viewport_height / layout_reference_zoom
+            } else {
+                base_canvas_height
+            };
+            let routed = base_routed.map(|routed| {
+                expand_routed_graph_to_viewport(
+                    &routed,
+                    &edge_pairs,
+                    target_canvas_width,
+                    target_canvas_height,
+                )
             });
             let layout = routed.as_ref().map(|routed| &routed.layout);
             let canvas_width = layout.map_or(780.0, |l| l.canvas_width).max(780.0);
-            let canvas_height = layout.map_or(280.0, |l| l.canvas_height).max(220.0);
-            let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
+            let canvas_height = layout.map_or(450.0, |l| l.canvas_height).max(450.0);
             let scaled_canvas_width = canvas_width * zoom;
             let scaled_canvas_height = canvas_height * zoom;
-
-            // Focus targets for §7.8/§9.3's "Focus Current/Failed/Stale" --
-            // real per-node `NodeState::Failed`/`::Stale` from the Phase 1
-            // planner (`plan_preview`), not `GraphNodeState` (the render
-            // state the canvas boxes use below), which doesn't carry those
-            // two variants yet. A button is only spawned when a matching
-            // node genuinely exists this pass, per the phase plan's own
-            // "菜单项必须按状态和节点能力启用或禁用".
-            let current_focus = live_node_id
-                .map(app_core::AnalysisNodeId::new)
-                .and_then(|id| analysis_graph_focus_target(layout, &id, zoom));
-            let failed_focus = plan_preview
-                .as_ref()
-                .and_then(|plan| {
-                    plan.nodes
-                        .iter()
-                        .find(|node| node.state == app_core::NodeState::Failed)
-                })
-                .and_then(|node| analysis_graph_focus_target(layout, &node.id, zoom));
-            let stale_focus = plan_preview
-                .as_ref()
-                .and_then(|plan| {
-                    plan.nodes
-                        .iter()
-                        .find(|node| node.state == app_core::NodeState::Stale)
-                })
-                .and_then(|node| analysis_graph_focus_target(layout, &node.id, zoom));
-
-            session_card
-                .spawn(Node {
-                    width: percent(100),
-                    align_items: AlignItems::Center,
-                    column_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    row_gap: px(6),
-                    ..default()
-                })
-                .with_children(|controls| {
-                    spawn_text(controls, font.clone(), "VIEW", 7.0, theme.muted_foreground);
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        "−",
-                        11.0,
-                        UiAction::from(AnalysisCommand::AdjustAnalysisGraphZoom(
-                            -((ANALYSIS_GRAPH_ZOOM_STEP * 100.0).round() as i32),
-                        )),
-                    );
-                    spawn_text(
-                        controls,
-                        font.clone(),
-                        format!("{:.0}%", zoom * 100.0),
-                        9.0,
-                        theme.foreground,
-                    );
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        "+",
-                        11.0,
-                        UiAction::from(AnalysisCommand::AdjustAnalysisGraphZoom(
-                            (ANALYSIS_GRAPH_ZOOM_STEP * 100.0).round() as i32,
-                        )),
-                    );
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        "Fit",
-                        9.0,
-                        UiAction::from(AnalysisCommand::FitAnalysisGraph(canvas_width.round() as i32)),
-                    );
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        if session.analysis_mini_view {
-                            "Full view"
-                        } else {
-                            "MINI view"
-                        },
-                        9.0,
-                        UiAction::from(AnalysisCommand::ToggleAnalysisMiniView),
-                    );
-                    if let Some((scroll, stage_id)) = current_focus {
-                        spawn_text_button(
-                            controls,
-                            font.clone(),
-                            theme,
-                            "Focus current",
-                            9.0,
-                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
-                        );
-                    }
-                    if let Some((scroll, stage_id)) = failed_focus {
-                        spawn_text_button(
-                            controls,
-                            font.clone(),
-                            theme,
-                            "Focus failed",
-                            9.0,
-                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
-                        );
-                    }
-                    if let Some((scroll, stage_id)) = stale_focus {
-                        spawn_text_button(
-                            controls,
-                            font.clone(),
-                            theme,
-                            "Focus stale",
-                            9.0,
-                            UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
-                        );
-                    }
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        "Plan Preview",
-                        9.0,
-                        UiAction::from(AnalysisCommand::OpenPlanPreview(task.file_hash.clone())),
-                    );
-                    spawn_text_button(
-                        controls,
-                        font.clone(),
-                        theme,
-                        if session.analysis_lineage_mode || session.artifact_lineage.is_some() {
-                            "Hide source"
-                        } else {
-                            "Source"
-                        },
-                        9.0,
-                        UiAction::from(AnalysisCommand::ToggleAnalysisLineageMode),
-                    );
-                    if session.analysis_lineage_mode || session.artifact_lineage.is_some() {
-                        for (label, scope) in [
-                            ("Upstream only", LineageScope::Upstream),
-                            ("Downstream only", LineageScope::Downstream),
-                            ("Full lineage", LineageScope::Full),
-                        ] {
-                            spawn_text_button(
-                                controls,
-                                font.clone(),
-                                theme,
-                                label,
-                                9.0,
-                                UiAction::from(AnalysisCommand::SetArtifactLineageScope(scope)),
-                            );
-                        }
-                        spawn_text_button(
-                            controls,
-                            font.clone(),
-                            theme,
-                            "Return to run view",
-                            9.0,
-                            UiAction::from(AnalysisCommand::CloseArtifactLineage),
-                        );
-                    }
-                });
+            // Match the reference composition: center the actual DAG in a
+            // full-page workspace, keep the legend attached to that page,
+            // and let history begin below the first fold.
 
             session_card
                 .spawn((
                     AnalysisGraphViewport {
-                        unscaled_width: canvas_width,
-                        unscaled_height: canvas_height,
+                        // Fit must use the canonical graph dimensions. The
+                        // painted canvas may be expanded to fill the current
+                        // viewport, but feeding that expanded size back into
+                        // Fit creates a self-locking minimum-zoom loop.
+                        unscaled_width: base_canvas_width,
+                        unscaled_height: base_canvas_height,
                     },
                     UiPointerApi(&["ui.pointer.analysis_viewport_pan"]),
-                    ScrollPosition(Vec2::new(session.analysis_graph_scroll_offset, 0.0)),
+                    ScrollPosition(Vec2::new(
+                        session.analysis_graph_scroll_offset,
+                        session.analysis_graph_vertical_scroll_offset,
+                    )),
                     Node {
                         width: percent(100),
-                        min_height: px(0),
-                        flex_grow: 1.0,
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
+                        min_width: px(0),
+                        max_width: percent(100),
+                        height: vh(ANALYSIS_GRAPH_VIEWPORT_VH),
+                        min_height: px(560),
+                        flex_shrink: 0.0,
+                        // An oversized scroll child must start at the
+                        // viewport origin. Centering it makes its left/top
+                        // half unreachable at Fit's minimum zoom, which is
+                        // why the old canvas opened in the middle of the
+                        // vocal chain instead of at Preflight.
+                        justify_content: JustifyContent::FlexStart,
+                        align_items: AlignItems::FlexStart,
                         overflow: Overflow::scroll(),
                         border: UiRect::all(px(1)),
                         border_radius: BorderRadius::all(px(6)),
@@ -750,18 +882,32 @@ fn spawn_analysis_session_surface(
                 .with_children(|viewport| {
                     viewport
                         .spawn(Node {
-                            position_type: PositionType::Relative,
-                            width: px(scaled_canvas_width),
-                            height: px(scaled_canvas_height),
+                            width: percent(100),
+                            min_width: px(scaled_canvas_width),
+                            height: px(graph_viewport_height),
+                            min_height: px(scaled_canvas_height),
                             flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
                             ..default()
                         })
-                        .with_children(|graph| {
+                        .with_children(|canvas| {
+                            canvas
+                                .spawn(Node {
+                                    position_type: PositionType::Relative,
+                                    width: percent(100),
+                                    min_width: px(scaled_canvas_width),
+                                    height: px(graph_viewport_height),
+                                    flex_shrink: 0.0,
+                                    ..default()
+                                })
+                                .with_children(|graph| {
                             let Some(routed) = routed.as_ref() else {
                                 return;
                             };
                             let layout = &routed.layout;
-                            for band in layout.lane_bands() {
+                            for band in
+                                layout.lane_bands_for_height(graph_viewport_height / zoom)
+                            {
                                 spawn_analysis_graph_lane_band(
                                     graph,
                                     font.clone(),
@@ -806,6 +952,7 @@ fn spawn_analysis_session_surface(
                                     selected_edge,
                                     dimmed,
                                     show_label,
+                                    zoom,
                                 );
                             }
                             for node in &render_graph.nodes {
@@ -840,6 +987,11 @@ fn spawn_analysis_session_surface(
                                                 stage_id,
                                                 stage_complete(bucket),
                                             );
+                                        let has_runtime_route = !matches!(
+                                            route.as_str(),
+                                            "Complete · no runtime trace"
+                                                | "Awaiting connected inputs"
+                                        );
                                         if let Some(text) = override_text {
                                             route = text.to_string();
                                             warning = matches!(
@@ -848,18 +1000,12 @@ fn spawn_analysis_session_surface(
                                                     | GraphNodeState::Failed
                                                     | GraphNodeState::Stale
                                             );
-                                        } else if !node.detail.is_empty() {
-                                            route = node.detail.clone();
-                                        }
-                                        if node.collapsed_child_count > 0 {
-                                            route = format!(
-                                                "{route} · {} sub-check{} not shown",
-                                                node.collapsed_child_count,
-                                                if node.collapsed_child_count == 1 {
-                                                    ""
-                                                } else {
-                                                    "s"
-                                                }
+                                        } else {
+                                            route = analysis_graph_node_model_tag(
+                                                node.id.as_str(),
+                                                has_runtime_route.then_some(route.as_str()),
+                                                &node.detail,
+                                                session.config,
                                             );
                                         }
                                         spawn_analysis_stage_node(
@@ -868,16 +1014,20 @@ fn spawn_analysis_session_surface(
                                             theme,
                                             AnalysisStageNodeSpec {
                                                 bounds,
-                                                index: bucket,
                                                 stage_id,
                                                 node_id: node.id.as_str(),
                                                 file_hash: &task.file_hash,
-                                                label: &node.label,
+                                                label: analysis_graph_node_display_label(
+                                                    node.id.as_str(),
+                                                    &node.label,
+                                                    zoom,
+                                                ),
                                                 state,
                                                 selected: selected_stage == stage_id || edge_endpoint,
                                                 route: &route,
                                                 warning,
                                                 dimmed: lineage_dimmed,
+                                                zoom,
                                             },
                                         );
                                     }
@@ -895,6 +1045,7 @@ fn spawn_analysis_session_surface(
                                             history.map(|history| history.id),
                                             lineage_dimmed,
                                             edge_endpoint,
+                                            zoom,
                                         );
                                     }
                                     RenderNodeKind::Export => {
@@ -909,6 +1060,7 @@ fn spawn_analysis_session_surface(
                                             node.state == GraphNodeState::Complete,
                                             lineage_dimmed,
                                             edge_endpoint,
+                                            zoom,
                                         );
                                     }
                                 }
@@ -924,6 +1076,7 @@ fn spawn_analysis_session_surface(
                                     );
                                 }
                             }
+                                });
                         });
                 })
                 .observe(
@@ -946,8 +1099,19 @@ fn spawn_analysis_session_surface(
                         let delta = drag.delta / ui_scale.0;
                         position.x = (position.x - delta.x)
                             .clamp(0.0, (content.x - size.x).max(0.0));
+                        position.y = (position.y - delta.y)
+                            .clamp(0.0, (content.y - size.y).max(0.0));
                         analysis.analysis_graph_scroll_offset = position.x;
+                        analysis.analysis_graph_vertical_scroll_offset = position.y;
                     },
+                );
+                spawn_analysis_graph_legend(session_card, font.clone(), theme);
+                spawn_analysis_history_below_graph(
+                    session_card,
+                    font.clone(),
+                    session,
+                    theme,
+                    active_task.is_some(),
                 );
             }
 
@@ -1262,9 +1426,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Set active",
                                                 8.0,
-                                                UiAction::from(AnalysisCommand::SetActiveArtifactRevision(
+                                                UiAction::from(AnalysisCommand::SetActiveArtifactRevision(Box::new(
                                                     revision.clone(),
-                                                )),
+                                                ))),
                                             );
                                         }
                                         // Phase 6 `invalidate_artifact_revision` /
@@ -1281,9 +1445,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Invalidate",
                                                 8.0,
-                                                UiAction::from(AnalysisCommand::RequestInvalidateArtifactRevision(
+                                                UiAction::from(AnalysisCommand::RequestInvalidateArtifactRevision(Box::new(
                                                     revision.clone(),
-                                                )),
+                                                ))),
                                             );
                                         }
                                         spawn_text_button(
@@ -1292,13 +1456,13 @@ fn spawn_analysis_session_surface(
                                             theme,
                                             "Inspect provenance",
                                             8.0,
-                                            UiAction::from(AnalysisCommand::InspectArtifactProvenance(revision.clone())),
+                                            UiAction::from(AnalysisCommand::InspectArtifactProvenance(Box::new(revision.clone()))),
                                         );
                                         let workbench_ref =
                                             artifact_ref_from_revision(revision);
-                                        if let Ok(inspection) =
-                                            app_core::inspect_artifact(&workbench_ref)
-                                        {
+                                        let inspection =
+                                            app_core::inspect_artifact(&workbench_ref).ok();
+                                        if let Some(inspection) = inspection.as_ref() {
                                             if inspection.capabilities.iter().any(|capability| {
                                                 matches!(
                                                     capability,
@@ -1369,15 +1533,14 @@ fn spawn_analysis_session_surface(
                                                 "Compare revisions",
                                                 8.0,
                                                 UiAction::from(AnalysisCommand::CompareArtifactRevisions(
-                                                    revision.clone(),
+                                                    Box::new(revision.clone()),
                                                     artifact_ref_from_revision(active),
                                                 )),
                                             );
                                         }
-                                        let revision_is_pinned = app_core::inspect_artifact(
-                                            &artifact_ref_from_revision(revision),
-                                        )
-                                        .is_ok_and(|inspection| inspection.pinned);
+                                        let revision_is_pinned = inspection
+                                            .as_ref()
+                                            .is_some_and(|inspection| inspection.pinned);
                                         if !revision_is_pinned {
                                             spawn_text_button(
                                                 row,
@@ -1385,9 +1548,9 @@ fn spawn_analysis_session_surface(
                                                 theme,
                                                 "Delete",
                                                 8.0,
-                                                UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(
+                                                UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(Box::new(
                                                     revision.clone(),
-                                                )),
+                                                ))),
                                             );
                                         }
                                     });
@@ -1524,8 +1687,8 @@ fn spawn_analysis_session_surface(
             session.notice.as_deref(),
         );
     }
-    if let Some(state) = session.app_log_viewer.as_ref() {
-        spawn_app_log_viewer(
+    if let Some(state) = session.analysis_log_viewer.as_ref() {
+        spawn_analysis_log_viewer(
             parent,
             font.clone(),
             theme,

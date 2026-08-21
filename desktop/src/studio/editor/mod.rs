@@ -19,10 +19,11 @@ pub(crate) use audition::{
 };
 pub(crate) use commands::{
     can_extend_editor_lyric, extend_editor_lyric, next_extendable_editor_note,
+    try_save_editor_chart,
 };
 pub(crate) use input::{
-    finish_inline_lyric_edit, handle_editor_pointer_capture, handle_editor_wheel,
-    handle_tap_release, sync_editor_word_input,
+    finish_inline_lyric_edit, flush_editor_viewport_rebuild, handle_editor_pointer_capture,
+    handle_editor_wheel, handle_tap_release, sync_editor_word_input,
 };
 pub(crate) use panels::{
     handle_problems_panel_scroll, handle_shortcuts_panel_scroll, refresh_editor_problems_cache,
@@ -32,6 +33,7 @@ pub(crate) use panels::{
 pub(crate) use state::*;
 pub(crate) use tracks::{spawn_editor_tracks, sync_editor_singer_input};
 pub(crate) use view::{
-    spawn_editor, spawn_menu_check_row, update_editor_binding_guides, update_editor_geometry,
-    update_editor_playhead,
+    spawn_editor, spawn_editor_file_menu, spawn_editor_layout_menu, spawn_lyric_context_menu,
+    spawn_menu_check_row, spawn_note_context_menu, spawn_waveform_context_menu,
+    update_editor_binding_guides, update_editor_geometry, update_editor_playhead,
 };

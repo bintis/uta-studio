@@ -29,6 +29,7 @@ REQUIRED_MODEL_IDS = (
     "uvr_mdxnet_karaoke_2",
 )
 DEFAULT_LEGACY_KARAOKE_MODEL_ID = "melband_roformer_karaoke_aufr33_viperx"
+DEFAULT_BGM_MODEL_ID = "melband_roformer_inst_v2"
 
 
 @dataclass(frozen=True)

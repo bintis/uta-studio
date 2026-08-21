@@ -263,6 +263,27 @@ pub const EDITOR_ACTIONS: &[EditorActionDef] = &[
     // -- view -------------------------------------------------------------
     action!("toggle_lyrics", "Show or hide lyrics", View, Read, []),
     action!(
+        "toggle_spectrum",
+        "Show or hide the spectrum",
+        View,
+        Read,
+        []
+    ),
+    action!(
+        "toggle_editor_dock",
+        "Show or hide editor controls",
+        View,
+        Read,
+        []
+    ),
+    action!(
+        "toggle_editor_status",
+        "Show or hide editor status",
+        View,
+        Read,
+        []
+    ),
+    action!(
         "toggle_tracks",
         "Show or hide the track strip",
         View,

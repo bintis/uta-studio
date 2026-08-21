@@ -47,13 +47,28 @@ def progress_node(node_id: str, event: str, pct: int, msg: str, **metadata):
     the Legacy Adapter for events that don't set `node_id` (phase plan
     §3.3).
 
-    `event` is one of: node_started, node_progress, node_completed,
-    node_failed, node_skipped, artifact_reused. `node_skipped` is distinct
-    from `artifact_reused`: a skipped node produced no output *at all* this
+    `event` is one of: started, progress, completed, failed, skipped,
+    reused, cancelled. Legacy call sites may still pass the old
+    `node_*`/`artifact_reused` spellings; they are normalized at this single
+    boundary so the wire protocol and durable log use one vocabulary.
+    `skipped` is distinct from `reused`: a skipped node produced no output *at all* this
     run (e.g. Phase 4 §4.5 Bypass -- routed around with a substitute input),
     where `artifact_reused` means an existing output was validated and kept.
     """
-    progress(pct, msg, node_id=node_id, event=event, **metadata)
+    canonical = {
+        "node_started": "started",
+        "node_progress": "progress",
+        "node_completed": "completed",
+        "node_failed": "failed",
+        "node_skipped": "skipped",
+        "artifact_reused": "reused",
+        "node_cancelled": "cancelled",
+    }.get(event, event)
+    if canonical not in {
+        "started", "progress", "completed", "reused", "skipped", "failed", "cancelled"
+    }:
+        raise ValueError(f"unsupported analysis node event: {event!r}")
+    progress(pct, msg, node_id=node_id, event=canonical, **metadata)
 
 
 def artifact_reused(node_id: str, pct: int, msg: str, reason: str = "cache_hit", **metadata):
@@ -62,7 +77,7 @@ def artifact_reused(node_id: str, pct: int, msg: str, reason: str = "cache_hit",
     §3.5: a cache hit must never be sent to the UI disguised as a normal
     100%-progress run.
     """
-    progress_node(node_id, "artifact_reused", pct, msg, reason=reason, **metadata)
+    progress_node(node_id, "reused", pct, msg, reason=reason, **metadata)
 
 
 _align_backend = "whisperx"

@@ -442,14 +442,15 @@ pub(crate) fn mark_executable(_path: &std::path::Path) -> Result<(), String> {
 // ─── Other Helpers ───────────────────────────────────────────────────
 
 pub fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    #[allow(unused_mut)]
-    let mut cmd = Command::new(program);
+    let cmd = Command::new(program);
     #[cfg(windows)]
-    {
+    let cmd = {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = cmd;
         cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        cmd
+    };
     cmd
 }
 
@@ -701,6 +702,40 @@ const TORCH_PACKAGE: &str = "torch==2.8.0";
 const TORCHAUDIO_PACKAGE: &str = "torchaudio==2.8.0";
 const TORCHVISION_PACKAGE: &str = "torchvision==0.23.0";
 
+pub(crate) const TORCH_RUNTIME_PROBE: &str = r#"
+import sys
+import torch
+
+backend = sys.argv[1]
+if backend == "cuda":
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA wheel installed but no CUDA device is available")
+    device = "cuda"
+    name = torch.cuda.get_device_name(0)
+elif backend == "intel":
+    if not getattr(torch, "xpu", None) or not torch.xpu.is_available():
+        raise RuntimeError("Intel XPU wheel installed but no Intel XPU device is available")
+    device = "xpu"
+    # get_device_name() enters the same device-properties query that is known
+    # to segfault on Battlemage with affected PyTorch/compute-runtime stacks.
+    # The tensor operation below is the real runtime verification; a marketing
+    # name adds no evidence and is unsafe to query here.
+    name = "Intel XPU"
+else:
+    device = "cpu"
+    name = "CPU"
+
+x = torch.arange(256, dtype=torch.float32, device=device).reshape(16, 16)
+y = x @ x
+if device == "cuda":
+    torch.cuda.synchronize()
+elif device == "xpu":
+    torch.xpu.synchronize()
+if y.device.type != device:
+    raise RuntimeError(f"expected {device}, got {y.device.type}")
+print(f"Uta Studio runtime verified: backend={backend}, device={name}, torch={torch.__version__}")
+"#;
+
 fn install_torch_runtime(
     uv: &Path,
     py: &str,
@@ -747,38 +782,8 @@ pub(crate) fn verify_torch_runtime(
     // A package version alone is not enough: run a tensor operation on the
     // selected device. This catches a wrong wheel, missing driver, or missing
     // Level Zero runtime before setup is marked ready.
-    const PROBE: &str = r#"
-import sys
-import torch
-
-backend = sys.argv[1]
-if backend == "cuda":
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA wheel installed but no CUDA device is available")
-    device = "cuda"
-    name = torch.cuda.get_device_name(0)
-elif backend == "intel":
-    if not getattr(torch, "xpu", None) or not torch.xpu.is_available():
-        raise RuntimeError("Intel XPU wheel installed but no Intel XPU device is available")
-    device = "xpu"
-    name = torch.xpu.get_device_name(0)
-else:
-    device = "cpu"
-    name = "CPU"
-
-x = torch.arange(256, dtype=torch.float32, device=device).reshape(16, 16)
-y = x @ x
-if device == "cuda":
-    torch.cuda.synchronize()
-elif device == "xpu":
-    torch.xpu.synchronize()
-if y.device.type != device:
-    raise RuntimeError(f"expected {device}, got {y.device.type}")
-print(f"Uta Studio runtime verified: backend={backend}, device={name}, torch={torch.__version__}")
-"#;
-
     let output = silent_command(py)
-        .args(["-c", PROBE, backend.as_str()])
+        .args(["-c", TORCH_RUNTIME_PROBE, backend.as_str()])
         .output()
         .map_err(|e| format!("Failed to verify {} runtime: {e}", backend.as_str()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

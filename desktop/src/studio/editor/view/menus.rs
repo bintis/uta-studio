@@ -253,6 +253,165 @@ pub(crate) fn spawn_editor_lyrics(
         });
 }
 
+pub(crate) fn spawn_editor_file_menu(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    editor: &NativeEditor,
+) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(16),
+                top: px(52),
+                width: px(230),
+                padding: UiRect::all(px(10)),
+                row_gap: px(6),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.98)),
+            BorderColor::all(theme.border),
+            BoxShadow::new(
+                Color::srgba(0.0, 0.0, 0.0, 0.3),
+                px(0),
+                px(6),
+                px(18),
+                px(-4),
+            ),
+            ZIndex(30),
+        ))
+        .with_children(|menu| {
+            spawn_text(menu, font.clone(), "FILES", 8.0, theme.muted_foreground);
+            for (label, action) in [
+                (
+                    if editor.dirty {
+                        "Save changes *"
+                    } else {
+                        "Save changes"
+                    },
+                    UiAction::from(EditorCommand::Editor(EditorAction::Save)),
+                ),
+                (
+                    "Save as UTZ…",
+                    UiAction::from(EditorCommand::SaveEditorAsUtz),
+                ),
+                (
+                    "Save as UltraStar…",
+                    UiAction::from(EditorCommand::SaveEditorAsUltraStar),
+                ),
+                (
+                    "Song information…",
+                    UiAction::from(EditorCommand::OpenSongSettings(
+                        editor.chart.file_hash.clone(),
+                    )),
+                ),
+            ] {
+                spawn_text_button(menu, font.clone(), theme, label, 9.0, action);
+            }
+            spawn_text_button(
+                menu,
+                font,
+                theme,
+                "Done",
+                9.0,
+                UiAction::from(EditorCommand::DismissEditorFileMenu),
+            );
+        });
+}
+
+pub(crate) fn spawn_editor_layout_menu(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    editor: &NativeEditor,
+) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(16),
+                top: px(52),
+                width: px(230),
+                padding: UiRect::all(px(10)),
+                row_gap: px(4),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.98)),
+            BorderColor::all(theme.border),
+            BoxShadow::new(
+                Color::srgba(0.0, 0.0, 0.0, 0.3),
+                px(0),
+                px(6),
+                px(18),
+                px(-4),
+            ),
+            ZIndex(30),
+        ))
+        .with_children(|menu| {
+            spawn_text(
+                menu,
+                font.clone(),
+                "EDITOR AREAS",
+                8.0,
+                theme.muted_foreground,
+            );
+            for (label, active, action) in [
+                (
+                    "Track strip",
+                    !editor.tracks_hidden,
+                    EditorAction::ToggleTracks,
+                ),
+                ("Lyrics", !editor.lyrics_hidden, EditorAction::ToggleLyrics),
+                (
+                    "Spectrum",
+                    !editor.spectrum_hidden,
+                    EditorAction::ToggleSpectrum,
+                ),
+                ("Controls", !editor.dock_hidden, EditorAction::ToggleDock),
+                (
+                    "Status bar",
+                    !editor.status_hidden,
+                    EditorAction::ToggleStatus,
+                ),
+                (
+                    "Inspector",
+                    editor.inspector_open,
+                    EditorAction::ToggleInspector,
+                ),
+                (
+                    "Chart checks",
+                    editor.problems_panel_open,
+                    EditorAction::ToggleProblemsPanel,
+                ),
+            ] {
+                spawn_menu_check_row(
+                    menu,
+                    font.clone(),
+                    theme,
+                    label,
+                    active,
+                    true,
+                    UiAction::from(EditorCommand::Editor(action)),
+                );
+            }
+            spawn_text_button(
+                menu,
+                font,
+                theme,
+                "Done",
+                9.0,
+                UiAction::from(EditorCommand::DismissEditorLayoutMenu),
+            );
+        });
+}
+
 /// Right-clicking a note selects it (unless it's already part of the current
 /// selection, so a Shift-multi-select survives the click) and opens the
 /// context menu at the cursor.
@@ -274,14 +433,19 @@ pub(crate) fn open_note_from_click(
     let continue_word = editor
         .selected_word
         .filter(|word| can_extend_editor_lyric(&editor.document, *word, note_index));
-    if editor.selected_note != Some(note_index) && !editor.selected_notes.contains(&note_index) {
+    let selection_changed =
+        editor.selected_note != Some(note_index) && !editor.selected_notes.contains(&note_index);
+    if selection_changed {
         editor.select_only_note(note_index);
     }
     editor.note_context = Some(NoteContextMenu {
         position: event.pointer_location.position,
         continue_word,
     });
-    invalidated.invalidate(UiDirtyRegion::Editor);
+    if selection_changed {
+        invalidated.invalidate(UiDirtyRegion::Editor);
+    }
+    invalidated.invalidate(UiDirtyRegion::Dialog);
 }
 
 pub(crate) fn spawn_note_context_menu(
@@ -556,13 +720,18 @@ pub(crate) fn open_lyric_from_click(
     let Some(editor) = state.editor.as_mut() else {
         return;
     };
-    if editor.selected_word != Some(selection) && !editor.selected_words.contains(&selection) {
+    let selection_changed =
+        editor.selected_word != Some(selection) && !editor.selected_words.contains(&selection);
+    if selection_changed {
         editor.select_only_word(selection);
     }
     editor.lyric_context = Some(LyricContextMenu {
         position: event.pointer_location.position,
     });
-    invalidated.invalidate(UiDirtyRegion::Editor);
+    if selection_changed {
+        invalidated.invalidate(UiDirtyRegion::Editor);
+    }
+    invalidated.invalidate(UiDirtyRegion::Dialog);
 }
 
 pub(crate) fn spawn_lyric_context_menu(
@@ -784,19 +953,54 @@ type EditorAlignmentGuides<'w, 's> = Query<
     ),
 >;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EditorGeometrySignature {
+    revision: u64,
+    viewport_start: u64,
+    viewport_duration: u64,
+    pitch_min: u64,
+    pitch_max: u64,
+    alignment_guide: Option<u64>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_editor_geometry(
     state: Res<EditorUiState>,
     capture: Res<EditorPointerCapture>,
+    mut previous: Local<Option<EditorGeometrySignature>>,
+    added_notes: Query<(), Added<EditorNoteNode>>,
+    added_lyrics: Query<(), Added<EditorLyricNode>>,
+    added_guides: Query<(), Added<EditorAlignmentGuide>>,
     mut note_nodes: Query<(&EditorNoteNode, &mut Node)>,
     mut lyric_nodes: Query<(&EditorLyricNode, &mut Node), Without<EditorNoteNode>>,
     mut alignment_guides: EditorAlignmentGuides,
 ) {
     let Some(editor) = state.editor.as_ref() else {
+        *previous = None;
         return;
     };
+    let signature = EditorGeometrySignature {
+        revision: editor.document.revision(),
+        viewport_start: editor.viewport_start.to_bits(),
+        viewport_duration: editor.viewport_duration.to_bits(),
+        pitch_min: editor.pitch_min.to_bits(),
+        pitch_max: editor.pitch_max.to_bits(),
+        alignment_guide: capture.alignment_guide.map(f64::to_bits),
+    };
+    let has_new_nodes =
+        !added_notes.is_empty() || !added_lyrics.is_empty() || !added_guides.is_empty();
+    if previous.as_ref() == Some(&signature) && !has_new_nodes {
+        return;
+    }
+    *previous = Some(signature);
+
     let notes = chart_notes(&editor.document);
+    let notes_by_index = notes
+        .iter()
+        .map(|note| (note.index, note))
+        .collect::<HashMap<_, _>>();
     for (marker, mut node) in &mut note_nodes {
-        let Some(note) = notes.iter().find(|note| note.index == marker.0) else {
+        let Some(note) = notes_by_index.get(&marker.0) else {
             node.display = Display::None;
             continue;
         };
@@ -841,12 +1045,30 @@ pub(crate) fn update_editor_geometry(
 
 pub(crate) fn update_editor_playhead(
     state: Res<EditorUiState>,
+    mut previous: Local<Option<(u64, u64, u64, u64)>>,
+    added_playheads: Query<(), Added<EditorPlayhead>>,
+    added_clocks: Query<(), Added<EditorClockText>>,
     mut playheads: Query<&mut Node, With<EditorPlayhead>>,
     mut clocks: Query<&mut Text, With<EditorClockText>>,
 ) {
     let Some(editor) = state.editor.as_ref() else {
+        *previous = None;
         return;
     };
+    let signature = (
+        editor.visible_position.to_bits(),
+        editor.audio_status.duration_secs.to_bits(),
+        editor.viewport_start.to_bits(),
+        editor.viewport_duration.to_bits(),
+    );
+    if previous.as_ref() == Some(&signature)
+        && added_playheads.is_empty()
+        && added_clocks.is_empty()
+    {
+        return;
+    }
+    *previous = Some(signature);
+
     let position = time_percent(editor.visible_position, editor);
     for mut node in &mut playheads {
         node.left = percent(position);
@@ -864,8 +1086,21 @@ pub(crate) fn update_editor_playhead(
 /// each part's own container, the same approach `update_editor_geometry`
 /// uses for notes, lyrics, and the alignment guide. No world-space
 /// transform math.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EditorBindingGuideSignature {
+    revision: u64,
+    viewport_start: u64,
+    viewport_duration: u64,
+    pitch_min: u64,
+    pitch_max: u64,
+    selected_word: Option<WordSelection>,
+    selected_note: Option<usize>,
+}
+
 pub(crate) fn update_editor_binding_guides(
     state: Res<EditorUiState>,
+    mut previous: Local<Option<EditorBindingGuideSignature>>,
+    added_guides: Query<(), Added<EditorBindingGuide>>,
     mut guides: Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>,
 ) {
     let hide =
@@ -875,9 +1110,23 @@ pub(crate) fn update_editor_binding_guides(
             }
         };
     let Some(editor) = state.editor.as_ref() else {
+        *previous = None;
         hide(&mut guides);
         return;
     };
+    let signature = EditorBindingGuideSignature {
+        revision: editor.document.revision(),
+        viewport_start: editor.viewport_start.to_bits(),
+        viewport_duration: editor.viewport_duration.to_bits(),
+        pitch_min: editor.pitch_min.to_bits(),
+        pitch_max: editor.pitch_max.to_bits(),
+        selected_word: editor.selected_word,
+        selected_note: editor.selected_note,
+    };
+    if previous.as_ref() == Some(&signature) && added_guides.is_empty() {
+        return;
+    }
+    *previous = Some(signature);
 
     let lyrics = chart_lyrics(&editor.document);
     let lyric = if let Some(word) = editor.selected_word {

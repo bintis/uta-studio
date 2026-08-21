@@ -56,6 +56,87 @@ mod song_authoring_state_tests {
 }
 
 #[cfg(test)]
+mod live_progress_tests {
+    use super::{
+        AnalysisProgressSnapshot, AnalysisStageRoute, LIVE_ANALYSIS, update_live_analysis,
+    };
+
+    fn route(node_id: &str, event: &str, progress: usize) -> AnalysisStageRoute {
+        AnalysisStageRoute {
+            stage: "separation".to_string(),
+            node_id: Some(node_id.to_string()),
+            node_event: Some(event.to_string()),
+            binding_kind: None,
+            committed_outputs: Vec::new(),
+            input_revision_ids: Vec::new(),
+            operation: node_id.to_string(),
+            implementation: "fixture".to_string(),
+            model: "fixture".to_string(),
+            stage_progress: progress,
+            requested_device: "cpu".to_string(),
+            actual_device: "cpu".to_string(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            event_at_ms: Some(1),
+            work_units_completed: None,
+            work_units_total: None,
+        }
+    }
+
+    fn snapshot(progress: usize, route: AnalysisStageRoute) -> AnalysisProgressSnapshot {
+        AnalysisProgressSnapshot {
+            stage: "separation".to_string(),
+            overall_progress: progress,
+            stage_progress: route.stage_progress,
+            operation: route.operation.clone(),
+            detail: String::new(),
+            implementation: route.implementation.clone(),
+            model: route.model.clone(),
+            device: "cpu".to_string(),
+            requested_device: "cpu".to_string(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            stage_routes: vec![route],
+            node_id: None,
+            node_event: None,
+            artifact_reused_reason: None,
+            analysis_log_path: None,
+        }
+    }
+
+    #[test]
+    fn progress_is_monotonic_merges_real_nodes_and_caps_live_messages_at_99() {
+        let hash = "live-progress-contract-fixture";
+        LIVE_ANALYSIS.lock().unwrap().remove(hash);
+
+        update_live_analysis(
+            hash,
+            snapshot(80, route("stems.vocals", "completed", 100)),
+        );
+        update_live_analysis(
+            hash,
+            snapshot(20, route("instrumental.denoise", "started", 0)),
+        );
+        let current = LIVE_ANALYSIS.lock().unwrap().get(hash).cloned().unwrap();
+        assert_eq!(current.overall_progress, 80);
+        assert_eq!(current.stage_routes.len(), 2);
+
+        update_live_analysis(
+            hash,
+            snapshot(100, route("instrumental.denoise", "completed", 100)),
+        );
+        let current = LIVE_ANALYSIS.lock().unwrap().remove(hash).unwrap();
+        assert_eq!(current.overall_progress, 99);
+    }
+}
+
+#[cfg(test)]
 mod chart_protection_tests {
     use super::{apply_pitch_reanalysis_reset, apply_realign_reset, apply_reanalyze_reset};
     use crate::cache::CacheDir;
@@ -480,6 +561,7 @@ mod preview_full_analysis_plan_tests {
             model_availability: std::collections::BTreeMap::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
             active_stem_nodes: BTreeSet::new(),
+            audio_processing: None,
         };
         let plan =
             build_plan(&baseline_graph_spec(), &request).expect("baseline graph always plans");
@@ -674,8 +756,10 @@ mod compare_analysis_runs_tests {
             started_at_ms: finished_at_ms - 1000,
             finished_at_ms,
             error_message: None,
+            log_path: None,
             snapshot: super::AnalysisProgressSnapshot {
                 stage: "complete".to_string(),
+                overall_progress: 100,
                 stage_progress: 100,
                 operation: String::new(),
                 detail: String::new(),
@@ -691,6 +775,7 @@ mod compare_analysis_runs_tests {
                 node_id: None,
                 node_event: None,
                 artifact_reused_reason: None,
+                analysis_log_path: None,
             },
         }
     }
@@ -816,13 +901,49 @@ mod cancel_analysis_run_tests {
     //! interleaving with any other test that touches it -- same caution
     //! `run_analysis_plan_tests` below already documents for
     //! `enqueue_one`. The rejection path needs no such mutation.
-    use super::cancel_analysis_run;
+    use super::{cancel_analysis_run, stop_analysis_run};
 
     #[test]
     fn cancelling_a_hash_that_was_never_queued_is_rejected() {
         let error = cancel_analysis_run("cancel-test-hash-never-queued-xyz")
             .expect_err("a hash that was never queued cannot be cancelled");
         assert!(error.contains("not currently queued"));
+    }
+
+    #[test]
+    fn stopping_a_hash_that_was_never_queued_is_rejected() {
+        let error = stop_analysis_run("stop-test-hash-never-queued-xyz")
+            .expect_err("a hash that was never queued or running cannot be stopped");
+        assert!(error.contains("not currently queued or running"));
+    }
+}
+
+#[cfg(test)]
+mod stopped_run_cleanup_tests {
+    use super::cleanup_unfinished_output_temps;
+    use crate::cache::CacheDir;
+
+    #[test]
+    fn cleanup_removes_only_matching_temporary_outputs() {
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-stop-cleanup-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let cache = CacheDir { path };
+        let unfinished = cache.path.join(".song_pitch_track.json.random.tmp");
+        let final_output = cache.path.join("song_pitch_track.json");
+        let other_song = cache.path.join(".other_pitch_track.json.random.tmp");
+        for fixture in [&unfinished, &final_output, &other_song] {
+            std::fs::write(fixture, b"fixture").unwrap();
+        }
+
+        cleanup_unfinished_output_temps(&cache, "song");
+
+        assert!(!unfinished.exists());
+        assert!(final_output.exists());
+        assert!(other_song.exists());
+        cache.clear_all();
     }
 }
 
@@ -1179,14 +1300,15 @@ mod configure_node_tests {
     }
 
     #[test]
-    fn only_the_three_profile_controlled_nodes_are_configurable() {
-        for id in ["stems.separate", "lyrics.transcribe", "lyrics.align"] {
+    fn only_lyrics_model_nodes_are_configurable() {
+        for id in ["lyrics.transcribe", "lyrics.align"] {
             assert!(
                 node_can_be_configured_for_run(id),
                 "{id} should be configurable"
             );
         }
         for id in [
+            "stems.separate",
             "pitch.extract",
             "lyrics.preprocess",
             "lyrics.import_timed",
@@ -1220,16 +1342,15 @@ mod configure_node_tests {
         {
             let mut intents = PENDING_NODE_INTENTS.lock().unwrap();
             intents.entry(hash.to_string()).or_default().run_override =
-                Some((ProfileField::Separator, "demucs".to_string()));
+                Some((ProfileField::AsrEngine, "whisper".to_string()));
         }
 
         assert_eq!(
-            pending_run_override_for(hash, "stems.separate"),
-            Some("demucs".to_string())
+            pending_run_override_for(hash, "lyrics.transcribe"),
+            Some("whisper".to_string())
         );
-        // lyrics.transcribe maps to AsrEngine, a different field -- the
-        // Separator override stashed above must not leak into it.
-        assert_eq!(pending_run_override_for(hash, "lyrics.transcribe"), None);
+        // Alignment maps to a different field; the ASR override must not leak.
+        assert_eq!(pending_run_override_for(hash, "lyrics.align"), None);
 
         PENDING_NODE_INTENTS.lock().unwrap().remove(hash);
     }
@@ -1252,7 +1373,7 @@ mod configure_node_tests {
         };
         set_song_analysis_profile(hash, &seeded).unwrap();
 
-        save_node_config_as_song_profile(hash, "stems.separate").unwrap();
+        save_node_config_as_song_profile(hash, "lyrics.transcribe").unwrap();
 
         let saved = get_song_analysis_profile(hash).unwrap();
         assert_eq!(saved.alignment_backend, "mms_karaoke");
@@ -1591,6 +1712,7 @@ mod node_attempt_tests {
         assert_eq!(node_attempt_status(Some("node_completed")), "succeeded");
         assert_eq!(node_attempt_status(Some("node_failed")), "failed");
         assert_eq!(node_attempt_status(Some("artifact_reused")), "reused");
+        assert_eq!(node_attempt_status(Some("node_cancelled")), "cancelled");
     }
 
     #[test]
@@ -1627,6 +1749,9 @@ mod node_attempt_tests {
             backend_fallback_reason: None,
             started_at_ms: None,
             finished_at_ms: None,
+            event_at_ms: None,
+            work_units_completed: None,
+            work_units_total: None,
         }
     }
 
@@ -1643,11 +1768,13 @@ mod node_attempt_tests {
             finished_at_ms: 2_000,
             snapshot_json: "{}",
             error_message: None,
+            log_path: None,
         })
         .expect("insert run");
 
         let snapshot = AnalysisProgressSnapshot {
             stage: "complete".into(),
+            overall_progress: 100,
             stage_progress: 100,
             operation: "Analysis complete".into(),
             detail: String::new(),
@@ -1666,6 +1793,7 @@ mod node_attempt_tests {
             node_id: None,
             node_event: None,
             artifact_reused_reason: None,
+            analysis_log_path: None,
         };
         record_node_attempts(run_id, "songE", &snapshot);
 
@@ -1675,6 +1803,105 @@ mod node_attempt_tests {
         assert_eq!(attempts[0].status, "succeeded");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod analysis_log_cleanup_tests {
+    use super::{analysis_log_line_matches_node, delete_analysis_logs_in};
+
+    #[test]
+    fn jsonl_node_filter_keeps_matching_node_and_run_level_records_only() {
+        let matching = r#"{"record_type":"node_event","node_id":"stems.instrumental"}"#;
+        let sibling = r#"{"record_type":"node_event","node_id":"stems.vocals"}"#;
+        let matching_output =
+            r#"{"record_type":"process_output","node_id":"stems.instrumental"}"#;
+        let sibling_output =
+            r#"{"record_type":"process_output","node_id":"stems.vocals"}"#;
+        let terminal = r#"{"record_type":"history_terminal","status":"completed"}"#;
+
+        assert!(analysis_log_line_matches_node(
+            matching,
+            Some("stems.instrumental")
+        ));
+        assert!(analysis_log_line_matches_node(
+            matching_output,
+            Some("stems.instrumental")
+        ));
+        assert!(!analysis_log_line_matches_node(
+            sibling,
+            Some("stems.instrumental")
+        ));
+        assert!(!analysis_log_line_matches_node(
+            sibling_output,
+            Some("stems.instrumental")
+        ));
+        assert!(analysis_log_line_matches_node(
+            terminal,
+            Some("stems.instrumental")
+        ));
+    }
+
+    #[test]
+    fn cleanup_removes_only_referenced_files_directly_inside_the_log_root() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-analysis-log-cleanup-{}-{}",
+            std::process::id(),
+            super::unix_time_ms()
+        ));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("one.log"), b"one").unwrap();
+        std::fs::write(root.join("unreferenced.log"), b"keep").unwrap();
+        std::fs::write(nested.join("keep.log"), b"keep").unwrap();
+
+        delete_analysis_logs_in(
+            &root,
+            &[root.join("one.log"), nested.join("keep.log")],
+        )
+        .expect_err("an out-of-root reference must be reported");
+
+        assert!(!root.join("one.log").exists());
+        assert!(root.join("unreferenced.log").exists());
+        assert!(nested.join("keep.log").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod analysis_history_log_tests {
+    use super::library_db;
+
+    #[test]
+    fn cancelled_history_round_trips_its_dedicated_log_path() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-analysis-history-log-{}-{}",
+            std::process::id(),
+            super::unix_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = library_db::reconnect_for_test(&root);
+        let log_path = root.join("analysis-logs/run.jsonl");
+
+        library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
+            file_hash: "cancelled-song",
+            title: "Cancelled",
+            artist: "Fixture",
+            status: "cancelled",
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            snapshot_json: "{}",
+            error_message: Some("cancelled by user"),
+            log_path: Some(&log_path),
+        })
+        .unwrap();
+
+        let rows = library_db::analysis_history_load(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "cancelled");
+        assert_eq!(rows[0].log_path.as_deref(), Some(log_path.as_path()));
+        std::fs::remove_dir_all(root).unwrap();
+        drop(guard);
     }
 }
 

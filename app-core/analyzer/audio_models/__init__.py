@@ -1,6 +1,7 @@
 """Offline audio model catalog, parameter schema, and processing plans."""
 
 from .catalog import (
+    DEFAULT_BGM_MODEL_ID,
     DEFAULT_LEGACY_KARAOKE_MODEL_ID,
     REQUIRED_MODEL_IDS,
     AudioModelCatalog,
@@ -39,6 +40,7 @@ from .plan import (
 from .schema import PARAMETER_SPECS, schema_for
 
 __all__ = [
+    "DEFAULT_BGM_MODEL_ID",
     "DEFAULT_LEGACY_KARAOKE_MODEL_ID",
     "REQUIRED_MODEL_IDS",
     "AudioInputReference",

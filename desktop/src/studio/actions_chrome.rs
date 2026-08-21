@@ -52,6 +52,11 @@ pub(crate) fn apply_chrome_action(
         UiCommand::Analysis(AnalysisCommand::SelectAnalysisHistory(id)) => {
             studio.analysis.selected_analysis_history = *id;
             studio.analysis.selected_analysis_stage = None;
+            studio.analysis.selected_analysis_node = None;
+            studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
             studio.dialogs.activity_open = false;
             invalidated.invalidate(UiDirtyRegion::Analysis);
             invalidated.invalidate(UiDirtyRegion::Dialog);
@@ -63,8 +68,11 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.selected_analysis_history =
                 completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
             studio.analysis.selected_analysis_stage = None;
+            studio.analysis.selected_analysis_node = None;
             studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
             studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
             studio.library.library_view = LibraryView::Queue;
             studio.library.library_facet = None;
             studio.shell.route = StudioRoute::Library;
@@ -76,8 +84,9 @@ pub(crate) fn apply_chrome_action(
                 .then(|| "No saved analysis session is available for this song.".to_string());
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(stage)) => {
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(node_id, stage)) => {
             studio.analysis.selected_analysis_stage = Some(stage.clone());
+            studio.analysis.selected_analysis_node = Some(node_id.clone());
             studio.dialogs.analysis_node_context = None;
             studio.library.library_view = LibraryView::Queue;
             studio.shell.route = StudioRoute::AnalysisInspect;
@@ -89,21 +98,48 @@ pub(crate) fn apply_chrome_action(
                 studio.analysis.analysis_graph_zoom + (*delta_percent as f32) / 100.0,
             );
             studio.analysis.analysis_graph_needs_fit = false;
+            studio.analysis.analysis_graph_fit_active = false;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView) => {
             studio.analysis.analysis_mini_view = !studio.analysis.analysis_mini_view;
+            studio.analysis.analysis_lineage_mode = false;
+            studio.analysis.selected_graph_edge = None;
+            studio.dialogs.artifact_lineage = None;
             studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisModelPanel) => {
+            studio.analysis.analysis_model_panel_open = !studio.analysis.analysis_model_panel_open;
+            studio.dialogs.open_settings_select = None;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::CloseAnalysisModelPanel) => {
+            studio.analysis.analysis_model_panel_open = false;
+            studio.dialogs.open_settings_select = None;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::SetAnalysisModelCategory(category)) => {
+            studio.analysis.analysis_model_category = *category;
+            studio.dialogs.open_settings_select = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph(_)) => {
             studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
             studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)) => {
             studio.analysis.analysis_graph_scroll_offset = (*scroll).max(0) as f32;
             studio.analysis.selected_analysis_stage = Some(stage_id.clone());
+            studio.analysis.selected_analysis_node = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext) => {
@@ -125,6 +161,7 @@ pub(crate) fn apply_chrome_action(
                     studio.analysis.analysis_history.clear();
                     studio.analysis.selected_analysis_history = None;
                     studio.analysis.selected_analysis_stage = None;
+                    studio.analysis.selected_analysis_node = None;
                     studio.shell.notice = Some("Analysis history deleted.".into());
                 }
                 Err(error) => {
@@ -165,6 +202,10 @@ pub(crate) fn apply_chrome_action(
             } else if studio.shell.route == StudioRoute::AnalysisInspect {
                 studio.shell.route = StudioRoute::Library;
                 studio.library.library_view = LibraryView::Queue;
+                studio.analysis.analysis_graph_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_needs_fit = true;
+                studio.analysis.analysis_graph_fit_active = true;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route != StudioRoute::Library {
@@ -244,8 +285,10 @@ pub(crate) fn apply_chrome_action(
             if view_changed {
                 studio.library.library_scroll_offset = 0.0;
                 studio.analysis.analysis_graph_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
                 if *view == LibraryView::Queue {
                     studio.analysis.analysis_graph_needs_fit = true;
+                    studio.analysis.analysis_graph_fit_active = true;
                 }
             }
             studio.library.refresh();
@@ -359,6 +402,10 @@ pub(crate) fn apply_chrome_action(
                 studio.library.library_view = LibraryView::Queue;
                 studio.library.library_facet = None;
                 studio.shell.route = StudioRoute::Library;
+                studio.analysis.analysis_graph_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_needs_fit = true;
+                studio.analysis.analysis_graph_fit_active = true;
                 studio.library.refresh();
                 studio.shell.notice = Some("Matching unanalyzed songs were queued.".to_string());
             } else {
@@ -391,9 +438,14 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisLineageMode) => {
-            studio.analysis.analysis_lineage_mode = !studio.analysis.analysis_lineage_mode;
-            if !studio.analysis.analysis_lineage_mode {
+            if !studio.analysis.analysis_mini_view {
+                studio.analysis.analysis_lineage_mode = false;
                 studio.dialogs.artifact_lineage = None;
+            } else {
+                studio.analysis.analysis_lineage_mode = !studio.analysis.analysis_lineage_mode;
+                if !studio.analysis.analysis_lineage_mode {
+                    studio.dialogs.artifact_lineage = None;
+                }
             }
             invalidated.invalidate(action.0.dirty_region());
         }

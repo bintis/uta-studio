@@ -29,6 +29,18 @@ def map_named_outputs(
                 f"{model_spec.id} stem {stem_name!r} is missing at {path}",
                 model_id=model_spec.id,
             )
+        try:
+            output_size = path.stat().st_size
+        except OSError as exc:
+            raise OutputContractError(
+                f"{model_spec.id} stem {stem_name!r} cannot be inspected at {path}: {exc}",
+                model_id=model_spec.id,
+            ) from exc
+        if output_size == 0:
+            raise OutputContractError(
+                f"{model_spec.id} stem {stem_name!r} is empty at {path}",
+                model_id=model_spec.id,
+            )
         role = model_spec.output_contract[stem_name]
         artifacts[role] = StemArtifact(
             role=role,

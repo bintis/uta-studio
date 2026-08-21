@@ -17,7 +17,7 @@ pub(crate) fn spawn_select_setting_row(
 ) {
     let label = label.into();
     let description = description.into();
-    let current = settings_select_value(kind, &session.config);
+    let current = settings_select_value(kind, session.config);
     let open = session.open_settings_select == Some(kind);
     let options = settings_select_options(
         kind,

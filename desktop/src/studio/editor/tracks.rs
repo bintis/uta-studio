@@ -23,7 +23,7 @@ use crate::{
     studio::{
         commands::{EditorCommand, UiAction},
         state::EditorUiState,
-        widgets::{UiIcon, spawn_icon_button, spawn_text, ui_text_font},
+        widgets::{UiIcon, spawn_icon, spawn_icon_button, spawn_text, ui_text_font},
     },
     theme::StudioTheme,
 };
@@ -72,6 +72,13 @@ pub(crate) fn spawn_editor_tracks(
             BorderColor::all(theme.border.with_alpha(0.45)),
         ))
         .with_children(|strip| {
+            spawn_icon(
+                strip,
+                icons.clone(),
+                UiIcon::Duet,
+                22.0,
+                theme.muted_foreground,
+            );
             for track in &tracks {
                 spawn_track_card(
                     strip,

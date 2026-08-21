@@ -17,6 +17,7 @@ use crate::analysis_graph::{
     stem_group_node_ids,
 };
 use crate::analysis_profile::AnalysisProfileSnapshot;
+use crate::audio_processing::AudioProcessingPlanSnapshot;
 
 /// See docs/analysis-dag-redesign.md §7. Phase 1's planner only ever
 /// produces `Ready | Frozen | Disabled | Blocked | NotApplicable` — the rest
@@ -107,10 +108,14 @@ pub struct AnalysisRequest {
     #[serde(default)]
     pub profile_snapshot: AnalysisProfileSnapshot,
     /// Stem-pipeline nodes selected by the current audio settings. An empty
-    /// set means "use the default chart path" (`stems.vocals` + bind).
+    /// set means "use the default chart path" (dedicated vocal + BGM + bind).
     /// Optional stem nodes not listed here become `NotApplicable`.
     #[serde(default)]
     pub active_stem_nodes: BTreeSet<AnalysisNodeId>,
+    /// Immutable catalog-backed audio chain used by both execution and UI.
+    /// `None` keeps plans written before the catalog pipeline readable.
+    #[serde(default)]
+    pub audio_processing: Option<AudioProcessingPlanSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -137,6 +142,8 @@ pub struct AnalysisPlan {
     pub nodes: Vec<PlannedNode>,
     pub target_nodes: BTreeSet<AnalysisNodeId>,
     pub profile_snapshot: AnalysisProfileSnapshot,
+    #[serde(default)]
+    pub audio_processing: Option<AudioProcessingPlanSnapshot>,
     pub warnings: Vec<PlanWarning>,
 }
 
@@ -379,6 +386,7 @@ pub fn build_plan(
         nodes,
         target_nodes: request.targets.clone(),
         profile_snapshot: request.profile_snapshot.clone(),
+        audio_processing: request.audio_processing.clone(),
         warnings,
     })
 }
@@ -415,6 +423,7 @@ mod tests {
             model_availability: BTreeMap::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
             active_stem_nodes: BTreeSet::new(),
+            audio_processing: None,
         }
     }
 
@@ -733,7 +742,8 @@ mod tests {
         for unused in [
             "vocals.denoise",
             "vocals.dereverb",
-            "stems.instrumental",
+            "instrumental.denoise",
+            "instrumental.dereverb",
             "stems.karaoke",
             "stems.multistem",
         ] {
@@ -743,6 +753,11 @@ mod tests {
         }
         assert!(
             plan.node(&AnalysisNodeId::new("stems.vocals"))
+                .unwrap()
+                .will_run
+        );
+        assert!(
+            plan.node(&AnalysisNodeId::new("stems.instrumental"))
                 .unwrap()
                 .will_run
         );
@@ -800,5 +815,18 @@ mod tests {
         let json = serde_json::to_string(&plan).expect("serialize plan");
         let restored: AnalysisPlan = serde_json::from_str(&json).expect("deserialize plan");
         assert_eq!(restored.nodes.len(), plan.nodes.len());
+    }
+
+    #[test]
+    fn catalog_audio_snapshot_flows_into_the_plan() {
+        let mut request = request(&["chart.build_candidate"], LyricsRoute::WhisperAsr);
+        let settings =
+            crate::audio_processing::AudioProcessingSettings::from_legacy_separator("karaoke");
+        let audio = crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&settings);
+        request.audio_processing = Some(audio.clone());
+        request.active_stem_nodes =
+            crate::analysis_graph::active_stem_nodes_from_settings(&settings);
+        let plan = build_plan(&baseline_graph_spec(), &request).unwrap();
+        assert_eq!(plan.audio_processing, Some(audio));
     }
 }

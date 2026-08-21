@@ -1,9 +1,9 @@
 //! Real app-log capture: a bounded in-memory ring buffer plus a best-effort
 //! on-disk file, fed by a genuine `tracing_subscriber` layer
-//! (`desktop/src/studio/mod.rs`'s `AppLogWriter`/`app_log_custom_layer`).
+//! (`desktop/src/studio/startup.rs`'s `AppLogWriter`/`app_log_custom_layer`).
 //! Backs `get_log_path`/`get_recent_logs` (`app-core/src/api.rs`'s
-//! `API_CAPABILITIES` catalogue entries, previously unimplemented anywhere)
-//! and the Node Context Menu's "View logs" dialog.
+//! `API_CAPABILITIES` catalogue entries) for application lifecycle and
+//! unscoped IPC diagnostics. Analysis runs use separate JSONL files.
 
 use std::collections::VecDeque;
 use std::io::Write;

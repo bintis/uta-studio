@@ -350,7 +350,7 @@ fn record_timed_lyrics_import(
     let route = AnalysisStageRoute {
         stage: "finalizing".to_string(),
         node_id: Some("lyrics.import_timed".to_string()),
-        node_event: Some("node_completed".to_string()),
+        node_event: Some("completed".to_string()),
         binding_kind: None,
         committed_outputs: vec![AnalysisArtifactCommit {
             slot: "output:0".to_string(),
@@ -377,9 +377,13 @@ fn record_timed_lyrics_import(
         backend_fallback_reason: None,
         started_at_ms: Some(now),
         finished_at_ms: Some(now),
+        event_at_ms: Some(now),
+        work_units_completed: Some(1),
+        work_units_total: Some(1),
     };
     let snapshot = AnalysisProgressSnapshot {
         stage: "complete".to_string(),
+        overall_progress: 100,
         stage_progress: 100,
         operation: "Timed lyrics imported".to_string(),
         detail: "Transcript rebuilt directly from the provided timed LRC.".to_string(),
@@ -393,8 +397,9 @@ fn record_timed_lyrics_import(
         backend_fallback_reason: None,
         stage_routes: vec![route],
         node_id: Some("lyrics.import_timed".to_string()),
-        node_event: Some("node_completed".to_string()),
+        node_event: Some("completed".to_string()),
         artifact_reused_reason: None,
+        analysis_log_path: None,
     };
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
@@ -406,6 +411,7 @@ fn record_timed_lyrics_import(
         finished_at_ms: now,
         snapshot_json: &snapshot_json,
         error_message: None,
+        log_path: None,
     })
     .map_err(|error| error.to_string())?;
     library_db::analysis_node_attempts_insert_batch(
@@ -655,7 +661,7 @@ mod timed_lyrics_import_history_tests {
         let snapshot: crate::analyzer::AnalysisProgressSnapshot =
             serde_json::from_str(&row.snapshot_json).expect("snapshot_json must parse");
         assert_eq!(snapshot.node_id.as_deref(), Some("lyrics.import_timed"));
-        assert_eq!(snapshot.node_event.as_deref(), Some("node_completed"));
+        assert_eq!(snapshot.node_event.as_deref(), Some("completed"));
         assert_eq!(snapshot.stage_routes.len(), 1);
 
         drop(_guard);

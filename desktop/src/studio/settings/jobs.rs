@@ -249,6 +249,14 @@ pub(crate) fn handle_settings_scroll(
             -event.y * scale
         })
         .sum::<f32>();
+    // Settings content is rebuilt while runtime/model jobs report progress.
+    // The replacement node has not been laid out yet in this system's frame,
+    // so clamping it without real scroll input sees a zero-sized viewport and
+    // overwrites the persisted offset with zero. Leave the seeded
+    // ScrollPosition untouched until the user actually scrolls.
+    if delta == 0.0 {
+        return;
+    }
     let size = computed.size() * computed.inverse_scale_factor();
     let content = computed.content_size() * computed.inverse_scale_factor();
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));

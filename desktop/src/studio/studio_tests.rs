@@ -182,6 +182,8 @@ mod tests {
         assert!(root.join(LOGO_PATH).is_file());
         assert!(root.join(FONT_PATH).is_file());
         assert!(root.join(ICON_ATLAS_PATH).is_file());
+        assert!(root.join(MUSIC_PLACEHOLDER_PATH).is_file());
+        assert!(root.join("desktop/assets/icons/music-placeholder.svg").is_file());
         // Baked in via `include_bytes!`, not loaded from `asset_root()` --
         // a missing file would already be a compile error, but a real PNG
         // signature is worth confirming rather than assuming.
@@ -513,8 +515,10 @@ mod tests {
         assert_eq!(pitch_percent(60.0, &editor), 58.0);
         assert_eq!(time_percent(5.0, &editor), 0.0);
         assert_eq!(pitch_percent(100.0, &editor), 20.0);
-        assert_eq!(surface_pitch_fraction(0.2), 0.0);
-        assert_eq!(surface_pitch_fraction(0.96), 1.0);
+        assert_eq!(surface_pitch_fraction(0.2, false), 0.0);
+        assert_eq!(surface_pitch_fraction(0.96, false), 1.0);
+        assert_eq!(surface_pitch_fraction(0.0, true), 0.0);
+        assert_eq!(surface_pitch_fraction(0.96, true), 1.0);
         set_editor_pitch_span(&mut editor, 999.0);
         assert_eq!(editor.pitch_min, 0.0);
         assert_eq!(editor.pitch_max, 127.0);

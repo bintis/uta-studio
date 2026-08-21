@@ -96,7 +96,9 @@ class AsrRouteSplitTests(unittest.TestCase):
 
             with open(asr_segments_path, encoding="utf-8") as f:
                 asr_segments = json.load(f)
-            self.assertEqual(asr_segments["segments"], fake_result["segments"])
+            self.assertEqual(
+                asr_segments["segments"], fake_result["_pre_alignment_segments"]
+            )
             self.assertNotIn("_pre_alignment_segments", asr_segments)
             # Reflects the transcribe node's own output, not yet patched
             # with chart-build-time key/tempo/bpm.
@@ -110,6 +112,76 @@ class AsrRouteSplitTests(unittest.TestCase):
             self.assertEqual(transcript["key"], "C")
             self.assertEqual(transcript["bpm"], 120.0)
             self.assertNotIn("_pre_alignment_segments", transcript)
+
+    def test_transcribe_artifacts_commit_before_alignment_starts(self):
+        with _tmp_dir() as output_dir:
+            events = []
+            real_atomic_write = pipeline._atomic_write_json
+
+            def record_write(path, data):
+                events.append(f"write:{os.path.basename(path)}")
+                real_atomic_write(path, data)
+
+            def record_event(node_id, event, _pct, _message, **_metadata):
+                events.append(f"event:{node_id}:{event}")
+
+            fake_result = {
+                "language": "en",
+                "source": "generated",
+                "segments": [{"text": "hello", "start": 0.0, "end": 1.0}],
+                "_pre_alignment_segments": [
+                    {"text": "hello", "start": 0.0, "end": 1.0}
+                ],
+                "_alignment_raw_segments": [
+                    {"text": "hello", "start": 0.0, "end": 1.0}
+                ],
+                "_alignment_audio": [0.0],
+                "_alignment_device": "cpu",
+                "_pre_align_cleanup": None,
+            }
+            aligned = {
+                "language": "en",
+                "segments": [
+                    {
+                        "text": "hello",
+                        "start": 0.0,
+                        "end": 1.0,
+                        "words": [{"word": "hello", "start": 0.0, "end": 1.0}],
+                    }
+                ],
+            }
+            with (
+                mock.patch.object(
+                    pipeline, "transcribe_vocals", return_value=dict(fake_result)
+                ),
+                mock.patch.object(pipeline, "_atomic_write_json", side_effect=record_write),
+                mock.patch.object(pipeline, "progress_node", side_effect=record_event),
+                mock.patch("transcribe._align_and_build", return_value=aligned),
+            ):
+                pipeline.run_transcription(
+                    "/tmp/vocals.wav",
+                    "/tmp/source.flac",
+                    "cpu",
+                    output_dir,
+                    "orderedSong",
+                    model_name="large-v3",
+                )
+
+            transcribe_complete = events.index("event:lyrics.transcribe:completed")
+            align_started = events.index("event:lyrics.align:started")
+            self.assertLess(
+                events.index("write:orderedSong_recognized_text.json"),
+                transcribe_complete,
+            )
+            self.assertLess(
+                events.index("write:orderedSong_asr_segments.json"),
+                transcribe_complete,
+            )
+            self.assertLess(transcribe_complete, align_started)
+            self.assertLess(
+                events.index("write:orderedSong_timed_transcript.json"),
+                events.index("event:lyrics.align:completed"),
+            )
 
     def test_parakeet_without_pre_alignment_segments_falls_back_to_final_segments(self):
         # Parakeet emits word timing natively -- transcribe.py never sets

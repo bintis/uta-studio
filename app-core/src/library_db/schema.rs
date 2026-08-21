@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 10;
+pub(crate) const SCHEMA_VERSION: i32 = 11;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -70,7 +70,9 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             started_at_ms INTEGER NOT NULL,
             finished_at_ms INTEGER NOT NULL,
             snapshot_json TEXT NOT NULL,
-            error_message TEXT
+            error_message TEXT,
+            log_path TEXT,
+            cancelled INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_analysis_history_finished
             ON analysis_history(finished_at_ms DESC);
@@ -218,6 +220,19 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     if !column_exists(conn, "analysis_node_artifacts", "attempt_id")? {
         conn.execute_batch(
             "ALTER TABLE analysis_node_artifacts ADD COLUMN attempt_id INTEGER REFERENCES analysis_node_attempts(id) ON DELETE CASCADE;",
+        )?;
+    }
+    // SCHEMA_VERSION 10 -> 11: a log belongs to one durable run even when
+    // old snapshot JSON does not carry its path. Cancellation is stored as
+    // a separate flag so existing databases keep their original CHECK
+    // constraint while callers can expose `cancelled` as a real history
+    // status instead of mislabelling it as a model failure.
+    if !column_exists(conn, "analysis_history", "log_path")? {
+        conn.execute_batch("ALTER TABLE analysis_history ADD COLUMN log_path TEXT;")?;
+    }
+    if !column_exists(conn, "analysis_history", "cancelled")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
@@ -392,5 +407,32 @@ mod tests {
         ensure_schema(&conn).unwrap();
         ensure_schema(&conn).unwrap();
         assert!(column_exists(&conn, "analysis_node_artifacts", "attempt_id").unwrap());
+    }
+
+    #[test]
+    fn ensure_schema_repairs_a_partially_applied_history_log_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE analysis_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_hash TEXT NOT NULL,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+                started_at_ms INTEGER NOT NULL,
+                finished_at_ms INTEGER NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                error_message TEXT,
+                log_path TEXT
+            );",
+        )
+        .unwrap();
+        assert!(column_exists(&conn, "analysis_history", "log_path").unwrap());
+        assert!(!column_exists(&conn, "analysis_history", "cancelled").unwrap());
+
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "analysis_history", "cancelled").unwrap());
     }
 }

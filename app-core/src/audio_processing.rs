@@ -8,10 +8,11 @@ use ts_rs::TS;
 
 use crate::audio_model::{
     AUDIO_CATALOG_SCHEMA_VERSION, AUDIO_CATALOG_VERSION, AudioModelCatalogSummary,
-    AudioModelStatus, AudioParameterMap, AudioParameterValue, DEFAULT_LEGACY_KARAOKE_MODEL_ID,
+    AudioModelStatus, AudioParameterMap, AudioParameterValue, DEFAULT_BGM_MODEL_ID,
+    DEFAULT_LEGACY_KARAOKE_MODEL_ID,
 };
 
-#[allow(dead_code)]
+#[cfg(test)]
 const PLACEHOLDER_HASHES: &[&str] = &["REPLACE_WITH_VERIFIED_FULL_SHA256", "TODO", "UNKNOWN", ""];
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Default)]
@@ -23,6 +24,8 @@ pub struct AudioProcessingSettings {
     pub vocal_cleanup_chain: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accompaniment_model_id: Option<String>,
+    #[serde(default)]
+    pub accompaniment_cleanup_chain: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub karaoke_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +62,10 @@ fn default_memory_policy() -> String {
     "normal".to_string()
 }
 
+pub fn cleanup_model_enabled(model_id: &str) -> bool {
+    !matches!(model_id.trim(), "" | "none" | "off")
+}
+
 impl AudioProcessingSettings {
     pub fn from_legacy_separator(separator: &str) -> Self {
         let (legacy_profile, karaoke, vocal, accompaniment, multistem) = match separator {
@@ -80,7 +87,7 @@ impl AudioProcessingSettings {
                 Some("legacy_karaoke_roformer".to_string()),
                 None,
                 Some(DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()),
-                None,
+                Some(DEFAULT_BGM_MODEL_ID.to_string()),
                 None,
             ),
         };
@@ -88,6 +95,7 @@ impl AudioProcessingSettings {
             vocal_model_id: vocal,
             vocal_cleanup_chain: Vec::new(),
             accompaniment_model_id: accompaniment,
+            accompaniment_cleanup_chain: Vec::new(),
             karaoke_model_id: karaoke,
             multistem_model_id: multistem,
             common_overrides: AudioParameterMap::new(),
@@ -219,15 +227,11 @@ fn chart_snapshot(
     settings: &AudioProcessingSettings,
     runtime: AudioRuntimeRequest,
 ) -> AudioProcessingPlanSnapshot {
-    let mut vocal_roles = vec!["extracted_vocal".to_string()];
-    if settings.accompaniment_model_id.is_none() {
-        vocal_roles.push("residual_instrumental".to_string());
-    }
     let mut steps = vec![AudioProcessingStep {
         step_id: "extract_vocals".to_string(),
         model_id: vocal.to_string(),
         input: AudioInputReference::SourceMedia,
-        selected_output_roles: vocal_roles,
+        selected_output_roles: vec!["extracted_vocal".to_string()],
         effective_parameters: param(
             &settings.common_overrides,
             settings
@@ -238,7 +242,11 @@ fn chart_snapshot(
     }];
     let mut current_step = "extract_vocals".to_string();
     let mut current_role = "extracted_vocal".to_string();
-    for model_id in &settings.vocal_cleanup_chain {
+    for model_id in settings
+        .vocal_cleanup_chain
+        .iter()
+        .filter(|model_id| cleanup_model_enabled(model_id))
+    {
         let (step_id, role) = if model_id.contains("denoise") {
             ("denoise_vocals", "clean_audio")
         } else {
@@ -263,20 +271,53 @@ fn chart_snapshot(
         current_step = step_id.to_string();
         current_role = role.to_string();
     }
-    if let Some(accompaniment) = settings.accompaniment_model_id.as_deref() {
+    let accompaniment = settings
+        .accompaniment_model_id
+        .as_deref()
+        .unwrap_or(DEFAULT_BGM_MODEL_ID);
+    steps.push(AudioProcessingStep {
+        step_id: "extract_accompaniment".to_string(),
+        model_id: accompaniment.to_string(),
+        input: AudioInputReference::SourceMedia,
+        selected_output_roles: vec!["instrumental".to_string()],
+        effective_parameters: param(
+            &settings.common_overrides,
+            settings
+                .per_model_overrides
+                .get(accompaniment)
+                .unwrap_or(&AudioParameterMap::new()),
+        ),
+    });
+    let mut accompaniment_step = "extract_accompaniment".to_string();
+    let mut accompaniment_role = "instrumental".to_string();
+    for model_id in settings
+        .accompaniment_cleanup_chain
+        .iter()
+        .filter(|model_id| cleanup_model_enabled(model_id))
+    {
+        let (step_id, role) = if model_id.contains("denoise") {
+            ("denoise_accompaniment", "clean_audio")
+        } else {
+            ("dereverb_accompaniment", "dry_audio")
+        };
         steps.push(AudioProcessingStep {
-            step_id: "extract_accompaniment".to_string(),
-            model_id: accompaniment.to_string(),
-            input: AudioInputReference::SourceMedia,
-            selected_output_roles: vec!["instrumental".to_string()],
+            step_id: step_id.to_string(),
+            model_id: model_id.clone(),
+            input: AudioInputReference::StepOutput {
+                step_id: accompaniment_step.clone(),
+                role: accompaniment_role.clone(),
+            },
+            selected_output_roles: vec![role.to_string()],
             effective_parameters: param(
                 &settings.common_overrides,
                 settings
                     .per_model_overrides
-                    .get(accompaniment)
+                    .get(model_id)
                     .unwrap_or(&AudioParameterMap::new()),
             ),
         });
+        accompaniment_step = step_id.to_string();
+        accompaniment_role = role.to_string();
     }
     let mut bindings = vec![
         AudioOutputBinding {
@@ -292,21 +333,12 @@ fn chart_snapshot(
             sum: None,
         },
     ];
-    if settings.accompaniment_model_id.is_some() {
-        bindings.push(AudioOutputBinding {
-            artifact_role: "instrumental".to_string(),
-            step_id: "extract_accompaniment".to_string(),
-            role: "instrumental".to_string(),
-            sum: None,
-        });
-    } else {
-        bindings.push(AudioOutputBinding {
-            artifact_role: "instrumental".to_string(),
-            step_id: "extract_vocals".to_string(),
-            role: "residual_instrumental".to_string(),
-            sum: None,
-        });
-    }
+    bindings.push(AudioOutputBinding {
+        artifact_role: "instrumental".to_string(),
+        step_id: accompaniment_step,
+        role: accompaniment_role,
+        sum: None,
+    });
     AudioProcessingPlanSnapshot {
         schema_version: AUDIO_CATALOG_SCHEMA_VERSION,
         catalog_version: AUDIO_CATALOG_VERSION.to_string(),
@@ -497,12 +529,12 @@ pub fn preview_effective_audio_params(
     resolved
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn is_placeholder_hash(value: &str) -> bool {
     PLACEHOLDER_HASHES.contains(&value) || value.eq_ignore_ascii_case("todo")
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn sha256_hex_ok(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -524,15 +556,49 @@ pub fn validate_audio_processing_profile(
     if let Some(model_id) = settings.multistem_model_id.as_deref() {
         validate_model_id(model_id)?;
     }
-    for model_id in &settings.vocal_cleanup_chain {
+    for model_id in settings
+        .vocal_cleanup_chain
+        .iter()
+        .filter(|model_id| cleanup_model_enabled(model_id))
+    {
         validate_model_id(model_id)?;
     }
+    for model_id in settings
+        .accompaniment_cleanup_chain
+        .iter()
+        .filter(|model_id| cleanup_model_enabled(model_id))
+    {
+        validate_model_id(model_id)?;
+    }
+    validate_cleanup_chain("vocal", &settings.vocal_cleanup_chain)?;
+    validate_cleanup_chain("BGM", &settings.accompaniment_cleanup_chain)?;
     for key in settings.common_overrides.keys() {
         if key == "overlap" || key == "segment_size" {
             return Err("bare overlap/segment_size parameters are not allowed".to_string());
         }
     }
     Ok(AudioProcessingPlanSnapshot::from_settings(settings))
+}
+
+fn validate_cleanup_chain(label: &str, chain: &[String]) -> Result<(), String> {
+    if chain.len() > 2 {
+        return Err(format!(
+            "{label} cleanup supports at most two ordered steps"
+        ));
+    }
+    let enabled = chain
+        .iter()
+        .filter(|model_id| cleanup_model_enabled(model_id))
+        .collect::<Vec<_>>();
+    if enabled.iter().enumerate().any(|(index, model_id)| {
+        enabled
+            .iter()
+            .skip(index + 1)
+            .any(|candidate| candidate == model_id)
+    }) {
+        return Err(format!("{label} cleanup cannot repeat the same model"));
+    }
+    Ok(())
 }
 
 fn validate_model_id(model_id: &str) -> Result<(), String> {
@@ -570,7 +636,7 @@ const CATALOG_MODELS: &[(&str, &str, &str, &str, &str, &str)] = &[
     (
         "melband_roformer_denoise_aufr33",
         "MelBand-RoFormer Denoise",
-        "Vocal denoise",
+        "Post-separation denoise",
         "mdxc_melband_roformer",
         "denoise",
         "mdxc_torch",
@@ -578,7 +644,7 @@ const CATALOG_MODELS: &[(&str, &str, &str, &str, &str, &str)] = &[
     (
         "melband_roformer_dereverb_anvuew",
         "MelBand-RoFormer Dereverb",
-        "Vocal dereverb",
+        "Post-separation dereverb",
         "mdxc_melband_roformer",
         "dereverb",
         "mdxc_torch",
@@ -744,7 +810,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_karaoke_round_trips() {
+    fn default_chart_route_has_dedicated_vocal_and_bgm_models() {
         let settings = AudioProcessingSettings::from_legacy_separator("karaoke");
         assert_eq!(settings.derived_legacy_separator(), "karaoke");
         assert_eq!(
@@ -756,8 +822,13 @@ mod tests {
             Some(DEFAULT_LEGACY_KARAOKE_MODEL_ID)
         );
         let snapshot = AudioProcessingPlanSnapshot::from_settings(&settings);
-        assert_eq!(snapshot.steps.len(), 1);
+        assert_eq!(
+            settings.accompaniment_model_id.as_deref(),
+            Some(DEFAULT_BGM_MODEL_ID)
+        );
+        assert_eq!(snapshot.steps.len(), 2);
         assert_eq!(snapshot.steps[0].model_id, DEFAULT_LEGACY_KARAOKE_MODEL_ID);
+        assert_eq!(snapshot.steps[1].model_id, DEFAULT_BGM_MODEL_ID);
         assert!(
             snapshot
                 .output_bindings
@@ -775,10 +846,15 @@ mod tests {
             "melband_roformer_denoise_aufr33".to_string(),
             "melband_roformer_dereverb_anvuew".to_string(),
         ];
+        settings.accompaniment_cleanup_chain = vec![
+            "melband_roformer_dereverb_anvuew".to_string(),
+            "melband_roformer_denoise_aufr33".to_string(),
+        ];
         let first = AudioProcessingPlanSnapshot::from_settings(&settings);
         settings.vocal_cleanup_chain.clear();
+        settings.accompaniment_cleanup_chain.clear();
         let second = AudioProcessingPlanSnapshot::from_settings(&settings);
-        assert_eq!(first.steps.len(), 4);
+        assert_eq!(first.steps.len(), 6);
         assert_eq!(second.steps.len(), 2);
         assert_ne!(
             first
@@ -792,6 +868,64 @@ mod tests {
                 .map(|s| s.model_id.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn vocal_and_bgm_cleanup_keep_their_independent_selected_order() {
+        let mut settings = AudioProcessingSettings::from_legacy_separator("karaoke");
+        settings.vocal_model_id = Some("bs_roformer_vocals_ep317".to_string());
+        settings.accompaniment_model_id = Some("melband_roformer_inst_v2".to_string());
+        settings.vocal_cleanup_chain = vec![
+            "melband_roformer_denoise_aufr33".to_string(),
+            "melband_roformer_dereverb_anvuew".to_string(),
+        ];
+        settings.accompaniment_cleanup_chain = vec![
+            "melband_roformer_dereverb_anvuew".to_string(),
+            "melband_roformer_denoise_aufr33".to_string(),
+        ];
+
+        let snapshot = validate_audio_processing_profile(&settings).unwrap();
+        let step_ids = snapshot
+            .steps
+            .iter()
+            .map(|step| step.step_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            step_ids,
+            vec![
+                "extract_vocals",
+                "denoise_vocals",
+                "dereverb_vocals",
+                "extract_accompaniment",
+                "dereverb_accompaniment",
+                "denoise_accompaniment",
+            ]
+        );
+        let bgm = snapshot
+            .output_bindings
+            .iter()
+            .find(|binding| binding.artifact_role == "instrumental")
+            .unwrap();
+        assert_eq!(bgm.step_id, "denoise_accompaniment");
+        assert_eq!(bgm.role, "clean_audio");
+    }
+
+    #[test]
+    fn disabled_first_cleanup_slot_does_not_move_the_second_slot_or_create_a_step() {
+        let mut settings = AudioProcessingSettings::from_legacy_separator("karaoke");
+        settings.vocal_cleanup_chain = vec![
+            "none".to_string(),
+            "melband_roformer_dereverb_anvuew".to_string(),
+        ];
+
+        let snapshot = validate_audio_processing_profile(&settings).unwrap();
+        let vocal_steps = snapshot
+            .steps
+            .iter()
+            .filter(|step| step.step_id.ends_with("_vocals"))
+            .map(|step| step.step_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(vocal_steps, vec!["extract_vocals", "dereverb_vocals"]);
     }
 
     #[test]

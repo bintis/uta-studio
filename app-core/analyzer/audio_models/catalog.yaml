@@ -178,7 +178,7 @@ models:
 
   - id: melband_roformer_denoise_aufr33
     display_name: "MelBand-RoFormer Denoise"
-    purpose: "Vocal denoise"
+    purpose: "Post-separation denoise"
     family: roformer
     architecture: mdxc_melband_roformer
     operation: denoise
@@ -187,6 +187,8 @@ models:
     input_contract:
       accepted_roles:
         - extracted_vocal
+        - instrumental
+        - dry_audio
         - source_mix
       channels: 2
       sample_rate_policy: model_native
@@ -206,13 +208,13 @@ models:
         sha256: 5d7d83b2e9d232da60941b717b0abdc345155d45cff3f79715cdb2790ba18c36
         size_bytes: 1621
     model_metadata:
-      target_stem: Vocals
+      target_stem: dry
       expected_stems:
-        - Vocals
-        - Noise
+        - dry
+        - other
     output_contract:
-      Vocals: clean_audio
-      Noise: noise
+      dry: clean_audio
+      other: noise
     supported_backends:
       - torch_cuda
       - torch_xpu
@@ -227,7 +229,7 @@ models:
 
   - id: melband_roformer_dereverb_anvuew
     display_name: "MelBand-RoFormer Dereverb"
-    purpose: "Vocal dereverb"
+    purpose: "Post-separation dereverb"
     family: roformer
     architecture: mdxc_melband_roformer
     operation: dereverb
@@ -237,6 +239,7 @@ models:
       accepted_roles:
         - clean_audio
         - extracted_vocal
+        - instrumental
         - source_mix
       channels: 2
       sample_rate_policy: model_native
@@ -256,13 +259,13 @@ models:
         sha256: 66963a9d60756076506a230b4e503c553a3beb7b4e9a10e6bcc73dee9dbd4866
         size_bytes: 1846
     model_metadata:
-      target_stem: Vocals
+      target_stem: noreverb
       expected_stems:
-        - Vocals
-        - Reverb
+        - noreverb
+        - reverb
     output_contract:
-      Vocals: dry_audio
-      Reverb: reverb
+      noreverb: dry_audio
+      reverb: reverb
     supported_backends:
       - torch_cuda
       - torch_xpu

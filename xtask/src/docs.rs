@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DOCUMENT_REVISION: &str = "2026-08-18";
+const DOCUMENT_REVISION: &str = "2026-08-21";
 const LOCALES: [(&str, &str); 3] = [("en", "English"), ("zh-CN", "简体中文"), ("ja", "日本語")];
 const PAGE_IDS: [&str; 15] = [
     "guide:about",
@@ -411,6 +411,13 @@ fn build_bundle(documents: &[LocaleDocument], app_version: &str) -> String {
     semantic_links.insert("node:pitch.extract", "guide:analysis");
     semantic_links.insert("node:preflight", "guide:analysis");
     semantic_links.insert("node:stems.separate", "guide:analysis");
+    semantic_links.insert("node:stems.vocals", "guide:analysis");
+    semantic_links.insert("node:vocals.denoise", "guide:analysis");
+    semantic_links.insert("node:vocals.dereverb", "guide:analysis");
+    semantic_links.insert("node:stems.instrumental", "guide:analysis");
+    semantic_links.insert("node:instrumental.denoise", "guide:analysis");
+    semantic_links.insert("node:instrumental.dereverb", "guide:analysis");
+    semantic_links.insert("node:stems.bind_analysis_outputs", "guide:analysis");
     semantic_links.insert("problem:OverlappingNotes", "guide:editor");
     semantic_links.insert("problem:NoteTooShort", "guide:editor");
     semantic_links.insert("problem:MissingPitchTarget", "guide:editor");

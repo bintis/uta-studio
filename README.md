@@ -64,6 +64,13 @@ Run the desktop app with:
 cargo desktop dev
 ```
 
+Build a local release binary with the installed rustup toolchain (Nix only
+provides native libraries and runtime tools):
+
+```sh
+./build.sh
+```
+
 Release packages are built with `nix build path:.#uta-studio`. The generated
 offline documentation bundle is embedded in the desktop executable; runtime
 source Markdown files are not required.

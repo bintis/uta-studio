@@ -27,7 +27,6 @@ def load_restricted_yaml(text: str) -> Any:
         return tuple(loader.construct_sequence(node))
 
     _CatalogLoader.add_constructor("tag:yaml.org,2002:python/tuple", _construct_tuple)
-    _CatalogLoader.add_constructor("tag:yaml.org,2002:python/tuple", _construct_tuple)
 
     try:
         return yaml.load(text, Loader=_CatalogLoader)
@@ -43,7 +42,9 @@ def load_simple_yaml(text: str) -> Any:
         if not expanded.strip() or expanded.lstrip().startswith("#"):
             continue
         indent = len(expanded) - len(expanded.lstrip(" "))
-        lines.append((indent, expanded.strip()))
+        content = _strip_inline_comment(expanded.strip())
+        if content:
+            lines.append((indent, content))
     value, _ = _parse_lines(lines, 0, 0)
     return value
 
@@ -74,11 +75,27 @@ def _parse_mapping(
         if text.startswith("- "):
             raise RestrictedYamlError("cannot mix sequence and mapping at the same indent")
         key, remainder = _split_key(text)
-        if remainder == "":
-            if index + 1 < len(lines) and lines[index + 1][0] > indent:
+        if remainder == "" or remainder == "!!python/tuple":
+            next_is_indented = index + 1 < len(lines) and lines[index + 1][0] > indent
+            next_is_indentless_sequence = (
+                index + 1 < len(lines)
+                and lines[index + 1][0] == indent
+                and lines[index + 1][1].startswith("- ")
+            )
+            if next_is_indented or next_is_indentless_sequence:
                 child, index = _parse_lines(lines, index + 1, lines[index + 1][0])
+                if remainder == "!!python/tuple":
+                    if not isinstance(child, list):
+                        raise RestrictedYamlError(
+                            f"!!python/tuple value for {key!r} must be a sequence"
+                        )
+                    child = tuple(child)
                 mapping[key] = child
                 continue
+            if remainder == "!!python/tuple":
+                raise RestrictedYamlError(
+                    f"!!python/tuple value for {key!r} must be a sequence"
+                )
             mapping[key] = None
             index += 1
             continue
@@ -94,6 +111,8 @@ def _parse_sequence(
     while index < len(lines):
         current_indent, text = lines[index]
         if current_indent < indent:
+            break
+        if current_indent == indent and not text.startswith("- "):
             break
         if current_indent > indent or not text.startswith("- "):
             raise RestrictedYamlError(f"expected sequence item, got {text!r}")
@@ -140,6 +159,27 @@ def _split_key(text: str) -> tuple[str, str]:
 
 def _is_quoted(text: str) -> bool:
     return len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}
+
+
+def _strip_inline_comment(text: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote == '"':
+            escaped = True
+            continue
+        if char in {"'", '"'}:
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+            continue
+        if char == "#" and quote is None and (index == 0 or text[index - 1].isspace()):
+            return text[:index].rstrip()
+    return text
 
 
 def parse_scalar(text: str) -> Any:

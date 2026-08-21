@@ -46,6 +46,7 @@ pub(crate) fn apply_content_action(
                 studio.library.library_facet = None;
                 studio.shell.route = StudioRoute::Library;
                 studio.analysis.analysis_graph_needs_fit = true;
+                studio.analysis.analysis_graph_fit_active = true;
                 studio.library.refresh();
                 studio.shell.notice = Some("Song queued for analysis.".to_string());
             } else {
@@ -624,33 +625,63 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::OpenAppLogViewer(file_hash, node_id)) => {
-            studio.dialogs.app_log_viewer = Some(AppLogViewerState {
+        UiCommand::Analysis(AnalysisCommand::StartAnalysis(file_hash)) => {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
+                app_core::run_analysis_plan(
+                    file_hash,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                )
+            }));
+            studio.analysis.selected_analysis_history = None;
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::StopAnalysis(file_hash)) => {
+            studio.shell.notice = Some(match app_core::stop_analysis_run(file_hash) {
+                Ok(()) => "Stopping analysis; committed outputs will be kept.".to_string(),
+                Err(error) => format!("Could not stop analysis: {error}"),
+            });
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisLogViewer(file_hash, node_id)) => {
+            studio.dialogs.analysis_log_viewer = Some(AnalysisLogViewerState {
                 file_hash: file_hash.clone(),
                 node_id: node_id.clone(),
             });
             studio.dialogs.analysis_node_context = None;
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::CloseAppLogViewer) => {
-            studio.dialogs.app_log_viewer = None;
+        UiCommand::Analysis(AnalysisCommand::CloseAnalysisLogViewer) => {
+            studio.dialogs.analysis_log_viewer = None;
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::OpenAppLogFile) => {
-            studio.shell.notice = Some(match app_core::get_log_path() {
-                Some(path) => match open::that_detached(&path) {
-                    Ok(()) => localized_message(
-                        &studio.shell.config,
-                        UiMessage::PathOpened,
-                        &[("{path}", &path.display().to_string())],
-                    ),
-                    Err(error) => format!("Could not open {}: {error}", path.display()),
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisLogFile) => {
+            let selected_run_id = studio.analysis.selected_analysis_history;
+            let file_hash = studio
+                .dialogs
+                .analysis_log_viewer
+                .as_ref()
+                .map(|state| state.file_hash.as_str())
+                .unwrap_or_default();
+            studio.shell.notice = Some(
+                match app_core::analysis_log_path_for(selected_run_id, file_hash) {
+                    Some(path) => match open::that_detached(&path) {
+                        Ok(()) => localized_message(
+                            &studio.shell.config,
+                            UiMessage::PathOpened,
+                            &[("{path}", &path.display().to_string())],
+                        ),
+                        Err(error) => format!("Could not open {}: {error}", path.display()),
+                    },
+                    None => "The analysis log is not available for this run.".to_string(),
                 },
-                None => "The app log is not available in this environment.".to_string(),
-            });
+            );
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::OpenSongSettings(file_hash)) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor.file_menu_open = false;
+            }
             studio.dialogs.song_settings = open_song_settings(file_hash);
             if studio.dialogs.song_settings.is_none() {
                 studio.shell.notice = Some("Could not load this song's settings.".to_string());
@@ -876,7 +907,7 @@ pub(crate) fn apply_content_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::SetActiveArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_active = Some(revision.clone());
+            studio.dialogs.pending_artifact_active = Some(revision.as_ref().clone());
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::CancelSetActiveArtifactRevision) => {
@@ -958,7 +989,7 @@ pub(crate) fn apply_content_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::RequestDeleteArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_delete = Some(revision.clone());
+            studio.dialogs.pending_artifact_delete = Some(revision.as_ref().clone());
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::CancelDeleteArtifactRevision) => {
@@ -978,7 +1009,7 @@ pub(crate) fn apply_content_action(
             }
         }
         UiCommand::Analysis(AnalysisCommand::RequestInvalidateArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_invalidate = Some(revision.clone());
+            studio.dialogs.pending_artifact_invalidate = Some(revision.as_ref().clone());
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::CancelInvalidateArtifactRevision) => {
@@ -1150,6 +1181,60 @@ pub(crate) fn apply_content_action(
         UiCommand::Library(LibraryCommand::ToggleLibraryQueue) => {
             studio.playback.library_playback.queue_open =
                 !studio.playback.library_playback.queue_open;
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::ToggleEditorFileMenu) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor.file_menu_open = !editor.file_menu_open;
+                editor.layout_menu_open = false;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::DismissEditorFileMenu) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor.file_menu_open = false;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(
+            command @ (EditorCommand::SaveEditorAsUtz | EditorCommand::SaveEditorAsUltraStar),
+        ) => {
+            let extension = if matches!(command, EditorCommand::SaveEditorAsUtz) {
+                "utz"
+            } else {
+                "txt"
+            };
+            let file_hash = studio.editor.editor.as_mut().and_then(|editor| {
+                editor.file_menu_open = false;
+                match try_save_editor_chart(editor) {
+                    Ok(()) => Some(editor.chart.file_hash.clone()),
+                    Err(error) => {
+                        studio.shell.notice = Some(error);
+                        None
+                    }
+                }
+            });
+            if let Some(file_hash) = file_hash {
+                studio.shell.notice = Some(start_export_job(
+                    &file_hash,
+                    extension,
+                    studio.shell.config.export_path.clone(),
+                    &mut studio.jobs.export_job,
+                ));
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::ToggleEditorLayoutMenu) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor.layout_menu_open = !editor.layout_menu_open;
+                editor.file_menu_open = false;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::DismissEditorLayoutMenu) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor.layout_menu_open = false;
+            }
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::DismissLyricContext) => {

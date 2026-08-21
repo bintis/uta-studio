@@ -41,8 +41,9 @@ pub use analysis_artifact::{
 };
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
-    DisablePolicy, GraphValidationError, active_stem_nodes_from_settings, baseline_graph_spec,
-    default_active_stem_nodes, lyrics_route_node_ids, optional_stem_node_ids, stem_group_node_ids,
+    DisablePolicy, GraphValidationError, active_stem_nodes_from_settings,
+    analysis_node_for_audio_step, baseline_graph_spec, default_active_stem_nodes,
+    lyrics_route_node_ids, optional_stem_node_ids, stem_group_node_ids,
 };
 pub use analysis_plan::{
     AnalysisPlan, AnalysisRequest, LyricsRoute, NodeState, PlanError, PlanWarning, PlannedNode,
@@ -56,18 +57,19 @@ pub use analysis_profile::{
 pub use analyzer::{
     AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison, AnalysisRunHistory,
     AnalysisStageRoute, AnalysisTask, NodeAttempt, NodeAttemptComparison, PendingAnalysisIntent,
-    QueuedStatus, SongAuthoringState, bypass_analysis_node_with_original_mix_for_run,
-    cancel_analysis_run, clear_analysis_history, compare_analysis_runs,
-    compare_node_attempt_with_previous_run, configure_analysis_node_for_run, delete_cache,
-    disable_analysis_node_for_run, downstream_node_ids, enqueue_all, enqueue_one,
-    freeze_analysis_node_outputs_for_run, frozen_artifact_kinds_for_node_id, load_analysis_history,
-    load_analysis_node_attempts, load_analysis_tasks, node_can_be_bypassed_for_run,
-    node_can_be_configured_for_run, node_can_be_disabled_for_run, node_can_be_frozen_for_run,
-    pending_analysis_intent, pending_run_override_for, preview_analysis_plan_for_selection,
-    preview_full_analysis_plan, realign, reanalyze_force_transcribe, reanalyze_full,
-    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, run_analysis_node,
-    run_analysis_node_downstream, run_analysis_plan, run_analysis_request,
-    save_node_config_as_song_profile, shutdown_server,
+    QueuedStatus, SongAuthoringState, analysis_log_lines, analysis_log_path_for,
+    analysis_stop_requested, bypass_analysis_node_with_original_mix_for_run, cancel_analysis_run,
+    clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
+    configure_analysis_node_for_run, delete_cache, disable_analysis_node_for_run,
+    downstream_node_ids, enqueue_all, enqueue_one, freeze_analysis_node_outputs_for_run,
+    frozen_artifact_kinds_for_node_id, load_analysis_history, load_analysis_node_attempts,
+    load_analysis_tasks, node_can_be_bypassed_for_run, node_can_be_configured_for_run,
+    node_can_be_disabled_for_run, node_can_be_frozen_for_run, pending_analysis_intent,
+    pending_run_override_for, preview_analysis_plan_for_selection, preview_full_analysis_plan,
+    realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
+    resolve_song_authoring_state, run_analysis_node, run_analysis_node_downstream,
+    run_analysis_plan, run_analysis_request, save_node_config_as_song_profile, shutdown_server,
+    stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -89,13 +91,14 @@ pub use artifact_workbench::{
 };
 pub use audio_model::{
     AudioModelCatalogSummary, AudioModelFileStatus, AudioModelLicense, AudioModelStatus,
-    AudioParameterMap, AudioParameterSpec, AudioParameterValue, DEFAULT_LEGACY_KARAOKE_MODEL_ID,
-    REQUIRED_AUDIO_MODEL_IDS, audio_model_dir, audio_processing_root,
+    AudioParameterMap, AudioParameterSpec, AudioParameterValue, DEFAULT_BGM_MODEL_ID,
+    DEFAULT_LEGACY_KARAOKE_MODEL_ID, REQUIRED_AUDIO_MODEL_IDS, audio_model_dir,
+    audio_processing_root,
 };
 pub use audio_processing::{
     AudioInputReference, AudioOutputBinding, AudioProcessingPlanSnapshot, AudioProcessingSettings,
-    AudioProcessingStep, AudioRuntimeRequest, ResolvedAudioParameter, get_audio_model_status,
-    install_audio_model, list_audio_models, list_audio_models_from_python,
+    AudioProcessingStep, AudioRuntimeRequest, ResolvedAudioParameter, cleanup_model_enabled,
+    get_audio_model_status, install_audio_model, list_audio_models, list_audio_models_from_python,
     preview_effective_audio_params, reinstall_audio_model, remove_audio_model,
     validate_audio_processing_profile,
 };

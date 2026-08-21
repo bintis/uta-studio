@@ -8,7 +8,7 @@ import soundfile as sf
 import torch
 
 from gpu import gpu_model
-from whisper_compat import progress
+from whisper_compat import progress_node
 
 def _ensure_wav(audio_path: str, work_dir: str) -> str:
     """Convert input audio to WAV so plain `soundfile` can decode it.
@@ -66,7 +66,8 @@ def separate_stems(
     actual_device = torch.device(device if device != "mps" else "cpu")
 
     with gpu_model("demucs") as held:
-        progress(
+        progress_node(
+            "stems.multistem", "node_started",
             5,
             "Loading Demucs model...",
             requested_device=device,
@@ -79,7 +80,10 @@ def separate_stems(
         held.append(model)
         model.to(actual_device)
 
-        progress(10, "Loading audio file...")
+        progress_node(
+            "stems.multistem", "node_progress", 10, "Loading audio file...",
+            node_progress_pct=10,
+        )
         load_path = _ensure_wav(audio_path, work_dir)
         wav, sr = _load_wav_as_tensor(load_path)
         wav = wav.to(actual_device)
@@ -88,7 +92,11 @@ def separate_stems(
         wav_centered = wav - ref.mean()
         wav_scaled = wav_centered / ref.abs().max().clamp(min=1e-8)
 
-        progress(15, f"Separating vocals (shifts={shifts}, overlap={overlap:.2f})...")
+        progress_node(
+            "stems.multistem", "node_progress", 15,
+            f"Separating vocals (shifts={shifts}, overlap={overlap:.2f})...",
+            node_progress_pct=20,
+        )
         sources = apply_model(
             model, wav_scaled[None], device=actual_device, shifts=shifts, overlap=overlap,
         )[0]
@@ -99,7 +107,10 @@ def separate_stems(
         vocals = sources[vocals_idx] * ref.abs().max() + ref.mean()
         instrumental = wav - vocals
 
-        progress(45, "Saving separated stems...")
+        progress_node(
+            "stems.multistem", "node_progress", 45, "Saving separated stems...",
+            node_progress_pct=90,
+        )
         vocals_cpu = vocals.detach().cpu()
         instrumental_cpu = instrumental.detach().cpu()
 
@@ -109,7 +120,10 @@ def separate_stems(
         _save_wav_pcm16(instrumental_cpu, instrumental_path, sr)
         del vocals_cpu, instrumental_cpu
 
-    progress(50, "Stem separation complete")
+    progress_node(
+        "stems.multistem", "node_progress", 50, "Stem separation compute complete",
+        node_progress_pct=98,
+    )
     return vocals_path, instrumental_path
 
 

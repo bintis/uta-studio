@@ -5,6 +5,192 @@
 // `super::X` only ever looks one level up.
 use crate::studio::*;
 
+mod node_context_action_tests {
+    use super::{
+        AnalysisCommand, UiCommand, Vec2, build_analysis_node_context_menu,
+        clamp_analysis_node_context_position,
+    };
+
+    fn menu(node_id: &str) -> super::AnalysisNodeContextMenu {
+        build_analysis_node_context_menu(
+            node_id,
+            "separation",
+            node_id,
+            "fixture-song",
+            Some(42),
+            false,
+            Vec2::ZERO,
+        )
+    }
+
+    #[test]
+    fn bgm_and_vocal_children_truthfully_advertise_the_shared_stem_executor() {
+        for node_id in [
+            "stems.instrumental",
+            "instrumental.denoise",
+            "instrumental.dereverb",
+            "stems.vocals",
+            "vocals.denoise",
+            "vocals.dereverb",
+        ] {
+            let context = menu(node_id);
+            let retry = context.retry_action.expect("stem rerun action");
+            assert_eq!(retry.label, "Re-run configured stem pipeline");
+            assert!(matches!(
+                retry.action.0,
+                UiCommand::Analysis(AnalysisCommand::RunAnalysisNodeOnly(ref hash, ref id))
+                    if hash == "fixture-song" && id == node_id
+            ));
+            assert_eq!(
+                context
+                    .run_downstream_action
+                    .as_ref()
+                    .map(|action| action.label),
+                Some("Run stem route and downstream")
+            );
+            assert!(context.open_configure_dialog_action.is_none());
+            assert!(context.bypass_node_action.is_none());
+            assert!(context.view_logs_action.is_some());
+        }
+    }
+
+    #[test]
+    fn specialized_nodes_use_their_real_specialized_commands() {
+        let pitch = menu("pitch.extract").retry_action.unwrap();
+        assert_eq!(pitch.label, "Rebuild pitch evidence");
+        assert!(matches!(
+            pitch.action.0,
+            UiCommand::Analysis(AnalysisCommand::ReanalyzePitch(ref hash))
+                if hash == "fixture-song"
+        ));
+
+        let transcribe = menu("lyrics.transcribe");
+        assert_eq!(
+            transcribe.retry_action.as_ref().map(|action| action.label),
+            Some("Retranscribe and align")
+        );
+        assert!(transcribe.force_transcribe_action.is_some());
+        assert!(transcribe.open_configure_dialog_action.is_some());
+        assert!(transcribe.refetch_align_action.is_none());
+
+        let align = menu("lyrics.align");
+        assert_eq!(
+            align.retry_action.as_ref().map(|action| action.label),
+            Some("Realign existing lyrics")
+        );
+        assert!(align.refetch_align_action.is_some());
+        assert!(align.open_configure_dialog_action.is_some());
+        assert!(align.force_transcribe_action.is_none());
+    }
+
+    #[test]
+    fn preflight_and_preprocess_only_offer_supported_route_actions() {
+        let preflight = menu("preflight");
+        assert!(preflight.retry_action.is_none());
+        assert_eq!(
+            preflight
+                .run_downstream_action
+                .as_ref()
+                .map(|action| action.label),
+            Some("Run full analysis pipeline")
+        );
+
+        let preprocess = menu("lyrics.preprocess");
+        assert!(preprocess.retry_action.is_none());
+        assert_eq!(
+            preprocess
+                .run_downstream_action
+                .as_ref()
+                .map(|action| action.label),
+            Some("Run preprocessing and lyrics route")
+        );
+        assert!(preprocess.capture_intermediate_action.is_some());
+    }
+
+    #[test]
+    fn node_menu_is_kept_inside_every_viewport_edge() {
+        let clamped = clamp_analysis_node_context_position(
+            Vec2::new(1915.0, 1075.0),
+            Vec2::new(1920.0, 1080.0),
+        );
+        assert!(clamped.x + 278.0 <= 1912.0);
+        assert!(clamped.y + 620.0 <= 1072.0);
+        assert_eq!(
+            clamp_analysis_node_context_position(Vec2::new(-20.0, -40.0), Vec2::new(800.0, 500.0),),
+            Vec2::splat(8.0)
+        );
+    }
+
+    #[test]
+    fn every_compute_node_has_only_actions_its_executor_can_honor() {
+        let retry_nodes = [
+            "music.analysis",
+            "music.key",
+            "music.rhythm",
+            "music.descriptors",
+            "stems.separate",
+            "stems.vocals",
+            "vocals.denoise",
+            "vocals.dereverb",
+            "stems.instrumental",
+            "instrumental.denoise",
+            "instrumental.dereverb",
+            "stems.karaoke",
+            "stems.multistem",
+            "stems.bind_analysis_outputs",
+            "pitch.extract",
+            "lyrics.transcribe",
+            "lyrics.align",
+            "chart.build_candidate",
+        ];
+        let downstream_nodes = [
+            "preflight",
+            "stems.separate",
+            "stems.vocals",
+            "vocals.denoise",
+            "vocals.dereverb",
+            "stems.instrumental",
+            "instrumental.denoise",
+            "instrumental.dereverb",
+            "stems.karaoke",
+            "stems.multistem",
+            "stems.bind_analysis_outputs",
+            "lyrics.preprocess",
+        ];
+        for spec in app_core::baseline_graph_spec().nodes {
+            let id = spec.id.as_str();
+            let context = menu(id);
+            assert_eq!(
+                context.retry_action.is_some(),
+                retry_nodes.contains(&id),
+                "{id}"
+            );
+            assert_eq!(
+                context.run_downstream_action.is_some(),
+                downstream_nodes.contains(&id),
+                "{id}"
+            );
+            assert_eq!(
+                context.disable_node_action.is_some(),
+                app_core::node_can_be_disabled_for_run(id),
+                "{id}"
+            );
+            assert_eq!(
+                context.open_configure_dialog_action.is_some(),
+                app_core::node_can_be_configured_for_run(id),
+                "{id}"
+            );
+            assert_eq!(
+                context.bypass_node_action.is_some(),
+                id == "stems.separate",
+                "{id}"
+            );
+            assert!(context.compare_node_action.is_some(), "{id}");
+            assert!(context.view_logs_action.is_some(), "{id}");
+        }
+    }
+}
+
 mod node_stage_bridge_tests {
     use super::{analysis_node_stage_index, analysis_stage_index, resolve_live_stage_index};
 
@@ -271,7 +457,7 @@ mod graph_view_polish_tests {
     }
 
     #[test]
-    fn selected_stage_parameter_covers_the_three_profile_controlled_nodes() {
+    fn selected_stage_parameter_covers_the_remaining_profile_controlled_nodes() {
         let profile = AnalysisProfileSnapshot {
             separator: "demucs".to_string(),
             alignment_backend: "whisperx".to_string(),
@@ -279,10 +465,6 @@ mod graph_view_polish_tests {
             requested_device: "auto".to_string(),
             language_override: None,
         };
-        assert_eq!(
-            selected_stage_parameter("stems.separate", &profile),
-            Some(("SEPARATOR", "demucs".to_string()))
-        );
         assert_eq!(
             selected_stage_parameter("lyrics.transcribe", &profile),
             Some(("ASR ENGINE", "parakeet".to_string()))
@@ -296,7 +478,12 @@ mod graph_view_polish_tests {
     #[test]
     fn selected_stage_parameter_is_none_for_nodes_without_a_profile_knob() {
         let profile = AnalysisProfileSnapshot::default();
-        for node in ["preflight", "music.analysis", "chart.build_candidate"] {
+        for node in [
+            "preflight",
+            "music.analysis",
+            "stems.separate",
+            "chart.build_candidate",
+        ] {
             assert_eq!(selected_stage_parameter(node, &profile), None);
         }
     }
@@ -403,11 +590,7 @@ mod node_config_field_tests {
     }
 
     #[test]
-    fn only_the_three_profile_controlled_nodes_map_to_a_field() {
-        assert_eq!(
-            node_config_profile_field("stems.separate"),
-            Some(ProfileField::Separator)
-        );
+    fn only_lyrics_model_nodes_map_to_a_legacy_profile_field() {
         assert_eq!(
             node_config_profile_field("lyrics.transcribe"),
             Some(ProfileField::AsrEngine)
@@ -417,6 +600,7 @@ mod node_config_field_tests {
             Some(ProfileField::AlignmentBackend)
         );
         for id in [
+            "stems.separate",
             "pitch.extract",
             "lyrics.preprocess",
             "lyrics.import_timed",
@@ -496,6 +680,7 @@ mod plan_preview_tests {
             nodes,
             target_nodes: BTreeSet::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
+            audio_processing: None,
             warnings: Vec::new(),
         }
     }
@@ -605,80 +790,10 @@ mod plan_preview_tests {
             );
         }
     }
-}
-
-#[cfg(test)]
-mod app_log_viewer_tests {
-    //! §7.5 "View logs": `resolve_app_log_source` picks between a real
-    //! recorded-attempt window and an honestly-labeled fallback, fixture-
-    //! based, no DB.
-    use super::{AppLogSource, resolve_app_log_source};
-    use app_core::NodeAttempt;
-
-    fn fixture_attempt(started_at_ms: Option<i64>, finished_at_ms: Option<i64>) -> NodeAttempt {
-        NodeAttempt {
-            id: 1,
-            run_id: 1,
-            file_hash: "songA".to_string(),
-            node_id: "pitch.extract".to_string(),
-            status: "completed".to_string(),
-            progress: 100,
-            operation: "extract".to_string(),
-            implementation: "rmvpe".to_string(),
-            model: "rmvpe".to_string(),
-            requested_device: "cpu".to_string(),
-            actual_device: "cpu".to_string(),
-            fallback_from: None,
-            fallback_reason: None,
-            backend_fallback_from: None,
-            backend_fallback_reason: None,
-            started_at_ms,
-            finished_at_ms,
-        }
-    }
 
     #[test]
-    fn no_attempt_falls_back_to_recent() {
-        assert!(matches!(
-            resolve_app_log_source(None, 1_000),
-            AppLogSource::RecentFallback
-        ));
-    }
-
-    #[test]
-    fn a_completed_attempt_windows_from_start_to_finish() {
-        let attempt = fixture_attempt(Some(100), Some(200));
-        match resolve_app_log_source(Some(&attempt), 9_999) {
-            AppLogSource::Windowed { start_ms, end_ms } => {
-                assert_eq!(start_ms, 100);
-                assert_eq!(end_ms, 200);
-            }
-            AppLogSource::RecentFallback => panic!("expected a windowed source"),
-        }
-    }
-
-    #[test]
-    fn a_still_running_attempt_windows_from_start_to_now() {
-        let attempt = fixture_attempt(Some(100), None);
-        match resolve_app_log_source(Some(&attempt), 9_999) {
-            AppLogSource::Windowed { start_ms, end_ms } => {
-                assert_eq!(start_ms, 100);
-                assert_eq!(end_ms, 9_999);
-            }
-            AppLogSource::RecentFallback => panic!("expected a windowed source"),
-        }
-    }
-
-    #[test]
-    fn an_attempt_with_no_started_at_falls_back_to_recent() {
-        // A real but incomplete attempt row (e.g. from before Phase 7's
-        // timestamp columns existed) shouldn't fabricate a window from
-        // nothing.
-        let attempt = fixture_attempt(None, None);
-        assert!(matches!(
-            resolve_app_log_source(Some(&attempt), 1_000),
-            AppLogSource::RecentFallback
-        ));
+    fn preprocessing_is_not_exposed_as_a_plan_preview_choice() {
+        assert!(!PLAN_PREVIEW_DISABLEABLE_NODES.contains(&"lyrics.preprocess"));
     }
 }
 
@@ -701,6 +816,7 @@ mod failed_node_overlay_tests {
             nodes,
             target_nodes: Default::default(),
             profile_snapshot: Default::default(),
+            audio_processing: None,
             warnings: Vec::new(),
         }
     }
@@ -922,6 +1038,9 @@ mod node_duration_copy_tests {
             input_revision_ids: Vec::new(),
             started_at_ms,
             finished_at_ms,
+            event_at_ms: None,
+            work_units_completed: None,
+            work_units_total: None,
         }
     }
 
@@ -1046,6 +1165,7 @@ mod stale_candidate_overlay_tests {
             nodes,
             target_nodes: Default::default(),
             profile_snapshot: Default::default(),
+            audio_processing: None,
             warnings: Vec::new(),
         }
     }
@@ -1200,7 +1320,7 @@ mod compound_toggle_tests {
 
 #[cfg(test)]
 mod node_id_wire_protocol_tests {
-    use super::{find_matching_route, selected_progress_and_status};
+    use super::{analysis_eyebrow_label, find_matching_route, selected_progress_and_status};
     use crate::studio::GraphNodeState;
 
     fn route(
@@ -1227,6 +1347,9 @@ mod node_id_wire_protocol_tests {
             input_revision_ids: Vec::new(),
             started_at_ms: None,
             finished_at_ms: None,
+            event_at_ms: None,
+            work_units_completed: None,
+            work_units_total: None,
         }
     }
 
@@ -1289,6 +1412,16 @@ mod node_id_wire_protocol_tests {
     }
 
     #[test]
+    fn structured_sibling_in_the_same_bucket_never_stands_in_for_the_selected_node() {
+        let routes = vec![route(
+            Some("stems.bind_analysis_outputs"),
+            "separation",
+            100,
+        )];
+        assert!(find_matching_route(&routes, "stems.vocals", "separation").is_none());
+    }
+
+    #[test]
     fn selected_progress_and_status_forces_100_when_render_state_is_complete() {
         // The confirmed real bug: stage_routes can be frozen at a stale
         // non-100 value even after the node is genuinely done.
@@ -1299,18 +1432,38 @@ mod node_id_wire_protocol_tests {
     }
 
     #[test]
-    fn selected_progress_and_status_leaves_non_complete_states_untouched() {
-        for state in [
-            GraphNodeState::Running,
-            GraphNodeState::Waiting,
-            GraphNodeState::Blocked,
-        ] {
+    fn selected_progress_and_status_uses_the_canvas_state_for_every_node_state() {
+        let (progress, status) =
+            selected_progress_and_status(Some(GraphNodeState::Running), 42, "WAITING");
+        assert_eq!((progress, status), (42, "RUNNING"));
+
+        for state in [GraphNodeState::Waiting, GraphNodeState::Blocked] {
             let (progress, status) = selected_progress_and_status(Some(state), 42, "RUNNING");
-            assert_eq!(progress, 42);
-            assert_eq!(status, "RUNNING");
+            assert_eq!((progress, status), (0, "WAITING"));
         }
+
+        let (progress, status) =
+            selected_progress_and_status(Some(GraphNodeState::Failed), 42, "RUNNING");
+        assert_eq!((progress, status), (42, "FAILED"));
+
         let (progress, status) = selected_progress_and_status(None, 0, "WAITING");
         assert_eq!(progress, 0);
         assert_eq!(status, "WAITING");
+    }
+
+    #[test]
+    fn selected_history_eyebrow_never_borrows_another_runs_active_state() {
+        assert_eq!(
+            analysis_eyebrow_label(true, Some("completed"), Some("failed")),
+            "ANALYSIS COMPLETE"
+        );
+        assert_eq!(
+            analysis_eyebrow_label(true, Some("failed"), Some("completed")),
+            "ANALYSIS HISTORY"
+        );
+        assert_eq!(
+            analysis_eyebrow_label(true, None, Some("completed")),
+            "IN PROGRESS"
+        );
     }
 }

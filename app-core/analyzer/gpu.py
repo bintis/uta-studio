@@ -27,21 +27,41 @@ def _xpu_available() -> bool:
         return False
 
 
+def _xpu_initialized() -> bool:
+    """Check existing state without creating a persistent Level Zero context."""
+    try:
+        xpu = getattr(torch, "xpu", None)
+        is_initialized = getattr(xpu, "is_initialized", None)
+        return bool(xpu is not None and callable(is_initialized) and is_initialized())
+    except Exception:
+        return False
+
+
 def vram_snapshot() -> dict:
-    """Return current/peak VRAM usage in MiB, or empty dict on non-CUDA."""
-    if not _cuda_available():
+    """Return current/peak accelerator memory usage in MiB."""
+    if _cuda_available():
+        memory = torch.cuda
+        backend = "cuda"
+    elif _xpu_initialized():
+        memory = torch.xpu
+        backend = "xpu"
+    else:
         return {}
     try:
-        torch.cuda.synchronize()
+        memory.synchronize()
     except Exception:
         pass
     mib = 1024 * 1024
-    return {
-        "allocated": torch.cuda.memory_allocated() // mib,
-        "reserved": torch.cuda.memory_reserved() // mib,
-        "peak_alloc": torch.cuda.max_memory_allocated() // mib,
-        "peak_reserved": torch.cuda.max_memory_reserved() // mib,
-    }
+    try:
+        return {
+            "backend": backend,
+            "allocated": memory.memory_allocated() // mib,
+            "reserved": memory.memory_reserved() // mib,
+            "peak_alloc": memory.max_memory_allocated() // mib,
+            "peak_reserved": memory.max_memory_reserved() // mib,
+        }
+    except Exception:
+        return {}
 
 
 def log_vram(tag: str) -> None:
@@ -49,7 +69,7 @@ def log_vram(tag: str) -> None:
     if not snap:
         return
     print(
-        f"[uta-studio:LOG] [vram:{tag}] "
+        f"[uta-studio:LOG] [vram:{tag}] backend={snap['backend']} "
         f"alloc={snap['allocated']}MiB reserved={snap['reserved']}MiB "
         f"peak={snap['peak_alloc']}MiB peak_reserved={snap['peak_reserved']}MiB",
         flush=True,
@@ -57,12 +77,16 @@ def log_vram(tag: str) -> None:
 
 
 def reset_peak_stats() -> None:
-    if not _cuda_available():
-        return
-    try:
-        torch.cuda.reset_peak_memory_stats()
-    except Exception:
-        pass
+    for available, memory in (
+        (_cuda_available, torch.cuda),
+        (_xpu_initialized, getattr(torch, "xpu", None)),
+    ):
+        if memory is None or not available():
+            continue
+        try:
+            memory.reset_peak_memory_stats()
+        except Exception:
+            pass
 
 
 def hard_free_gpu(tag: str = "") -> None:
@@ -82,7 +106,7 @@ def hard_free_gpu(tag: str = "") -> None:
             torch.cuda.ipc_collect()
         except Exception:
             pass
-    if _xpu_available():
+    if _xpu_initialized():
         try:
             torch.xpu.synchronize()
             torch.xpu.empty_cache()
@@ -92,15 +116,28 @@ def hard_free_gpu(tag: str = "") -> None:
         log_vram(f"after_free:{tag}")
 
 
-def move_to_cpu(model) -> None:
+def move_to_cpu(model, _seen: set[int] | None = None) -> None:
     """Best-effort eviction of model weights from VRAM to host RAM."""
     if model is None:
         return
-    for attr in ("model", "model_run_obj", "separator"):
+    if _seen is None:
+        _seen = set()
+    identity = id(model)
+    if identity in _seen:
+        return
+    _seen.add(identity)
+    for attr in (
+        "model",
+        "model_run",
+        "model_run_obj",
+        "separator",
+        "_separator",
+        "model_instance",
+    ):
         inner = getattr(model, attr, None)
         if inner is not None and inner is not model:
             try:
-                move_to_cpu(inner)
+                move_to_cpu(inner, _seen)
             except Exception:
                 pass
     try:

@@ -59,6 +59,8 @@ pub enum ArtifactKind {
     DereverbedVocalStem,
     AnalysisVocalStem,
     HighQualityInstrumentalStem,
+    DenoisedInstrumentalStem,
+    DereverbedInstrumentalStem,
     KaraokeInstrumentalStem,
     DrumStem,
     BassStem,
@@ -398,6 +400,8 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
                 "vocals.denoise",
                 "vocals.dereverb",
                 "stems.instrumental",
+                "instrumental.denoise",
+                "instrumental.dereverb",
                 "stems.karaoke",
                 "stems.multistem",
                 "stems.bind_analysis_outputs",
@@ -407,7 +411,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
             "stems.vocals",
             "Vocal Extraction",
             &[SourceMedia],
-            &[RawVocalStem, InstrumentalStem],
+            &[RawVocalStem],
             Optional,
             Generalized,
             "1",
@@ -444,6 +448,26 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
             &[],
         ),
         spec(
+            "instrumental.denoise",
+            "BGM Denoise",
+            &[HighQualityInstrumentalStem],
+            &[DenoisedInstrumentalStem],
+            Optional,
+            Generalized,
+            "1",
+            &[],
+        ),
+        spec(
+            "instrumental.dereverb",
+            "BGM Dereverb",
+            &[HighQualityInstrumentalStem, DenoisedInstrumentalStem],
+            &[DereverbedInstrumentalStem],
+            Optional,
+            Generalized,
+            "1",
+            &[],
+        ),
+        spec(
             "stems.karaoke",
             "Karaoke Accompaniment",
             &[SourceMedia],
@@ -473,6 +497,8 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
                 DenoisedVocalStem,
                 DereverbedVocalStem,
                 HighQualityInstrumentalStem,
+                DenoisedInstrumentalStem,
+                DereverbedInstrumentalStem,
             ],
             &[AnalysisVocalStem, VocalStem, InstrumentalStem],
             AlwaysRequired,
@@ -533,7 +559,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         spec(
             "chart.build_candidate",
             "Build Candidate Chart",
-            &[PitchNoteCandidates, TimedTranscript],
+            &[PitchNoteCandidates, TimedTranscript, InstrumentalStem],
             &[CandidateChart],
             AlwaysRequired,
             Generalized,
@@ -558,7 +584,12 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         edge("vocals.denoise", "vocals.dereverb"),
         edge("vocals.denoise", "stems.bind_analysis_outputs"),
         edge("vocals.dereverb", "stems.bind_analysis_outputs"),
+        edge("stems.instrumental", "instrumental.denoise"),
+        edge("stems.instrumental", "instrumental.dereverb"),
         edge("stems.instrumental", "stems.bind_analysis_outputs"),
+        edge("instrumental.denoise", "instrumental.dereverb"),
+        edge("instrumental.denoise", "stems.bind_analysis_outputs"),
+        edge("instrumental.dereverb", "stems.bind_analysis_outputs"),
         edge("stems.bind_analysis_outputs", "pitch.extract"),
         edge("stems.bind_analysis_outputs", "lyrics.preprocess"),
         edge("lyrics.preprocess", "lyrics.transcribe"),
@@ -568,6 +599,7 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         edge("pitch.extract", "chart.build_candidate"),
         edge("lyrics.align", "chart.build_candidate"),
         edge("lyrics.import_timed", "chart.build_candidate"),
+        edge("stems.bind_analysis_outputs", "chart.build_candidate"),
         // Parakeet's ASR step emits word timing directly (no separate
         // alignment pass) -- docs/analysis-dag-redesign.md §5 dynamic
         // branch rules. lyrics.align stays the edge used by Known
@@ -605,6 +637,8 @@ pub fn optional_stem_node_ids() -> BTreeSet<AnalysisNodeId> {
         "vocals.denoise",
         "vocals.dereverb",
         "stems.instrumental",
+        "instrumental.denoise",
+        "instrumental.dereverb",
         "stems.karaoke",
         "stems.multistem",
     ]
@@ -614,12 +648,17 @@ pub fn optional_stem_node_ids() -> BTreeSet<AnalysisNodeId> {
 }
 
 /// Default chart path when a request does not carry a settings snapshot:
-/// dedicated vocal extract plus bind, no cleanup or side paths.
+/// independent dedicated vocal and BGM extraction plus bind, with no
+/// cleanup or side paths.
 pub fn default_active_stem_nodes() -> BTreeSet<AnalysisNodeId> {
-    ["stems.vocals", "stems.bind_analysis_outputs"]
-        .into_iter()
-        .map(AnalysisNodeId::new)
-        .collect()
+    [
+        "stems.vocals",
+        "stems.instrumental",
+        "stems.bind_analysis_outputs",
+    ]
+    .into_iter()
+    .map(AnalysisNodeId::new)
+    .collect()
 }
 
 /// Compound shell plus every stem child. Disabling or bypassing
@@ -642,15 +681,28 @@ pub fn active_stem_nodes_from_settings(
         return nodes;
     }
     nodes.insert(AnalysisNodeId::new("stems.vocals"));
-    for model_id in &settings.vocal_cleanup_chain {
+    for model_id in settings
+        .vocal_cleanup_chain
+        .iter()
+        .filter(|model_id| crate::audio_processing::cleanup_model_enabled(model_id))
+    {
         if model_id.contains("denoise") {
             nodes.insert(AnalysisNodeId::new("vocals.denoise"));
         } else {
             nodes.insert(AnalysisNodeId::new("vocals.dereverb"));
         }
     }
-    if settings.accompaniment_model_id.is_some() {
-        nodes.insert(AnalysisNodeId::new("stems.instrumental"));
+    nodes.insert(AnalysisNodeId::new("stems.instrumental"));
+    for model_id in settings
+        .accompaniment_cleanup_chain
+        .iter()
+        .filter(|model_id| crate::audio_processing::cleanup_model_enabled(model_id))
+    {
+        if model_id.contains("denoise") {
+            nodes.insert(AnalysisNodeId::new("instrumental.denoise"));
+        } else {
+            nodes.insert(AnalysisNodeId::new("instrumental.dereverb"));
+        }
     }
     if settings.karaoke_model_id.is_some() {
         nodes.insert(AnalysisNodeId::new("stems.karaoke"));
@@ -659,6 +711,23 @@ pub fn active_stem_nodes_from_settings(
         nodes.insert(AnalysisNodeId::new("stems.multistem"));
     }
     nodes
+}
+
+/// Stable bridge between catalog execution step ids and DAG node ids.
+/// Unknown future steps stay represented by the compound separation shell
+/// until the graph gains a dedicated node for them.
+pub fn analysis_node_for_audio_step(step_id: &str) -> AnalysisNodeId {
+    AnalysisNodeId::new(match step_id {
+        "extract_vocals" => "stems.vocals",
+        "denoise_vocals" => "vocals.denoise",
+        "dereverb_vocals" => "vocals.dereverb",
+        "extract_accompaniment" => "stems.instrumental",
+        "denoise_accompaniment" => "instrumental.denoise",
+        "dereverb_accompaniment" => "instrumental.dereverb",
+        "extract_karaoke" => "stems.karaoke",
+        "separate_6s" | "legacy_htdemucs" => "stems.multistem",
+        _ => "stems.separate",
+    })
 }
 
 #[cfg(test)]

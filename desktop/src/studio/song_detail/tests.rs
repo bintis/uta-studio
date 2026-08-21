@@ -16,8 +16,10 @@ mod last_successful_run_tests {
             started_at_ms: finished_at_ms - 1000,
             finished_at_ms,
             error_message: None,
+            log_path: None,
             snapshot: AnalysisProgressSnapshot {
                 stage: "complete".to_string(),
+                overall_progress: 100,
                 stage_progress: 100,
                 operation: String::new(),
                 detail: String::new(),
@@ -33,6 +35,7 @@ mod last_successful_run_tests {
                 node_id: None,
                 node_event: None,
                 artifact_reused_reason: None,
+                analysis_log_path: None,
             },
         }
     }
@@ -273,8 +276,10 @@ mod view_song_analysis_tests {
             started_at_ms: id * 100,
             finished_at_ms: id * 100 + 50,
             error_message: None,
+            log_path: None,
             snapshot: AnalysisProgressSnapshot {
                 stage: "complete".to_string(),
+                overall_progress: 100,
                 stage_progress: 100,
                 operation: String::new(),
                 detail: String::new(),
@@ -290,6 +295,7 @@ mod view_song_analysis_tests {
                 node_id: None,
                 node_event: None,
                 artifact_reused_reason: None,
+                analysis_log_path: None,
             },
         }
     }

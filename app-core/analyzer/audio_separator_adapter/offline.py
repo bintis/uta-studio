@@ -157,6 +157,7 @@ class OfflineSeparator:
         mdxc_params: dict[str, Any] | None = None,
         torch_backend: str = "torch_cpu",
         log_level: int = logging.WARNING,
+        process_isolated: bool = False,
     ) -> None:
         from audio_separator.separator import Separator
 
@@ -189,6 +190,7 @@ class OfflineSeparator:
         )
         apply_torch_device(self._separator, torch_backend)
         self.torch_device_override = self._separator.torch_device
+        self._process_isolated = process_isolated
 
     def load_model_from_spec(
         self,
@@ -216,10 +218,19 @@ class OfflineSeparator:
         audio_file_path: str,
         custom_output_names: Mapping[str, str] | None = None,
     ) -> list[str]:
-        return self._separator.separate(
-            audio_file_path,
-            custom_output_names=dict(custom_output_names) if custom_output_names else None,
-        )
+        try:
+            return self._separator.separate(
+                audio_file_path,
+                custom_output_names=dict(custom_output_names) if custom_output_names else None,
+            )
+        finally:
+            if not self.__dict__.get("_process_isolated", False):
+                # audio-separator 0.44.5 clears CUDA and MPS caches but has no
+                # XPU branch. Retire queued in-process inference commands before
+                # this model is handed back to the plan runner.
+                from gpu import hard_free_gpu
+
+                hard_free_gpu("audio-separator-inference")
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._separator, name)

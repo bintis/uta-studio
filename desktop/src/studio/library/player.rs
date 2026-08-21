@@ -44,7 +44,7 @@ pub(crate) fn spawn_library_player(
                 == Some(song.file_hash.as_str())
                 && session.library_playback.status.loaded;
             let position = if current {
-                library_visible_position(&session.library_playback)
+                library_visible_position(session.library_playback)
             } else {
                 0.0
             };

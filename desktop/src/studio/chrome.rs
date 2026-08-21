@@ -75,16 +75,7 @@ pub(crate) fn spawn_sidebar(
                 });
 
             spawn_section_label(sidebar, font.clone(), theme, "BROWSE");
-            let analysis_count = session
-                .analysis_tasks
-                .iter()
-                .filter(|task| {
-                    matches!(
-                        task.status,
-                        app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
-                    )
-                })
-                .count();
+            let analysis_count = active_analysis_task_count(session.analysis_tasks);
             for (view, icon, label, count) in [
                 (
                     LibraryView::All,
@@ -419,7 +410,10 @@ pub(crate) fn spawn_workspace(
             spawn_top_bar(workspace, font.clone(), icons.clone(), session, theme);
             spawn_analysis_boundary_progress(workspace, session, theme);
             match session.route {
-                StudioRoute::Library if session.config.library_paths().is_empty() => {
+                StudioRoute::Library
+                    if session.config.library_paths().is_empty()
+                        && session.library_view != LibraryView::Queue =>
+                {
                     spawn_empty_library(workspace, font.clone(), session.scanning, theme);
                 }
                 StudioRoute::Library
@@ -483,19 +477,19 @@ pub(crate) fn spawn_workspace(
         });
 }
 
-fn analysis_workspace_open(session: &StudioSessionView<'_>) -> bool {
-    (session.route == StudioRoute::Library && session.library_view == LibraryView::Queue)
-        || session.route == StudioRoute::AnalysisInspect
+fn analysis_boundary_progress_open(session: &StudioSessionView<'_>) -> bool {
+    session.route == StudioRoute::AnalysisInspect
 }
 
-/// Hairline progress rail that replaces the top-bar / DAG divider on the
-/// analysis pages. The page title no longer carries a second progress bar.
+/// Inspect view has no queue title divider of its own, so it retains the
+/// workspace-boundary progress rail. The main analysis page paints progress on
+/// the title divider instead.
 fn spawn_analysis_boundary_progress(
     parent: &mut ChildSpawnerCommands,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
-    if !analysis_workspace_open(session) {
+    if !analysis_boundary_progress_open(session) {
         return;
     }
     let progress = current_analysis_header(session)
@@ -505,7 +499,7 @@ fn spawn_analysis_boundary_progress(
         .spawn((
             Node {
                 width: percent(100),
-                height: px(3),
+                height: px(6),
                 flex_shrink: 0.0,
                 overflow: Overflow::clip(),
                 ..default()
@@ -513,16 +507,15 @@ fn spawn_analysis_boundary_progress(
             BackgroundColor(theme.border.with_alpha(0.55)),
         ))
         .with_children(|rail| {
-            if progress > 0 {
-                rail.spawn((
-                    Node {
-                        width: percent(progress as f32),
-                        height: percent(100),
-                        ..default()
-                    },
-                    BackgroundColor(theme.primary),
-                ));
-            }
+            rail.spawn((
+                Node {
+                    width: percent(progress as f32),
+                    min_width: if progress > 0 { px(2) } else { px(0) },
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(theme.primary),
+            ));
         });
 }
 
@@ -545,7 +538,7 @@ pub(crate) fn spawn_top_bar(
                     right: px(12),
                     ..default()
                 },
-                border: if analysis_workspace_open(session) {
+                border: if analysis_boundary_progress_open(session) {
                     UiRect::ZERO
                 } else {
                     UiRect::bottom(px(1))
@@ -856,6 +849,7 @@ pub(crate) struct CloseRequestState<'w> {
     jobs: Res<'w, AsyncJobs>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_window_close_requests(
     mut requests: MessageReader<bevy::window::WindowCloseRequested>,
     mut commands: Commands,

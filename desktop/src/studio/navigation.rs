@@ -45,7 +45,7 @@ pub(crate) fn action_is_navigation_target(action: &UiAction) -> bool {
             | UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext)
             | UiCommand::Analysis(AnalysisCommand::DismissAnalysisExportContext)
             | UiCommand::Analysis(AnalysisCommand::ClosePlanPreview)
-            | UiCommand::Analysis(AnalysisCommand::CloseAppLogViewer)
+            | UiCommand::Analysis(AnalysisCommand::CloseAnalysisLogViewer)
     )
 }
 

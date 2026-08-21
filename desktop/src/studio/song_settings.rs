@@ -76,7 +76,9 @@ pub(crate) fn spawn_song_settings_panel(
             backdrop
                 .spawn((
                     Node {
-                        width: px(440),
+                        width: percent(92),
+                        max_width: px(520),
+                        min_width: px(0),
                         flex_direction: FlexDirection::Column,
                         row_gap: px(10),
                         padding: UiRect::all(px(20)),
@@ -88,14 +90,14 @@ pub(crate) fn spawn_song_settings_panel(
                     BorderColor::all(theme.border),
                 ))
                 .with_children(|dialog| {
-                    spawn_text(
+                    spawn_bounded_wrapped_text(
                         dialog,
                         font.clone(),
                         format!("Song settings · {}", panel.title),
                         15.0,
                         theme.foreground,
                     );
-                    spawn_text(
+                    spawn_bounded_wrapped_text(
                         dialog,
                         font.clone(),
                         panel.artist.clone(),
@@ -128,7 +130,7 @@ pub(crate) fn spawn_song_settings_panel(
                         &panel.initial_bpm,
                     );
 
-                    spawn_text(
+                    spawn_bounded_wrapped_text(
                         dialog,
                         font.clone(),
                         format!(
@@ -141,8 +143,10 @@ pub(crate) fn spawn_song_settings_panel(
 
                     dialog
                         .spawn(Node {
-                            align_items: AlignItems::Center,
-                            column_gap: px(8),
+                            width: percent(100),
+                            min_width: px(0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(3),
                             ..default()
                         })
                         .with_children(|row| {
@@ -160,7 +164,13 @@ pub(crate) fn spawn_song_settings_panel(
                                 .and_then(|name| name.to_str())
                                 .map(str::to_string)
                                 .unwrap_or_else(|| "None set".to_string());
-                            spawn_text(row, font.clone(), label, 9.0, theme.foreground);
+                            spawn_bounded_wrapped_text(
+                                row,
+                                font.clone(),
+                                label,
+                                9.0,
+                                theme.foreground,
+                            );
                         });
                     dialog
                         .spawn(Node {
@@ -222,7 +232,13 @@ pub(crate) fn spawn_song_settings_panel(
                                 descriptors.loudness_db,
                             ));
                         }
-                        spawn_wrapped_text(dialog, font.clone(), summary, 9.0, theme.foreground);
+                        spawn_bounded_wrapped_text(
+                            dialog,
+                            font.clone(),
+                            summary,
+                            9.0,
+                            theme.foreground,
+                        );
                     }
 
                     dialog
@@ -278,6 +294,7 @@ fn spawn_song_settings_field(
             padding: UiRect::horizontal(px(8)),
             border: UiRect::all(px(1)),
             border_radius: BorderRadius::all(px(4)),
+            overflow: Overflow::clip_x(),
             ..default()
         },
         ui_text_font(font, 10.0),

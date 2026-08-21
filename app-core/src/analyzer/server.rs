@@ -3,25 +3,31 @@ use super::*;
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct ServerProcess {
-    pub(crate) child: Child,
+    pub(crate) child: Arc<Mutex<Child>>,
     pub(crate) reader: BufReader<TcpStream>,
     pub(crate) writer: BufWriter<TcpStream>,
 }
 
 impl Drop for ServerProcess {
     fn drop(&mut self) {
-        let pid = self.child.id();
+        let Ok(mut child) = self.child.lock() else {
+            return;
+        };
+        let pid = child.id();
         info!("[analyzer] Killing server process (pid={pid})");
         SERVER_PID.store(0, Ordering::SeqCst);
         if let Ok(stream) = self.writer.get_ref().try_clone() {
             let _ = stream.shutdown(Shutdown::Both);
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
+        ACTIVE_SERVER_CHILD.lock().unwrap().take();
     }
 }
 
 pub(crate) static ANALYZER_SERVER: LazyLock<Mutex<Option<ServerProcess>>> =
+    LazyLock::new(|| Mutex::new(None));
+pub(crate) static ACTIVE_SERVER_CHILD: LazyLock<Mutex<Option<Arc<Mutex<Child>>>>> =
     LazyLock::new(|| Mutex::new(None));
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +284,8 @@ pub(crate) fn spawn_server() -> Result<ServerProcess, UtaStudioError> {
     drain_lines_to_log(stdout_reader, "stdout");
     drop(stderr_drain);
 
+    let child = Arc::new(Mutex::new(child));
+    *ACTIVE_SERVER_CHILD.lock().unwrap() = Some(Arc::clone(&child));
     Ok(ServerProcess {
         child,
         reader,

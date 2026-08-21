@@ -23,12 +23,15 @@ impl AnalysisGraphBox {
 /// unscaled. The default sits at the previous 160% "readable node" zoom
 /// now that the inspect pane no longer steals the canvas; min/max stay
 /// wide enough that Fit and +/- still have room around that default.
-pub(crate) const ANALYSIS_GRAPH_ZOOM_MIN: f32 = 0.5;
+pub(crate) const ANALYSIS_GRAPH_ZOOM_MIN: f32 = 0.35;
 pub(crate) const ANALYSIS_GRAPH_ZOOM_MAX: f32 = 2.4;
 pub(crate) const ANALYSIS_GRAPH_ZOOM_STEP: f32 = 0.15;
 pub(crate) const ANALYSIS_GRAPH_ZOOM_DEFAULT: f32 = 1.0;
 /// Inset so a fitted graph is not flush against the viewport chrome.
 pub(crate) const ANALYSIS_GRAPH_FIT_PADDING: f32 = 20.0;
+/// Keeps the DAG and its legend inside the real client area even when native
+/// Wayland decorations reduce it relative to an internal app screenshot.
+pub(crate) const ANALYSIS_GRAPH_VIEWPORT_VH: f32 = 76.0;
 
 pub(crate) fn clamp_analysis_graph_zoom(zoom: f32) -> f32 {
     zoom.clamp(ANALYSIS_GRAPH_ZOOM_MIN, ANALYSIS_GRAPH_ZOOM_MAX)
@@ -73,6 +76,7 @@ pub(crate) fn zoomed_box(rect: LayoutRect, zoom: f32) -> AnalysisGraphBox {
 /// and inspector stage id to jump to for a "Focus" button, or `None` if the
 /// node isn't part of this pass's layout at all (e.g. a compound child
 /// that's currently collapsed).
+#[cfg(test)]
 pub(crate) fn analysis_graph_focus_target(
     layout: Option<&GraphLayout>,
     id: &app_core::AnalysisNodeId,
@@ -86,6 +90,7 @@ pub(crate) fn analysis_graph_focus_target(
 /// the Focus buttons and by live follow, which recenters the running node
 /// as analysis walks the DAG. Falls back to a left-aligned jump when the
 /// viewport width is not yet known (first frame).
+#[cfg(test)]
 pub(crate) fn analysis_graph_center_target(
     layout: Option<&GraphLayout>,
     id: &app_core::AnalysisNodeId,
@@ -431,6 +436,8 @@ pub(crate) fn analysis_node_stage_index(node_id: &str) -> Option<usize> {
         | "vocals.denoise"
         | "vocals.dereverb"
         | "stems.instrumental"
+        | "instrumental.denoise"
+        | "instrumental.dereverb"
         | "stems.karaoke"
         | "stems.multistem"
         | "stems.bind_analysis_outputs" => Some(1),
@@ -504,7 +511,6 @@ pub(crate) fn selected_stage_parameter(
     profile: &app_core::AnalysisProfileSnapshot,
 ) -> Option<(&'static str, String)> {
     match node_id {
-        "stems.separate" => Some(("SEPARATOR", profile.separator.clone())),
         "lyrics.transcribe" => Some(("ASR ENGINE", profile.asr_engine.clone())),
         "lyrics.align" => Some(("ALIGNMENT BACKEND", profile.alignment_backend.clone())),
         _ => None,
@@ -518,7 +524,6 @@ pub(crate) fn selected_stage_parameter(
 /// for this run" dialog need the field itself, not a pre-formatted label).
 pub(crate) fn node_config_profile_field(node_id: &str) -> Option<app_core::ProfileField> {
     match node_id {
-        "stems.separate" => Some(app_core::ProfileField::Separator),
         "lyrics.transcribe" => Some(app_core::ProfileField::AsrEngine),
         "lyrics.align" => Some(app_core::ProfileField::AlignmentBackend),
         _ => None,
@@ -610,7 +615,7 @@ pub(crate) fn format_artifact_provenance(revision: &app_core::ArtifactRevision) 
 /// `app_core::compare_artifact_revisions`'s result as readable copy, same
 /// "session.notice, not a new diff panel" choice as
 /// `format_node_attempt_comparison`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn format_artifact_revision_comparison(
     comparison: &app_core::ArtifactRevisionComparison,
 ) -> String {
@@ -768,32 +773,114 @@ pub(crate) fn graph_node_state_to_stage_state(
         GraphNodeState::Waiting => (AnalysisGraphStageState::Waiting, None),
         GraphNodeState::Frozen => (
             AnalysisGraphStageState::Waiting,
-            Some("Frozen · reusing a protected artifact"),
+            Some("Frozen · protected artifact"),
         ),
         GraphNodeState::Disabled => (
             AnalysisGraphStageState::Waiting,
             Some("Disabled for this run"),
         ),
-        GraphNodeState::Blocked => (
-            AnalysisGraphStageState::Waiting,
-            Some("Blocked · a required input is missing"),
-        ),
-        GraphNodeState::NotApplicable => (
-            AnalysisGraphStageState::Waiting,
-            Some("Not applicable to this run's lyrics route"),
-        ),
+        GraphNodeState::Blocked => (AnalysisGraphStageState::Waiting, Some("Missing input")),
+        GraphNodeState::NotApplicable => (AnalysisGraphStageState::Waiting, Some("Optional · Off")),
         GraphNodeState::Failed => (
             AnalysisGraphStageState::Waiting,
-            Some("Failed · see the inspector for details"),
+            Some("Failed · inspect details"),
         ),
         GraphNodeState::Stale => (
             AnalysisGraphStageState::Complete,
-            Some("Stale · a newer candidate differs from your saved chart"),
+            Some("Stale · newer candidate"),
         ),
         GraphNodeState::Bypassed => (
             AnalysisGraphStageState::Waiting,
-            Some("Bypassed · using the original mix instead"),
+            Some("Bypassed · original mix"),
         ),
+    }
+}
+
+/// Loads the same plan evidence for every DAG-facing surface. Keeping the
+/// failed-attempt and stale-chart overlays here prevents the canvas, quick
+/// model panel, and inspector from inventing different node states for the
+/// same run.
+pub(crate) fn analysis_graph_plan_preview(
+    file_hash: &str,
+    history_id: Option<i64>,
+) -> Option<app_core::AnalysisPlan> {
+    app_core::preview_full_analysis_plan(file_hash)
+        .ok()
+        .map(|plan| {
+            let attempts = history_id
+                .map(app_core::load_analysis_node_attempts)
+                .unwrap_or_default();
+            overlay_failed_node_attempts(plan, &attempts)
+        })
+        .map(|plan| {
+            let candidate_status = app_core::candidate_chart_status(file_hash);
+            overlay_stale_candidate_chart(plan, &candidate_status)
+        })
+}
+
+/// Builds the authoritative compute-node state projection shared by the DAG
+/// canvas and adjacent controls. Structured node events override the legacy
+/// bucket compatibility projection after the plan has established whether a
+/// node is disabled, blocked, frozen, or out of scope.
+pub(crate) fn analysis_graph_view_for_run(
+    plan: Option<&app_core::AnalysisPlan>,
+    live: Option<&app_core::AnalysisProgressSnapshot>,
+    overall_progress: usize,
+    expanded_compound_nodes: &std::collections::BTreeSet<app_core::AnalysisNodeId>,
+    mini_view: bool,
+) -> GraphViewModel {
+    let stage = live.map(|live| live.stage.as_str()).unwrap_or("preparing");
+    let live_node_id = live.and_then(|live| live.node_id.as_deref());
+    let stage_index = resolve_live_stage_index(stage, live_node_id);
+    let active_stage_progress = live
+        .map(|live| live.stage_progress.clamp(0, 100))
+        .unwrap_or(0);
+    let stage_complete = |index: usize| {
+        index < stage_index
+            || (index == stage_index && active_stage_progress >= 100)
+            || overall_progress >= 100
+    };
+    let graph_spec = app_core::baseline_graph_spec();
+    let no_expanded = std::collections::BTreeSet::new();
+    let mut full_expanded = expanded_compound_nodes.clone();
+    // Stem children are the real selected pipeline; always show them in
+    // Full view instead of the stems.separate compatibility shell.
+    full_expanded.insert(app_core::AnalysisNodeId::new("stems.separate"));
+    let expanded = if mini_view {
+        &no_expanded
+    } else {
+        &full_expanded
+    };
+    let mut view = build_graph_view_model(
+        &graph_spec,
+        plan,
+        live_node_id,
+        stage_index,
+        expanded,
+        &analysis_node_stage_index,
+        &stage_complete,
+    );
+    if let Some(live) = live {
+        overlay_runtime_node_event_states(&mut view, &live.stage_routes);
+    }
+    view
+}
+
+pub(crate) fn graph_node_panel_status(
+    state: Option<GraphNodeState>,
+    fallback: &'static str,
+) -> &'static str {
+    match state {
+        Some(GraphNodeState::Complete) => "COMPLETE",
+        Some(GraphNodeState::Running) => "RUNNING",
+        Some(GraphNodeState::Failed) => "FAILED",
+        Some(GraphNodeState::Stale) => "STALE",
+        Some(GraphNodeState::Bypassed) => "BYPASSED",
+        Some(GraphNodeState::Frozen) => "FROZEN",
+        Some(GraphNodeState::Disabled) => "DISABLED",
+        Some(GraphNodeState::NotApplicable) => "OFF",
+        Some(GraphNodeState::Blocked | GraphNodeState::Waiting) => "WAITING",
+        None => fallback,
     }
 }
 
@@ -822,6 +909,9 @@ pub(crate) fn find_matching_route<'a>(
         .rev()
         .find(|route| route.node_id.as_deref() == Some(node_id))
         .or_else(|| {
+            if routes.iter().any(|route| route.node_id.is_some()) {
+                return None;
+            }
             routes
                 .iter()
                 .rev()
@@ -829,28 +919,25 @@ pub(crate) fn find_matching_route<'a>(
         })
 }
 
-/// §7.4/§9.3 bug fix: the canvas box and the inspector used to be able to
-/// show *different* completion percentages for the same node, because the
-/// inspector derived its number from `stage_routes`' historical record,
-/// which can be frozen at a stale non-100 value if a stage's last progress
-/// event never happened to report exactly 100 before the pipeline moved on.
-/// `render_state` (the canvas box's own `GraphNodeState`) derives
-/// completion from the plan + real on-disk artifact presence, so it's
-/// authoritative -- when it says Complete, the inspector must agree,
-/// regardless of the last recorded route percentage. Only overrides the
-/// Complete case; Running/Waiting/etc. keep the route/task-derived number,
-/// which is already correct and more granular (0-99%) than a node state
-/// alone can be.
-#[cfg(test)]
+/// Keeps the canvas, inspector, and quick panel on one status source. The
+/// route still supplies granular progress for Running/Failed, while every
+/// terminal, blocked, disabled, frozen, bypassed, or waiting label comes
+/// from the canvas's plan-plus-event `GraphNodeState`.
 pub(crate) fn selected_progress_and_status(
     render_state: Option<GraphNodeState>,
     route_progress: usize,
     route_status: &'static str,
 ) -> (usize, &'static str) {
-    if render_state == Some(GraphNodeState::Complete) {
-        (100, "COMPLETE")
-    } else {
-        (route_progress, route_status)
+    match render_state {
+        Some(GraphNodeState::Complete | GraphNodeState::Stale) => {
+            (100, graph_node_panel_status(render_state, route_status))
+        }
+        Some(GraphNodeState::Running | GraphNodeState::Failed) => (
+            route_progress,
+            graph_node_panel_status(render_state, route_status),
+        ),
+        Some(_) => (0, graph_node_panel_status(render_state, route_status)),
+        None => (route_progress, route_status),
     }
 }
 

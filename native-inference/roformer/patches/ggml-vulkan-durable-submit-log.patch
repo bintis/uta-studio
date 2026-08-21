@@ -1,0 +1,70 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+index 585e10d..90bdf54 100644
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -2111,6 +2111,7 @@ std::mutex vk_memory_logger::log_mutex;
+ static bool vk_perf_logger_enabled = false;
+ static bool vk_perf_logger_concurrent = false;
+ static bool vk_enable_sync_logger = false;
++static bool vk_submit_logger_enabled = false;
+ // number of calls between perf logger prints
+ static uint32_t vk_perf_logger_frequency = 1;
+ static std::string vk_pipeline_stats_filter;
+@@ -7417,6 +7418,7 @@ static void ggml_vk_instance_init() {
+     vk_perf_logger_concurrent = getenv("GGML_VK_PERF_LOGGER_CONCURRENT") != nullptr;
+     vk_enable_sync_logger = getenv("GGML_VK_SYNC_LOGGER") != nullptr;
+     vk_memory_logger_enabled = getenv("GGML_VK_MEMORY_LOGGER") != nullptr;
++    vk_submit_logger_enabled = getenv("GGML_VK_SUBMIT_LOGGER") != nullptr;
+     const char* GGML_VK_PIPELINE_STATS = getenv("GGML_VK_PIPELINE_STATS");
+     if (GGML_VK_PIPELINE_STATS != nullptr) {
+         vk_pipeline_stats_filter = GGML_VK_PIPELINE_STATS;
+@@ -16947,6 +16949,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
+     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+
++    if (vk_submit_logger_enabled) {
++        GGML_LOG_INFO("ggml_vulkan: graph.begin device=%s nodes=%d serialize_submissions=%d\n",
++                ctx->device->name.c_str(), cgraph->n_nodes, ctx->device->serialize_submissions ? 1 : 0);
++    }
++
+     ctx->device->diag_cgraph = nullptr;
+     ctx->device->diag_prev_start = -1;
+     ctx->device->diag_prev_end = -1;
+@@ -17044,6 +17051,14 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+
+     auto const submit_after = [&](int start, int end) {
+         if (ctx->device->serialize_submissions) {
++            if (vk_submit_logger_enabled) {
++                const ggml_tensor * first = cgraph->nodes[start];
++                const ggml_tensor * last = cgraph->nodes[end];
++                GGML_LOG_INFO("ggml_vulkan: submission.wait.begin index=%u nodes=%d-%d first_op=%s first_name=%s last_op=%s last_name=%s\n",
++                        submit_count, start, end,
++                        ggml_op_name(first->op), first->name,
++                        ggml_op_name(last->op), last->name);
++            }
+             try {
+                 auto res = ctx->device->device.waitForFences({ ctx->fence }, true, UINT64_MAX);
+                 if (res != vk::Result::eSuccess) {
+@@ -17062,6 +17077,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+             ctx->device->diag_cgraph = cgraph;
+             ctx->device->diag_prev_start = start;
+             ctx->device->diag_prev_end = end;
++            if (vk_submit_logger_enabled) {
++                GGML_LOG_INFO("ggml_vulkan: submission.wait.end index=%u nodes=%d-%d\n",
++                        submit_count, start, end);
++            }
+         }
+         first_node_in_batch = true;
+         submitted_nodes = 0;
+@@ -17402,6 +17421,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+         ggml_vk_synchronize(ctx);
+     }
+
++    if (vk_submit_logger_enabled) {
++        GGML_LOG_INFO("ggml_vulkan: graph.end device=%s nodes=%d submissions=%u status=success\n",
++                ctx->device->name.c_str(), cgraph->n_nodes, submit_count);
++    }
++
+     return GGML_STATUS_SUCCESS;
+
+     UNUSED(backend);

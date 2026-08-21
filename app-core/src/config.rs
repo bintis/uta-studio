@@ -140,6 +140,14 @@ impl AppConfig {
                 ),
             );
         }
+        if let Some(settings) = self.audio_processing.as_mut()
+            && settings.vocal_model_id.is_some()
+            && settings.multistem_model_id.is_none()
+            && settings.accompaniment_model_id.is_none()
+        {
+            settings.accompaniment_model_id =
+                Some(crate::audio_model::DEFAULT_BGM_MODEL_ID.to_string());
+        }
         if !matches!(self.pitch_model.as_deref(), None | Some("rmvpe")) {
             self.pitch_model = Some("rmvpe".to_string());
         }
@@ -266,13 +274,19 @@ impl AppConfig {
                     .ui_language
                     .as_deref()
                     .is_some_and(|language| !matches!(language, "en" | "zh-CN" | "ja"));
+                let had_missing_bgm_model = cfg.audio_processing.as_ref().is_some_and(|settings| {
+                    settings.vocal_model_id.is_some()
+                        && settings.multistem_model_id.is_none()
+                        && settings.accompaniment_model_id.is_none()
+                });
                 (
                     cfg.with_defaults(),
                     !had_data_path
                         || had_invalid_separator
                         || had_invalid_pitch_model
                         || had_invalid_align_backend
-                        || had_invalid_ui_language,
+                        || had_invalid_ui_language
+                        || had_missing_bgm_model,
                 )
             }
             None => (Self::default().with_defaults(), true),
@@ -488,6 +502,29 @@ mod tests {
         }
         .with_defaults();
         assert_eq!(repaired.align_backend(), "whisperx");
+    }
+
+    #[test]
+    fn legacy_vocal_only_settings_gain_the_dedicated_bgm_model() {
+        let config = AppConfig {
+            separator: Some("karaoke".to_string()),
+            audio_processing: Some(crate::audio_processing::AudioProcessingSettings {
+                vocal_model_id: Some(
+                    crate::audio_model::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+
+        assert_eq!(
+            config
+                .audio_processing
+                .as_ref()
+                .and_then(|settings| settings.accompaniment_model_id.as_deref()),
+            Some(crate::audio_model::DEFAULT_BGM_MODEL_ID)
+        );
     }
 
     #[test]

@@ -20,6 +20,20 @@ mod ready_marker_contract_tests {
     }
 }
 
+mod torch_runtime_probe_tests {
+    use super::TORCH_RUNTIME_PROBE;
+
+    #[test]
+    fn intel_probe_executes_xpu_without_querying_device_properties() {
+        assert!(TORCH_RUNTIME_PROBE.contains("device = \"xpu\""));
+        assert!(TORCH_RUNTIME_PROBE.contains("x = torch.arange"));
+        assert!(TORCH_RUNTIME_PROBE.contains("y = x @ x"));
+        assert!(TORCH_RUNTIME_PROBE.contains("torch.xpu.synchronize()"));
+        assert!(!TORCH_RUNTIME_PROBE.contains("torch.xpu.get_device_name"));
+        assert!(!TORCH_RUNTIME_PROBE.contains("torch.xpu.get_device_properties"));
+    }
+}
+
 mod node_model_availability_tests {
     use super::{ModelAvailabilityChecks, node_model_availability_from_checks};
     use crate::analysis_graph::AnalysisNodeId;

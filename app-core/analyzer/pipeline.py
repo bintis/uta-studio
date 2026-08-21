@@ -65,6 +65,92 @@ def _models_dir(output_dir):
     return output_dir
 
 
+def _audio_plan_node_ids(audio_processing):
+    node_for_step = {
+        "extract_vocals": "stems.vocals",
+        "denoise_vocals": "vocals.denoise",
+        "dereverb_vocals": "vocals.dereverb",
+        "extract_accompaniment": "stems.instrumental",
+        "denoise_accompaniment": "instrumental.denoise",
+        "dereverb_accompaniment": "instrumental.dereverb",
+        "extract_karaoke": "stems.karaoke",
+        "separate_6s": "stems.multistem",
+        "legacy_htdemucs": "stems.multistem",
+    }
+    nodes = []
+    for step in (audio_processing or {}).get("steps") or []:
+        node_id = node_for_step.get(str(step.get("step_id") or ""))
+        if node_id and node_id not in nodes:
+            nodes.append(node_id)
+    return nodes or ["stems.multistem"]
+
+
+def _report_stem_plan_reused(audio_processing, message, reason, artifacts):
+    for node_id in _audio_plan_node_ids(audio_processing):
+        artifact_reused(
+            node_id, 50, message, reason=reason,
+            requested_device="cache", actual_device="cache",
+            node_progress_pct=100,
+        )
+    artifact_reused(
+        "stems.bind_analysis_outputs", 50, "Analysis audio bindings reused",
+        reason=reason, requested_device="cache", actual_device="cache",
+        node_progress_pct=100, artifacts=artifacts,
+    )
+
+
+def _audio_artifact_kind(node_id, role):
+    normalized = str(role).lower()
+    if node_id == "stems.vocals":
+        return "RawVocalStem"
+    if node_id == "vocals.denoise":
+        return "DenoisedVocalStem"
+    if node_id == "vocals.dereverb":
+        return "DereverbedVocalStem"
+    if node_id == "stems.instrumental":
+        return "HighQualityInstrumentalStem"
+    if node_id == "instrumental.denoise":
+        return "DenoisedInstrumentalStem"
+    if node_id == "instrumental.dereverb":
+        return "DereverbedInstrumentalStem"
+    if node_id == "stems.karaoke":
+        return "KaraokeInstrumentalStem"
+    if node_id == "stems.multistem":
+        return {
+            "vocals": "VocalStem",
+            "vocal": "VocalStem",
+            "drums": "DrumStem",
+            "drum": "DrumStem",
+            "bass": "BassStem",
+            "guitar": "GuitarStem",
+            "piano": "PianoStem",
+            "other": "OtherStem",
+        }.get(normalized, "OtherStem")
+    return "VocalStem"
+
+
+_AUDIO_STEP_NODES = {
+    "extract_vocals": "stems.vocals",
+    "denoise_vocals": "vocals.denoise",
+    "dereverb_vocals": "vocals.dereverb",
+    "extract_accompaniment": "stems.instrumental",
+    "denoise_accompaniment": "instrumental.denoise",
+    "dereverb_accompaniment": "instrumental.dereverb",
+    "extract_karaoke": "stems.karaoke",
+    "separate_6s": "stems.multistem",
+    "legacy_htdemucs": "stems.multistem",
+}
+
+
+def _audio_node_for_step(step_id):
+    try:
+        return _AUDIO_STEP_NODES[step_id]
+    except KeyError as error:
+        raise RuntimeError(
+            f"audio processing step {step_id!r} has no authoritative DAG node mapping"
+        ) from error
+
+
 def _try_execute_audio_plan(
     audio_processing,
     audio_path,
@@ -94,43 +180,84 @@ def _try_execute_audio_plan(
     from audio_processors.executor import execute_audio_processing_plan
 
     plan = plan_from_json(audio_processing)
+    step_indexes = {step.step_id: index for index, step in enumerate(plan.steps)}
+    started_steps = set()
+
+    def report_step_progress(percent, message, **metadata):
+        step_id = str(metadata.get("step_id") or "")
+        model_id = str(metadata.get("model_id") or step_id)
+        node_id = _audio_node_for_step(step_id)
+        local = max(0, min(100, int(percent)))
+        count = max(1, len(plan.steps))
+        index = step_indexes.get(step_id, 0)
+        overall = 4 + round(((index + local / 100.0) / count) * 46)
+        lifecycle = metadata.get("lifecycle")
+        if step_id not in started_steps:
+            started_steps.add(step_id)
+            progress_node(
+                node_id,
+                "node_started",
+                overall,
+                message,
+                implementation=metadata.get("implementation") or "Audio Model Catalog",
+                model=model_id,
+                node_progress_pct=local,
+            )
+        if lifecycle == "step_completed":
+            artifacts = [
+                _committed_artifact(
+                    _audio_artifact_kind(
+                        node_id, artifact.get("role", f"output:{artifact_index}")
+                    ),
+                    artifact["path"],
+                    f"output:{artifact_index}",
+                )
+                for artifact_index, artifact in enumerate(metadata.get("artifacts") or [])
+                if artifact.get("path")
+            ]
+            progress_node(
+                node_id,
+                "node_completed",
+                overall,
+                message,
+                implementation=metadata.get("implementation") or "Audio Model Catalog",
+                model=model_id,
+                requested_device=metadata.get("requested_device"),
+                actual_device=metadata.get("actual_device"),
+                fallback_from=metadata.get("fallback_from"),
+                fallback_reason=metadata.get("fallback_reason"),
+                node_progress_pct=100,
+                artifacts=artifacts,
+            )
+            return
+        progress_node(
+            node_id,
+            "node_progress",
+            overall,
+            message,
+            implementation=metadata.get("implementation") or "Audio Model Catalog",
+            model=model_id,
+            requested_device=metadata.get("requested_device"),
+            actual_device=metadata.get("actual_device"),
+            node_progress_pct=local,
+        )
+
     result = execute_audio_processing_plan(
         plan,
         source_path=Path(audio_path),
         work_root=Path(work_dir),
         models_dir=Path(_models_dir(output_dir)),
+        progress_sink=report_step_progress,
     )
-    for step_id, step_result in result.step_results.items():
-        node_id = {
-            "extract_vocals": "stems.vocals",
-            "denoise_vocals": "vocals.denoise",
-            "dereverb_vocals": "vocals.dereverb",
-            "extract_accompaniment": "stems.instrumental",
-            "extract_karaoke": "stems.karaoke",
-            "separate_6s": "stems.multistem",
-            "legacy_htdemucs": "stems.multistem",
-        }.get(step_id, "stems.separate")
-        artifacts = [
-            _committed_artifact(
-                artifact.role,
-                str(artifact.path),
-                f"output:{index}",
-            )
-            for index, artifact in enumerate(step_result.artifacts.values())
-        ]
-        progress_node(
-            node_id,
-            "node_completed",
-            50,
-            f"{step_result.model_id} on {step_result.actual_backend}",
-            requested_device=step_result.requested_backend,
-            actual_device=step_result.actual_backend,
-            fallback_from=step_result.fallback_from,
-            fallback_reason=step_result.fallback_reason,
-            artifacts=artifacts,
-        )
     vocals = result.binding("vocals").path
     instrumental = result.binding("instrumental").path
+    progress_node(
+        "stems.bind_analysis_outputs",
+        "node_started",
+        50,
+        "Resolving analysis vocal and instrumental outputs...",
+        node_progress_pct=0,
+    )
     return str(vocals), str(instrumental)
 from transcribe import transcribe_vocals
 from align import align_lyrics
@@ -162,12 +289,25 @@ def source_is_lossless(path):
 
 def convert_to_cache_audio(src, destination, *, lossless):
     codec = ["-c:a", "flac", "-compression_level", "8"] if lossless else ["-c:a", "libmp3lame", "-q:a", "2"]
-    subprocess.run(
-        [ffmpeg_bin(), "-y", "-i", src, *codec, "-v", "error", destination],
-        check=True,
-    )
-    if os.path.isfile(destination):
-        os.remove(src)
+    directory = os.path.dirname(destination) or "."
+    suffix = os.path.splitext(destination)[1]
+    prefix = f".{os.path.basename(destination)}."
+    fd, temporary = tempfile.mkstemp(prefix=prefix, suffix=f".tmp{suffix}", dir=directory)
+    os.close(fd)
+    try:
+        subprocess.run(
+            [ffmpeg_bin(), "-y", "-i", src, *codec, "-v", "error", temporary],
+            check=True,
+        )
+        os.replace(temporary, destination)
+        if os.path.isfile(src):
+            os.remove(src)
+    except Exception:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def normalize_tempo(tempo):
@@ -213,8 +353,7 @@ def _cached_separator_matches(output_dir, file_hash, separator, options):
 
 def _write_separator_marker(output_dir, file_hash, separator, options):
     path = _separator_marker_path(output_dir, file_hash)
-    with open(path, "w", encoding="utf-8") as marker:
-        json.dump({"separator": separator, "options": options}, marker)
+    _atomic_write_json(path, {"separator": separator, "options": options})
 
 
 def _find_legacy_stem_cache(output_dir, file_hash, extension):
@@ -243,8 +382,10 @@ def _find_legacy_stem_cache(output_dir, file_hash, extension):
 def run_stem_separation(
     audio_path, output_dir, file_hash, separator, device,
     separator_options=None, audio_processing=None, free_gpu_fn=None, freeze=False,
+    run_work_dir=None,
 ):
-    """Node: stems.separate. Run stem separation or reuse cached stems.
+    """Execute the stem plan and report only its real child/binding nodes.
+    ``stems.separate`` is a UI aggregate derived from those events.
     Returns the vocals path.
 
     Stem identity is the source file hash, separator backend, and separator
@@ -263,7 +404,6 @@ def run_stem_separation(
     inconsistency, not a normal "nothing to freeze yet" case -- raised
     rather than silently falling through to a real (unwanted) separation.
     """
-    progress_node("stems.separate", "node_started", 4, "Inspecting source codec and cache format...")
     lossless = source_is_lossless(audio_path)
     cache_extension = "flac" if lossless else "mp3"
     final_vocals = os.path.join(output_dir, f"{file_hash}_vocals.{cache_extension}")
@@ -275,17 +415,12 @@ def run_stem_separation(
                 "stems.separate was frozen for this run, but no cached vocal/instrumental "
                 "stem exists to reuse"
             )
-        artifact_reused(
-            "stems.separate",
-            50,
-            "Stem separation frozen, reusing existing stems",
-            reason="frozen",
-            requested_device="cache",
-            actual_device="cache",
-            artifacts=[
-                _committed_artifact("VocalStem", final_vocals, "output:0", "frozen"),
-                _committed_artifact("InstrumentalStem", final_instrumental, "output:1", "frozen"),
-            ],
+        artifacts = [
+            _committed_artifact("VocalStem", final_vocals, "output:0", "frozen"),
+            _committed_artifact("InstrumentalStem", final_instrumental, "output:1", "frozen"),
+        ]
+        _report_stem_plan_reused(
+            audio_processing, "Stem output frozen and reused", "frozen", artifacts
         )
         return final_vocals
 
@@ -293,36 +428,31 @@ def run_stem_separation(
     separator_matches = _cached_separator_matches(output_dir, file_hash, separator, active_options)
 
     if os.path.isfile(final_vocals) and os.path.isfile(final_instrumental) and separator_matches:
-        artifact_reused(
-            "stems.separate",
-            50,
-            "Stems already cached, skipping separation",
-            requested_device="cache",
-            actual_device="cache",
-            artifacts=[
-                _committed_artifact("VocalStem", final_vocals, "output:0", "reused"),
-                _committed_artifact("InstrumentalStem", final_instrumental, "output:1", "reused"),
-            ],
+        artifacts = [
+            _committed_artifact("VocalStem", final_vocals, "output:0", "reused"),
+            _committed_artifact("InstrumentalStem", final_instrumental, "output:1", "reused"),
+        ]
+        _report_stem_plan_reused(
+            audio_processing, "Stem output already cached", "cache_hit", artifacts
         )
         return final_vocals
 
     if separator_matches:
         legacy = _find_legacy_stem_cache(output_dir, file_hash, cache_extension)
         if legacy is not None:
-            artifact_reused(
-                "stems.separate",
-                50,
-                "Stems already cached, skipping separation",
-                requested_device="cache",
-                actual_device="cache",
-                artifacts=[
-                    _committed_artifact("VocalStem", legacy[0], "output:0", "reused"),
-                    _committed_artifact("InstrumentalStem", legacy[1], "output:1", "reused"),
-                ],
+            artifacts = [
+                _committed_artifact("VocalStem", legacy[0], "output:0", "reused"),
+                _committed_artifact("InstrumentalStem", legacy[1], "output:1", "reused"),
+            ]
+            _report_stem_plan_reused(
+                audio_processing, "Legacy stem output already cached", "cache_hit", artifacts
             )
             return legacy[0]
 
-    with tempfile.TemporaryDirectory(prefix="uta_studio_") as work_dir:
+    if run_work_dir:
+        os.makedirs(run_work_dir, exist_ok=True)
+    used_catalog_plan = False
+    with tempfile.TemporaryDirectory(prefix="uta_studio_", dir=run_work_dir) as work_dir:
         plan_result = _try_execute_audio_plan(
             audio_processing,
             audio_path,
@@ -333,6 +463,7 @@ def run_stem_separation(
             separator_options,
         )
         if plan_result is not None:
+            used_catalog_plan = True
             vp, ip = plan_result
         elif separator == "karaoke":
             raise RuntimeError(
@@ -340,6 +471,10 @@ def run_stem_separation(
                 "melband_roformer_karaoke_aufr33_viperx in Settings > Models & runtime"
             )
         elif separator == "openvino_demucs":
+            progress_node(
+                "stems.multistem", "node_started", 5,
+                "Loading OpenVINO Demucs...", node_progress_pct=0,
+            )
             vp, ip = separate_stems_openvino_demucs(audio_path, work_dir, os.environ.get("OPENVINO_SEPARATOR_MODEL_DIR", output_dir))
         else:
             vp, ip = separate_stems(
@@ -349,22 +484,43 @@ def run_stem_separation(
                 shifts=active_options.get("shifts", 1),
                 overlap=active_options.get("overlap_pct", 25) / 100.0,
             )
-        progress(51, "Saving stems to cache...")
+        if not used_catalog_plan:
+            progress_node(
+                "stems.bind_analysis_outputs", "node_started", 50,
+                "Resolving analysis vocal and instrumental outputs...",
+                node_progress_pct=0,
+            )
+        progress_node(
+            "stems.bind_analysis_outputs", "node_progress", 51,
+            "Saving analysis audio to cache...", node_progress_pct=75,
+        )
         convert_to_cache_audio(vp, final_vocals, lossless=lossless)
         convert_to_cache_audio(ip, final_instrumental, lossless=lossless)
+
+    if not used_catalog_plan:
+        progress_node(
+            "stems.multistem", "node_completed", 50,
+            "Legacy multi-stem separation complete", node_progress_pct=100,
+            artifacts=[
+                _committed_artifact("VocalStem", final_vocals, "output:0"),
+                _committed_artifact("InstrumentalStem", final_instrumental, "output:1"),
+            ],
+        )
+
+    progress_node(
+        "stems.bind_analysis_outputs", "node_completed", 51,
+        "Analysis audio outputs resolved", node_progress_pct=100,
+        artifacts=[
+            _committed_artifact("VocalStem", final_vocals, "output:0"),
+            _committed_artifact("InstrumentalStem", final_instrumental, "output:1"),
+        ],
+    )
 
     _write_separator_marker(output_dir, file_hash, separator, active_options)
 
     if free_gpu_fn:
         free_gpu_fn()
 
-    progress_node(
-        "stems.separate", "node_completed", 51, "Stem separation complete",
-        artifacts=[
-            _committed_artifact("VocalStem", final_vocals, "output:0"),
-            _committed_artifact("InstrumentalStem", final_instrumental, "output:1"),
-        ],
-    )
     return final_vocals
 
 
@@ -385,8 +541,8 @@ def run_transcription(
     Writes the §4.4 split artifacts this node owns:
     `recognized_text.json` (pre-alignment ASR output -- see
     `transcribe.py::_build_result_from_raw_segments`'s
-    `_pre_alignment_segments`) and `asr_segments.json` (this node's own
-    final, possibly word-aligned, output). Parakeet has no separate
+    `_pre_alignment_segments`) and `asr_segments.json` (the ASR segment
+    evidence committed before alignment starts). Parakeet has no separate
     pre-alignment stage (native word timing, no wav2vec2 pass), so
     `_pre_alignment_segments` is absent for that engine and
     `recognized_text.json` falls back to the same content as
@@ -394,7 +550,6 @@ def run_transcription(
     not a fabricated distinction (mirrors the direct
     `lyrics.transcribe -> chart.build_candidate` graph edge for Parakeet).
     """
-    progress_node("lyrics.transcribe", "node_started", 55, "Transcribing vocals...")
     result = transcribe_vocals(
         vocals_path, audio_path, device,
         model_name=model_name,
@@ -407,21 +562,58 @@ def run_transcription(
         capture_preprocessed_path=capture_preprocessed_path,
     )
     pre_alignment_segments = result.pop("_pre_alignment_segments", None)
-    recognized_text_path, asr_segments_path, _ = _transcript_split_paths(output_dir, file_hash)
+    alignment_raw_segments = result.pop("_alignment_raw_segments", None)
+    alignment_audio = result.pop("_alignment_audio", None)
+    alignment_device = result.pop("_alignment_device", None)
+    alignment_cleanup = result.pop("_pre_align_cleanup", None)
+    recognized_text_path, asr_segments_path, timed_transcript_path = _transcript_split_paths(
+        output_dir, file_hash
+    )
     recognized_text = {
         "language": result.get("language"),
         "source": result.get("source"),
         "segments": pre_alignment_segments if pre_alignment_segments is not None else result.get("segments"),
     }
     _atomic_write_json(recognized_text_path, recognized_text)
-    _atomic_write_json(asr_segments_path, result)
+    asr_segments = dict(result)
+    if pre_alignment_segments is not None:
+        asr_segments["segments"] = pre_alignment_segments
+    _atomic_write_json(asr_segments_path, asr_segments)
     progress_node(
-        "lyrics.transcribe", "node_completed", 90, "Transcription complete",
+        "lyrics.transcribe", "completed", 90, "Transcription complete",
+        node_progress_pct=100,
         artifacts=[
             _committed_artifact("RecognizedText", recognized_text_path, "output:0"),
             _committed_artifact("AsrSegments", asr_segments_path, "output:1"),
         ],
     )
+    if alignment_raw_segments is not None:
+        progress_node(
+            "lyrics.align", "started", 80, "Aligning word timestamps...",
+            node_progress_pct=0,
+        )
+        from transcribe import _align_and_build
+
+        result = _align_and_build(
+            alignment_raw_segments,
+            alignment_audio,
+            result.get("language"),
+            alignment_device,
+            alignment_cleanup,
+        )
+        result["source"] = "generated"
+        progress_node(
+            "lyrics.align", "progress", 90, "Word timing alignment computed",
+            node_progress_pct=95,
+        )
+        _atomic_write_json(timed_transcript_path, result)
+        progress_node(
+            "lyrics.align", "completed", 90, "Word timing alignment complete",
+            node_progress_pct=100,
+            artifacts=[_committed_artifact(
+                "TimedTranscript", timed_transcript_path, "output:0"
+            )],
+        )
     return result
 
 
@@ -433,7 +625,6 @@ def run_alignment(
     """Node: lyrics.align. Known-lyrics path (Plain lyrics / LRCLIB text,
     not Timed LRC -- Timed LRC skips this pipeline entirely)."""
     print(f"[uta-studio:LOG] Using pre-fetched lyrics: {lyrics_path}", flush=True)
-    progress_node("lyrics.align", "node_started", 55, "Aligning known lyrics...")
     result = align_lyrics(
         lyrics_path, vocals_path, device,
         model_name=model_name,
@@ -446,6 +637,7 @@ def run_alignment(
     _atomic_write_json(timed_transcript_path, result)
     progress_node(
         "lyrics.align", "node_completed", 90, "Alignment complete",
+        node_progress_pct=100,
         artifacts=[_committed_artifact(
             "TimedTranscript", timed_transcript_path, "output:0"
         )],
@@ -523,7 +715,8 @@ def _write_music_analysis_cache(path, data):
     leaves a half-written (and therefore corrupt-looking, triggering a
     pointless re-analysis) JSON file behind."""
     directory = os.path.dirname(path) or "."
-    fd, temp_path = tempfile.mkstemp(prefix="music_analysis_", suffix=".tmp", dir=directory)
+    prefix = f".{os.path.basename(path)}."
+    fd, temp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -539,14 +732,13 @@ def _write_music_analysis_cache(path, data):
 def _atomic_write_json(path, data):
     """Same temp-file-plus-atomic-replace strategy as
     `_write_music_analysis_cache`, generalized for the §4.4 split artifacts
-    (`recognized_text.json`/`asr_segments.json`/`timed_transcript.json`) so a
-    crash or kill mid-write never leaves a half-written file behind. The
-    legacy `{file_hash}_transcript.json` compatibility write in
-    `build_candidate_chart` is deliberately left as-is (non-atomic) --
-    unrelated behavior this change must not touch.
+    (`recognized_text.json`/`asr_segments.json`/`timed_transcript.json`) and
+    compatibility files so a crash or kill mid-write never leaves a
+    half-written output behind.
     """
     directory = os.path.dirname(path) or "."
-    fd, temp_path = tempfile.mkstemp(prefix="transcript_split_", suffix=".tmp", dir=directory)
+    prefix = f".{os.path.basename(path)}."
+    fd, temp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -568,8 +760,9 @@ def _transcript_split_paths(output_dir, file_hash):
 
 
 def run_music_analysis(audio_path, output_dir, file_hash):
-    """Node: music.analysis (compound: music.key / music.rhythm /
-    music.descriptors). Key + rhythm (+ a few extra descriptors when
+    """Run music.key / music.rhythm / music.descriptors. The
+    ``music.analysis`` UI aggregate is derived from those child events.
+    Key + rhythm (+ a few extra descriptors when
     Essentia is installed), cached to `{file_hash}_music_analysis.json`.
     Reuses a valid existing cache instead of re-running analysis:
     realigning lyrics or re-running transcription must not repeat key/BPM
@@ -583,37 +776,67 @@ def run_music_analysis(audio_path, output_dir, file_hash):
     path = _music_analysis_path(output_dir, file_hash)
     cached = _read_music_analysis_cache(path)
     if cached is not None:
-        artifact_reused(
-            "music.analysis", 3, "Music analysis already cached, skipping...",
-            artifacts=[_committed_artifact("MusicAnalysis", path, "output:0", "reused")],
-        )
+        artifacts = [_committed_artifact("MusicAnalysis", path, "output:0", "reused")]
+        for node_id in ("music.key", "music.rhythm", "music.descriptors"):
+            artifact_reused(
+                node_id, 4, "Music analysis already cached",
+                node_progress_pct=100,
+                artifacts=artifacts if node_id == "music.descriptors" else None,
+            )
         return cached
 
     progress_node(
-        "music.analysis", "node_started", 3, "Analyzing musical key...",
+        "music.key", "node_started", 3, "Analyzing musical key...",
         implementation="Essentia/NumPy FFT", model="KeyExtractor / Krumhansl chroma profiles",
+        node_progress_pct=0,
     )
     key = detect_key_structured(audio_path)
+    progress_node(
+        "music.key", "node_completed", 3, "Musical key analysis complete",
+        implementation="Essentia/NumPy FFT", model="KeyExtractor / Krumhansl chroma profiles",
+        node_progress_pct=100,
+    )
 
-    progress(4, "Analyzing tempo and beat positions...", implementation="Essentia/NumPy FFT", model="RhythmExtractor2013 / onset autocorrelation")
+    progress_node(
+        "music.rhythm", "node_started", 3, "Analyzing tempo and beat positions...",
+        implementation="Essentia/NumPy FFT", model="RhythmExtractor2013 / onset autocorrelation",
+        node_progress_pct=0,
+    )
     rhythm = analyze_rhythm(audio_path)
-
-    if key.get("tonic") is None and rhythm.get("bpm") is None:
-        progress(4, "Music analysis unavailable; continuing without beat grid...")
+    progress_node(
+        "music.rhythm", "node_completed", 4, "Tempo and beat analysis complete",
+        implementation="Essentia/NumPy FFT", model="RhythmExtractor2013 / onset autocorrelation",
+        node_progress_pct=100,
+    )
 
     result = {"version": MUSIC_ANALYSIS_VERSION, "key": key, "rhythm": rhythm}
 
+    progress_node(
+        "music.descriptors", "node_started", 4, "Analyzing audio descriptors...",
+        implementation="Essentia/NumPy FFT", model="Audio descriptors",
+        node_progress_pct=0,
+    )
     try:
         descriptors = analyze_extra_descriptors(audio_path)
         if descriptors:
             result["descriptors"] = descriptors
+        descriptor_event = "completed"
+        descriptor_message = "Audio descriptor analysis complete"
+        descriptor_reason = None
     except Exception as e:
         # Never let an optional descriptor pass take key/rhythm down with it.
         print(f"[uta-studio:LOG] Extra descriptors unavailable: {e}", flush=True)
+        descriptor_event = "skipped"
+        descriptor_message = f"Audio descriptors unavailable: {e}"
+        descriptor_reason = "unavailable"
 
     _write_music_analysis_cache(path, result)
     progress_node(
-        "music.analysis", "node_completed", 4, "Music analysis complete",
+        "music.descriptors", descriptor_event, 4, descriptor_message,
+        node_progress_pct=100,
+        reason=descriptor_reason,
+        implementation="Essentia/NumPy FFT",
+        model="Audio descriptors",
         artifacts=[_committed_artifact("MusicAnalysis", path, "output:0")],
     )
     return result
@@ -671,6 +894,7 @@ def run_pitch_analysis(
             model="RMVPE singing pitch model",
             requested_device="cache",
             actual_device="cache",
+            node_progress_pct=100,
             artifacts=[
                 _committed_artifact("PitchTrack", track_path, "output:0", "frozen"),
                 _committed_artifact("PitchNoteCandidates", notes_path, "output:1", "frozen"),
@@ -686,6 +910,7 @@ def run_pitch_analysis(
             model="RMVPE singing pitch model",
             requested_device="cache",
             actual_device="cache",
+            node_progress_pct=100,
             artifacts=[
                 _committed_artifact("PitchTrack", track_path, "output:0", "reused"),
                 _committed_artifact("PitchNoteCandidates", notes_path, "output:1", "reused"),
@@ -693,10 +918,14 @@ def run_pitch_analysis(
         )
         return
     try:
-        progress_node("pitch.extract", "node_started", 52, "Extracting reference pitch...")
+        progress_node(
+            "pitch.extract", "node_started", 52, "Extracting reference pitch...",
+            node_progress_pct=0,
+        )
         analyze_pitch(vocals_path, output_dir, file_hash, pitch_model_dir)
         progress_node(
             "pitch.extract", "node_completed", 54, "Building singing guide...",
+            node_progress_pct=100,
             artifacts=[
                 _committed_artifact("PitchTrack", track_path, "output:0"),
                 _committed_artifact("PitchNoteCandidates", notes_path, "output:1"),
@@ -704,7 +933,10 @@ def run_pitch_analysis(
         )
     except Exception as e:
         print(f"[uta-studio:LOG] Pitch guide unavailable: {e}", flush=True)
-        progress_node("pitch.extract", "node_failed", 54, f"Pitch guide unavailable: {e}")
+        progress_node(
+            "pitch.extract", "node_failed", 54, f"Pitch guide unavailable: {e}",
+            node_progress_pct=100,
+        )
 
 
 def build_candidate_chart(
@@ -730,8 +962,7 @@ def build_candidate_chart(
     transcript["tempo"] = normalize_tempo(tempo)
     transcript["bpm"] = detected_bpm
     progress_node("chart.build_candidate", "node_started", 95, "Writing transcript...")
-    with open(transcript_path, "w", encoding="utf-8") as f:
-        json.dump(transcript, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(transcript_path, transcript)
     if timed_transcript_path is not None:
         _atomic_write_json(timed_transcript_path, transcript)
     artifacts = [_committed_artifact("CandidateChart", transcript_path, "output:0")]
@@ -748,15 +979,22 @@ def run_preflight(output_dir, device):
     every other node's output directory depends on this having run first.
     """
     os.makedirs(output_dir, exist_ok=True)
-    progress_node("preflight", "node_started", 1, "Inspecting source audio and existing analysis cache...")
+    progress_node(
+        "preflight", "node_started", 1,
+        "Inspecting source audio and existing analysis cache...", node_progress_pct=0,
+    )
     progress(2, f"Using device: {device}")
-    progress_node("preflight", "node_completed", 2, f"Using device: {device}")
+    progress_node(
+        "preflight", "node_completed", 2, f"Using device: {device}",
+        node_progress_pct=100,
+    )
 
 
 def run_pipeline(
     audio_path, output_dir, file_hash, device, *,
     model_name="large-v3", beam_size=5, batch_size=16,
     separator="karaoke", separator_options=None, audio_processing=None, engine="whisper",
+    run_work_dir=None,
     lyrics_path=None, language_override=None,
     whisper_model=None, pre_align_cleanup=None, free_gpu_fn=None,
     skip_transcription=False,
@@ -798,16 +1036,9 @@ def run_pipeline(
     transcript_path = os.path.join(output_dir, f"{file_hash}_transcript.json")
     transcript_exists = os.path.isfile(transcript_path)
     _, _, timed_transcript_path = _transcript_split_paths(output_dir, file_hash)
-    pitch_track_path, pitch_notes_path = _pitch_cache_paths(output_dir, file_hash)
-    pitch_ready = os.path.isfile(pitch_track_path) and os.path.isfile(pitch_notes_path)
-    if (
-        transcript_exists
-        and not skip_transcription
-        and pitch_ready
-        and not capture_preprocessed_audio
-    ):
-        progress(100, "Already analyzed, skipping")
-        return
+    recognized_text_path, asr_segments_path, _ = _transcript_split_paths(
+        output_dir, file_hash
+    )
 
     run_preflight(output_dir, device)
 
@@ -824,16 +1055,18 @@ def run_pipeline(
                 audio_path, output_dir, file_hash, separator, device,
                 separator_options=separator_options,
                 audio_processing=audio_processing,
+                run_work_dir=run_work_dir,
                 free_gpu_fn=free_gpu_fn,
                 freeze=freeze_separation,
             )
             log_vram("phase:after_separation")
         elif bypass_separation_with_original_mix:
-            progress_node(
-                "stems.separate", "node_skipped", 50,
-                "Stem separation bypassed, using the original mix",
-                reason="bypassed",
-            )
+            for node_id in [*_audio_plan_node_ids(audio_processing), "stems.bind_analysis_outputs"]:
+                progress_node(
+                    node_id, "node_skipped", 50,
+                    "Stem processing bypassed, using the original mix",
+                    reason="bypassed", node_progress_pct=100,
+                )
             vocals_path = audio_path
 
         run_pitch_analysis(
@@ -848,7 +1081,48 @@ def run_pipeline(
             and not skip_transcription
             and not capture_preprocessed_audio
         ):
-            progress(100, "Transcript already cached")
+            progress_node(
+                "lyrics.preprocess", "node_skipped", 90,
+                "Preprocessing skipped because committed lyric artifacts are cached",
+                reason="downstream_cache_hit", node_progress_pct=100,
+            )
+            if os.path.isfile(recognized_text_path) and os.path.isfile(asr_segments_path):
+                artifact_reused(
+                    "lyrics.transcribe", 90, "Transcription artifacts already cached",
+                    artifacts=[
+                        _committed_artifact(
+                            "RecognizedText", recognized_text_path, "output:0", "reused"
+                        ),
+                        _committed_artifact(
+                            "AsrSegments", asr_segments_path, "output:1", "reused"
+                        ),
+                    ],
+                )
+            elif not lyrics_path:
+                progress_node(
+                    "lyrics.transcribe", "node_skipped", 90,
+                    "Legacy transcript cache has no split ASR artifacts",
+                    reason="legacy_cache", node_progress_pct=100,
+                )
+            if os.path.isfile(timed_transcript_path):
+                artifact_reused(
+                    "lyrics.align", 94, "Timed transcript already cached",
+                    artifacts=[_committed_artifact(
+                        "TimedTranscript", timed_transcript_path, "output:0", "reused"
+                    )],
+                )
+            elif engine != "parakeet":
+                progress_node(
+                    "lyrics.align", "node_skipped", 94,
+                    "Legacy transcript cache has no split timing artifact",
+                    reason="legacy_cache", node_progress_pct=100,
+                )
+            artifact_reused(
+                "chart.build_candidate", 99, "Candidate chart already committed",
+                artifacts=[_committed_artifact(
+                    "CandidateChart", transcript_path, "output:0", "reused"
+                )],
+            )
             return
 
         if skip_transcription:

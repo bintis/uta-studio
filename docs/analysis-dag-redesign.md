@@ -998,10 +998,9 @@
 >   `desktop/uta-studio.desktop` (`Name=Uta Studio`, `Exec=uta-studio`,
 >   `Icon=uta-studio`), the native window's title string (`"Uta Studio"` in
 >   `desktop/src/studio/mod.rs`), and every crate's `description`/`authors`
->   fields. Also checked for template/framework leftovers specifically
->   (`bevy_game`, `my_bevy_game`, generic `MyGame`-style placeholders) and
->   for any stray Tauri config (`tauri.conf.json`, `package.json`) that
->   might remain from this app's pre-Bevy history -- none found. Clean:
+>   fields. Also checked for generic template/framework project-name
+>   leftovers and stale configuration from the app's pre-Bevy history --
+>   none found. Clean:
 >   no stray project name anywhere in the scanned surface.
 >
 >   **User correction, then a real fix, not a re-labeled excuse.** The

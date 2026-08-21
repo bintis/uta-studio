@@ -439,13 +439,13 @@ pub(crate) fn album_art_handle(
     local_images: &mut LocalImages,
 ) -> Handle<Image> {
     let Some(path) = song.album_art_path.as_ref() else {
-        return asset_server.load(LOGO_PATH);
+        return asset_server.load(MUSIC_PLACEHOLDER_PATH);
     };
     if let Some(handle) = local_images.covers.get(path) {
         return handle.clone();
     }
     let Ok(bytes) = std::fs::read(path) else {
-        return asset_server.load(LOGO_PATH);
+        return asset_server.load(MUSIC_PLACEHOLDER_PATH);
     };
     let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         "png"
@@ -460,10 +460,10 @@ pub(crate) fn album_art_handle(
         ImageSampler::default(),
         RenderAssetUsages::default(),
     ) else {
-        return asset_server.load(LOGO_PATH);
+        return asset_server.load(MUSIC_PLACEHOLDER_PATH);
     };
     let Ok(dynamic) = decoded.try_into_dynamic() else {
-        return asset_server.load(LOGO_PATH);
+        return asset_server.load(MUSIC_PLACEHOLDER_PATH);
     };
     // Library artwork can be several thousand pixels wide while its largest
     // presentation in the desktop UI is a small cover. Bounding retained

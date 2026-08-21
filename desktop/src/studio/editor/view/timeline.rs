@@ -123,7 +123,7 @@ pub(crate) fn spawn_editor_timeline(
                         left: px(0),
                         right: px(0),
                         top: px(0),
-                        height: percent(EDITOR_PITCH_TOP_PERCENT),
+                        height: percent(editor_pitch_top_percent(editor)),
                         border: UiRect::bottom(px(1)),
                         ..default()
                     },
@@ -243,15 +243,17 @@ pub(crate) fn spawn_editor_timeline(
                 // note's own box — the analyzer's raw evidence, never
                 // editable, sitting behind the waveform and notes as a
                 // spectrogram-like backdrop to author against.
-                {
-                    let visible_frames = editor
+                if !editor.spectrum_hidden {
+                    let viewport_end = editor.viewport_end();
+                    let frame_start = editor
                         .pitch_frames
+                        .partition_point(|frame| frame.time < editor.viewport_start);
+                    let frame_end = editor
+                        .pitch_frames
+                        .partition_point(|frame| frame.time <= viewport_end);
+                    let visible_frames = editor.pitch_frames[frame_start..frame_end]
                         .iter()
-                        .filter(|frame| {
-                            frame.time >= editor.viewport_start
-                                && frame.time <= editor.viewport_end()
-                                && frame.confidence >= 0.12
-                        })
+                        .filter(|frame| frame.confidence >= 0.12)
                         .cloned()
                         .collect::<Vec<_>>();
                     let reference = abstract_pitch_contour(&visible_frames, 320);
@@ -285,17 +287,25 @@ pub(crate) fn spawn_editor_timeline(
                     }
                 }
                 let peak_count = editor.waveform.peaks.len();
-                if peak_count > 0 && editor.waveform.duration_secs > 0.0 {
-                    let visible_peaks = editor
-                        .waveform
-                        .peaks
+                if !editor.spectrum_hidden && peak_count > 0 && editor.waveform.duration_secs > 0.0
+                {
+                    let peak_start = ((editor.viewport_start / editor.waveform.duration_secs)
+                        * peak_count as f64)
+                        .floor()
+                        .clamp(0.0, peak_count as f64)
+                        as usize;
+                    let peak_end = ((editor.viewport_end() / editor.waveform.duration_secs)
+                        * peak_count as f64)
+                        .ceil()
+                        .clamp(0.0, peak_count as f64) as usize;
+                    let visible_peaks = editor.waveform.peaks[peak_start..peak_end]
                         .iter()
                         .enumerate()
-                        .filter_map(|(index, peak)| {
+                        .map(|(offset, peak)| {
+                            let index = peak_start + offset;
                             let time =
                                 index as f64 / peak_count as f64 * editor.waveform.duration_secs;
-                            (time >= editor.viewport_start && time <= editor.viewport_end())
-                                .then_some((time, *peak))
+                            (time, *peak)
                         })
                         .collect::<Vec<_>>();
                     // Reduce each bar's whole span to its true min/max instead
@@ -651,10 +661,13 @@ pub(crate) fn open_waveform_menu_from_click(
     let Some(editor) = state.editor.as_mut() else {
         return;
     };
+    if editor.spectrum_hidden {
+        return;
+    }
     editor.waveform_context = Some(WaveformContextMenu {
         position: event.pointer_location.position,
     });
-    invalidated.invalidate(UiDirtyRegion::Editor);
+    invalidated.invalidate(UiDirtyRegion::Dialog);
 }
 
 /// Anchors a context menu at `pointer` (window coordinates — the editor has

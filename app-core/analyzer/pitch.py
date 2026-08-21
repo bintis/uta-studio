@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -222,8 +223,22 @@ def _analyze_pitch_in_process(vocals_path: str, output_dir: str, file_hash: str,
     }
     notes = {"format_version": FORMAT_VERSION, "notes": segment_notes(frames)}
 
-    track_path.write_text(json.dumps(track, ensure_ascii=False), encoding="utf-8")
-    notes_path.write_text(json.dumps(notes, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(track_path, track)
+    _atomic_write_json(notes_path, notes)
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False)
+        os.replace(temporary_path, path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def analyze_pitch(vocals_path: str, output_dir: str, file_hash: str, models_dir: str) -> None:

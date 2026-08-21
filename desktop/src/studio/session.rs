@@ -3,6 +3,7 @@ use crate::studio::*;
 pub(crate) const FONT_PATH: &str = "desktop/assets/fonts/NotoSansCJKsc-Regular.otf";
 
 pub(crate) const LOGO_PATH: &str = "icon.png";
+pub(crate) const MUSIC_PLACEHOLDER_PATH: &str = "desktop/assets/icons/music-placeholder.png";
 
 /// Baked into the binary (see `setup`'s `BrandImages`) rather than loaded
 /// via `AssetServer` like `LOGO_PATH` -- neither needs to be user-replaceable
@@ -125,9 +126,7 @@ pub(crate) enum PendingLeave {
 }
 
 #[derive(Resource)]
-pub(crate) struct NativeAudio(
-    #[allow(dead_code)] pub(crate) Arc<uta_studio_audio::EditorAudioPlayer>,
-);
+pub(crate) struct NativeAudio(pub(crate) Arc<uta_studio_audio::EditorAudioPlayer>);
 
 /// The synthesized pitch stream. It is a second player so auditioning a note
 /// target never alters, mixes into, or re-encodes the song audio.

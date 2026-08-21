@@ -1,4 +1,7 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ANALYSIS_LOG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct AnalyzerState {
     pub(crate) queue: VecDeque<String>,
@@ -18,6 +21,10 @@ pub(crate) static LIVE_ANALYSIS: LazyLock<Mutex<HashMap<String, AnalysisProgress
     LazyLock::new(|| Mutex::new(HashMap::new()));
 pub(crate) static ANALYSIS_STARTED: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static STOP_REQUESTED: LazyLock<Mutex<BTreeSet<String>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+pub(crate) static RETRY_ATTEMPT_ROUTES: LazyLock<Mutex<HashMap<String, Vec<AnalysisStageRoute>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn unix_time_ms() -> i64 {
     SystemTime::now()
@@ -25,6 +32,218 @@ pub(crate) fn unix_time_ms() -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+pub(crate) fn create_analysis_log(file_hash: &str, started_at_ms: i64) -> Option<PathBuf> {
+    let root = crate::cache::uta_studio_dir().join("analysis-logs");
+    std::fs::create_dir_all(&root).ok()?;
+    let safe_hash: String = file_hash
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .take(48)
+        .collect();
+    let safe_hash = if safe_hash.is_empty() {
+        "unknown"
+    } else {
+        &safe_hash
+    };
+    let sequence = ANALYSIS_LOG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run_id = format!("{}-{sequence}", std::process::id());
+    let path = root.join(format!("{started_at_ms}-{safe_hash}-{run_id}.jsonl"));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    use std::io::Write as _;
+    let record = serde_json::json!({
+        "timestamp_ms": unix_time_ms(),
+        "record_type": "run_requested",
+        "run_id": run_id,
+        "file_hash": file_hash,
+    });
+    let _ = serde_json::to_writer(&mut file, &record);
+    let _ = writeln!(file);
+    Some(path)
+}
+
+pub(crate) fn append_analysis_log_path(path: Option<&Path>, message: &str) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        use std::io::Write as _;
+        let record = serde_json::json!({
+            "timestamp_ms": unix_time_ms(),
+            "record_type": "native_event",
+            "message": message,
+        });
+        let _ = serde_json::to_writer(&mut file, &record);
+        let _ = writeln!(file);
+    }
+}
+
+pub(crate) fn append_analysis_log_node_event(
+    path: Option<&Path>,
+    node_id: &str,
+    event: &str,
+    progress: usize,
+    message: &str,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        use std::io::Write as _;
+        let record = serde_json::json!({
+            "timestamp_ms": unix_time_ms(),
+            "record_type": "node_event",
+            "node_id": node_id,
+            "event": event,
+            "stage_progress": progress.min(100),
+            "msg": message,
+            "implementation": "Uta Studio native preflight",
+            "requested_device": "cpu",
+            "actual_device": "cpu",
+        });
+        let _ = serde_json::to_writer(&mut file, &record);
+        let _ = writeln!(file);
+    }
+}
+
+pub(crate) fn append_analysis_log_attempt(
+    path: Option<&Path>,
+    attempt: usize,
+    reason: Option<&str>,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        use std::io::Write as _;
+        let record = serde_json::json!({
+            "timestamp_ms": unix_time_ms(),
+            "record_type": "attempt_started",
+            "attempt": attempt,
+            "reason": reason,
+        });
+        let _ = serde_json::to_writer(&mut file, &record);
+        let _ = writeln!(file);
+    }
+}
+
+pub(crate) fn append_analysis_log_terminal(
+    path: Option<&Path>,
+    status: &str,
+    message: Option<&str>,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        use std::io::Write as _;
+        let record = serde_json::json!({
+            "timestamp_ms": unix_time_ms(),
+            "record_type": "history_terminal",
+            "status": status,
+            "message": message,
+        });
+        let _ = serde_json::to_writer(&mut file, &record);
+        let _ = writeln!(file);
+    }
+}
+
+pub(crate) fn append_analysis_artifacts(path: Option<&Path>, routes: &[AnalysisStageRoute]) {
+    let Some(path) = path else {
+        return;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) else {
+        return;
+    };
+    use std::io::Write as _;
+    for route in routes {
+        for artifact in &route.committed_outputs {
+            let record = serde_json::json!({
+                "timestamp_ms": unix_time_ms(),
+                "record_type": "artifact_committed",
+                "node_id": route.node_id,
+                "artifact_kind": artifact.artifact_kind,
+                "binding_kind": artifact.binding_kind,
+                "path": artifact.path,
+                "immutable_path": artifact.immutable_path,
+                "content_hash": artifact.content_hash,
+                "byte_size": artifact.byte_size,
+                "capture_error": artifact.capture_error,
+            });
+            let _ = serde_json::to_writer(&mut file, &record);
+            let _ = writeln!(file);
+        }
+    }
+}
+
+pub fn analysis_log_path_for(run_id: Option<i64>, file_hash: &str) -> Option<PathBuf> {
+    if let Some(run_id) = run_id {
+        return load_analysis_history(500)
+            .into_iter()
+            .find(|run| run.id == run_id && run.file_hash == file_hash)
+            .and_then(|run| run.log_path.or(run.snapshot.analysis_log_path));
+    }
+    LIVE_ANALYSIS
+        .lock()
+        .unwrap()
+        .get(file_hash)
+        .and_then(|snapshot| snapshot.analysis_log_path.clone())
+}
+
+pub fn analysis_log_lines(
+    run_id: Option<i64>,
+    file_hash: &str,
+    node_id: Option<&str>,
+    limit: usize,
+) -> Vec<crate::applog::LogLine> {
+    let Some(path) = analysis_log_path_for(run_id, file_hash) else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut lines: Vec<crate::applog::LogLine> = contents
+        .lines()
+        .filter(|line| analysis_log_line_matches_node(line, node_id))
+        .map(|line| {
+            let timestamp_ms = serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|value| value.get("timestamp_ms").and_then(|value| value.as_i64()))
+                .or_else(|| {
+                    line.split_once(' ')
+                        .and_then(|(value, _)| value.parse().ok())
+                })
+                .unwrap_or(0);
+            crate::applog::LogLine {
+                timestamp_ms,
+                text: line.to_string(),
+            }
+        })
+        .collect();
+    let keep = limit.clamp(1, 2_000);
+    if lines.len() > keep {
+        lines.drain(..lines.len() - keep);
+    }
+    lines
+}
+
+pub(crate) fn analysis_log_line_matches_node(line: &str, node_id: Option<&str>) -> bool {
+    let Some(node_id) = node_id else {
+        return true;
+    };
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        return value.get("node_id").and_then(|value| value.as_str()) == Some(node_id)
+            || !matches!(
+                value.get("record_type").and_then(|value| value.as_str()),
+                Some("node_event" | "process_output")
+            );
+    }
+    line.contains(&format!("node={node_id}")) || !line.contains("[progress]")
 }
 
 /// Maps a route's last recorded structured event kind
@@ -37,12 +256,21 @@ pub(crate) fn unix_time_ms() -> i64 {
 /// "incomplete".
 pub(crate) fn node_attempt_status(node_event: Option<&str>) -> &'static str {
     match node_event {
-        Some("node_completed") => "succeeded",
-        Some("node_failed") => "failed",
-        Some("artifact_reused") => "reused",
-        Some("node_skipped") => "bypassed",
+        Some("completed" | "node_completed") => "succeeded",
+        Some("failed" | "node_failed") => "failed",
+        Some("reused" | "artifact_reused") => "reused",
+        Some("skipped" | "node_skipped") => "bypassed",
+        Some("cancelled" | "node_cancelled") => "cancelled",
         _ => "incomplete",
     }
+}
+
+pub(crate) fn take_stop_requested(file_hash: &str) -> bool {
+    STOP_REQUESTED.lock().unwrap().remove(file_hash)
+}
+
+pub fn analysis_stop_requested(file_hash: &str) -> bool {
+    STOP_REQUESTED.lock().unwrap().contains(file_hash)
 }
 
 pub(crate) fn node_attempt_status_for_route(route: &AnalysisStageRoute) -> &'static str {
@@ -66,9 +294,14 @@ pub(crate) fn record_node_attempts(
     file_hash: &str,
     snapshot: &AnalysisProgressSnapshot,
 ) {
-    let attempts: Vec<library_db::NewAnalysisNodeAttempt> = snapshot
-        .stage_routes
+    let previous_routes = RETRY_ATTEMPT_ROUTES
+        .lock()
+        .unwrap()
+        .remove(file_hash)
+        .unwrap_or_default();
+    let attempts: Vec<library_db::NewAnalysisNodeAttempt> = previous_routes
         .iter()
+        .chain(snapshot.stage_routes.iter())
         .filter_map(|route| {
             let node_id = route.node_id.as_deref()?;
             Some(library_db::NewAnalysisNodeAttempt {
@@ -96,24 +329,32 @@ pub(crate) fn finish_analysis_history(file_hash: &str, status: &str, error_messa
     let Some(started_at_ms) = ANALYSIS_STARTED.lock().unwrap().remove(file_hash) else {
         return;
     };
-    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
-        return;
-    };
     let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get(file_hash).cloned() else {
         return;
     };
+    let song = library_db::load_song_by_hash(file_hash).ok().flatten();
+    let title = song
+        .as_ref()
+        .map(|song| song.title.as_str())
+        .unwrap_or(file_hash);
+    let artist = song
+        .as_ref()
+        .map(|song| song.artist.as_str())
+        .unwrap_or("Unknown artist");
+    append_analysis_log_terminal(snapshot.analysis_log_path.as_deref(), status, error_message);
     let Ok(snapshot_json) = serde_json::to_string(&snapshot) else {
         return;
     };
     let Ok(run_id) = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
         file_hash,
-        title: &song.title,
-        artist: &song.artist,
+        title,
+        artist,
         status,
         started_at_ms,
         finished_at_ms: unix_time_ms(),
         snapshot_json: &snapshot_json,
         error_message,
+        log_path: snapshot.analysis_log_path.as_deref(),
     }) else {
         return;
     };
@@ -138,18 +379,58 @@ pub(crate) fn finish_analysis_history(file_hash: &str, status: &str, error_messa
         }
         Err(error) => {
             let message = format!("Artifact lineage recording failed after output commit: {error}");
-            warn!("[analyzer] {message}");
-            crate::applog::record_log_text(&message);
+            append_analysis_log_path(snapshot.analysis_log_path.as_deref(), &message);
             let _ = library_db::analysis_history_set_error(run_id, &message);
         }
     }
 }
 
 pub(crate) fn update_live_analysis(file_hash: &str, snapshot: AnalysisProgressSnapshot) {
-    LIVE_ANALYSIS
+    let mut live = LIVE_ANALYSIS.lock().unwrap();
+    let mut snapshot = snapshot;
+    // A progress message is never the durable success boundary. Only
+    // `finalize_song`, after committed outputs have been checked, may set
+    // the run to 100%.
+    snapshot.overall_progress = snapshot.overall_progress.min(99);
+    if let Some(previous) = live.get(file_hash) {
+        snapshot.overall_progress = snapshot
+            .overall_progress
+            .max(previous.overall_progress.min(99));
+        if snapshot.analysis_log_path.is_none() {
+            snapshot.analysis_log_path = previous.analysis_log_path.clone();
+        }
+        let current_nodes: BTreeSet<_> = snapshot
+            .stage_routes
+            .iter()
+            .filter_map(|route| route.node_id.clone())
+            .collect();
+        let mut retained: Vec<_> = previous
+            .stage_routes
+            .iter()
+            .filter(|route| {
+                route
+                    .node_id
+                    .as_deref()
+                    .is_none_or(|node_id| !current_nodes.contains(node_id))
+            })
+            .cloned()
+            .collect();
+        retained.extend(snapshot.stage_routes);
+        snapshot.stage_routes = retained;
+    }
+    live.insert(file_hash.to_string(), snapshot);
+}
+
+pub(crate) fn preserve_retry_attempt(file_hash: &str) {
+    let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get(file_hash).cloned() else {
+        return;
+    };
+    RETRY_ATTEMPT_ROUTES
         .lock()
         .unwrap()
-        .insert(file_hash.to_string(), snapshot);
+        .entry(file_hash.to_string())
+        .or_default()
+        .extend(snapshot.stage_routes);
 }
 
 pub(crate) fn capture_committed_outputs(file_hash: &str, routes: &mut [AnalysisStageRoute]) {
@@ -400,7 +681,10 @@ pub(crate) fn resolve_frozen_config(
 /// Empty `targets` means "no special intent was stashed for this run" --
 /// self-contained default of "run everything," so callers don't have to
 /// duplicate that empty-check themselves.
-fn configured_active_stem_nodes() -> BTreeSet<crate::analysis_graph::AnalysisNodeId> {
+fn configured_audio_processing() -> (
+    crate::audio_processing::AudioProcessingPlanSnapshot,
+    BTreeSet<crate::analysis_graph::AnalysisNodeId>,
+) {
     use crate::audio_processing::AudioProcessingSettings;
 
     let config = crate::config::AppConfig::load();
@@ -408,7 +692,11 @@ fn configured_active_stem_nodes() -> BTreeSet<crate::analysis_graph::AnalysisNod
         .audio_processing
         .clone()
         .unwrap_or_else(|| AudioProcessingSettings::from_legacy_separator(config.separator()));
-    crate::analysis_graph::active_stem_nodes_from_settings(&settings)
+    let active = crate::analysis_graph::active_stem_nodes_from_settings(&settings);
+    (
+        crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&settings),
+        active,
+    )
 }
 
 pub(crate) fn build_execution_plan(
@@ -427,6 +715,7 @@ pub(crate) fn build_execution_plan(
     } else {
         targets.clone()
     };
+    let (audio_processing, active_stem_nodes) = configured_audio_processing();
     let request = AnalysisRequest {
         file_hash: String::new(),
         targets: effective_targets,
@@ -436,7 +725,8 @@ pub(crate) fn build_execution_plan(
         lyrics_route: LyricsRoute::WhisperAsr,
         model_availability: BTreeMap::new(),
         profile_snapshot: AnalysisProfileSnapshot::default(),
-        active_stem_nodes: configured_active_stem_nodes(),
+        active_stem_nodes,
+        audio_processing: Some(audio_processing),
     };
     build_plan(&graph, &request)
 }
@@ -491,6 +781,8 @@ pub(crate) fn pipeline_flags_from_plan(plan: &crate::analysis_plan::AnalysisPlan
         || will_run("stems.vocals")
         || will_run("stems.bind_analysis_outputs")
         || will_run("stems.instrumental")
+        || will_run("instrumental.denoise")
+        || will_run("instrumental.dereverb")
         || will_run("stems.multistem");
     let skip_separation = !separation_will_run && !freeze_separation;
     let skip_pitch = !will_run("pitch.extract") && !freeze_pitch;
@@ -574,10 +866,10 @@ pub(crate) fn pipeline_can_honor_disable(id: &crate::analysis_graph::AnalysisNod
 /// has no config-driven invalidation today (its cache-hit check is pure
 /// file-existence), so freezing it is currently equivalent to ordinary
 /// cache reuse -- wired anyway for API/UI symmetry and so it stays correct
-/// if pitch ever grows parameterized cache invalidation. The lyrics nodes
-/// don't qualify: their output is merged into the single `transcript.json`
-/// (Phase 4 §4.4 artifact splitting hasn't happened), so there is no
-/// standalone file to freeze independently of the whole transcript.
+/// if pitch ever grows parameterized cache invalidation. Lyrics outputs are
+/// now split into typed artifacts, but the Python pipeline still has no
+/// independent freeze control for those stages, so this predicate remains
+/// deliberately narrower than the artifact schema.
 pub(crate) fn pipeline_can_honor_freeze(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
     matches!(id.as_str(), "stems.separate" | "pitch.extract")
 }
@@ -657,6 +949,12 @@ pub fn run_analysis_request(request: crate::analysis_plan::AnalysisRequest) -> R
                 "{id} cannot be disabled for a single run yet -- it is computed together with sibling nodes that always run"
             ));
         }
+    }
+    let plan =
+        crate::analysis_plan::build_plan(&crate::analysis_graph::baseline_graph_spec(), &request)
+            .map_err(|error| error.to_string())?;
+    if let Some(warning) = plan.warnings.first() {
+        return Err(format!("{}: {}", warning.node, warning.message));
     }
     if let Err(warnings) = pipeline_flags_for_request(
         &request.targets,
@@ -870,7 +1168,6 @@ pub(crate) fn node_config_field_for(
 ) -> Option<crate::analysis_profile::ProfileField> {
     use crate::analysis_profile::ProfileField;
     match node_id {
-        "stems.separate" => Some(ProfileField::Separator),
         "lyrics.transcribe" => Some(ProfileField::AsrEngine),
         "lyrics.align" => Some(ProfileField::AlignmentBackend),
         _ => None,
@@ -992,8 +1289,31 @@ pub(crate) fn preview_analysis_request_for(
         });
     let availability_params =
         crate::vendor::model_availability_params_for_profile(&profile_snapshot);
-    let model_availability = crate::vendor::node_model_availability_for(&availability_params);
+    let mut model_availability = crate::vendor::node_model_availability_for(&availability_params);
     let pending = pending_analysis_intent(file_hash);
+    let config = AppConfig::load();
+    let audio_settings = config.audio_processing.clone().unwrap_or_else(|| {
+        crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
+            &profile_snapshot.separator,
+        )
+    });
+    let audio_processing =
+        crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&audio_settings);
+    let mut all_audio_models_ready = true;
+    for step in &audio_processing.steps {
+        let ready = crate::audio_processing::get_audio_model_status(&step.model_id)
+            .is_ok_and(|status| status.state == "installed");
+        all_audio_models_ready &= ready;
+        model_availability.insert(
+            crate::analysis_graph::analysis_node_for_audio_step(&step.step_id),
+            ready,
+        );
+    }
+    model_availability.insert(
+        crate::analysis_graph::AnalysisNodeId::new("stems.separate"),
+        all_audio_models_ready,
+    );
+    let active_stem_nodes = crate::analysis_graph::active_stem_nodes_from_settings(&audio_settings);
     let mut disabled_nodes = disabled_nodes;
     disabled_nodes.extend(pending.disabled_nodes);
     AnalysisRequest {
@@ -1005,7 +1325,8 @@ pub(crate) fn preview_analysis_request_for(
         lyrics_route: LyricsRoute::WhisperAsr,
         model_availability,
         profile_snapshot,
-        active_stem_nodes: configured_active_stem_nodes(),
+        active_stem_nodes,
+        audio_processing: Some(audio_processing),
     }
 }
 
@@ -1196,6 +1517,41 @@ pub fn cancel_analysis_run(file_hash: &str) -> Result<(), String> {
     PENDING_NODE_INTENTS.lock().unwrap().remove(file_hash);
     FROZEN_CONFIGS.lock().unwrap().remove(file_hash);
     Ok(())
+}
+
+/// Stops either a queued or active run. Active work is terminated through
+/// the child handle rather than the server mutex, which is intentionally
+/// held by the monitoring worker for the duration of a model call.
+pub fn stop_analysis_run(file_hash: &str) -> Result<(), String> {
+    let state = ANALYZER.lock().unwrap();
+    let active = state.active_hash.as_deref() == Some(file_hash);
+    let queued = state.queue.iter().any(|hash| hash == file_hash);
+    drop(state);
+    if !active {
+        return if queued {
+            cancel_analysis_run(file_hash)
+        } else {
+            Err(format!("{file_hash} is not currently queued or running"))
+        };
+    }
+    STOP_REQUESTED.lock().unwrap().insert(file_hash.to_string());
+    let result = ACTIVE_SERVER_CHILD
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "the analyzer process is not available".to_string())
+        .and_then(|child| {
+            child
+                .lock()
+                .map_err(|_| "the analyzer process lock is unavailable".to_string())?
+                .kill()
+                .map_err(|error| format!("could not stop analyzer process: {error}"))
+        });
+    if result.is_err() {
+        STOP_REQUESTED.lock().unwrap().remove(file_hash);
+    }
+    result
 }
 
 pub fn enqueue_all(filters: &LibraryMenuFilters) {

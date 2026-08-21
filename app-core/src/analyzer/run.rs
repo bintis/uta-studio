@@ -28,16 +28,45 @@ pub(crate) fn spawn_worker() {
     });
 }
 
+/// Removes only crash/stop leftovers created by this song's atomic writers.
+/// Final cache paths and immutable artifact revisions never match this
+/// dot-prefixed temporary naming convention and are therefore preserved.
+pub(crate) fn cleanup_unfinished_output_temps(cache: &CacheDir, file_hash: &str) {
+    let prefix = format!(".{file_hash}_");
+    let Ok(entries) = std::fs::read_dir(&cache.path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(&prefix) && name.contains(".tmp") {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
+    let started_at_ms = unix_time_ms();
     ANALYSIS_STARTED
         .lock()
         .unwrap()
-        .insert(initial_hash.to_string(), unix_time_ms());
+        .insert(initial_hash.to_string(), started_at_ms);
+    let analysis_log_path = create_analysis_log(initial_hash, started_at_ms);
+    append_analysis_log_node_event(
+        analysis_log_path.as_deref(),
+        "preflight",
+        "started",
+        0,
+        "Validating source media",
+    );
     update_queue_status(initial_hash, QueuedStatus::Analyzing(0));
     update_live_analysis(
         initial_hash,
         AnalysisProgressSnapshot {
             stage: "preparing".into(),
+            overall_progress: 0,
             stage_progress: 0,
             operation: "Validating source media".into(),
             detail: "Checking the source before the analysis runtime starts.".into(),
@@ -49,10 +78,33 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
             fallback_reason: None,
             backend_fallback_from: None,
             backend_fallback_reason: None,
-            stage_routes: Vec::new(),
+            stage_routes: vec![AnalysisStageRoute {
+                stage: "preparing".into(),
+                node_id: Some("preflight".into()),
+                node_event: Some("started".into()),
+                binding_kind: None,
+                committed_outputs: Vec::new(),
+                input_revision_ids: Vec::new(),
+                operation: "Validating source media".into(),
+                implementation: "Uta Studio native preflight".into(),
+                model: "Source validation".into(),
+                stage_progress: 0,
+                requested_device: "cpu".into(),
+                actual_device: "cpu".into(),
+                fallback_from: None,
+                fallback_reason: None,
+                backend_fallback_from: None,
+                backend_fallback_reason: None,
+                started_at_ms: Some(started_at_ms),
+                finished_at_ms: None,
+                event_at_ms: Some(started_at_ms),
+                work_units_completed: None,
+                work_units_total: None,
+            }],
             node_id: Some("preflight".to_string()),
-            node_event: Some("node_started".to_string()),
+            node_event: Some("started".to_string()),
             artifact_reused_reason: None,
+            analysis_log_path: analysis_log_path.clone(),
         },
     );
     // Note: a `reanalyze_pitch`-style backup recorded into
@@ -66,18 +118,66 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     // silent data loss -- strictly better than the pre-fix behavior, even
     // though it isn't auto-restored here.
     let Some(song) = library_db::load_song_by_hash(initial_hash).ok().flatten() else {
-        warn!("[analyzer] Song with hash {initial_hash} not found in store, skipping");
+        let failed_at_ms = unix_time_ms();
+        if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(initial_hash) {
+            snapshot.node_event = Some("failed".into());
+            snapshot.detail = "Song record disappeared before analysis could start".into();
+            if let Some(route) = snapshot.stage_routes.first_mut() {
+                route.node_event = Some("failed".into());
+                route.finished_at_ms = Some(failed_at_ms);
+                route.event_at_ms = Some(failed_at_ms);
+            }
+        }
+        append_analysis_log_node_event(
+            analysis_log_path.as_deref(),
+            "preflight",
+            "failed",
+            0,
+            "Song record disappeared before analysis could start",
+        );
+        append_analysis_log_path(
+            analysis_log_path.as_deref(),
+            "song record disappeared before analysis could start",
+        );
+        finish_analysis_history(
+            initial_hash,
+            "failed",
+            Some("song record disappeared before analysis could start"),
+        );
+        remove_from_queue(initial_hash);
+        LIVE_ANALYSIS.lock().unwrap().remove(initial_hash);
         return;
     };
 
     let (song, local_path, file_hash_owned) = match prepare_audio_for_analysis(&song, cache) {
         Ok(out) => out,
         Err(e) => {
-            warn!("[analyzer] Failed to prepare audio for analysis: {e}");
+            let failed_at_ms = unix_time_ms();
+            if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(initial_hash) {
+                snapshot.node_event = Some("failed".into());
+                snapshot.detail = e.to_string();
+                if let Some(route) = snapshot.stage_routes.first_mut() {
+                    route.node_event = Some("failed".into());
+                    route.finished_at_ms = Some(failed_at_ms);
+                    route.event_at_ms = Some(failed_at_ms);
+                }
+            }
+            append_analysis_log_node_event(
+                analysis_log_path.as_deref(),
+                "preflight",
+                "failed",
+                0,
+                &e.to_string(),
+            );
+            append_analysis_log_path(
+                analysis_log_path.as_deref(),
+                &format!("source preparation failed: {e}"),
+            );
             update_queue_status(
                 initial_hash,
                 QueuedStatus::Failed(format!("audio prep failed: {e}")),
             );
+            finish_analysis_history(initial_hash, "failed", Some(&e.to_string()));
             return;
         }
     };
@@ -100,10 +200,12 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
         }
     }
 
-    info!(
-        "[analyzer] Starting analysis: {} (hash={})",
-        local_path.display(),
-        file_hash
+    append_analysis_log_path(
+        analysis_log_path.as_deref(),
+        &format!(
+            "starting source={} file_hash={file_hash}",
+            local_path.display()
+        ),
     );
 
     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
@@ -166,11 +268,18 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
         .as_ref()
         .map(|i| i.backup_paths.clone())
         .unwrap_or_default();
+    let run_work_dir = std::env::temp_dir().join(format!(
+        "uta-studio-analysis-{}-{}",
+        std::process::id(),
+        unix_time_ms()
+    ));
+    let _ = std::fs::create_dir_all(&run_work_dir);
     let resolve_backups = || {
         for (original, backup) in &backup_paths {
             restore_or_commit_backup(original, backup);
         }
         ACTIVE_CAPTURE_REQUESTS.lock().unwrap().remove(file_hash);
+        let _ = std::fs::remove_dir_all(&run_work_dir);
     };
 
     if !node_targets.is_empty() && file_hash != initial_hash {
@@ -279,6 +388,9 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
             "demucs_overlap_pct": config.demucs_overlap_pct(),
         },
         "audio_processing": audio_processing,
+        "run_work_dir": run_work_dir,
+        "analysis_log_path": analysis_log_path.clone(),
+        "node_weights": historical_progress_weights(),
         "engine": effective_asr_engine,
         "align_backend": effective_align_backend,
         "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
@@ -326,13 +438,19 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
 
     let json_str = serde_json::to_string(&cmd_json).unwrap();
     let mut retried = false;
+    let mut attempt = 1;
+    append_analysis_log_attempt(analysis_log_path.as_deref(), attempt, None);
 
     loop {
         let mut guard = ANALYZER_SERVER.lock().unwrap();
 
         if let Err(e) = ensure_server(&mut guard) {
-            warn!("[analyzer] Failed to start server: {e}");
+            append_analysis_log_path(
+                analysis_log_path.as_deref(),
+                &format!("analyzer service failed to start: {e}"),
+            );
             update_queue_status(file_hash, QueuedStatus::Failed(e.to_string()));
+            finish_analysis_history(file_hash, "failed", Some(&e.to_string()));
             resolve_backups();
             return;
         }
@@ -345,31 +463,91 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
                 return;
             }
             Ok(SongResult::Oom) => {
-                warn!("[analyzer] CUDA OOM, killing server to free GPU memory");
+                append_analysis_log_path(
+                    analysis_log_path.as_deref(),
+                    "analyzer reported out-of-memory; restarting the service",
+                );
                 *guard = None;
 
                 if !retried {
                     retried = true;
-                    info!("[analyzer] Respawning server and retrying with clean GPU");
+                    preserve_retry_attempt(file_hash);
+                    attempt += 1;
+                    append_analysis_log_path(
+                        analysis_log_path.as_deref(),
+                        "retrying after a clean analyzer restart",
+                    );
+                    append_analysis_log_attempt(
+                        analysis_log_path.as_deref(),
+                        attempt,
+                        Some("out_of_memory"),
+                    );
                     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
                     continue;
                 }
                 update_queue_status(file_hash, QueuedStatus::Failed("CUDA out of memory".into()));
+                finish_analysis_history(file_hash, "failed", Some("CUDA out of memory"));
                 resolve_backups();
                 return;
             }
             Ok(SongResult::Error(msg)) => {
-                update_queue_status(file_hash, QueuedStatus::Failed(msg));
+                append_analysis_log_path(
+                    analysis_log_path.as_deref(),
+                    &format!("analysis failed: {msg}"),
+                );
+                update_queue_status(file_hash, QueuedStatus::Failed(msg.clone()));
+                finish_analysis_history(file_hash, "failed", Some(&msg));
                 resolve_backups();
                 return;
             }
             Err(e) => {
-                warn!("[analyzer] Server crashed: {e}");
+                if take_stop_requested(file_hash) {
+                    append_analysis_log_path(
+                        analysis_log_path.as_deref(),
+                        "analysis stopped by the user",
+                    );
+                    if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
+                        snapshot.operation = "Analysis stopped".into();
+                        snapshot.detail =
+                            "Stopped by the user; committed outputs were kept.".into();
+                        snapshot.node_event = Some("cancelled".into());
+                        if let Some(node_id) = snapshot.node_id.as_deref()
+                            && let Some(route) = snapshot
+                                .stage_routes
+                                .iter_mut()
+                                .find(|route| route.node_id.as_deref() == Some(node_id))
+                        {
+                            route.node_event = Some("cancelled".into());
+                            route.finished_at_ms = Some(unix_time_ms());
+                        }
+                    }
+                    *guard = None;
+                    cleanup_unfinished_output_temps(cache, file_hash);
+                    finish_analysis_history(file_hash, "cancelled", Some("cancelled by user"));
+                    remove_from_queue(file_hash);
+                    LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
+                    resolve_backups();
+                    return;
+                }
+                append_analysis_log_path(
+                    analysis_log_path.as_deref(),
+                    &format!("analyzer service connection failed: {e}"),
+                );
                 *guard = None;
 
                 if !retried {
                     retried = true;
-                    info!("[analyzer] Respawning server and retrying");
+                    preserve_retry_attempt(file_hash);
+                    attempt += 1;
+                    append_analysis_log_path(
+                        analysis_log_path.as_deref(),
+                        "retrying after analyzer service crash",
+                    );
+                    append_analysis_log_attempt(
+                        analysis_log_path.as_deref(),
+                        attempt,
+                        Some("analyzer_service_crash"),
+                    );
                     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
                     continue;
                 }
@@ -377,6 +555,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
                     file_hash,
                     QueuedStatus::Failed(format!("Server crashed: {e}")),
                 );
+                finish_analysis_history(file_hash, "failed", Some(&format!("Server crashed: {e}")));
                 resolve_backups();
                 return;
             }
@@ -398,6 +577,7 @@ pub(crate) fn finalize_song(file_hash: &str, cache: &CacheDir) {
         );
         if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
             snapshot.stage = "complete".into();
+            snapshot.overall_progress = 100;
             snapshot.stage_progress = 100;
             snapshot.operation = "Analysis complete".into();
             snapshot.detail = "All requested analysis stages completed successfully.".into();
@@ -410,15 +590,25 @@ pub(crate) fn finalize_song(file_hash: &str, cache: &CacheDir) {
                 route.operation = "Analysis complete".into();
             }
         }
+        let log_path = LIVE_ANALYSIS
+            .lock()
+            .unwrap()
+            .get(file_hash)
+            .and_then(|snapshot| snapshot.analysis_log_path.clone());
+        append_analysis_log_path(log_path.as_deref(), "analysis completed successfully");
         finish_analysis_history(file_hash, "completed", None);
         remove_from_queue(file_hash);
         LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
-        info!("[analyzer] Analysis complete for {file_hash}");
     } else {
-        update_queue_status(
-            file_hash,
-            QueuedStatus::Failed("Transcript file not found after analysis".into()),
-        );
+        let message = "Transcript file not found after analysis";
+        let log_path = LIVE_ANALYSIS
+            .lock()
+            .unwrap()
+            .get(file_hash)
+            .and_then(|snapshot| snapshot.analysis_log_path.clone());
+        append_analysis_log_path(log_path.as_deref(), message);
+        update_queue_status(file_hash, QueuedStatus::Failed(message.into()));
+        finish_analysis_history(file_hash, "failed", Some(message));
     }
 }
 
@@ -821,15 +1011,19 @@ pub(crate) fn send_and_monitor(
                 event,
                 artifact_reused_reason,
             } => {
-                if !msg.is_empty() {
-                    info!("[analyzer] progress {pct}% {msg}");
-                }
                 if let Some(hash) = progress_hash {
+                    let analysis_log_path = LIVE_ANALYSIS
+                        .lock()
+                        .unwrap()
+                        .get(hash)
+                        .and_then(|snapshot| snapshot.analysis_log_path.clone());
                     capture_committed_outputs(hash, &mut stage_routes);
+                    append_analysis_artifacts(analysis_log_path.as_deref(), &stage_routes);
                     update_live_analysis(
                         hash,
                         AnalysisProgressSnapshot {
                             stage,
+                            overall_progress: (pct as usize).clamp(0, 100),
                             stage_progress,
                             operation,
                             detail: msg,
@@ -845,6 +1039,7 @@ pub(crate) fn send_and_monitor(
                             node_id,
                             node_event: event,
                             artifact_reused_reason,
+                            analysis_log_path,
                         },
                     );
                     update_queue_status(hash, QueuedStatus::Analyzing(pct as usize));

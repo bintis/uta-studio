@@ -1,7 +1,7 @@
 # Uta Studio User Guide / 用户说明书 / ユーザーガイド
 
 **Applies to:** Uta Studio 0.5.1
-**Document revision:** 2026-08-18
+**Document revision:** 2026-08-21
 **License:** Documentation distributed with the GPL-3.0 project.
 
 [English](#english) · [简体中文](#简体中文) · [日本語](#日本語)
@@ -153,13 +153,13 @@ Library playback includes previous/next, pause/play, repeat modes, shuffle, mute
 
 ### 6. Analysis pipeline
 
-Uta Studio uses four explicit stages. Generated files from these stages are typed **analysis artifacts**; inspect revisions, lineage, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
+Uta Studio executes an explicit node-based DAG. Generated files are typed **analysis artifacts**; inspect revisions, lineage, real node progress, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
 
-#### 01 · Vocal separation
+#### 01 · Vocal and BGM separation
 
-Creates vocal and instrumental stems before recognition. Available choices depend on platform and configured runtime, and may include the legacy UVR Karaoke / Demucs / Intel OpenVINO path or the 0.5 audio catalog (BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem).
+Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
 
-Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline. Vocal, accompaniment, karaoke, denoise, and dereverb models can be chosen independently, including cleanup order; existing chart data changes only after re-analysis.
+Available choices depend on the configured runtime and can include BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline; existing chart data changes only after re-analysis.
 
 Use a balanced profile first. Memory-saving profiles reduce peak use; quality profiles usually take longer and can require more memory.
 
@@ -274,6 +274,8 @@ In **Settings → General**:
 
 - **Application log → View log** opens the current log when one exists.
 - **Feature API diagnostics → Run checks** verifies local APIs, native audio, and real temporary UTZ/UltraStar exports. The diagnostic temporary folder is removed after the check.
+
+Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens that run and filters by `node_id`; legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
 
 Include the application version, platform, selected runtime, relevant log excerpt, and reproducible steps in a bug report. Do not attach copyrighted source media unless you have permission.
 
@@ -407,7 +409,12 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 - `preflight` — checks that the local source and runtime are usable before work starts.
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
-- `stems.separate` — vocal and instrumental stems.
+- `stems.separate` — MINI-view aggregate derived from the real stem child nodes; it is not an executable Extract step.
+- `stems.vocals` — runs the selected vocal separation model.
+- `vocals.denoise` / `vocals.dereverb` — optional vocal post-processing in the configured slot order.
+- `stems.instrumental` — runs the independent BGM separation model.
+- `instrumental.denoise` / `instrumental.dereverb` — optional BGM post-processing in the configured slot order.
+- `stems.bind_analysis_outputs` — validates and binds the final vocal and BGM products for downstream consumers.
 - `pitch.extract` — pitch curve and note-candidate evidence.
 - `lyrics.preprocess` (Vocal Preprocessing) — vocal audio prepared for recognition and alignment; ephemeral unless captured.
 - `lyrics.transcribe` — recognized text.
@@ -575,13 +582,13 @@ Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模�
 
 ### 6. 分析流水线
 
-Uta Studio 使用四个明确阶段。这些阶段生成的文件是带类型的**分析产物**；可在歌曲的分析图中查看修订、来源和编辑器入口。详见[分析产物](guide:artifacts)。
+Uta Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分析产物**；可在歌曲分析图中查看修订、来源、真实节点进度和编辑器入口。详见[分析产物](guide:artifacts)。
 
-#### 01 · 人声分离
+#### 01 · 人声与 BGM 分离
 
-在识别前创建人声与伴奏分轨。可用选项取决于平台和运行环境，包括旧版 UVR Karaoke / Demucs / Intel OpenVINO，以及 0.5 音频目录（BS-RoFormer 人声、MelBand 伴奏、Karaoke 2、去噪、去混响和 HTDemucs 六声部）。
+人声与 BGM 使用彼此独立的分离分支。每个分支单独选择分离模型，之后有两个按顺序执行的后处理槽；每个槽可设为关闭、降噪或降回声。BGM 产物直接进入谱面构建，人声产物则进入音高与歌词分析。
 
-目录模型只能在 **设置 > 模型与运行环境** 中，确认名称、来源、体积和许可后安装。分析过程保持离线。人声、伴奏、卡拉 OK、去噪和去混响模型可独立选择（含清理顺序）；已有制谱数据只会在重新分析后改变。
+可用选项取决于已配置的运行环境，包括 BS-RoFormer 人声、MelBand BGM、Karaoke 2、降噪、降回声和 HTDemucs 六声部。目录模型只能在 **设置 > 模型与运行环境** 中，确认名称、来源、体积和许可后安装。分析过程保持离线；已有制谱数据只会在重新分析后改变。
 
 建议先使用“均衡”配置。节省内存配置可降低峰值占用；高质量配置通常更慢，并需要更多内存。
 
@@ -696,6 +703,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 - **应用日志 → 查看日志**：在日志存在时打开当前日志。
 - **功能 API 诊断 → 运行检查**：验证本地 API、原生音频以及真实的临时 UTZ/UltraStar 导出；诊断完成后会删除临时目录。
+
+每次分析运行都会在 `analysis-logs/` 下写入一个详细 JSONL 文件。DAG 节点的**查看日志**会打开所选运行并按 `node_id` 过滤；旧版运行会明确提示没有独立日志。分析进度、模型输出和 traceback 不会进入 `app.log`。确认清空分析历史时，只会同步删除 `analysis-logs/` 内由记录引用的日志文件。
 
 提交问题时，请包含应用版本、平台、所选运行环境、相关日志片段和可复现步骤。没有授权时，不要附带受版权保护的源媒体。
 
@@ -829,7 +838,12 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 - `preflight` — 在开始工作前检查本地源文件和运行环境是否可用。
 - `music.analysis` — 调性、节奏和描述符分析，供后续时间和谱面使用。
-- `stems.separate` — 人声与伴奏分轨。
+- `stems.separate` — MINI 视图中由真实分轨子节点派生的聚合节点，不是可执行的 Extract 步骤。
+- `stems.vocals` — 执行所选人声分离模型。
+- `vocals.denoise` / `vocals.dereverb` — 按配置槽位顺序执行的可选人声后处理。
+- `stems.instrumental` — 执行独立的 BGM 分离模型。
+- `instrumental.denoise` / `instrumental.dereverb` — 按配置槽位顺序执行的可选 BGM 后处理。
+- `stems.bind_analysis_outputs` — 校验并绑定最终人声与 BGM 产物，供下游节点使用。
 - `pitch.extract` — 音高曲线和音符候选证据。
 - `lyrics.preprocess`（人声预处理） — 把人声收成识别/对齐用的音频；除非捕获，否则为临时文件。
 - `lyrics.transcribe` — 识别文本。
@@ -997,13 +1011,13 @@ Uta Studio は互換性のあるローカルの `ffmpeg`、`uv`、Python、既�
 
 ### 6. 解析パイプライン
 
-Uta Studio は4つの明示的な段階を使用します。各段階の生成ファイルは型付きの**解析成果物**です。版、由来、エディターへの導線は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
+Uta Studio はノード単位で実行される明示的な DAG を使用します。生成ファイルは型付きの**解析成果物**です。版、由来、実際のノード進捗、エディターへの導線は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
 
-#### 01 · ボーカル分離
+#### 01 · ボーカルと BGM の分離
 
-認識前にボーカルと伴奏のステムを作ります。利用可能な選択肢はプラットフォームとランタイムにより、従来の UVR Karaoke / Demucs / Intel OpenVINO に加え、0.5 オーディオカタログ（BS-RoFormer ボーカル、MelBand 伴奏、Karaoke 2、ノイズ除去、残響除去、HTDemucs 6 ステム）を含みます。
+ボーカルと BGM は独立した分離ブランチで処理します。各ブランチで分離モデルを個別に選び、その後に順番どおり実行される2つの後処理スロットを設定します。各スロットはオフ、ノイズ除去、残響除去から選べます。BGM 成果物は譜面構築へ直接渡り、ボーカル成果物はピッチ・歌詞解析へ渡ります。
 
-カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。分析自体はオフラインです。ボーカル、伴奏、カラオケ、ノイズ除去、残響除去は個別に選べ、順序も指定できます。既存の譜面は再分析後にだけ変わります。
+利用できる選択肢は設定済みランタイムにより、BS-RoFormer ボーカル、MelBand BGM、Karaoke 2、ノイズ除去、残響除去、HTDemucs 6 ステムなどです。カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。解析自体はオフラインで、既存の譜面は再解析後にだけ変わります。
 
 まずはバランス設定を推奨します。省メモリ設定はピーク使用量を下げ、高品質設定は通常より長い処理時間と多くのメモリを必要とします。
 
@@ -1118,6 +1132,8 @@ UTF-8 UltraStar 1.1 テキストと同階層のメディアを書き出します
 
 - **アプリログ → ログを表示**：ログが存在する場合に開きます。
 - **機能 API 診断 → チェックを実行**：ローカル API、ネイティブ音声、実際の一時 UTZ/UltraStar 書き出しを検証し、診断後に一時フォルダーを削除します。
+
+解析ごとに `analysis-logs/` 配下へ詳細な JSONL ファイルを1つ記録します。DAG ノードの**ログを表示**は選択中の解析ログを開き、`node_id` で絞り込みます。旧解析に専用ログがない場合は明示します。解析進捗、モデル出力、traceback は `app.log` に書きません。解析履歴の消去を確認した場合も、`analysis-logs/` 内で履歴が参照するログだけを削除します。
 
 不具合報告には、アプリのバージョン、プラットフォーム、選択ランタイム、関連ログ、再現手順を含めてください。権利がない場合、著作権で保護された元メディアを添付しないでください。
 
@@ -1251,7 +1267,12 @@ Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそ
 
 - `preflight` — 作業開始前にローカルソースとランタイムが使えるか確認します。
 - `music.analysis` — 後のタイミングと譜面に使うキー、リズム、記述子解析です。
-- `stems.separate` — ボーカルと伴奏ステムです。
+- `stems.separate` — MINI 表示で実ノードから派生する集約ノードです。実行可能な Extract 処理ではありません。
+- `stems.vocals` — 選択したボーカル分離モデルを実行します。
+- `vocals.denoise` / `vocals.dereverb` — 設定したスロット順で実行する任意のボーカル後処理です。
+- `stems.instrumental` — 独立した BGM 分離モデルを実行します。
+- `instrumental.denoise` / `instrumental.dereverb` — 設定したスロット順で実行する任意の BGM 後処理です。
+- `stems.bind_analysis_outputs` — 最終ボーカル・BGM 成果物を検証し、下流ノードへ束縛します。
 - `pitch.extract` — ピッチ曲線とノート候補の証拠です。
 - `lyrics.preprocess`（Vocal Preprocessing） — 認識・アライメント用に整えたボーカル音声です。キャプチャしない限り一時的です。
 - `lyrics.transcribe` — 認識テキストです。

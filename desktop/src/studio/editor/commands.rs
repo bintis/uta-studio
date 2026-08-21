@@ -274,31 +274,35 @@ pub(crate) fn unbind_editor_selection(
 /// Saves the chart, or explains the first error standing in the way. The
 /// format rejects an invalid chart outright, so the editor names the problem
 /// and where it is instead of surfacing a validation message with no location.
-pub(crate) fn save_editor_chart(editor: &mut NativeEditor) -> String {
+pub(crate) fn try_save_editor_chart(editor: &mut NativeEditor) -> Result<(), String> {
     let report = editor.refresh_problems();
     if let Some(problem) = report
         .problems
         .iter()
         .find(|problem| problem.severity() == app_core::Severity::Error)
     {
-        return format!(
+        return Err(format!(
             "Cannot save: {} on track {} at {} ({} error(s)). Open the inspector to jump to it.",
             problem.message,
             problem.track + 1,
             format_duration(problem.time),
             report.errors()
-        );
+        ));
     }
-    match app_core::save_vocal_chart_from_revision(
+    app_core::save_vocal_chart_from_revision(
         &editor.chart.file_hash,
         editor.document.to_chart(),
         editor.artifact_source.as_ref(),
-    ) {
-        Ok(()) => {
-            editor.dirty = false;
-            "Chart saved atomically.".to_string()
-        }
-        Err(error) => format!("Could not save chart: {error}"),
+    )
+    .map_err(|error| format!("Could not save chart: {error}"))?;
+    editor.dirty = false;
+    Ok(())
+}
+
+pub(crate) fn save_editor_chart(editor: &mut NativeEditor) -> String {
+    match try_save_editor_chart(editor) {
+        Ok(()) => "Chart saved atomically.".to_string(),
+        Err(error) => error,
     }
 }
 

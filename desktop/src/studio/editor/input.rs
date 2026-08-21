@@ -29,12 +29,13 @@ use super::{
     },
     state::{
         EDITOR_DRAG_MIN_PX, EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX, EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS,
-        EDITOR_PITCH_HEIGHT_PERCENT, EDITOR_PITCH_TOP_PERCENT, EditorDrag, EditorLyricNode,
-        EditorLyricResizeHandle, EditorLyricsSurface, EditorMarqueeBox, EditorNoteNode,
-        EditorNoteOriginal, EditorNoteResizeHandle, EditorPointerCapture, EditorTimelineSurface,
+        EditorDrag, EditorLyricNode, EditorLyricResizeHandle, EditorLyricsSurface,
+        EditorMarqueeBox, EditorNoteNode, EditorNoteOriginal, EditorNoteResizeHandle,
+        EditorPointerCapture, EditorTimelineSurface, EditorViewportRebuildThrottle,
         EditorWordInput, EditorWordOriginal, InlineEditorWordInput, NoteEdge, chart_notes,
-        nearest_note_boundary, selected_editor_word, set_editor_pitch_span,
-        snap_lyric_move_to_notes, surface_pitch_fraction,
+        editor_pitch_height_percent, editor_pitch_top_percent, nearest_note_boundary,
+        selected_editor_word, set_editor_pitch_span, snap_lyric_move_to_notes,
+        surface_pitch_fraction,
     },
 };
 
@@ -134,6 +135,7 @@ pub(crate) fn handle_editor_wheel(
     keys: Res<ButtonInput<KeyCode>>,
     shell: Res<ShellState>,
     mut editor_state: ResMut<EditorUiState>,
+    mut rebuild_throttle: ResMut<EditorViewportRebuildThrottle>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if shell.route != StudioRoute::Editor
@@ -172,8 +174,20 @@ pub(crate) fn handle_editor_wheel(
         editor.viewport_start =
             (editor.viewport_start - f64::from(delta) * editor.viewport_duration * 0.08).max(0.0);
     }
-    editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-    invalidated.invalidate(UiDirtyRegion::Editor);
+    let now = Instant::now();
+    editor.manual_scroll_until = now + Duration::from_millis(1400);
+    if rebuild_throttle.request(now) {
+        invalidated.invalidate(UiDirtyRegion::Editor);
+    }
+}
+
+pub(crate) fn flush_editor_viewport_rebuild(
+    mut throttle: ResMut<EditorViewportRebuildThrottle>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    if throttle.take_due(Instant::now()) {
+        invalidated.invalidate(UiDirtyRegion::Editor);
+    }
 }
 
 #[derive(SystemParam)]
@@ -251,8 +265,10 @@ pub(crate) fn handle_editor_pointer_capture(
                 let fraction = (local.x / size.x + 0.5).clamp(0.0, 1.0);
                 let surface_y = (local.y / size.y + 0.5).clamp(0.0, 1.0);
                 let target = editor.viewport_start + f64::from(fraction) * editor.viewport_duration;
-                let pitch_surface = surface_y * 100.0 >= EDITOR_PITCH_TOP_PERCENT
-                    && surface_y * 100.0 <= EDITOR_PITCH_TOP_PERCENT + EDITOR_PITCH_HEIGHT_PERCENT;
+                let pitch_top = editor_pitch_top_percent(editor);
+                let pitch_height = editor_pitch_height_percent(editor);
+                let pitch_surface =
+                    surface_y * 100.0 >= pitch_top && surface_y * 100.0 <= pitch_top + pitch_height;
                 let double_click = pitch_surface
                     && capture.last_surface_click.is_some_and(|(at, previous)| {
                         at.elapsed() <= Duration::from_millis(360)
@@ -270,7 +286,7 @@ pub(crate) fn handle_editor_pointer_capture(
                         target
                     }
                     .max(0.0);
-                    let pitch_fraction = surface_pitch_fraction(surface_y);
+                    let pitch_fraction = surface_pitch_fraction(surface_y, editor.spectrum_hidden);
                     let midi = (editor.pitch_max
                         - f64::from(pitch_fraction) * (editor.pitch_max - editor.pitch_min))
                         .round()
@@ -420,7 +436,6 @@ pub(crate) fn handle_editor_pointer_capture(
                     });
                 }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if let Some(selection) = pressed_lyric {
             let modifier = keys.any_pressed([
@@ -469,7 +484,9 @@ pub(crate) fn handle_editor_pointer_capture(
                 }
             }
             editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-            invalidated.invalidate(UiDirtyRegion::Editor);
+            if double_click {
+                invalidated.invalidate(UiDirtyRegion::Editor);
+            }
         } else if let Some((index, edge)) = pressed_resize {
             if let Some(note) = chart_notes(&editor.document)
                 .into_iter()
@@ -488,7 +505,6 @@ pub(crate) fn handle_editor_pointer_capture(
                     });
                 }
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if let Some(index) = pressed_note {
             let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -534,7 +550,6 @@ pub(crate) fn handle_editor_pointer_capture(
                 editor.selected_words.clear();
                 editor.word_edit_focus = None;
                 editor.manual_scroll_until = Instant::now() + Duration::from_millis(1400);
-                invalidated.invalidate(UiDirtyRegion::Editor);
             }
         } else if surface_interactions
             .iter()
@@ -564,7 +579,7 @@ pub(crate) fn handle_editor_pointer_capture(
                         target
                     }
                     .max(0.0);
-                    let pitch_fraction = surface_pitch_fraction(surface_y);
+                    let pitch_fraction = surface_pitch_fraction(surface_y, editor.spectrum_hidden);
                     let midi = (editor.pitch_max
                         - f64::from(pitch_fraction) * (editor.pitch_max - editor.pitch_min))
                         .round()
@@ -682,7 +697,8 @@ pub(crate) fn handle_editor_pointer_capture(
                 .unwrap_or(0.0);
             let time_delta = raw_time_delta.max(-earliest);
             let pitch_delta =
-                -f64::from(delta.y / (size.y * (EDITOR_PITCH_HEIGHT_PERCENT / 100.0))) * pitch_span;
+                -f64::from(delta.y / (size.y * (editor_pitch_height_percent(editor) / 100.0)))
+                    * pitch_span;
             let mut moved = 0usize;
             for original in &originals {
                 let start = (original.start + time_delta).max(0.0);
@@ -844,7 +860,8 @@ pub(crate) fn handle_editor_pointer_capture(
                 (viewport_start - f64::from(delta.x / size.x) * editor.viewport_duration).max(0.0);
             let pitch_span = pitch_max - pitch_min;
             let pitch_offset =
-                f64::from(delta.y / (size.y * (EDITOR_PITCH_HEIGHT_PERCENT / 100.0))) * pitch_span;
+                f64::from(delta.y / (size.y * (editor_pitch_height_percent(editor) / 100.0)))
+                    * pitch_span;
             editor.pitch_min = (pitch_min + pitch_offset).clamp(0.0, 127.0 - pitch_span);
             editor.pitch_max = editor.pitch_min + pitch_span;
         }
@@ -872,8 +889,9 @@ pub(crate) fn handle_editor_pointer_capture(
                 node.top = percent(raw_top * 100.0);
                 node.height = percent(((raw_bottom - raw_top) * 100.0).max(0.0));
             }
-            let top = surface_pitch_fraction(start.y.min(current.y) + 0.5);
-            let bottom = surface_pitch_fraction(start.y.max(current.y) + 0.5);
+            let top = surface_pitch_fraction(start.y.min(current.y) + 0.5, editor.spectrum_hidden);
+            let bottom =
+                surface_pitch_fraction(start.y.max(current.y) + 0.5, editor.spectrum_hidden);
             let time_start = viewport_start + f64::from(left) * viewport_duration;
             let time_end = viewport_start + f64::from(right) * viewport_duration;
             let pitch_span = pitch_max - pitch_min;

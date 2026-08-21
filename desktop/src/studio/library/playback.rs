@@ -414,18 +414,18 @@ pub(crate) fn handle_library_scroll(
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<LibrarySongList>>,
     graphs: Query<(&ComputedNode, &UiGlobalTransform), With<AnalysisGraphViewport>>,
 ) {
-    if shell.route != StudioRoute::Library || library.library_view == LibraryView::Queue {
+    if shell.route != StudioRoute::Library {
         return;
     }
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if shift
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    if library.library_view == LibraryView::Queue
+        && ctrl
         && let Ok(window) = windows.single()
         && let Some(pointer) = window.cursor_position()
         && graphs
             .iter()
             .any(|(computed, transform)| ui_node_contains_pointer(computed, transform, pointer))
     {
-        wheel.clear();
         return;
     }
     let Ok((computed, mut position)) = lists.single_mut() else {

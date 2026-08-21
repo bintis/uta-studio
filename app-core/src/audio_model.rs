@@ -21,6 +21,7 @@ pub const REQUIRED_AUDIO_MODEL_IDS: &[&str] = &[
 ];
 
 pub const DEFAULT_LEGACY_KARAOKE_MODEL_ID: &str = "melband_roformer_karaoke_aufr33_viperx";
+pub const DEFAULT_BGM_MODEL_ID: &str = "melband_roformer_inst_v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(untagged)]

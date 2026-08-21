@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from audio_models.catalog import DEFAULT_LEGACY_KARAOKE_MODEL_ID, REQUIRED_MODEL_IDS, load_catalog
+from audio_models.plan import build_chart_analysis_plan
 from audio_models.schema import ALLOWED_ARCHITECTURES, ALLOWED_BACKENDS, is_sha256
+from audio_models.yaml_util import load_restricted_yaml
 
 
 class AudioModelCatalogTests(unittest.TestCase):
@@ -62,11 +64,42 @@ class AudioModelCatalogTests(unittest.TestCase):
         self.assertEqual(vocals.target_stem, "Vocals")
         self.assertEqual(inst.target_stem, "Instrumental")
 
+    def test_roformer_catalog_stems_match_shipped_model_configs(self) -> None:
+        configs_dir = Path(__file__).parent / "audio_models" / "configs"
+        for model in self.catalog.models:
+            if not model.architecture.startswith("mdxc_"):
+                continue
+            config_path = configs_dir / model.file("model_config").filename
+            raw = load_restricted_yaml(config_path.read_text(encoding="utf-8"))
+            training = raw["training"]
+            instruments = tuple(str(stem) for stem in training["instruments"])
+            target = str(training["target_instrument"])
+            with self.subTest(model=model.id):
+                self.assertEqual(model.expected_stems, instruments)
+                self.assertEqual(model.target_stem, target)
+                self.assertEqual(tuple(model.output_contract), instruments)
+
     def test_default_karaoke_is_catalogued(self) -> None:
         karaoke = self.catalog.get(DEFAULT_LEGACY_KARAOKE_MODEL_ID)
         self.assertEqual(karaoke.architecture, "mdxc_melband_roformer")
         self.assertEqual(karaoke.output_contract["Vocals"], "extracted_vocal")
         self.assertEqual(karaoke.output_contract["Instrumental"], "residual_instrumental")
+
+    def test_disabled_cleanup_slot_is_not_treated_as_a_model(self) -> None:
+        plan = build_chart_analysis_plan(
+            self.catalog,
+            {
+                "vocal_cleanup_chain": [
+                    "none",
+                    "melband_roformer_dereverb_anvuew",
+                ],
+                "accompaniment_cleanup_chain": ["none", "none"],
+            },
+        )
+        self.assertEqual(
+            [step.step_id for step in plan.steps],
+            ["extract_vocals", "dereverb_vocals", "extract_accompaniment"],
+        )
 
 
 if __name__ == "__main__":

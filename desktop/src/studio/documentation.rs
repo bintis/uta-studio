@@ -161,7 +161,14 @@ pub(crate) fn documentation_anchor_for_node(node_id: &str) -> &'static str {
         "preflight" | "music.analysis" | "music.key" | "music.rhythm" | "music.descriptors" => {
             "guide:analysis"
         }
-        "stems.separate" => "guide:analysis",
+        "stems.separate"
+        | "stems.vocals"
+        | "vocals.denoise"
+        | "vocals.dereverb"
+        | "stems.instrumental"
+        | "instrumental.denoise"
+        | "instrumental.dereverb"
+        | "stems.bind_analysis_outputs" => "guide:analysis",
         "pitch.extract" => "guide:analysis",
         "lyrics.preprocess" | "lyrics.transcribe" | "lyrics.align" | "lyrics.import_timed" => {
             "guide:lyrics"
@@ -556,7 +563,7 @@ pub(crate) fn spawn_documentation(
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
-    let locale = effective_ui_locale(&session.config);
+    let locale = effective_ui_locale(session.config);
     let source = source_for(locale);
     let visible_source = visible_source(source, session.documentation.anchor.as_deref());
     let hits = search_documentation(locale, &session.documentation.query);

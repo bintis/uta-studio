@@ -741,9 +741,29 @@ pub(crate) fn spawn_artifact_impact_panel(
 
 pub(crate) fn render_artifact_kind(node_id: &str) -> Option<app_core::ArtifactKind> {
     match node_id {
+        "artifact.raw_vocal" => Some(app_core::ArtifactKind::RawVocalStem),
+        "artifact.denoised_vocal" => Some(app_core::ArtifactKind::DenoisedVocalStem),
+        "artifact.dereverbed_vocal" => Some(app_core::ArtifactKind::DereverbedVocalStem),
         "artifact.vocal_stem" => Some(app_core::ArtifactKind::VocalStem),
+        "artifact.multistem_vocal" => Some(app_core::ArtifactKind::VocalStem),
+        "artifact.multistem_drums" => Some(app_core::ArtifactKind::DrumStem),
+        "artifact.multistem_bass" => Some(app_core::ArtifactKind::BassStem),
+        "artifact.multistem_guitar" => Some(app_core::ArtifactKind::GuitarStem),
+        "artifact.multistem_piano" => Some(app_core::ArtifactKind::PianoStem),
+        "artifact.multistem_other" => Some(app_core::ArtifactKind::OtherStem),
+        "artifact.multistem_instrumental" => Some(app_core::ArtifactKind::InstrumentalStem),
+        "artifact.hq_instrumental" => Some(app_core::ArtifactKind::HighQualityInstrumentalStem),
+        "artifact.raw_instrumental" => Some(app_core::ArtifactKind::HighQualityInstrumentalStem),
+        "artifact.denoised_instrumental" => Some(app_core::ArtifactKind::DenoisedInstrumentalStem),
+        "artifact.dereverbed_instrumental" => {
+            Some(app_core::ArtifactKind::DereverbedInstrumentalStem)
+        }
+        "artifact.karaoke_stem" => Some(app_core::ArtifactKind::KaraokeInstrumentalStem),
         "artifact.instrumental_stem" => Some(app_core::ArtifactKind::InstrumentalStem),
+        "artifact.music_analysis" => Some(app_core::ArtifactKind::MusicAnalysis),
         "artifact.note_guide" => Some(app_core::ArtifactKind::PitchTrack),
+        "artifact.lyrics" => Some(app_core::ArtifactKind::RecognizedText),
+        "artifact.lyrics_input" => Some(app_core::ArtifactKind::LyricsInput),
         "artifact.timed_lyrics" => Some(app_core::ArtifactKind::TimedTranscript),
         "artifact.chart" => Some(app_core::ArtifactKind::AuthoredChart),
         _ => None,
@@ -775,6 +795,7 @@ pub(crate) fn spawn_workbench_artifact_node(
     run_id: Option<i64>,
     dimmed: bool,
     selected: bool,
+    zoom: f32,
 ) {
     let kind = render_artifact_kind(node_id);
     let revision = kind.and_then(|kind| match run_id {
@@ -784,6 +805,19 @@ pub(crate) fn spawn_workbench_artifact_node(
     let reference = revision.as_ref().map(artifact_ref_from_revision);
     let title_owned = title.to_string();
     let file_hash_owned = file_hash.to_string();
+    let accent = analysis_graph_node_accent(node_id, theme);
+    let title_size = analysis_graph_scaled(10.0, 7.8, zoom);
+    let detail_size = analysis_graph_scaled(7.5, 6.4, zoom);
+    let detail = analysis_graph_node_detail(node_id, detail);
+    let stem_chip = matches!(
+        node_id,
+        "artifact.raw_vocal"
+            | "artifact.denoised_vocal"
+            | "artifact.dereverbed_vocal"
+            | "artifact.raw_instrumental"
+            | "artifact.denoised_instrumental"
+            | "artifact.dereverbed_instrumental"
+    );
 
     let mut entity = parent.spawn((
         Button,
@@ -797,50 +831,121 @@ pub(crate) fn spawn_workbench_artifact_node(
             top: px(bounds.y),
             width: px(bounds.width),
             height: px(bounds.height),
-            flex_direction: FlexDirection::Column,
+            flex_direction: if stem_chip {
+                FlexDirection::Row
+            } else {
+                FlexDirection::Column
+            },
+            align_items: if stem_chip {
+                AlignItems::Center
+            } else {
+                AlignItems::Stretch
+            },
             justify_content: JustifyContent::Center,
-            padding: UiRect::axes(px(12), px(8)),
-            row_gap: px(2),
+            padding: if stem_chip {
+                UiRect::axes(
+                    px(analysis_graph_scaled(9.0, 5.0, zoom)),
+                    px(analysis_graph_scaled(5.0, 3.0, zoom)),
+                )
+            } else {
+                UiRect {
+                    left: px(analysis_graph_scaled(10.0, 5.0, zoom)),
+                    right: px(analysis_graph_scaled(10.0, 5.0, zoom)),
+                    top: px(analysis_graph_scaled(7.0, 4.0, zoom)),
+                    bottom: px(analysis_graph_scaled(28.0, 19.0, zoom)),
+                }
+            },
+            row_gap: px(analysis_graph_scaled(2.0, 1.0, zoom)),
             overflow: Overflow::clip(),
             border: UiRect::all(px(if selected { 2 } else { 1 })),
-            border_radius: BorderRadius::all(px(18)),
+            border_radius: BorderRadius::all(px(analysis_graph_scaled(7.0, 4.0, zoom))),
             ..default()
         },
         BackgroundColor(if ready {
-            theme
-                .pitch_contour
-                .with_alpha(if dimmed { 0.04 } else { 0.1 })
+            accent.with_alpha(if dimmed { 0.04 } else { 0.10 })
         } else {
             theme
                 .background
                 .with_alpha(if dimmed { 0.28 } else { 0.72 })
         }),
         BorderColor::all(if selected {
-            theme.primary.with_alpha(0.92)
+            accent.with_alpha(0.96)
         } else if ready {
-            theme
-                .pitch_contour
-                .with_alpha(if dimmed { 0.22 } else { 0.62 })
+            accent.with_alpha(if dimmed { 0.22 } else { 0.70 })
         } else {
-            theme.border.with_alpha(if dimmed { 0.28 } else { 0.62 })
+            accent.with_alpha(if dimmed { 0.18 } else { 0.50 })
         }),
         ZIndex(2),
     ));
     entity.with_children(|node| {
-        spawn_analysis_graph_ports(node, theme, ready);
-        spawn_text(
-            node,
-            font.clone(),
-            format!("ARTIFACT · {}", if ready { "READY" } else { "PENDING" }),
-            6.5,
-            if ready {
-                theme.pitch_contour
+        if !stem_chip {
+            spawn_analysis_graph_ports(node, theme, ready, zoom);
+        }
+        node.spawn(Node {
+            width: percent(100),
+            align_items: AlignItems::Center,
+            column_gap: px(analysis_graph_scaled(6.0, 4.0, zoom)),
+            ..default()
+        })
+        .with_children(|heading| {
+            if zoom >= 0.60 {
+                spawn_text(heading, font.clone(), "▣", title_size, accent);
+            }
+            heading
+                .spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    ..default()
+                })
+                .with_children(|copy| {
+                    let label = analysis_graph_node_display_label(node_id, title, zoom);
+                    if stem_chip {
+                        copy.spawn((
+                            Text::new(label),
+                            ui_text_font(font.clone(), title_size),
+                            TextColor(theme.foreground),
+                            TextLayout::no_wrap(),
+                        ));
+                    } else {
+                        spawn_bounded_wrapped_text(
+                            copy,
+                            font.clone(),
+                            label,
+                            title_size,
+                            theme.foreground,
+                        );
+                    }
+                });
+        });
+        if !stem_chip && zoom >= 0.72 {
+            spawn_bounded_wrapped_text(
+                node,
+                font.clone(),
+                detail,
+                detail_size,
+                theme.muted_foreground,
+            );
+        }
+        if !stem_chip {
+            let status_color = if ready {
+                analysis_graph_phase_accent(LayoutLaneKind::AuthoringAndOutput, theme)
             } else {
                 theme.muted_foreground
-            },
-        );
-        spawn_text(node, font.clone(), title, 9.0, theme.foreground);
-        spawn_bounded_wrapped_text(node, font, detail, 7.0, theme.muted_foreground);
+            };
+            spawn_analysis_graph_status_pill(
+                node,
+                font,
+                if zoom < 0.60 {
+                    if ready { "✓" } else { "○" }.to_string()
+                } else if ready {
+                    "✓ READY".to_string()
+                } else {
+                    "○ WAITING".to_string()
+                },
+                status_color,
+                zoom,
+            );
+        }
     });
 
     entity.observe(
@@ -915,12 +1020,17 @@ pub(crate) fn spawn_workbench_export_node(
     ready: bool,
     lineage_dimmed: bool,
     selected: bool,
+    zoom: f32,
 ) {
     let Some(kind) = app_core::ExportPackageKind::from_node_id(node_id) else {
         return;
     };
     let inspection = app_core::inspect_export_node(file_hash, kind).ok();
     let ready = inspection.as_ref().map(|item| item.ready).unwrap_or(ready);
+    let exported = inspection
+        .as_ref()
+        .and_then(|item| item.last_destination.as_ref())
+        .is_some_and(|path| path.is_file());
     let last = inspection
         .as_ref()
         .and_then(|item| item.last_destination.as_ref())
@@ -929,25 +1039,28 @@ pub(crate) fn spawn_workbench_export_node(
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
         });
-    let detail = match (ready, last.as_deref()) {
-        (true, Some(name)) => format!("Ready · last {name}"),
-        (true, None) => "Ready · no last export tracked".to_string(),
-        (false, Some(name)) => format!("Blocked · last {name}"),
-        (false, None) => inspection
+    let detail = match (exported, ready, last.as_deref()) {
+        (true, _, Some(name)) => format!("Exported · {name}"),
+        (true, _, None) => "Exported".to_string(),
+        (false, true, _) => "Inputs ready · no output file yet".to_string(),
+        (false, false, Some(name)) => format!("Blocked · previous {name} is unavailable"),
+        (false, false, None) => inspection
             .as_ref()
             .map(|item| {
                 if item.missing.is_empty() {
-                    "Pending".to_string()
+                    "Not generated".to_string()
                 } else {
                     format!("Missing {}", item.missing.join(", "))
                 }
             })
-            .unwrap_or_else(|| "Pending".to_string()),
+            .unwrap_or_else(|| "Not generated".to_string()),
     };
     let title_owned = title.to_string();
     let file_hash_owned = file_hash.to_string();
-    let accent = theme.primary;
+    let accent = analysis_graph_node_accent(node_id, theme);
     let alpha = if lineage_dimmed { 0.28 } else { 1.0 };
+    let title_size = analysis_graph_scaled(10.0, 7.8, zoom);
+    let detail_size = analysis_graph_scaled(7.5, 6.4, zoom);
     let mut entity = parent.spawn((
         Button,
         UiPointerApi(&[
@@ -962,21 +1075,26 @@ pub(crate) fn spawn_workbench_export_node(
             height: px(bounds.height),
             flex_direction: FlexDirection::Column,
             justify_content: JustifyContent::Center,
-            padding: UiRect::axes(px(12), px(8)),
-            row_gap: px(2),
+            padding: UiRect {
+                left: px(analysis_graph_scaled(10.0, 5.0, zoom)),
+                right: px(analysis_graph_scaled(10.0, 5.0, zoom)),
+                top: px(analysis_graph_scaled(7.0, 4.0, zoom)),
+                bottom: px(analysis_graph_scaled(28.0, 19.0, zoom)),
+            },
+            row_gap: px(analysis_graph_scaled(2.0, 1.0, zoom)),
             overflow: Overflow::clip(),
             border: UiRect::all(px(if selected { 2 } else { 1 })),
-            border_radius: BorderRadius::all(px(8)),
+            border_radius: BorderRadius::all(px(analysis_graph_scaled(7.0, 4.0, zoom))),
             ..default()
         },
-        BackgroundColor(if ready {
+        BackgroundColor(if exported {
             accent.with_alpha(0.1 * alpha)
         } else {
             theme.background.with_alpha(0.72 * alpha)
         }),
         BorderColor::all(if selected {
-            theme.primary.with_alpha(0.92)
-        } else if ready {
+            accent.with_alpha(0.96)
+        } else if exported {
             accent.with_alpha(0.62 * alpha)
         } else {
             theme.border.with_alpha(0.62 * alpha)
@@ -984,20 +1102,61 @@ pub(crate) fn spawn_workbench_export_node(
         ZIndex(2),
     ));
     entity.with_children(|node| {
-        spawn_analysis_graph_ports(node, theme, ready);
-        spawn_text(
+        spawn_analysis_graph_ports(node, theme, exported || ready, zoom);
+        node.spawn(Node {
+            align_items: AlignItems::Center,
+            column_gap: px(analysis_graph_scaled(6.0, 4.0, zoom)),
+            ..default()
+        })
+        .with_children(|heading| {
+            if zoom >= 0.60 {
+                spawn_text(heading, font.clone(), "★", title_size, accent);
+            }
+            heading
+                .spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_bounded_wrapped_text(
+                        copy,
+                        font.clone(),
+                        analysis_graph_node_display_label(node_id, title, zoom),
+                        title_size,
+                        theme.foreground,
+                    );
+                });
+        });
+        if zoom >= 0.72 {
+            spawn_bounded_wrapped_text(
+                node,
+                font.clone(),
+                detail,
+                detail_size,
+                theme.muted_foreground,
+            );
+        }
+        let status_color = if exported || ready {
+            accent
+        } else {
+            theme.muted_foreground
+        };
+        spawn_analysis_graph_status_pill(
             node,
-            font.clone(),
-            format!("EXPORT · {}", if ready { "READY" } else { "PENDING" }),
-            6.5,
-            if ready {
-                accent
+            font,
+            if zoom < 0.60 {
+                if exported || ready { "✓" } else { "○" }.to_string()
+            } else if exported {
+                "✓ EXPORTED".to_string()
+            } else if ready {
+                "✓ READY".to_string()
             } else {
-                theme.muted_foreground
+                "○ WAITING".to_string()
             },
+            status_color,
+            zoom,
         );
-        spawn_text(node, font.clone(), title, 9.0, theme.foreground);
-        spawn_bounded_wrapped_text(node, font, detail, 7.0, theme.muted_foreground);
     });
     entity.observe(
         move |mut event: On<Pointer<Click>>,
@@ -1279,7 +1438,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Set Active…",
                     11.0,
-                    UiAction::from(AnalysisCommand::SetActiveArtifactRevision(revision.clone())),
+                    UiAction::from(AnalysisCommand::SetActiveArtifactRevision(Box::new(
+                        revision.clone(),
+                    ))),
                 );
             }
             if !revision.active
@@ -1293,7 +1454,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     "Compare with Active…",
                     11.0,
                     UiAction::from(AnalysisCommand::CompareArtifactRevisions(
-                        revision.clone(),
+                        Box::new(revision.clone()),
                         artifact_ref_from_revision(&active),
                     )),
                 );
@@ -1311,7 +1472,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     "Compare with Authored…",
                     11.0,
                     UiAction::from(AnalysisCommand::CompareArtifactRevisions(
-                        revision.clone(),
+                        Box::new(revision.clone()),
                         artifact_ref_from_revision(&authored),
                     )),
                 );
@@ -1422,7 +1583,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                 theme,
                 "Inspect provenance",
                 11.0,
-                UiAction::from(AnalysisCommand::InspectArtifactProvenance(revision.clone())),
+                UiAction::from(AnalysisCommand::InspectArtifactProvenance(Box::new(
+                    revision.clone(),
+                ))),
             );
             spawn_text_button(
                 menu,
@@ -1456,7 +1619,7 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     "Invalidate…",
                     11.0,
                     UiAction::from(AnalysisCommand::RequestInvalidateArtifactRevision(
-                        revision.clone(),
+                        Box::new(revision.clone()),
                     )),
                 );
             }
@@ -1467,9 +1630,9 @@ pub(crate) fn spawn_analysis_artifact_context_menu(
                     theme,
                     "Delete",
                     11.0,
-                    UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(
+                    UiAction::from(AnalysisCommand::RequestDeleteArtifactRevision(Box::new(
                         revision.clone(),
-                    )),
+                    ))),
                 );
             }
         });

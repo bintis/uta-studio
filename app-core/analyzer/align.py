@@ -66,7 +66,12 @@ def align_lyrics(
         }]
     progress_node(
         "lyrics.preprocess", "node_completed", 57,
-        "Vocal-region preprocessing complete", artifacts=artifacts,
+        "Vocal-region preprocessing complete", node_progress_pct=100, artifacts=artifacts,
+    )
+
+    progress_node(
+        "lyrics.align", "node_started", 58, "Preparing forced alignment...",
+        node_progress_pct=0,
     )
 
     a_device = align_device_for(device)

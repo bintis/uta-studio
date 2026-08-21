@@ -39,7 +39,6 @@ RELEASING.md
 
 # Local helper files generated or imported during workflows/tasks
 /release.yml
-uta-ruleset-code-doc-*.zip
 /.uta-studio-artifact-workbench-backup/
 /.uta-studio-import-backup/
 /uta-studio-v0.4.0-i18n-user-guide-20260817/

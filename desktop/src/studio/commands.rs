@@ -108,8 +108,19 @@ pub(crate) enum SettingsCommand {
     ConfirmClearCache,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AnalysisModelCategory {
+    #[default]
+    Bgm,
+    Vocals,
+    Lyrics,
+    Pitch,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AnalysisCommand {
+    StartAnalysis(String),
+    StopAnalysis(String),
     SelectArtifactInspectorTab(ArtifactInspectorTab),
     ToggleArtifactPinned(app_core::ArtifactRef),
     OpenArtifactCompatibleEditor(app_core::ArtifactRef),
@@ -129,15 +140,20 @@ pub(crate) enum AnalysisCommand {
     CloseArtifactImpact,
     ConfirmArtifactImpact,
     DismissAnalysisArtifactContext,
+    #[allow(dead_code)] // retained for the registered command API; MINI keeps this control hidden
     ToggleAnalysisLineageMode,
     DismissAnalysisExportContext,
     ValidateExportNode(String, app_core::ExportPackageKind),
     RevealLastExport(String, app_core::ExportPackageKind),
     SelectAnalysisHistory(Option<i64>),
     OpenSongAnalysis(String),
-    OpenAnalysisInspect(String),
+    OpenAnalysisInspect(String, String),
+    #[allow(dead_code)] // Ctrl+wheel is the visible gesture; automation still uses this command
     AdjustAnalysisGraphZoom(i32),
     ToggleAnalysisMiniView,
+    ToggleAnalysisModelPanel,
+    CloseAnalysisModelPanel,
+    SetAnalysisModelCategory(AnalysisModelCategory),
     FitAnalysisGraph(i32),
     FocusAnalysisGraphNode(i32, String),
     DismissAnalysisNodeContext,
@@ -165,9 +181,9 @@ pub(crate) enum AnalysisCommand {
     ClosePlanPreview,
     TogglePlanPreviewDisabledNode(String),
     RunPlanPreviewDraft,
-    OpenAppLogViewer(String, String),
-    CloseAppLogViewer,
-    OpenAppLogFile,
+    OpenAnalysisLogViewer(String, String),
+    CloseAnalysisLogViewer,
+    OpenAnalysisLogFile,
     ToggleAnalysisCompoundNode(String),
     RequestDeleteSongCache(String),
     CancelAnalysisRun(String),
@@ -177,7 +193,7 @@ pub(crate) enum AnalysisCommand {
     CancelReplaceAuthoredChart,
     ConfirmReplaceAuthoredChart,
     SyncArtifactRevisions(String),
-    SetActiveArtifactRevision(app_core::ArtifactRevision),
+    SetActiveArtifactRevision(Box<app_core::ArtifactRevision>),
     CancelSetActiveArtifactRevision,
     ConfirmSetActiveArtifactRevision,
     RequestCaptureIntermediate(String),
@@ -188,14 +204,14 @@ pub(crate) enum AnalysisCommand {
     OpenArtifactRevision(PathBuf),
     PreviewArtifactRevision(PathBuf),
     RevealArtifactRevision(PathBuf),
-    RequestDeleteArtifactRevision(app_core::ArtifactRevision),
+    RequestDeleteArtifactRevision(Box<app_core::ArtifactRevision>),
     CancelDeleteArtifactRevision,
     ConfirmDeleteArtifactRevision,
-    RequestInvalidateArtifactRevision(app_core::ArtifactRevision),
+    RequestInvalidateArtifactRevision(Box<app_core::ArtifactRevision>),
     CancelInvalidateArtifactRevision,
     ConfirmInvalidateArtifactRevision,
-    InspectArtifactProvenance(app_core::ArtifactRevision),
-    CompareArtifactRevisions(app_core::ArtifactRevision, app_core::ArtifactRef),
+    InspectArtifactProvenance(Box<app_core::ArtifactRevision>),
+    CompareArtifactRevisions(Box<app_core::ArtifactRevision>, app_core::ArtifactRef),
     CloseArtifactDiff,
 }
 
@@ -235,6 +251,12 @@ pub(crate) enum EditorCommand {
     SelectEditorTrack(usize),
     MoveSelectionToTrack(usize),
     SetNoteKind(app_core::NoteKind),
+    ToggleEditorFileMenu,
+    DismissEditorFileMenu,
+    SaveEditorAsUtz,
+    SaveEditorAsUltraStar,
+    ToggleEditorLayoutMenu,
+    DismissEditorLayoutMenu,
     DismissLyricContext,
     DismissNoteContext,
     SelectWaveformSource(WaveformSource),
@@ -262,6 +284,12 @@ impl UiCommand {
             Self::App(_) => UiDirtyRegion::Chrome,
             Self::Library(_) => UiDirtyRegion::Library,
             Self::Settings(_) => UiDirtyRegion::Settings,
+            // This command changes the top-level route.  Rebuilding only the
+            // analysis workspace leaves the top bar and the persistent
+            // overlay tree on the old route for a frame.  Replacing the
+            // whole route tree in one deferred command batch keeps Bevy
+            // from submitting that mixed-generation tree to Wayland.
+            Self::Analysis(AnalysisCommand::OpenAnalysisInspect(_, _)) => UiDirtyRegion::Chrome,
             Self::Analysis(
                 AnalysisCommand::DismissAnalysisNodeContext
                 | AnalysisCommand::ShowArtifactLineage(_)
@@ -297,7 +325,14 @@ impl UiCommand {
                 | EditorCommand::CloseSongSettings
                 | EditorCommand::ChooseBackgroundVideo
                 | EditorCommand::ClearBackgroundVideo
-                | EditorCommand::SaveSongSettings,
+                | EditorCommand::SaveSongSettings
+                | EditorCommand::ToggleEditorFileMenu
+                | EditorCommand::DismissEditorFileMenu
+                | EditorCommand::ToggleEditorLayoutMenu
+                | EditorCommand::DismissEditorLayoutMenu
+                | EditorCommand::DismissLyricContext
+                | EditorCommand::DismissNoteContext
+                | EditorCommand::DismissWaveformContext,
             ) => UiDirtyRegion::Dialog,
             Self::Editor(
                 EditorCommand::OpenLyricsEditor(_)
@@ -370,7 +405,7 @@ mod tests {
         );
         assert_eq!(
             UiCommand::Editor(EditorCommand::DismissLyricContext).dirty_region(),
-            UiDirtyRegion::Editor
+            UiDirtyRegion::Dialog
         );
     }
 
@@ -391,6 +426,18 @@ mod tests {
         assert_eq!(
             UiCommand::Editor(EditorCommand::CloseSongSettings).dirty_region(),
             UiDirtyRegion::Dialog
+        );
+    }
+
+    #[test]
+    fn opening_inspect_rebuilds_the_route_chrome_as_one_tree() {
+        assert_eq!(
+            UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(
+                "pitch.extract".to_string(),
+                "pitch".to_string(),
+            ))
+            .dirty_region(),
+            UiDirtyRegion::Chrome
         );
     }
 

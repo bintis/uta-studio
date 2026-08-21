@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-#[allow(unused_imports)]
-use tracing::info;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]

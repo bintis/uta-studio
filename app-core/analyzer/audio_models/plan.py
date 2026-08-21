@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .catalog import (
+    DEFAULT_BGM_MODEL_ID,
     DEFAULT_LEGACY_KARAOKE_MODEL_ID,
     AudioModelCatalog,
     ModelSpec,
@@ -218,10 +219,19 @@ def build_chart_analysis_plan(
     run_overrides: Mapping[str, Any] | None = None,
 ) -> AudioProcessingPlanSnapshot:
     vocal_id = settings.get("vocal_model_id") or DEFAULT_LEGACY_KARAOKE_MODEL_ID
-    accompaniment_id = settings.get("accompaniment_model_id")
-    cleanup = list(settings.get("vocal_cleanup_chain") or [])
+    accompaniment_id = settings.get("accompaniment_model_id") or DEFAULT_BGM_MODEL_ID
+    vocal_cleanup = [
+        model_id
+        for model_id in settings.get("vocal_cleanup_chain") or []
+        if str(model_id).strip().lower() not in {"", "none", "off"}
+    ]
+    accompaniment_cleanup = [
+        model_id
+        for model_id in settings.get("accompaniment_cleanup_chain") or []
+        if str(model_id).strip().lower() not in {"", "none", "off"}
+    ]
     vocal = catalog.get(str(vocal_id))
-    vocal_roles = ("extracted_vocal", "residual_instrumental") if not accompaniment_id else ("extracted_vocal",)
+    vocal_roles = ("extracted_vocal",)
     steps: list[AudioProcessingStep] = [
         _step(
             "extract_vocals",
@@ -238,7 +248,7 @@ def build_chart_analysis_plan(
     ]
     current_step = "extract_vocals"
     current_role = "extracted_vocal"
-    for model_id in cleanup:
+    for model_id in vocal_cleanup:
         cleanup_model = catalog.get(str(model_id))
         if "denoise" in str(model_id):
             step_id, role = "denoise_vocals", "clean_audio"
@@ -264,29 +274,48 @@ def build_chart_analysis_plan(
         AudioOutputBinding("analysis_vocal", current_step, current_role),
         AudioOutputBinding("vocals", current_step, current_role),
     ]
-    if accompaniment_id:
-        accompaniment = catalog.get(str(accompaniment_id))
+    accompaniment = catalog.get(str(accompaniment_id))
+    steps.append(
+        _step(
+            "extract_accompaniment",
+            accompaniment,
+            AudioInputReference.source_media(),
+            ("instrumental",),
+            _resolved_for(
+                accompaniment,
+                global_overrides=global_overrides,
+                song_overrides=song_overrides,
+                run_overrides=run_overrides,
+            ),
+        )
+    )
+    accompaniment_step = "extract_accompaniment"
+    accompaniment_role = "instrumental"
+    for model_id in accompaniment_cleanup:
+        cleanup_model = catalog.get(str(model_id))
+        if "denoise" in str(model_id):
+            step_id, role = "denoise_accompaniment", "clean_audio"
+        else:
+            step_id, role = "dereverb_accompaniment", "dry_audio"
         steps.append(
             _step(
-                "extract_accompaniment",
-                accompaniment,
-                AudioInputReference.source_media(),
-                ("instrumental",),
+                step_id,
+                cleanup_model,
+                AudioInputReference.step_output(accompaniment_step, accompaniment_role),
+                (role,),
                 _resolved_for(
-                    accompaniment,
+                    cleanup_model,
                     global_overrides=global_overrides,
                     song_overrides=song_overrides,
                     run_overrides=run_overrides,
                 ),
             )
         )
-        bindings_list.append(
-            AudioOutputBinding("instrumental", "extract_accompaniment", "instrumental")
-        )
-    else:
-        bindings_list.append(
-            AudioOutputBinding("instrumental", "extract_vocals", "residual_instrumental")
-        )
+        accompaniment_step = step_id
+        accompaniment_role = role
+    bindings_list.append(
+        AudioOutputBinding("instrumental", accompaniment_step, accompaniment_role)
+    )
     bindings = tuple(bindings_list)
     return AudioProcessingPlanSnapshot(
         schema_version=1,
@@ -505,7 +534,7 @@ def legacy_plan_from_separator(
     karaoke_settings = {
         **settings,
         "vocal_model_id": DEFAULT_LEGACY_KARAOKE_MODEL_ID,
-        "accompaniment_model_id": None,
+        "accompaniment_model_id": DEFAULT_BGM_MODEL_ID,
         "vocal_cleanup_chain": [],
     }
     plan = build_chart_analysis_plan(loaded, karaoke_settings)

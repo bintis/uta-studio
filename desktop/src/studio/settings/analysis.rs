@@ -23,10 +23,10 @@ pub(crate) fn spawn_analysis_settings(
         parent,
         font.clone(),
         theme,
-        "01 · VOCAL SEPARATION",
-        "Vocal separation",
-        "Creates a clean vocal source before lyrics and pitch are analyzed.",
-        separator_label(session.config.separator()),
+        "01 · STEM SEPARATION",
+        "Vocal & BGM separation",
+        "Creates independent vocal and BGM sources before lyrics, pitch, and chart generation.",
+        vocal_separation_label(session.config),
         Some(analysis_stage_status(
             &status,
             Some(app_core::ModelDownloadTarget::Separator),
@@ -41,105 +41,149 @@ pub(crate) fn spawn_analysis_settings(
         font.clone(),
         icons.clone(),
         theme,
-        "Separation engine",
-        "Choose the model family that creates vocal and instrumental stems.",
+        "Separation route",
+        "Choose the catalog vocal/BGM route or the alternate six-stem route.",
         SettingsSelectKind::Separator,
         session,
     );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Analysis vocal model",
-        "Catalog model used for analysis vocals. Existing chart data changes only after re-analysis.",
-        SettingsSelectKind::AudioVocalModel,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Denoise model",
-        "Optional vocal denoise. Turn off to keep the raw extracted vocal.",
-        SettingsSelectKind::AudioDenoise,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Dereverb model",
-        "Optional vocal dereverb. Turn off independently of denoise.",
-        SettingsSelectKind::AudioDereverb,
-        session,
-    );
-    if audio_denoise_value(&session.config) != "none"
-        && audio_dereverb_value(&session.config) != "none"
-    {
+    match session.config.separator() {
+        "karaoke" => {
+            spawn_settings_section(
+                parent,
+                font.clone(),
+                theme,
+                "VOCAL OUTPUT",
+                "Choose the vocal separator, then apply up to two post-processing steps in slot order.",
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Vocal separation model",
+                "Dedicated model that produces the analysis vocal used by lyrics and pitch.",
+                SettingsSelectKind::AudioVocalModel,
+                session,
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Post-processing 1",
+                "First optional vocal step. Choose Off, Denoise, or Dereverb.",
+                SettingsSelectKind::AudioVocalPostprocess1,
+                session,
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Post-processing 2",
+                "Second optional vocal step. It runs after post-processing 1.",
+                SettingsSelectKind::AudioVocalPostprocess2,
+                session,
+            );
+            spawn_settings_section(
+                parent,
+                font.clone(),
+                theme,
+                "BGM OUTPUT",
+                "Choose the BGM separator, then apply up to two independent post-processing steps in slot order.",
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "BGM separation model",
+                "Dedicated BGM model that produces the chart accompaniment independently of the vocal model.",
+                SettingsSelectKind::AudioAccompanimentModel,
+                session,
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Post-processing 1",
+                "First optional BGM step. Choose Off, Denoise, or Dereverb.",
+                SettingsSelectKind::AudioBgmPostprocess1,
+                session,
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Post-processing 2",
+                "Second optional BGM step. It runs after post-processing 1.",
+                SettingsSelectKind::AudioBgmPostprocess2,
+                session,
+            );
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Karaoke model",
+                "Optional karaoke side output; it never replaces the analysis vocal.",
+                SettingsSelectKind::AudioKaraokeModel,
+                session,
+            );
+        }
+        "demucs" => {
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Six-stem model",
+                "Demucs model that produces vocals, drums, bass, guitar, piano, and other stems.",
+                SettingsSelectKind::AudioMultistemModel,
+                session,
+            );
+        }
+        _ => {}
+    }
+    if session.config.separator() != "openvino_demucs" {
         spawn_select_setting_row(
             parent,
             font.clone(),
             icons.clone(),
             theme,
-            "Cleanup order",
-            "Order of denoise and dereverb when both are enabled.",
-            SettingsSelectKind::AudioCleanupOrder,
+            "PyTorch backend",
+            "Compute route for the selected RoFormer or Demucs model. Whole-model CPU fallback is recorded.",
+            SettingsSelectKind::AudioTorchBackend,
+            session,
+        );
+        if session.config.separator() == "karaoke"
+            && settings_select_value(SettingsSelectKind::AudioKaraokeModel, session.config)
+                == "uvr_mdxnet_karaoke_2"
+        {
+            spawn_select_setting_row(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Karaoke ONNX backend",
+                "Compute route used only by the selected MDX-NET Karaoke model.",
+                SettingsSelectKind::AudioOnnxBackend,
+                session,
+            );
+        }
+        spawn_select_setting_row(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            "Precision policy",
+            "Precision requested for the selected catalog model.",
+            SettingsSelectKind::AudioPrecisionPolicy,
             session,
         );
     }
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Accompaniment model",
-        "Independent high-quality accompaniment. Do not treat this as the complement of the vocal model.",
-        SettingsSelectKind::AudioAccompanimentModel,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Karaoke model",
-        "Optional karaoke accompaniment. Turning this off does not block charting.",
-        SettingsSelectKind::AudioKaraokeModel,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "PyTorch backend",
-        "Requested compute route for RoFormer and Demucs. Fallback to CPU is recorded if the whole model cannot run here.",
-        SettingsSelectKind::AudioTorchBackend,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "ONNX / OpenVINO backend",
-        "Requested route for MDX ONNX models such as Karaoke 2. OpenVINO runs in a helper process.",
-        SettingsSelectKind::AudioOnnxBackend,
-        session,
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Precision policy",
-        "First release keeps FP32 until each model has CPU/XPU comparison tests.",
-        SettingsSelectKind::AudioPrecisionPolicy,
-        session,
-    );
     let separation_advanced =
         session.open_analysis_advanced == Some(AnalysisAdvancedSection::Separation);
     if session.config.separator() != "openvino_demucs" {
@@ -262,10 +306,10 @@ pub(crate) fn spawn_analysis_settings(
         "02 · LYRICS TRANSCRIPTION",
         "Lyrics transcription",
         "Recognizes sung words. Fallback settings appear separately when the primary engine needs them.",
-        transcription_summary(&session.config),
+        transcription_summary(session.config),
         Some(analysis_stage_status(
             &status,
-            Some(transcription_model_target(&session.config)),
+            Some(transcription_model_target(session.config)),
         )),
         Some((
             "Manage models…".to_string(),
@@ -375,7 +419,7 @@ pub(crate) fn spawn_analysis_settings(
         align_backend_label(session.config.align_backend()),
         Some(analysis_stage_status(
             &status,
-            alignment_model_target(&session.config),
+            alignment_model_target(session.config),
         )),
         Some((
             "Manage models…".to_string(),

@@ -21,7 +21,7 @@ pub(crate) fn spawn_model_settings(
         spawn_setup_progress_panel(parent, font.clone(), icons.clone(), native_setup, theme);
     }
     let status = app_core::analysis_runtime_status();
-    spawn_model_runtime_status_row(parent, font.clone(), theme, &session.config, &status);
+    spawn_model_runtime_status_row(parent, font.clone(), theme, session.config, &status);
     spawn_select_setting_row(
         parent,
         font.clone(),
@@ -60,10 +60,10 @@ pub(crate) fn spawn_model_settings(
         theme,
         session,
         &status.models,
-        "01 · VOCAL SEPARATION",
-        "Vocal separation",
-        "Creates vocal and instrumental stems before recognition.",
-        separator_label(session.config.separator()),
+        "01 · STEM SEPARATION",
+        "Vocal & BGM separation",
+        "Installs the model files used by the independent vocal and BGM branches.",
+        vocal_separation_label(session.config),
         &[app_core::ModelDownloadTarget::Separator],
     );
     spawn_audio_catalog_models(parent, font.clone(), theme, session);
@@ -76,7 +76,7 @@ pub(crate) fn spawn_model_settings(
         "02 · LYRICS TRANSCRIPTION",
         "Lyrics transcription",
         "Recognizes lyrics. Compatibility and language-detection models are identified separately from the selected engine.",
-        transcription_summary(&session.config),
+        transcription_summary(session.config),
         &[
             app_core::ModelDownloadTarget::OpenVinoWhisper,
             app_core::ModelDownloadTarget::Parakeet,
@@ -246,7 +246,7 @@ pub(crate) fn spawn_model_install_row(
     model: &app_core::ModelInstallStatus,
     stage: &'static str,
 ) {
-    let role = model_install_role(&session.config, model.target);
+    let role = model_install_role(session.config, model.target);
     parent
         .spawn((
             Node {
@@ -741,7 +741,7 @@ pub(crate) fn spawn_analysis_pipeline(
                         font.clone(),
                         theme,
                         "01 · Vocals",
-                        separator_label(session.config.separator()),
+                        vocal_separation_label(session.config),
                         analysis_stage_status(
                             status,
                             Some(app_core::ModelDownloadTarget::Separator),
@@ -752,10 +752,10 @@ pub(crate) fn spawn_analysis_pipeline(
                         font.clone(),
                         theme,
                         "02 · Lyrics",
-                        transcription_summary(&session.config),
+                        transcription_summary(session.config),
                         analysis_stage_status(
                             status,
-                            Some(transcription_model_target(&session.config)),
+                            Some(transcription_model_target(session.config)),
                         ),
                     );
                     spawn_analysis_pipeline_stage(
@@ -764,7 +764,7 @@ pub(crate) fn spawn_analysis_pipeline(
                         theme,
                         "03 · Timing",
                         align_backend_label(session.config.align_backend()),
-                        analysis_stage_status(status, alignment_model_target(&session.config)),
+                        analysis_stage_status(status, alignment_model_target(session.config)),
                     );
                     spawn_analysis_pipeline_stage(
                         pipeline,

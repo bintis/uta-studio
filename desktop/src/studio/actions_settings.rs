@@ -108,10 +108,45 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     studio.shell.config.compute_backend = Some(value.clone());
                 }
                 SettingsSelectKind::Separator => {
-                    studio.shell.config.separator = Some(value.clone());
-                    studio.shell.config.audio_processing = Some(
-                        app_core::AudioProcessingSettings::from_legacy_separator(value),
-                    );
+                    let previous = audio_settings(&studio.shell.config);
+                    let separator = match value.as_str() {
+                        "htdemucs_6s" | "demucs" => "demucs",
+                        "openvino_demucs" => "openvino_demucs",
+                        _ => "karaoke",
+                    };
+                    let mut next = if studio.shell.config.separator() == separator {
+                        previous.clone()
+                    } else {
+                        app_core::AudioProcessingSettings::from_legacy_separator(separator)
+                    };
+                    match value.as_str() {
+                        "melband_roformer_karaoke_aufr33_viperx" | "bs_roformer_vocals_ep317" => {
+                            next.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                            next.multistem_model_id = None;
+                            next.vocal_model_id = Some(value.clone());
+                        }
+                        "htdemucs_6s" => {
+                            next.legacy_profile = Some("legacy_htdemucs".to_string());
+                            next.multistem_model_id = Some(value.clone());
+                            next.vocal_model_id = None;
+                            next.vocal_cleanup_chain.clear();
+                            next.accompaniment_model_id = None;
+                            next.accompaniment_cleanup_chain.clear();
+                            next.karaoke_model_id = None;
+                        }
+                        _ => {}
+                    }
+                    // Changing the separation family must not silently discard
+                    // runtime policy or model-specific tuning. Incompatible
+                    // route selections reset; shared execution settings stay.
+                    next.common_overrides = previous.common_overrides;
+                    next.per_model_overrides = previous.per_model_overrides;
+                    next.torch_backend = previous.torch_backend;
+                    next.onnx_backend = previous.onnx_backend;
+                    next.precision_policy = previous.precision_policy;
+                    next.memory_policy = previous.memory_policy;
+                    studio.shell.config.separator = Some(separator.to_string());
+                    studio.shell.config.audio_processing = Some(next);
                 }
                 SettingsSelectKind::SeparatorPreset => {
                     apply_separator_preset(&mut studio.shell.config, value);
@@ -129,39 +164,60 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     studio.shell.config.pitch_model = Some(value.clone());
                 }
                 SettingsSelectKind::AudioVocalModel => {
-                    audio_settings_mut(&mut studio.shell.config).vocal_model_id =
-                        Some(value.clone());
+                    let settings = audio_settings_mut(&mut studio.shell.config);
+                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.multistem_model_id = None;
+                    settings.vocal_model_id = Some(value.clone());
+                }
+                SettingsSelectKind::AudioMultistemModel => {
+                    let settings = audio_settings_mut(&mut studio.shell.config);
+                    settings.legacy_profile = Some("legacy_htdemucs".to_string());
+                    settings.multistem_model_id = Some(value.clone());
+                    settings.vocal_model_id = None;
+                    settings.vocal_cleanup_chain.clear();
+                    settings.accompaniment_model_id = None;
+                    settings.accompaniment_cleanup_chain.clear();
+                    settings.karaoke_model_id = None;
                 }
                 SettingsSelectKind::AudioAccompanimentModel => {
-                    audio_settings_mut(&mut studio.shell.config).accompaniment_model_id =
-                        (value != "none").then(|| value.clone());
+                    let settings = audio_settings_mut(&mut studio.shell.config);
+                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.multistem_model_id = None;
+                    settings.vocal_model_id.get_or_insert_with(|| {
+                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
+                    });
+                    settings.accompaniment_model_id = Some(value.clone());
                 }
                 SettingsSelectKind::AudioKaraokeModel => {
                     audio_settings_mut(&mut studio.shell.config).karaoke_model_id =
                         (value != "none").then(|| value.clone());
                 }
-                SettingsSelectKind::AudioDenoise
-                | SettingsSelectKind::AudioDereverb
-                | SettingsSelectKind::AudioCleanupOrder => {
+                SettingsSelectKind::AudioVocalPostprocess1
+                | SettingsSelectKind::AudioVocalPostprocess2 => {
                     let current = audio_settings(&studio.shell.config).vocal_cleanup_chain;
-                    let denoise = match kind {
-                        SettingsSelectKind::AudioDenoise => value != "none",
-                        _ => current.iter().any(|id| id.contains("denoise")),
-                    };
-                    let dereverb = match kind {
-                        SettingsSelectKind::AudioDereverb => value != "none",
-                        _ => current.iter().any(|id| id.contains("dereverb")),
-                    };
-                    let dereverb_first = match kind {
-                        SettingsSelectKind::AudioCleanupOrder => value == "dereverb_denoise",
-                        _ => {
-                            let d = current.iter().position(|id| id.contains("denoise"));
-                            let r = current.iter().position(|id| id.contains("dereverb"));
-                            matches!((d, r), (Some(di), Some(ri)) if ri < di)
-                        }
-                    };
-                    audio_settings_mut(&mut studio.shell.config).vocal_cleanup_chain =
-                        rewrite_cleanup_chain(&current, denoise, dereverb, dereverb_first);
+                    let slot =
+                        usize::from(matches!(kind, SettingsSelectKind::AudioVocalPostprocess2));
+                    let settings = audio_settings_mut(&mut studio.shell.config);
+                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.multistem_model_id = None;
+                    settings.vocal_model_id.get_or_insert_with(|| {
+                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
+                    });
+                    settings.vocal_cleanup_chain = rewrite_cleanup_slot(&current, slot, value);
+                }
+                SettingsSelectKind::AudioBgmPostprocess1
+                | SettingsSelectKind::AudioBgmPostprocess2 => {
+                    let current = audio_settings(&studio.shell.config).accompaniment_cleanup_chain;
+                    let slot =
+                        usize::from(matches!(kind, SettingsSelectKind::AudioBgmPostprocess2));
+                    let settings = audio_settings_mut(&mut studio.shell.config);
+                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.multistem_model_id = None;
+                    settings.vocal_model_id.get_or_insert_with(|| {
+                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
+                    });
+                    settings.accompaniment_cleanup_chain =
+                        rewrite_cleanup_slot(&current, slot, value);
                 }
                 SettingsSelectKind::AudioTorchBackend => {
                     audio_settings_mut(&mut studio.shell.config).torch_backend = value.clone();
@@ -176,11 +232,13 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             if matches!(
                 kind,
                 SettingsSelectKind::AudioVocalModel
+                    | SettingsSelectKind::AudioMultistemModel
                     | SettingsSelectKind::AudioAccompanimentModel
                     | SettingsSelectKind::AudioKaraokeModel
-                    | SettingsSelectKind::AudioDenoise
-                    | SettingsSelectKind::AudioDereverb
-                    | SettingsSelectKind::AudioCleanupOrder
+                    | SettingsSelectKind::AudioVocalPostprocess1
+                    | SettingsSelectKind::AudioVocalPostprocess2
+                    | SettingsSelectKind::AudioBgmPostprocess1
+                    | SettingsSelectKind::AudioBgmPostprocess2
             ) {
                 let derived = audio_settings(&studio.shell.config).derived_legacy_separator();
                 studio.shell.config.separator = Some(derived.to_string());
@@ -224,13 +282,38 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::InstallAudioModel(model_id)) => {
-            studio.shell.notice = Some(match app_core::install_audio_model(model_id) {
-                Ok(status) => format!(
-                    "{} is {}. Analysis uses it only after the next run.",
-                    status.display_name, status.state
-                ),
-                Err(error) => error,
-            });
+            if setup.receiver.is_some() {
+                studio.shell.notice =
+                    Some("Another model or runtime installation is already running.".to_string());
+            } else {
+                let model_id = model_id.clone();
+                let (sender, receiver) = mpsc::channel();
+                setup.receiver = Some(Mutex::new(receiver));
+                setup.progress = None;
+                setup.logs.clear();
+                setup
+                    .logs
+                    .push(format!("Installing audio model {model_id}…"));
+                setup.last_ui_refresh = None;
+                studio.shell.notice = Some("Audio model installation started.".to_string());
+                if let Err(error) = std::thread::Builder::new()
+                    .name("uta-studio-audio-model-install".to_string())
+                    .spawn(move || {
+                        let result = app_core::install_audio_model(&model_id).map(|status| {
+                            let _ = sender.send(SetupEvent::Log(format!(
+                                "Installed {}. Analysis uses it only after the next run.",
+                                status.display_name
+                            )));
+                        });
+                        let _ = sender.send(SetupEvent::Complete(result));
+                    })
+                {
+                    setup.receiver = None;
+                    setup.logs.clear();
+                    studio.shell.notice =
+                        Some(format!("Could not start audio model installation: {error}"));
+                }
+            }
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RemoveAudioModel(model_id)) => {

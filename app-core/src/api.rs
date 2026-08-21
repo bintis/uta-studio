@@ -51,6 +51,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Read the in-memory diagnostic log"
     ),
     capability!(
+        "analysis",
+        "analysis_log_path_for",
+        "read",
+        true,
+        "Resolve the dedicated log for one analysis run"
+    ),
+    capability!(
+        "analysis",
+        "analysis_log_lines",
+        "read",
+        true,
+        "Read the dedicated log for one analysis run or node"
+    ),
+    capability!(
         "window",
         "window_immersive",
         "read",
@@ -294,7 +308,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "clear_analysis_history",
         "destructive",
         false,
-        "Delete saved analysis session history without touching songs or generated assets"
+        "Delete saved analysis session history and its referenced per-run logs without touching songs or analysis artifacts"
     ),
     capability!(
         "library",
@@ -407,6 +421,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "mutation",
         false,
         "Remove a not-yet-started song from the analysis queue; rejects if it is already running"
+    ),
+    capability!(
+        "analysis",
+        "stop_analysis_run",
+        "mutation",
+        false,
+        "Stop a queued or running analysis while preserving committed outputs"
     ),
     capability!(
         "analysis",

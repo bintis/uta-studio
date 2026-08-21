@@ -9,7 +9,6 @@ pub(crate) fn spawn_editor(
     icons: Handle<Image>,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
-    window_size: Vec2,
 ) {
     let Some(editor) = session.editor.as_ref() else {
         parent
@@ -95,7 +94,7 @@ pub(crate) fn spawn_editor(
     let song = session.selected_song();
     let notes = chart_notes(&editor.document);
     let ghosts = other_track_notes(&editor.document);
-    let tracks_visible = session.editor_tracks_open || editor.document.track_count() > 1;
+    let tracks_visible = !editor.tracks_hidden;
     let lyrics = chart_lyrics(&editor.document);
     // The lyric or note(s) the current selection is bound to, so its match
     // can be highlighted and connected — the format ties a note's pitch and
@@ -242,26 +241,6 @@ pub(crate) fn spawn_editor(
                         UiAction::from(EditorCommand::Editor(EditorAction::EditLyricLine)),
                         false,
                     );
-                    spawn_icon_button(
-                        toolbar,
-                        icons.clone(),
-                        theme,
-                        UiIcon::PanelBottom,
-                        UiAction::from(EditorCommand::Editor(EditorAction::ToggleLyrics)),
-                        !editor.lyrics_hidden,
-                        false,
-                        34.0,
-                    );
-                    spawn_duet_icon_button(
-                        toolbar,
-                        theme,
-                        UiAction::from(EditorCommand::Editor(EditorAction::ToggleTracks)),
-                        tracks_visible,
-                        // A multi-track chart always shows which track an edit
-                        // would land on, so the toggle has nothing to do.
-                        editor.document.track_count() > 1,
-                        34.0,
-                    );
                     {
                         let problems = &editor.problems_cache.1;
                         spawn_toolbar_button(
@@ -279,25 +258,15 @@ pub(crate) fn spawn_editor(
                             problems.blocks_saving(),
                         );
                     }
-                    spawn_icon_button(
+                    spawn_toolbar_button(
                         toolbar,
+                        font.clone(),
                         icons.clone(),
                         theme,
                         UiIcon::PanelRight,
-                        UiAction::from(EditorCommand::Editor(EditorAction::ToggleInspector)),
-                        editor.inspector_open,
+                        "View",
+                        UiAction::from(EditorCommand::ToggleEditorLayoutMenu),
                         false,
-                        34.0,
-                    );
-                    spawn_icon_button(
-                        toolbar,
-                        icons.clone(),
-                        theme,
-                        UiIcon::Settings,
-                        UiAction::from(EditorCommand::OpenSongSettings(editor.chart.file_hash.clone())),
-                        false,
-                        false,
-                        34.0,
                     );
                     spawn_toolbar_button(
                         toolbar,
@@ -305,8 +274,8 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::Save,
-                        if editor.dirty { "Save *" } else { "Save" },
-                        UiAction::from(EditorCommand::Editor(EditorAction::Save)),
+                        if editor.dirty { "Files *" } else { "Files" },
+                        UiAction::from(EditorCommand::ToggleEditorFileMenu),
                         false,
                     );
                 });
@@ -395,70 +364,74 @@ pub(crate) fn spawn_editor(
                                     theme,
                                 );
                             }
-                            spawn_editor_dock(
-                                timeline_column,
-                                font.clone(),
-                                icons.clone(),
-                                editor,
-                                session.open_editor_select,
-                                theme,
-                            );
-                            timeline_column
-                                .spawn((
-                                    Node {
-                                        width: percent(100),
-                                        height: px(28),
-                                        flex_shrink: 0.0,
-                                        align_items: AlignItems::Center,
-                                        padding: UiRect::horizontal(px(16)),
-                                        border: UiRect::top(px(1)),
-                                        ..default()
-                                    },
-                                    BackgroundColor(theme.card.with_alpha(0.42)),
-                                    BorderColor::all(theme.border.with_alpha(0.45)),
-                                ))
-                                .with_children(|status| {
-                                    let selected_notes = editor.selected_note_indices().len();
-                                    let selected_lyrics = editor.selected_word_indices().len();
-                                    let selection = if selected_notes > 0 {
-                                        format!("{selected_notes} note(s) selected")
-                                    } else if selected_lyrics > 0 {
-                                        format!("{selected_lyrics} lyric item(s) selected")
-                                    } else {
-                                        "No selection".to_string()
-                                    };
-                                    spawn_text(
-                                        status,
-                                        font.clone(),
-                                        format!(
-                                            "{selection} · {:.1}–{:.1}s · {} notes",
-                                            editor.viewport_start,
-                                            editor.viewport_end(),
-                                            notes.len()
-                                        ),
-                                        8.0,
-                                        theme.muted_foreground,
-                                    );
-                                    status.spawn(Node {
-                                        flex_grow: 1.0,
-                                        ..default()
-                                    });
-                                    status
-                                        .spawn((
-                                            EditorShortcutsHoverTrigger,
-                                            Interaction::None,
-                                            Node::default(),
-                                        ))
-                                        .with_children(|trigger| {
-                                            spawn_text(
-                                                trigger,
-                                                font.clone(),
-                                                "Double-click lyric to edit · drag edges to resize · wheel / Shift / Ctrl / Alt to navigate · hover or press H for all shortcuts",
-                                                8.0,
-                                                theme.muted_foreground,
-                                            );
+                            if !editor.dock_hidden {
+                                spawn_editor_dock(
+                                    timeline_column,
+                                    font.clone(),
+                                    icons.clone(),
+                                    editor,
+                                    session.open_editor_select,
+                                    theme,
+                                );
+                            }
+                            if !editor.status_hidden {
+                                timeline_column
+                                    .spawn((
+                                        Node {
+                                            width: percent(100),
+                                            height: px(28),
+                                            flex_shrink: 0.0,
+                                            align_items: AlignItems::Center,
+                                            padding: UiRect::horizontal(px(16)),
+                                            border: UiRect::top(px(1)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.card.with_alpha(0.42)),
+                                        BorderColor::all(theme.border.with_alpha(0.45)),
+                                    ))
+                                    .with_children(|status| {
+                                        let selected_notes = editor.selected_note_indices().len();
+                                        let selected_lyrics = editor.selected_word_indices().len();
+                                        let selection = if selected_notes > 0 {
+                                            format!("{selected_notes} note(s) selected")
+                                        } else if selected_lyrics > 0 {
+                                            format!("{selected_lyrics} lyric item(s) selected")
+                                        } else {
+                                            "No selection".to_string()
+                                        };
+                                        spawn_text(
+                                            status,
+                                            font.clone(),
+                                            format!(
+                                                "{selection} · {:.1}–{:.1}s · {} notes",
+                                                editor.viewport_start,
+                                                editor.viewport_end(),
+                                                notes.len()
+                                            ),
+                                            8.0,
+                                            theme.muted_foreground,
+                                        );
+                                        status.spawn(Node {
+                                            flex_grow: 1.0,
+                                            ..default()
                                         });
-                                });
+                                        status
+                                            .spawn((
+                                                EditorShortcutsHoverTrigger,
+                                                Interaction::None,
+                                                Node::default(),
+                                            ))
+                                            .with_children(|trigger| {
+                                                spawn_text(
+                                                    trigger,
+                                                    font.clone(),
+                                                    "Double-click lyric to edit · drag edges to resize · wheel / Shift / Ctrl / Alt to navigate · hover or press H for all shortcuts",
+                                                    8.0,
+                                                    theme.muted_foreground,
+                                                );
+                                            });
+                                    });
+                            }
                         });
                     if editor.inspector_open {
                         spawn_editor_inspector(workspace, font.clone(), editor, &notes, theme);
@@ -470,16 +443,6 @@ pub(crate) fn spawn_editor(
             }
             spawn_shortcuts_panel(editor_root, font.clone(), theme, editor);
             spawn_all_lyrics_panel(editor_root, font.clone(), theme, editor);
-            if let Some(context) = editor.note_context.as_ref() {
-                spawn_note_context_menu(editor_root, font.clone(), theme, editor, context, window_size);
-            }
-            if let Some(context) = editor.lyric_context.as_ref() {
-                spawn_lyric_context_menu(editor_root, font.clone(), theme, editor, context, window_size);
-            }
-            if let Some(context) = editor.waveform_context.as_ref() {
-                spawn_waveform_context_menu(editor_root, font.clone(), theme, editor, context, window_size);
-            }
-
             if let Some(notice) = session.notice.as_deref() {
                 editor_root
                     .spawn((

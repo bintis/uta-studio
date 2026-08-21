@@ -61,7 +61,7 @@ class ProgressNodeHelperTests(unittest.TestCase):
         self.assertEqual(pct, 52)
         self.assertEqual(msg, "Extracting reference pitch...")
         self.assertEqual(metadata["node_id"], "pitch.extract")
-        self.assertEqual(metadata["event"], "node_started")
+        self.assertEqual(metadata["event"], "started")
 
     def test_progress_node_forwards_extra_metadata_unchanged(self):
         whisper_compat.progress_node(
@@ -75,7 +75,7 @@ class ProgressNodeHelperTests(unittest.TestCase):
     def test_artifact_reused_sets_event_and_default_reason(self):
         whisper_compat.artifact_reused("stems.separate", 50, "Stems already cached, skipping separation")
         _, _, metadata = self.captured[-1]
-        self.assertEqual(metadata["event"], "artifact_reused")
+        self.assertEqual(metadata["event"], "reused")
         self.assertEqual(metadata["reason"], "cache_hit")
         self.assertEqual(metadata["node_id"], "stems.separate")
 
@@ -97,7 +97,7 @@ class ProgressPayloadNodeFieldsTests(unittest.TestCase):
             runtime_state={},
         )
         self.assertEqual(payload["node_id"], "pitch.extract")
-        self.assertEqual(payload["event"], "node_started")
+        self.assertEqual(payload["event"], "started")
         # Legacy Adapter fields must still be computed identically -- Phase 3
         # is additive, not a replacement of the text classifier.
         self.assertEqual(payload["stage"], "pitch")
@@ -139,7 +139,7 @@ class ProgressPayloadNodeFieldsTests(unittest.TestCase):
             metadata={"node_id": "stems.separate", "event": "artifact_reused", "reason": "cache_hit"},
             runtime_state={},
         )
-        self.assertEqual(payload["event"], "artifact_reused")
+        self.assertEqual(payload["event"], "reused")
         self.assertEqual(payload["artifact_reused_reason"], "cache_hit")
 
     def test_atomic_output_commit_metadata_survives_in_stage_route(self):
@@ -152,7 +152,7 @@ class ProgressPayloadNodeFieldsTests(unittest.TestCase):
             "algorithm_version": "1",
         }
         payload = server._progress_payload(
-            90,
+            {}, "cpu", 90,
             "Alignment complete",
             metadata={
                 "node_id": "lyrics.align",
@@ -197,7 +197,7 @@ class StageRoutesNodeIdKeyingTests(unittest.TestCase):
             metadata={"node_id": "pitch.extract", "event": "node_completed"},
             runtime_state={},
         )
-        self.assertEqual(payload["stage_routes"][0]["node_event"], "node_completed")
+        self.assertEqual(payload["stage_routes"][0]["node_event"], "completed")
 
     def test_stage_routes_entry_node_event_is_none_for_legacy_call_sites(self):
         payload = server._progress_payload(
@@ -222,7 +222,7 @@ class StageRoutesNodeIdKeyingTests(unittest.TestCase):
             runtime_state=runtime_state,
         )
         self.assertEqual(len(payload["stage_routes"]), 1)
-        self.assertEqual(payload["stage_routes"][0]["node_event"], "node_completed")
+        self.assertEqual(payload["stage_routes"][0]["node_event"], "completed")
 
     def test_stage_routes_entry_node_id_is_none_for_legacy_call_sites(self):
         payload = server._progress_payload(

@@ -38,6 +38,11 @@ pub struct AnalysisTask {
 #[ts(export)]
 pub struct AnalysisProgressSnapshot {
     pub stage: String,
+    /// Whole-run completion reported by the analyzer. Kept separately from
+    /// `stage_progress` so the global rail and saved history do not mistake
+    /// the current model step's percentage for the complete DAG's progress.
+    #[serde(default)]
+    pub overall_progress: usize,
     pub stage_progress: usize,
     pub operation: String,
     pub detail: String,
@@ -64,6 +69,10 @@ pub struct AnalysisProgressSnapshot {
     pub node_event: Option<String>,
     #[serde(default)]
     pub artifact_reused_reason: Option<String>,
+    /// One durable, run-scoped analyzer log. Old history snapshots do not
+    /// contain this field and remain readable.
+    #[serde(default)]
+    pub analysis_log_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -127,6 +136,14 @@ pub struct AnalysisStageRoute {
     pub started_at_ms: Option<i64>,
     #[serde(default)]
     pub finished_at_ms: Option<i64>,
+    /// Timestamp of the most recently received lifecycle/progress event.
+    #[serde(default)]
+    pub event_at_ms: Option<i64>,
+    /// Real chunk/batch accounting when the model exposes it.
+    #[serde(default)]
+    pub work_units_completed: Option<u64>,
+    #[serde(default)]
+    pub work_units_total: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -162,6 +179,8 @@ pub struct AnalysisRunHistory {
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub error_message: Option<String>,
+    /// Durable run-owned JSONL path. Old rows legitimately have none.
+    pub log_path: Option<PathBuf>,
     pub snapshot: AnalysisProgressSnapshot,
 }
 
@@ -180,6 +199,7 @@ pub fn load_analysis_history(limit: usize) -> Vec<AnalysisRunHistory> {
                 started_at_ms: row.started_at_ms,
                 finished_at_ms: row.finished_at_ms,
                 error_message: row.error_message,
+                log_path: row.log_path,
                 snapshot,
             })
         })
@@ -237,6 +257,77 @@ pub fn load_analysis_node_attempts(run_id: i64) -> Vec<NodeAttempt> {
             finished_at_ms: row.finished_at_ms,
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HistoricalNodeWeight {
+    node_id: String,
+    implementation: String,
+    actual_device: String,
+    duration_ms: u64,
+}
+
+fn median_duration_ms(samples: &mut [u64]) -> u64 {
+    samples.sort_unstable();
+    let upper = samples.len() / 2;
+    if samples.len() % 2 == 1 {
+        samples[upper]
+    } else {
+        let lower_value = samples[upper - 1];
+        lower_value + (samples[upper] - lower_value) / 2
+    }
+}
+
+pub(crate) fn historical_progress_weights() -> Vec<HistoricalNodeWeight> {
+    let mut durations = BTreeMap::<(String, String, String), Vec<u64>>::new();
+    for run in load_analysis_history(100)
+        .into_iter()
+        .filter(|run| run.status == "completed")
+    {
+        for attempt in load_analysis_node_attempts(run.id)
+            .into_iter()
+            .filter(|attempt| attempt.status == "succeeded")
+        {
+            let Some(duration) = attempt
+                .finished_at_ms
+                .zip(attempt.started_at_ms)
+                .and_then(|(finished, started)| finished.checked_sub(started))
+                .filter(|duration| *duration > 0)
+            else {
+                continue;
+            };
+            durations
+                .entry((
+                    attempt.node_id,
+                    attempt.implementation,
+                    attempt.actual_device,
+                ))
+                .or_default()
+                .push(duration as u64);
+        }
+    }
+    durations
+        .into_iter()
+        .map(
+            |((node_id, implementation, actual_device), mut samples)| HistoricalNodeWeight {
+                node_id,
+                implementation,
+                actual_device,
+                duration_ms: median_duration_ms(&mut samples).max(1),
+            },
+        )
+        .collect()
+}
+
+#[cfg(test)]
+mod progress_weight_tests {
+    use super::median_duration_ms;
+
+    #[test]
+    fn duration_median_handles_odd_even_and_unsorted_samples() {
+        assert_eq!(median_duration_ms(&mut [90, 10, 30]), 30);
+        assert_eq!(median_duration_ms(&mut [100, 20, 80, 40]), 60);
+    }
 }
 
 /// One node's attempt in each of two compared runs (Phase 6
@@ -396,7 +487,47 @@ pub fn compare_node_attempt_with_previous_run(
 }
 
 pub fn clear_analysis_history() -> Result<(), String> {
-    library_db::analysis_history_clear().map_err(|error| error.to_string())
+    let referenced_logs =
+        library_db::analysis_history_clear().map_err(|error| error.to_string())?;
+    let root = crate::cache::uta_studio_dir().join("analysis-logs");
+    delete_analysis_logs_in(&root, &referenced_logs)
+}
+
+pub(crate) fn delete_analysis_logs_in(
+    root: &std::path::Path,
+    referenced_logs: &[PathBuf],
+) -> Result<(), String> {
+    let Ok(canonical_root) = root.canonicalize() else {
+        return Ok(());
+    };
+    let mut failures = Vec::new();
+    for referenced in referenced_logs {
+        if !referenced.exists() {
+            continue;
+        }
+        let Ok(path) = referenced.canonicalize() else {
+            failures.push(format!("{}: could not resolve path", referenced.display()));
+            continue;
+        };
+        if path.parent() != Some(canonical_root.as_path()) || !path.is_file() {
+            failures.push(format!(
+                "{}: refused because it is outside the analysis-logs root",
+                referenced.display()
+            ));
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            failures.push(format!("{}: {error}", path.display()));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "history was cleared, but some analysis logs could not be removed: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 /// Which single primary action a song's detail page should surface, per

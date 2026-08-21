@@ -72,7 +72,12 @@ def transcribe_vocals(
         }]
     progress_node(
         "lyrics.preprocess", "node_completed", 57,
-        "Vocal-region preprocessing complete", artifacts=artifacts,
+        "Vocal-region preprocessing complete", node_progress_pct=100, artifacts=artifacts,
+    )
+
+    progress_node(
+        "lyrics.transcribe", "node_started", 58, "Preparing transcription model...",
+        node_progress_pct=0,
     )
 
     if engine == "parakeet":
@@ -191,10 +196,20 @@ def _build_result_from_raw_segments(
     ]
 
     progress(75, f"Language: {language}")
-    result = _align_and_build(raw_segments, full_audio, language, device, pre_align_cleanup)
-    result["source"] = "generated"
-    result["_pre_alignment_segments"] = pre_alignment_segments
-    return result
+    progress_node(
+        "lyrics.transcribe", "node_progress", 79, "Speech transcription complete",
+        node_progress_pct=95,
+    )
+    return {
+        "language": language,
+        "source": "generated",
+        "segments": pre_alignment_segments,
+        "_pre_alignment_segments": pre_alignment_segments,
+        "_alignment_raw_segments": raw_segments,
+        "_alignment_audio": full_audio,
+        "_alignment_device": device,
+        "_pre_align_cleanup": pre_align_cleanup,
+    }
 
 
 def _build_result_from_words(

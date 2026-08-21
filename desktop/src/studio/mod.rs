@@ -71,8 +71,8 @@ pub(crate) use analysis_model::*;
 pub(crate) use artifact_workbench_ui::*;
 pub(crate) use chrome::*;
 pub(crate) use commands::{
-    AnalysisCommand, AppCommand, EditorCommand, LibraryCommand, SettingsCommand, UiAction,
-    UiCommand,
+    AnalysisCommand, AnalysisModelCategory, AppCommand, EditorCommand, LibraryCommand,
+    SettingsCommand, UiAction, UiCommand,
 };
 pub(crate) use documentation::*;
 pub(crate) use editor::*;

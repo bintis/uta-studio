@@ -2,22 +2,33 @@
 //! from (docs/analysis-dag-redesign.md Phase 7 §7.1, phase plan
 //! "AnalysisGraphSpec + AnalysisPlan + AnalysisRun + NodeAttempts +
 //! ArtifactInventory -> GraphViewModel. UI 不再自行读取 cache 文件猜状态").
-//! Pure: every input is a plain value or closure the caller already
-//! computed, so this module never touches the filesystem, the DB, or Bevy
-//! -- it can be (and is) unit-tested without any of the app's real state.
+//! Pure: inputs are values or closures supplied by the caller, so this
+//! module never touches the filesystem, database, or Bevy.
 //!
 //! `NodeState`'s *planned* values (`NotApplicable`/`Disabled`/`Blocked`/
 //! `Frozen`) come straight from Phase 1's `AnalysisPlan` and always win.
-//! Everything else is a *run-time* read derived the same way the existing
-//! 7-bucket progress UI already computes per-bucket completion
-//! (`stage_complete` in `analysis.rs`) -- this module doesn't invent a new
-//! execution-state source, it just gives every graph node (not only the 7
-//! buckets) a state by mapping each node onto its bucket via the existing
-//! `analysis_node_stage_index` bridge.
+//! Legacy history state is projected through the existing stage-bucket
+//! bridge; current runs are overlaid from authoritative node events.
 
 use std::collections::BTreeSet;
 
-use app_core::{AnalysisGraphSpec, AnalysisNodeId, AnalysisPlan, ArtifactKind};
+use app_core::{
+    AnalysisGraphSpec, AnalysisNodeId, AnalysisPlan, ArtifactKind, AudioInputReference,
+    AudioProcessingPlanSnapshot,
+};
+
+mod multistem;
+use multistem::push_multistem_product_chain;
+mod accompaniment;
+use accompaniment::push_accompaniment_product_chain;
+mod reference;
+pub(crate) use reference::{polish_mini_reference_overview, polish_reference_overview};
+mod runtime;
+pub(crate) use runtime::overlay_runtime_node_event_states;
+#[cfg(test)]
+use runtime::{derived_music_analysis_state, derived_stem_analysis_state, runtime_node_state};
+mod vocal;
+use vocal::push_vocal_product_chain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GraphNodeState {
@@ -54,6 +65,7 @@ pub(crate) enum GraphNodeState {
 pub(crate) struct GraphNodeView {
     pub(crate) id: AnalysisNodeId,
     pub(crate) label: String,
+    pub(crate) detail: String,
     pub(crate) state: GraphNodeState,
     /// Non-zero only when this is a collapsed compound node -- how many
     /// children `Expand` would reveal. A node is compound iff this can be
@@ -64,12 +76,14 @@ pub(crate) struct GraphNodeView {
     /// analysis.rs`, since it needs the answer independent of this node's
     /// current expand state -- `collapsed_child_count` alone can't tell an
     /// already-expanded compound node apart from a plain one, both read 0).
+    #[allow(dead_code)]
     pub(crate) collapsed_child_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GraphViewModel {
     pub(crate) nodes: Vec<GraphNodeView>,
+    pub(crate) audio_processing: Option<AudioProcessingPlanSnapshot>,
 }
 
 impl GraphViewModel {
@@ -103,12 +117,17 @@ pub(crate) fn resolve_node_state(
         Some(app_core::NodeState::Blocked) => return GraphNodeState::Blocked,
         Some(app_core::NodeState::Frozen) => return GraphNodeState::Frozen,
         Some(app_core::NodeState::Failed) => return GraphNodeState::Failed,
-        Some(app_core::NodeState::Stale) => return GraphNodeState::Stale,
         Some(app_core::NodeState::Bypassed) => return GraphNodeState::Bypassed,
         _ => {}
     }
+    // `Stale` describes a prior artifact. A live execution of this exact
+    // node must take precedence, otherwise the renderer presents the stale
+    // card as complete while its replacement is still running.
     if is_live_node {
         return GraphNodeState::Running;
+    }
+    if matches!(planned_state, Some(app_core::NodeState::Stale)) {
+        return GraphNodeState::Stale;
     }
     match bucket {
         Some(bucket) if stage_complete(bucket) => GraphNodeState::Complete,
@@ -152,10 +171,23 @@ pub(crate) fn build_graph_view_model(
             }
         }
         let planned_state = plan.and_then(|p| p.node(&node.id)).map(|n| n.state);
-        if matches!(planned_state, Some(app_core::NodeState::NotApplicable)) {
+        let keep_reference_cleanup = expanded.contains(&AnalysisNodeId::new("stems.separate"))
+            && matches!(node.id.as_str(), "vocals.denoise" | "vocals.dereverb");
+        if matches!(planned_state, Some(app_core::NodeState::NotApplicable))
+            && !keep_reference_cleanup
+        {
             continue;
         }
-        let bucket = node_bucket(node.id.as_str());
+        // A structured live node id means this is a new-protocol run. In
+        // that mode bucket order must never mark sibling nodes complete or
+        // running: only the exact live id and accumulated terminal events
+        // are authoritative. Bucket projection remains solely for legacy
+        // history snapshots that have no node ids.
+        let bucket = if live_node_id.is_some() {
+            None
+        } else {
+            node_bucket(node.id.as_str())
+        };
         let is_live_node = live_node_id == Some(node.id.as_str());
         let state = resolve_node_state(
             planned_state,
@@ -172,11 +204,58 @@ pub(crate) fn build_graph_view_model(
         nodes.push(GraphNodeView {
             id: node.id.clone(),
             label: node.label.clone(),
+            detail: plan
+                .and_then(|plan| analysis_plan_node_detail(plan, node.id.as_str()))
+                .unwrap_or_default(),
             state,
             collapsed_child_count,
         });
     }
-    GraphViewModel { nodes }
+    GraphViewModel {
+        nodes,
+        audio_processing: plan.and_then(|plan| plan.audio_processing.clone()),
+    }
+}
+
+pub(crate) fn audio_step_node_id(step_id: &str) -> Option<&'static str> {
+    match step_id {
+        "extract_vocals" => Some("stems.vocals"),
+        "denoise_vocals" => Some("vocals.denoise"),
+        "dereverb_vocals" => Some("vocals.dereverb"),
+        "extract_accompaniment" => Some("stems.instrumental"),
+        "denoise_accompaniment" => Some("instrumental.denoise"),
+        "dereverb_accompaniment" => Some("instrumental.dereverb"),
+        "extract_karaoke" => Some("stems.karaoke"),
+        "separate_6s" | "legacy_htdemucs" => Some("stems.multistem"),
+        _ => None,
+    }
+}
+
+fn analysis_plan_node_detail(plan: &AnalysisPlan, node_id: &str) -> Option<String> {
+    let audio = plan.audio_processing.as_ref()?;
+    if node_id == "stems.separate" {
+        return Some(format!(
+            "{} model step{} · {}",
+            audio.steps.len(),
+            if audio.steps.len() == 1 { "" } else { "s" },
+            audio.profile_id.as_deref().unwrap_or("custom chain")
+        ));
+    }
+    if node_id == "stems.bind_analysis_outputs" {
+        return Some(format!("{} output bindings", audio.output_bindings.len()));
+    }
+    audio
+        .steps
+        .iter()
+        .find(|step| audio_step_node_id(&step.step_id) == Some(node_id))
+        .map(|step| {
+            format!(
+                "{} · {} / {}",
+                step.model_id,
+                audio.requested_runtime.torch_backend,
+                audio.requested_runtime.precision_policy
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +272,6 @@ pub(crate) struct RenderNode {
     pub(crate) label: String,
     pub(crate) detail: String,
     pub(crate) state: GraphNodeState,
-    pub(crate) collapsed_child_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +341,8 @@ pub(crate) fn virtual_artifact_node_id(kind: ArtifactKind) -> Option<&'static st
         ArtifactKind::DereverbedVocalStem => Some("artifact.dereverbed_vocal"),
         ArtifactKind::AnalysisVocalStem | ArtifactKind::VocalStem => Some("artifact.vocal_stem"),
         ArtifactKind::HighQualityInstrumentalStem => Some("artifact.hq_instrumental"),
+        ArtifactKind::DenoisedInstrumentalStem => Some("artifact.denoised_instrumental"),
+        ArtifactKind::DereverbedInstrumentalStem => Some("artifact.dereverbed_instrumental"),
         ArtifactKind::KaraokeInstrumentalStem => Some("artifact.karaoke_stem"),
         ArtifactKind::InstrumentalStem => Some("artifact.instrumental_stem"),
         ArtifactKind::MusicAnalysis => Some("artifact.music_analysis"),
@@ -505,6 +585,11 @@ fn dropped_stem_alias_edge(
             | ("vocals.denoise", "stems.bind_analysis_outputs")
             | ("vocals.dereverb", "stems.bind_analysis_outputs")
             | ("stems.instrumental", "stems.bind_analysis_outputs")
+            | ("stems.instrumental", "instrumental.denoise")
+            | ("stems.instrumental", "instrumental.dereverb")
+            | ("instrumental.denoise", "instrumental.dereverb")
+            | ("instrumental.denoise", "stems.bind_analysis_outputs")
+            | ("instrumental.dereverb", "stems.bind_analysis_outputs")
             | ("stems.bind_analysis_outputs", "pitch.extract")
             | ("stems.bind_analysis_outputs", "lyrics.preprocess")
             | ("stems.vocals", "pitch.extract")
@@ -517,23 +602,66 @@ fn dropped_stem_alias_edge(
             | ("lyrics.align", "chart.build_candidate")
             | ("lyrics.import_timed", "chart.build_candidate")
             | ("lyrics.transcribe", "chart.build_candidate")
+            | ("stems.bind_analysis_outputs", "chart.build_candidate")
             | ("lyrics.transcribe", "lyrics.align")
             | ("preflight", "lyrics.import_timed")
     )
 }
 
-fn last_vocal_producer(view: &GraphViewModel) -> Option<AnalysisNodeId> {
+fn fallback_last_vocal_producer(view: &GraphViewModel) -> Option<AnalysisNodeId> {
     ["vocals.dereverb", "vocals.denoise", "stems.vocals"]
         .into_iter()
         .map(AnalysisNodeId::new)
-        .find(|id| view.node(id).is_some())
+        .find(|id| {
+            view.node(id).is_some_and(|node| {
+                !matches!(
+                    node.state,
+                    GraphNodeState::NotApplicable | GraphNodeState::Disabled
+                )
+            })
+        })
+}
+
+fn analysis_vocal_producer(view: &GraphViewModel) -> Option<AnalysisNodeId> {
+    view.audio_processing
+        .as_ref()
+        .and_then(|audio| {
+            audio
+                .output_bindings
+                .iter()
+                .find(|binding| binding.artifact_role == "analysis_vocal")
+                .or_else(|| {
+                    audio
+                        .output_bindings
+                        .iter()
+                        .find(|binding| binding.artifact_role == "vocals")
+                })
+        })
+        .and_then(|binding| audio_step_node_id(&binding.step_id))
+        .map(AnalysisNodeId::new)
+        .filter(|id| view.node(id).is_some())
+        .or_else(|| fallback_last_vocal_producer(view))
+}
+
+fn audio_step_consumer(view: &GraphViewModel, producer_step_id: &str) -> Option<&'static str> {
+    view.audio_processing
+        .as_ref()?
+        .steps
+        .iter()
+        .find_map(|step| match &step.input {
+            AudioInputReference::StepOutput { step_id, .. } if step_id == producer_step_id => {
+                audio_step_node_id(&step.step_id)
+            }
+            _ => None,
+        })
 }
 
 fn last_vocal_artifact_id(view: &GraphViewModel) -> Option<&'static str> {
-    match last_vocal_producer(view)?.as_str() {
+    match analysis_vocal_producer(view)?.as_str() {
         "vocals.dereverb" => Some("artifact.dereverbed_vocal"),
         "vocals.denoise" => Some("artifact.denoised_vocal"),
         "stems.vocals" => Some("artifact.raw_vocal"),
+        "stems.multistem" => Some("artifact.multistem_vocal"),
         _ => None,
     }
 }
@@ -575,7 +703,6 @@ fn push_on_path_artifact(
             label: label.to_string(),
             detail: detail.to_string(),
             state,
-            collapsed_child_count: 0,
         });
         edges.push(RenderEdge {
             from: producer_id.clone(),
@@ -598,129 +725,6 @@ fn push_on_path_artifact(
                 producer_node: producer_id,
             });
         }
-    }
-}
-
-fn push_vocal_product_chain(
-    view: &GraphViewModel,
-    artifact_present: &dyn Fn(ArtifactKind) -> bool,
-    nodes: &mut Vec<RenderNode>,
-    edges: &mut Vec<RenderEdge>,
-) {
-    if view.node(&AnalysisNodeId::new("stems.vocals")).is_none() {
-        return;
-    }
-    let next_after_extract = if view.node(&AnalysisNodeId::new("vocals.denoise")).is_some() {
-        Some("vocals.denoise")
-    } else if view.node(&AnalysisNodeId::new("vocals.dereverb")).is_some() {
-        Some("vocals.dereverb")
-    } else {
-        None
-    };
-    let (extract_name, extract_kind) = if next_after_extract.is_some() {
-        ("vocals_raw.flac", ArtifactKind::RawVocalStem)
-    } else {
-        ("vocals.flac", ArtifactKind::VocalStem)
-    };
-    push_on_path_artifact(
-        OnPathArtifactSpec {
-            id: "artifact.raw_vocal",
-            label: extract_name,
-            detail: "extracted vocal · lossless",
-            producer: "stems.vocals",
-            consumer: next_after_extract,
-            kind: extract_kind,
-        },
-        view,
-        artifact_present,
-        nodes,
-        edges,
-    );
-    if view.node(&AnalysisNodeId::new("vocals.denoise")).is_some() {
-        let next_after_denoise = if view.node(&AnalysisNodeId::new("vocals.dereverb")).is_some() {
-            Some("vocals.dereverb")
-        } else {
-            None
-        };
-        push_on_path_artifact(
-            OnPathArtifactSpec {
-                id: "artifact.denoised_vocal",
-                label: "vocals_denoised.flac",
-                detail: "denoised vocal · lossless",
-                producer: "vocals.denoise",
-                consumer: next_after_denoise,
-                kind: ArtifactKind::DenoisedVocalStem,
-            },
-            view,
-            artifact_present,
-            nodes,
-            edges,
-        );
-    }
-    if view.node(&AnalysisNodeId::new("vocals.dereverb")).is_some() {
-        push_on_path_artifact(
-            OnPathArtifactSpec {
-                id: "artifact.dereverbed_vocal",
-                label: "vocals_dry.flac",
-                detail: "dereverbed vocal · lossless",
-                producer: "vocals.dereverb",
-                consumer: None,
-                kind: ArtifactKind::DereverbedVocalStem,
-            },
-            view,
-            artifact_present,
-            nodes,
-            edges,
-        );
-    }
-    if let Some(artifact_id) = last_vocal_artifact_id(view) {
-        for consumer in ["pitch.extract", "lyrics.preprocess"] {
-            if view.node(&AnalysisNodeId::new(consumer)).is_some() {
-                let producer = last_vocal_producer(view).expect("artifact implies producer");
-                edges.push(RenderEdge {
-                    from: AnalysisNodeId::new(artifact_id),
-                    to: AnalysisNodeId::new(consumer),
-                    artifact_kind: Some(ArtifactKind::VocalStem),
-                    role: RenderEdgeRole::ArtifactOutput,
-                    producer_node: producer,
-                });
-            }
-        }
-    }
-    if view
-        .node(&AnalysisNodeId::new("stems.instrumental"))
-        .is_some()
-    {
-        push_on_path_artifact(
-            OnPathArtifactSpec {
-                id: "artifact.hq_instrumental",
-                label: "instrumental.flac",
-                detail: "high-quality accompaniment · lossless",
-                producer: "stems.instrumental",
-                consumer: None,
-                kind: ArtifactKind::HighQualityInstrumentalStem,
-            },
-            view,
-            artifact_present,
-            nodes,
-            edges,
-        );
-    }
-    if view.node(&AnalysisNodeId::new("stems.karaoke")).is_some() {
-        push_on_path_artifact(
-            OnPathArtifactSpec {
-                id: "artifact.karaoke_stem",
-                label: "instrumental_karaoke.flac",
-                detail: "side path · not used for charting",
-                producer: "stems.karaoke",
-                consumer: None,
-                kind: ArtifactKind::KaraokeInstrumentalStem,
-            },
-            view,
-            artifact_present,
-            nodes,
-            edges,
-        );
     }
 }
 
@@ -768,9 +772,8 @@ pub(crate) fn build_render_graph(
             id: n.id.clone(),
             kind: RenderNodeKind::Compute,
             label: n.label.clone(),
-            detail: String::new(),
+            detail: n.detail.clone(),
             state: n.state,
-            collapsed_child_count: n.collapsed_child_count,
         })
         .collect();
     // The real compute-node dependency edges (preflight -> stems.separate,
@@ -792,6 +795,8 @@ pub(crate) fn build_render_graph(
         })
         .collect();
     push_vocal_product_chain(view, artifact_present, &mut nodes, &mut edges);
+    push_accompaniment_product_chain(view, artifact_present, &mut nodes, &mut edges);
+    push_multistem_product_chain(view, artifact_present, &mut nodes, &mut edges);
 
     let push_artifact = |id: &str,
                          label: &str,
@@ -814,7 +819,6 @@ pub(crate) fn build_render_graph(
             label: label.to_string(),
             detail: detail.to_string(),
             state,
-            collapsed_child_count: 0,
         });
         edges.push(RenderEdge {
             from: upstream.clone(),
@@ -841,17 +845,6 @@ pub(crate) fn build_render_graph(
             "instrumental.flac · lossless",
             "stems.separate",
             app_core::ArtifactKind::InstrumentalStem,
-            &mut nodes,
-            &mut edges,
-        );
-    }
-    if view.node(&AnalysisNodeId::new("music.analysis")).is_some() {
-        push_artifact(
-            "artifact.music_analysis",
-            "Music analysis",
-            "key · BPM · descriptors",
-            "music.analysis",
-            app_core::ArtifactKind::MusicAnalysis,
             &mut nodes,
             &mut edges,
         );
@@ -936,7 +929,6 @@ pub(crate) fn build_render_graph(
                 label: label.to_string(),
                 detail: detail.to_string(),
                 state,
-                collapsed_child_count: 0,
             });
             edges.push(RenderEdge {
                 from: AnalysisNodeId::new("preflight"),
@@ -1004,7 +996,6 @@ pub(crate) fn build_render_graph(
             label: "Timed lyrics".to_string(),
             detail: "text · with timing".to_string(),
             state,
-            collapsed_child_count: 0,
         });
         for (source_id, _) in &timed_lyrics_upstreams {
             edges.push(RenderEdge {
@@ -1030,16 +1021,6 @@ pub(crate) fn build_render_graph(
         }
     }
 
-    push_artifact(
-        "artifact.chart",
-        "Editable chart",
-        "Authoring-ready assets",
-        "chart.build_candidate",
-        app_core::ArtifactKind::AuthoredChart,
-        &mut nodes,
-        &mut edges,
-    );
-
     if view
         .node(&AnalysisNodeId::new("chart.build_candidate"))
         .is_some()
@@ -1059,10 +1040,12 @@ pub(crate) fn build_render_graph(
                 label: label.to_string(),
                 detail: "Explicit export target".to_string(),
                 state: chart_state,
-                collapsed_child_count: 0,
             });
             edges.push(RenderEdge {
-                from: AnalysisNodeId::new("artifact.chart"),
+                // The authored-chart artifact remains the typed payload on
+                // this edge, but it does not need a second synthetic box
+                // between Finalize and the two explicit export targets.
+                from: AnalysisNodeId::new("chart.build_candidate"),
                 to: export_id,
                 artifact_kind: Some(app_core::ArtifactKind::AuthoredChart),
                 role: RenderEdgeRole::ExportTarget,
@@ -1186,6 +1169,100 @@ mod tests {
     }
 
     #[test]
+    fn live_node_overrides_a_stale_prior_artifact() {
+        let state = resolve_node_state(
+            Some(app_core::NodeState::Stale),
+            Some(1),
+            1,
+            true,
+            &always_incomplete,
+        );
+        assert_eq!(state, GraphNodeState::Running);
+    }
+
+    #[test]
+    fn structured_runtime_events_have_exact_node_states() {
+        assert_eq!(
+            runtime_node_state("node_started"),
+            Some(GraphNodeState::Running)
+        );
+        assert_eq!(
+            runtime_node_state("node_progress"),
+            Some(GraphNodeState::Running)
+        );
+        assert_eq!(
+            runtime_node_state("node_completed"),
+            Some(GraphNodeState::Complete)
+        );
+        assert_eq!(
+            runtime_node_state("node_failed"),
+            Some(GraphNodeState::Failed)
+        );
+        assert_eq!(
+            runtime_node_state("node_skipped"),
+            Some(GraphNodeState::Bypassed)
+        );
+        assert_eq!(runtime_node_state("started"), Some(GraphNodeState::Running));
+        assert_eq!(
+            runtime_node_state("completed"),
+            Some(GraphNodeState::Complete)
+        );
+    }
+
+    fn runtime_route(node_id: &str, event: &str) -> app_core::AnalysisStageRoute {
+        serde_json::from_value(serde_json::json!({
+            "stage": "separation",
+            "node_id": node_id,
+            "node_event": event,
+            "operation": "test",
+            "implementation": "test",
+            "model": "test",
+            "stage_progress": if event == "started" { 0 } else { 100 },
+            "requested_device": "cpu",
+            "actual_device": "cpu",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn stem_aggregate_waits_for_real_binding_terminal_event() {
+        let mut routes = vec![runtime_route("stems.vocals", "started")];
+        assert_eq!(
+            derived_stem_analysis_state(&routes),
+            Some(GraphNodeState::Running)
+        );
+        routes[0] = runtime_route("stems.vocals", "completed");
+        assert_eq!(
+            derived_stem_analysis_state(&routes),
+            Some(GraphNodeState::Running)
+        );
+        routes.push(runtime_route("stems.bind_analysis_outputs", "completed"));
+        assert_eq!(
+            derived_stem_analysis_state(&routes),
+            Some(GraphNodeState::Complete)
+        );
+    }
+
+    #[test]
+    fn music_aggregate_requires_all_three_real_children() {
+        let mut routes = vec![runtime_route("music.key", "completed")];
+        assert_eq!(
+            derived_music_analysis_state(&routes),
+            Some(GraphNodeState::Running)
+        );
+        routes.push(runtime_route("music.rhythm", "completed"));
+        routes.push(runtime_route("music.descriptors", "skipped"));
+        assert_eq!(
+            derived_music_analysis_state(&routes),
+            Some(GraphNodeState::Complete)
+        );
+    }
+
+    #[test]
     fn a_completed_bucket_reports_complete() {
         let state = resolve_node_state(None, Some(1), 4, false, &|bucket| bucket == 1);
         assert_eq!(state, GraphNodeState::Complete);
@@ -1207,6 +1284,36 @@ mod tests {
     fn a_node_with_no_known_bucket_reports_waiting_rather_than_panicking() {
         let state = resolve_node_state(None, None, 2, false, &always_incomplete);
         assert_eq!(state, GraphNodeState::Waiting);
+    }
+
+    #[test]
+    fn four_percent_vocal_extraction_does_not_complete_or_start_its_siblings() {
+        let graph = app_core::baseline_graph_spec();
+        let expanded = BTreeSet::from([id("stems.separate")]);
+        let view = build_graph_view_model(
+            &graph,
+            None,
+            Some("stems.vocals"),
+            1,
+            &expanded,
+            &|node_id| match node_id {
+                "stems.vocals" | "vocals.denoise" | "vocals.dereverb" => Some(1),
+                _ => Some(0),
+            },
+            &|_| true,
+        );
+        assert_eq!(
+            view.node(&id("stems.vocals")).unwrap().state,
+            GraphNodeState::Running
+        );
+        assert_eq!(
+            view.node(&id("vocals.denoise")).unwrap().state,
+            GraphNodeState::Waiting
+        );
+        assert_eq!(
+            view.node(&id("vocals.dereverb")).unwrap().state,
+            GraphNodeState::Waiting
+        );
     }
 
     #[test]
@@ -1372,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn virtual_artifact_and_export_nodes_are_present() {
+    fn useful_virtual_artifact_and_export_nodes_are_present() {
         let view = full_view_model(&|_| false);
         let graph = app_core::baseline_graph_spec();
         let render = build_render_graph(&graph, &view, &|_| false);
@@ -1382,7 +1489,6 @@ mod tests {
             "artifact.note_guide",
             "artifact.lyrics",
             "artifact.timed_lyrics",
-            "artifact.chart",
             "export.utz",
             "export.ultrastar",
         ] {
@@ -1391,6 +1497,10 @@ mod tests {
                 "missing virtual node {expected}"
             );
         }
+        assert!(
+            render.node(&id("artifact.chart")).is_none(),
+            "the redundant chart box should not sit between Finalize and exports"
+        );
     }
 
     #[test]
@@ -1498,6 +1608,7 @@ mod tests {
                 model_availability: Default::default(),
                 profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
                 active_stem_nodes: BTreeSet::new(),
+                audio_processing: None,
             },
         )
         .unwrap();
@@ -1557,12 +1668,17 @@ mod tests {
         let render = build_render_graph(&app_core::baseline_graph_spec(), &view, &|kind| {
             kind == app_core::ArtifactKind::AuthoredChart
         });
-        let chart = render.node(&id("artifact.chart")).unwrap();
         let utz = render.node(&id("export.utz")).unwrap();
         let ultrastar = render.node(&id("export.ultrastar")).unwrap();
-        assert_eq!(chart.state, GraphNodeState::Complete);
         assert_eq!(utz.state, GraphNodeState::Complete);
         assert_eq!(ultrastar.state, GraphNodeState::Complete);
+        for export in ["export.utz", "export.ultrastar"] {
+            assert!(render.edges.iter().any(|edge| {
+                edge.from == id("chart.build_candidate")
+                    && edge.to == id(export)
+                    && edge.artifact_kind == Some(app_core::ArtifactKind::AuthoredChart)
+            }));
+        }
     }
 
     #[test]
@@ -1640,18 +1756,18 @@ mod tests {
                 .any(|edge| edge.from == id(from) && edge.to == id(to))
         };
         assert!(has("stems.vocals", "artifact.raw_vocal"));
-        assert!(has("artifact.raw_vocal", "vocals.denoise"));
+        assert!(has("stems.vocals", "vocals.denoise"));
         assert!(has("vocals.denoise", "artifact.denoised_vocal"));
-        assert!(has("artifact.denoised_vocal", "vocals.dereverb"));
+        assert!(has("vocals.denoise", "vocals.dereverb"));
         assert!(has("vocals.dereverb", "artifact.dereverbed_vocal"));
-        assert!(has("artifact.dereverbed_vocal", "pitch.extract"));
+        assert!(has("vocals.dereverb", "pitch.extract"));
         assert!(has("artifact.dereverbed_vocal", "lyrics.preprocess"));
+        assert!(!has("vocals.dereverb", "lyrics.preprocess"));
         assert!(has("pitch.extract", "artifact.note_guide"));
         assert!(has("artifact.note_guide", "chart.build_candidate"));
         assert!(!has("pitch.extract", "chart.build_candidate"));
-        assert!(!has("stems.vocals", "pitch.extract"));
-        assert!(!has("stems.vocals", "lyrics.preprocess"));
-        assert!(!has("stems.vocals", "vocals.denoise"));
+        assert!(!has("artifact.raw_vocal", "vocals.denoise"));
+        assert!(!has("artifact.denoised_vocal", "vocals.dereverb"));
     }
 
     #[test]
@@ -1677,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn not_applicable_stem_nodes_are_omitted_from_the_view() {
+    fn full_view_keeps_the_reference_cleanup_chain_without_showing_auxiliary_jobs() {
         let graph = app_core::baseline_graph_spec();
         let plan = app_core::build_plan(
             &graph,
@@ -1691,6 +1807,7 @@ mod tests {
                 model_availability: Default::default(),
                 profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
                 active_stem_nodes: BTreeSet::new(),
+                audio_processing: None,
             },
         )
         .unwrap();
@@ -1707,22 +1824,99 @@ mod tests {
         );
         assert!(view.node(&id("stems.vocals")).is_some());
         assert!(view.node(&id("stems.bind_analysis_outputs")).is_none());
-        assert!(view.node(&id("vocals.denoise")).is_none());
+        assert_eq!(
+            view.node(&id("vocals.denoise")).unwrap().state,
+            GraphNodeState::NotApplicable
+        );
+        assert_eq!(
+            view.node(&id("vocals.dereverb")).unwrap().state,
+            GraphNodeState::NotApplicable
+        );
         assert!(view.node(&id("stems.karaoke")).is_none());
-        let render = build_render_graph(&graph, &view, &|_| false);
+        let mut render = build_render_graph(&graph, &view, &|_| false);
+        polish_reference_overview(&mut render);
         assert_eq!(
             render.node(&id("artifact.raw_vocal")).unwrap().label,
-            "vocals.flac"
+            "vocals_raw.flac"
         );
-        assert!(render
-            .edges
-            .iter()
-            .any(|edge| edge.from == id("artifact.raw_vocal") && edge.to == id("pitch.extract")));
+        let has = |from: &str, to: &str| {
+            render
+                .edges
+                .iter()
+                .any(|edge| edge.from == id(from) && edge.to == id(to))
+        };
+        assert!(has("stems.vocals", "vocals.denoise"));
+        assert!(has("vocals.denoise", "vocals.dereverb"));
+        assert!(has("vocals.dereverb", "pitch.extract"));
+        assert!(has("music.analysis", "stems.vocals"));
+        assert!(!has("preflight", "stems.vocals"));
+        assert!(!has("stems.vocals", "pitch.extract"));
+        if view.node(&id("lyrics.preprocess")).is_some() {
+            assert!(has("artifact.dereverbed_vocal", "lyrics.preprocess"));
+            assert!(!has("artifact.raw_vocal", "lyrics.preprocess"));
+        }
+    }
+
+    #[test]
+    fn catalog_multistem_plan_renders_model_outputs_and_chart_consumers() {
+        let graph = app_core::baseline_graph_spec();
+        let settings = app_core::AudioProcessingSettings::from_legacy_separator("demucs");
+        let audio = app_core::AudioProcessingPlanSnapshot::from_settings(&settings);
+        let active_stem_nodes = app_core::active_stem_nodes_from_settings(&settings);
+        let model_availability = [(id("stems.separate"), true), (id("stems.multistem"), true)]
+            .into_iter()
+            .collect();
+        let plan = app_core::build_plan(
+            &graph,
+            &app_core::AnalysisRequest {
+                file_hash: "song".into(),
+                targets: [id("chart.build_candidate")].into_iter().collect(),
+                disabled_nodes: BTreeSet::new(),
+                frozen_artifacts: BTreeSet::new(),
+                bypassed_nodes: BTreeSet::new(),
+                lyrics_route: app_core::LyricsRoute::WhisperAsr,
+                model_availability,
+                profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
+                active_stem_nodes,
+                audio_processing: Some(audio),
+            },
+        )
+        .unwrap();
+        let mut expanded = BTreeSet::new();
+        expanded.insert(id("stems.separate"));
+        let view = build_graph_view_model(
+            &graph,
+            Some(&plan),
+            None,
+            0,
+            &expanded,
+            &crate::studio::analysis_node_stage_index,
+            &always_incomplete,
+        );
         assert!(
-            !render.edges.iter().any(|edge| {
-                edge.from == id("stems.vocals") && edge.to == id("lyrics.preprocess")
-            })
+            view.node(&id("stems.multistem"))
+                .unwrap()
+                .detail
+                .contains("htdemucs_6s")
         );
+        let render = build_render_graph(&graph, &view, &|_| false);
+        for artifact in [
+            "artifact.multistem_vocal",
+            "artifact.multistem_drums",
+            "artifact.multistem_bass",
+            "artifact.multistem_guitar",
+            "artifact.multistem_piano",
+            "artifact.multistem_other",
+            "artifact.multistem_instrumental",
+        ] {
+            assert!(render.node(&id(artifact)).is_some(), "missing {artifact}");
+        }
+        assert!(render.edges.iter().any(|edge| {
+            edge.from == id("artifact.multistem_vocal") && edge.to == id("pitch.extract")
+        }));
+        assert!(render.edges.iter().any(|edge| {
+            edge.from == id("artifact.multistem_vocal") && edge.to == id("lyrics.preprocess")
+        }));
     }
 
     #[test]

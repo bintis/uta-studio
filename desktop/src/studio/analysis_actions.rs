@@ -12,30 +12,20 @@ pub(crate) struct AnalysisGraphViewport {
 }
 
 #[derive(Component)]
-pub(crate) struct AppLogViewerScroll;
+pub(crate) struct AnalysisLogViewerScroll;
 
-/// §7.5 "Node Context Menu" for a compute node, opened on secondary-click
-/// (`open_analysis_node_from_pointer`). `retry_action` reuses the same
-/// coarse-grained `Reanalyze*`/`RealignSong` commands Song Detail already
-/// calls (`analysis_node_retry_action`). "Run this node only" and "Disable
-/// for this run" go through Phase 4's generic per-node executor
-/// (`app_core::run_analysis_node`/`disable_analysis_node_for_run`) instead --
-/// real single-node execution, not another special-cased flag. The disable
-/// action can still be refused at click time (`analysis_node_can_disable`)
-/// for nodes the pipeline has no way to actually turn off yet
-/// (`music.key`/`music.rhythm`/`music.descriptors`/`preflight`/
-/// `chart.build_candidate` -- see `pipeline_can_honor_disable` in
-/// app-core/src/analyzer.rs), rather than showing a button that always
-/// errors. "Freeze current outputs" is the same pattern for Phase 4 §4.5's
-/// Freeze consumer (`app_core::freeze_analysis_node_outputs_for_run`/
-/// `node_can_be_frozen_for_run`) -- only offered for `stems.separate`/
-/// `pitch.extract`, and only once that node actually has output on disk.
-/// "Run this node and downstream" (`app_core::run_analysis_node_downstream`)
-/// is always offered, same as "Run this node only" -- it's pure graph
-/// traversal from `node_id`, so unlike disable/freeze it never has a
-/// structural reason to refuse. The rest of §7.5's list (configure for this
-/// run, save as profile, bypass, compare attempts) still needs work this
-/// pass doesn't cover -- see docs/analysis-dag-redesign.md.
+#[derive(Component)]
+pub(crate) struct PlanPreviewScroll;
+
+#[derive(Clone)]
+pub(crate) struct AnalysisNodeMenuAction {
+    pub(crate) label: &'static str,
+    pub(crate) action: UiAction,
+}
+
+/// Context actions are capability-driven. In particular, the analyzer has
+/// only stem/pitch/lyrics execution groups, so no menu item claims to run a
+/// child node "only" when the backend will actually execute its whole group.
 #[derive(Clone)]
 pub(crate) struct AnalysisNodeContextMenu {
     pub(crate) node_id: String,
@@ -45,13 +35,8 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// former throughout the rest of this module.
     pub(crate) stage_id: String,
     pub(crate) label: String,
-    pub(crate) retry_action: UiAction,
-    pub(crate) run_node_only_action: UiAction,
-    /// §7.5 "Run this node and downstream": always offered, same as
-    /// `run_node_only_action` -- `app_core::run_analysis_node_downstream`
-    /// is pure graph traversal from `node_id`, so it never has a reason to
-    /// refuse the way disable/freeze can.
-    pub(crate) run_downstream_action: UiAction,
+    pub(crate) retry_action: Option<AnalysisNodeMenuAction>,
+    pub(crate) run_downstream_action: Option<AnalysisNodeMenuAction>,
     /// `None` when `app_core::node_can_be_disabled_for_run` refuses this
     /// node -- the button is omitted rather than offered and guaranteed to
     /// error.
@@ -70,9 +55,10 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// only exists once a run is selected in the Activity/Queue view.
     pub(crate) compare_node_action: Option<UiAction>,
     /// Phase 8: `None` when `app_core::node_can_be_configured_for_run`
-    /// refuses this node -- i.e. it has no real profile-controlled
-    /// parameter (`stems.separate`/`lyrics.transcribe`/`lyrics.align`
-    /// only). "Save as song profile" fires immediately (no dialog --
+    /// refuses this node -- i.e. it has no real legacy profile-controlled
+    /// parameter (`lyrics.transcribe`/`lyrics.align` only; BGM and vocal
+    /// model selection live in the audio-processing snapshot). "Save as
+    /// song profile" fires immediately (no dialog --
     /// it persists whatever value is currently in effect); "Configure for
     /// this run…" opens `NativeNodeConfigDialog` since it needs a new value
     /// picked first.
@@ -98,11 +84,9 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// PreprocessedAudio is ephemeral unless the user explicitly requests
     /// retention. Only the real `lyrics.preprocess` boundary offers this.
     pub(crate) capture_intermediate_action: Option<UiAction>,
-    /// §7.5's last item, "View logs": always offered (unlike the
-    /// profile-controlled-field actions above, a log view is meaningful for
-    /// every node, same as "Run this node only"). Opens `AppLogViewerState`
-    /// rather than firing immediately, since it needs to resolve which
-    /// window of the real app log to show.
+    /// §7.5's last item, "View logs": always offered because a node filter is
+    /// meaningful for every node. Opens the selected run's dedicated JSONL
+    /// log; legacy runs without `log_path` show an explicit empty state.
     pub(crate) view_logs_action: Option<UiAction>,
     /// §7.3 "Music Analysis 支持展开": `(button label, action)`, `None` for
     /// every non-compound node. The label flips between "Expand
@@ -128,15 +112,12 @@ pub(crate) struct NativeNodeConfigDialog {
     pub(crate) picker_open: bool,
 }
 
-/// Node ids `app_core::preview_analysis_plan_for_selection`'s staged
-/// `disabled_nodes` can meaningfully contain -- the same 6 nodes
-/// `app_core::node_can_be_disabled_for_run` already allows one at a time
-/// from the Node Context Menu, just staged as a combination here instead of
-/// fired immediately. Order is the panel's display order.
+/// Top-level controls shown by Plan Preview. Vocal Preprocessing is an
+/// internal hand-off, not a useful user choice here. The two selected vocal
+/// cleanup stages are displayed directly beneath Stem Separation instead.
 pub(crate) const PLAN_PREVIEW_DISABLEABLE_NODES: &[&str] = &[
     "stems.separate",
     "pitch.extract",
-    "lyrics.preprocess",
     "lyrics.transcribe",
     "lyrics.align",
     "lyrics.import_timed",
@@ -192,76 +173,28 @@ pub(crate) fn plan_preview_groups(
     .collect()
 }
 
-/// §7.5's "View logs" dialog state -- which node's context menu it was
-/// opened from. No draft data: reads the live app log fresh on every
-/// render, same as `PlanPreviewDraft`.
-pub(crate) struct AppLogViewerState {
+/// §7.5's "View logs" dialog state -- which run-scoped analysis log and
+/// node filter should be shown.
+pub(crate) struct AnalysisLogViewerState {
     pub(crate) file_hash: String,
     pub(crate) node_id: String,
 }
 
-/// Which window of the real app log "View logs" should show -- a real,
-/// timestamped window when a recorded attempt exists for this node in the
-/// selected run, or an honestly-labeled fallback to the most recent general
-/// log lines when it doesn't. Never fabricates per-node granularity that
-/// isn't real (the exact trap the phase-plan's earlier "View logs" decline
-/// note warned about).
-pub(crate) enum AppLogSource {
-    Windowed { start_ms: i64, end_ms: i64 },
-    RecentFallback,
-}
-
-/// Resolves `AppLogSource` from the matching `NodeAttempt` (if any) for
-/// `node_id` -- pulled out of the dialog's spawn function so it's testable
-/// with a fixture, no DB. A `started_at_ms` with no `finished_at_ms` yet
-/// (the node is still running) windows from start through `now_ms` rather
-/// than falling back, since "from when it started to right now" is still a
-/// real, meaningful window.
-pub(crate) fn resolve_app_log_source(
-    attempt: Option<&app_core::NodeAttempt>,
-    now_ms: i64,
-) -> AppLogSource {
-    match attempt.and_then(|a| a.started_at_ms) {
-        Some(start_ms) => AppLogSource::Windowed {
-            start_ms,
-            end_ms: attempt.and_then(|a| a.finished_at_ms).unwrap_or(now_ms),
-        },
-        None => AppLogSource::RecentFallback,
-    }
-}
-
-pub(crate) fn spawn_app_log_viewer(
+pub(crate) fn spawn_analysis_log_viewer(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    state: &AppLogViewerState,
+    state: &AnalysisLogViewerState,
     selected_run_id: Option<i64>,
 ) {
-    let attempt = selected_run_id.and_then(|run_id| {
-        app_core::load_analysis_node_attempts(run_id)
-            .into_iter()
-            .find(|attempt| attempt.node_id == state.node_id)
-    });
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let (header, lines) = match resolve_app_log_source(attempt.as_ref(), now_ms) {
-        AppLogSource::Windowed { start_ms, end_ms } => (
-            format!(
-                "Log lines from {} to {} (recorded attempt)",
-                format_epoch_ms(start_ms),
-                format_epoch_ms(end_ms)
-            ),
-            app_core::log_lines_in_window(start_ms, end_ms),
-        ),
-        AppLogSource::RecentFallback => (
-            "No recorded attempt for this node in the selected run -- showing the most recent app log"
-                .to_string(),
-            app_core::get_recent_logs(80),
-        ),
+    let lines =
+        app_core::analysis_log_lines(selected_run_id, &state.file_hash, Some(&state.node_id), 240);
+    let log_path = app_core::analysis_log_path_for(selected_run_id, &state.file_hash);
+    let header = if log_path.is_some() {
+        format!("Dedicated analysis log · node {}", state.node_id)
+    } else {
+        "No dedicated log was recorded for this legacy analysis run".to_string()
     };
-    let log_path = app_core::get_log_path();
 
     // Click-outside-to-close backdrop, same pattern as the Plan Preview
     // dialog's -- and a real fix, not cosmetic: the dialog previously had
@@ -270,7 +203,7 @@ pub(crate) fn spawn_app_log_viewer(
     // out of reach in the first place (see below).
     parent.spawn((
         Button,
-        UiAction::from(AnalysisCommand::CloseAppLogViewer),
+        UiAction::from(AnalysisCommand::CloseAnalysisLogViewer),
         Node {
             position_type: PositionType::Absolute,
             left: px(0),
@@ -341,7 +274,7 @@ pub(crate) fn spawn_app_log_viewer(
                     // part of what has to be scrolled past.
                     dialog
                         .spawn((
-                            AppLogViewerScroll,
+                            AnalysisLogViewerScroll,
                             Node {
                                 min_height: px(0),
                                 flex_direction: FlexDirection::Column,
@@ -404,7 +337,7 @@ pub(crate) fn spawn_app_log_viewer(
                                     theme,
                                     "Open log file",
                                     10.0,
-                                    UiAction::from(AnalysisCommand::OpenAppLogFile),
+                                    UiAction::from(AnalysisCommand::OpenAnalysisLogFile),
                                 );
                             }
                             spawn_action_button(
@@ -412,7 +345,7 @@ pub(crate) fn spawn_app_log_viewer(
                                 font,
                                 theme,
                                 "Close",
-                                UiAction::from(AnalysisCommand::CloseAppLogViewer),
+                                UiAction::from(AnalysisCommand::CloseAnalysisLogViewer),
                             );
                         });
                 });
@@ -634,10 +567,40 @@ pub(crate) fn handle_plan_preview_keyboard(
     if dialogs.plan_preview_draft.is_some() {
         dialogs.plan_preview_draft = None;
         invalidated.invalidate(UiDirtyRegion::Analysis);
-    } else if dialogs.app_log_viewer.is_some() {
-        dialogs.app_log_viewer = None;
+    } else if dialogs.analysis_log_viewer.is_some() {
+        dialogs.analysis_log_viewer = None;
         invalidated.invalidate(UiDirtyRegion::Analysis);
     }
+}
+
+/// The preview contains both stage choices and the resolved model plan. Keep
+/// it inside short windows and make the complete contents reachable with an
+/// ordinary wheel gesture while the modal is open.
+pub(crate) fn handle_plan_preview_scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    dialogs: Res<DialogState>,
+    mut panels: Query<(&ComputedNode, &mut ScrollPosition), With<PlanPreviewScroll>>,
+) {
+    if dialogs.plan_preview_draft.is_none() {
+        return;
+    }
+    let Ok((computed, mut position)) = panels.single_mut() else {
+        return;
+    };
+    let mut delta = 0.0;
+    for event in wheel.read() {
+        let scale = match event.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => 24.0,
+            bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+        };
+        delta -= event.y * scale;
+    }
+    if delta.abs() < f32::EPSILON {
+        return;
+    }
+    let size = computed.size() * computed.inverse_scale_factor();
+    let content = computed.content_size() * computed.inverse_scale_factor();
+    position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
 }
 
 /// Ctrl+wheel scrolls the log viewer's line list -- same modifier
@@ -645,13 +608,13 @@ pub(crate) fn handle_plan_preview_keyboard(
 /// this dialog sits on top of the library's own scrollable song list, so a
 /// bare wheel wasn't just doing nothing here, it was reaching through to
 /// scroll the list underneath instead.
-pub(crate) fn handle_app_log_viewer_scroll(
+pub(crate) fn handle_analysis_log_viewer_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
     dialogs: Res<DialogState>,
-    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AppLogViewerScroll>>,
+    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AnalysisLogViewerScroll>>,
 ) {
-    if dialogs.app_log_viewer.is_none() {
+    if dialogs.analysis_log_viewer.is_none() {
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
@@ -739,8 +702,9 @@ pub(crate) fn spawn_plan_preview_dialog(
             overlay
                 .spawn((
                     Node {
-                        width: px(520),
-                        max_height: percent(84),
+                        width: px(560),
+                        height: percent(84),
+                        max_height: px(760),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(px(24)),
                         row_gap: px(11),
@@ -749,6 +713,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                         border_radius: BorderRadius::all(px(8)),
                         ..default()
                     },
+                    PlanPreviewScroll,
                     ScrollPosition::default(),
                     BackgroundColor(theme.card),
                     BorderColor::all(theme.border),
@@ -803,6 +768,56 @@ pub(crate) fn spawn_plan_preview_dialog(
                                 },
                             );
                         });
+                        if *node_id == "stems.separate" {
+                            for (child_id, step_id) in [
+                                ("vocals.denoise", "denoise_vocals"),
+                                ("vocals.dereverb", "dereverb_vocals"),
+                                ("instrumental.denoise", "denoise_accompaniment"),
+                                ("instrumental.dereverb", "dereverb_accompaniment"),
+                            ] {
+                                let selected = plan
+                                    .as_ref()
+                                    .and_then(|plan| plan.audio_processing.as_ref())
+                                    .is_some_and(|audio| {
+                                        audio.steps.iter().any(|step| step.step_id == step_id)
+                                    });
+                                body.spawn((
+                                    Node {
+                                        width: percent(100),
+                                        min_height: px(31),
+                                        align_items: AlignItems::Center,
+                                        justify_content: JustifyContent::SpaceBetween,
+                                        padding: UiRect::new(px(28), px(11), px(0), px(0)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(5)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.background.with_alpha(0.34)),
+                                    BorderColor::all(theme.border.with_alpha(0.45)),
+                                    Pickable::IGNORE,
+                                ))
+                                .with_children(|row| {
+                                    spawn_text(
+                                        row,
+                                        font.clone(),
+                                        format!("↳ {}", node_label(child_id)),
+                                        9.0,
+                                        theme.foreground,
+                                    );
+                                    spawn_text(
+                                        row,
+                                        font.clone(),
+                                        if selected { "In plan" } else { "Not selected" },
+                                        8.0,
+                                        if selected {
+                                            theme.primary
+                                        } else {
+                                            theme.muted_foreground
+                                        },
+                                    );
+                                });
+                            }
+                        }
                     }
                     body.spawn(Node {
                         height: px(5),
@@ -810,6 +825,42 @@ pub(crate) fn spawn_plan_preview_dialog(
                     });
                     match plan.as_ref() {
                         Some(plan) => {
+                            if let Some(audio) = plan.audio_processing.as_ref() {
+                                spawn_text(body, font.clone(), "AUDIO MODEL PLAN", 9.0, theme.primary);
+                                for (index, step) in audio.steps.iter().enumerate() {
+                                    let backend = if step.model_id.contains("mdxnet") {
+                                        &audio.requested_runtime.onnx_backend
+                                    } else {
+                                        &audio.requested_runtime.torch_backend
+                                    };
+                                    spawn_wrapped_text(
+                                        body,
+                                        font.clone(),
+                                        format!(
+                                            "{}. {} · {} · {} · {} parameter{}",
+                                            index + 1,
+                                            node_label(audio_step_node_id(&step.step_id).unwrap_or("stems.separate")),
+                                            step.model_id,
+                                            backend,
+                                            step.effective_parameters.len(),
+                                            if step.effective_parameters.len() == 1 { "" } else { "s" }
+                                        ),
+                                        9.0,
+                                        theme.foreground,
+                                    );
+                                }
+                                spawn_wrapped_text(
+                                    body,
+                                    font.clone(),
+                                    format!(
+                                        "Outputs · {} · precision {}",
+                                        audio.output_bindings.iter().map(|binding| binding.artifact_role.as_str()).collect::<Vec<_>>().join(", "),
+                                        audio.requested_runtime.precision_policy
+                                    ),
+                                    8.0,
+                                    theme.muted_foreground,
+                                );
+                            }
                             let groups = plan_preview_groups(plan);
                             if groups.is_empty() {
                                 spawn_text(
@@ -874,20 +925,157 @@ pub(crate) fn spawn_plan_preview_dialog(
         });
 }
 
-/// The closest already-wired retry command for a given node id. These are
-/// the same coarse, whole-song-scoped commands Song Detail's own buttons
-/// call (`ReanalyzePitch`, `RealignSong`, `ReanalyzeTranscript`) -- not a
-/// new per-node retry primitive, since the analyzer has no generic
-/// single-node run API yet. Falls back to a full re-run for every node
-/// without a finer existing command.
-pub(crate) fn analysis_node_retry_action(node_id: &str, file_hash: &str) -> UiAction {
-    match node_id {
-        "pitch.extract" => UiAction::from(AnalysisCommand::ReanalyzePitch(file_hash.to_string())),
-        "lyrics.align" => UiAction::from(AnalysisCommand::RealignSong(file_hash.to_string())),
-        "lyrics.transcribe" => {
-            UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))
+fn analysis_node_execution_actions(
+    node_id: &str,
+    file_hash: &str,
+) -> (
+    Option<AnalysisNodeMenuAction>,
+    Option<AnalysisNodeMenuAction>,
+) {
+    let targeted = || {
+        UiAction::from(AnalysisCommand::RunAnalysisNodeOnly(
+            file_hash.to_string(),
+            node_id.to_string(),
+        ))
+    };
+    let downstream = |label| {
+        Some(AnalysisNodeMenuAction {
+            label,
+            action: UiAction::from(AnalysisCommand::RunAnalysisNodeDownstream(
+                file_hash.to_string(),
+                node_id.to_string(),
+            )),
+        })
+    };
+    let retry = match node_id {
+        "music.analysis" | "music.key" | "music.rhythm" | "music.descriptors" => {
+            Some(AnalysisNodeMenuAction {
+                label: "Re-run music analysis route",
+                action: targeted(),
+            })
         }
-        _ => UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
+        "stems.separate"
+        | "stems.vocals"
+        | "vocals.denoise"
+        | "vocals.dereverb"
+        | "stems.instrumental"
+        | "instrumental.denoise"
+        | "instrumental.dereverb"
+        | "stems.karaoke"
+        | "stems.multistem"
+        | "stems.bind_analysis_outputs" => Some(AnalysisNodeMenuAction {
+            label: "Re-run configured stem pipeline",
+            action: targeted(),
+        }),
+        "pitch.extract" => Some(AnalysisNodeMenuAction {
+            label: "Rebuild pitch evidence",
+            action: UiAction::from(AnalysisCommand::ReanalyzePitch(file_hash.to_string())),
+        }),
+        "lyrics.transcribe" => Some(AnalysisNodeMenuAction {
+            label: "Retranscribe and align",
+            action: UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string())),
+        }),
+        "lyrics.align" => Some(AnalysisNodeMenuAction {
+            label: "Realign existing lyrics",
+            action: UiAction::from(AnalysisCommand::RealignSong(file_hash.to_string())),
+        }),
+        "chart.build_candidate" => Some(AnalysisNodeMenuAction {
+            label: "Rebuild candidate chart route",
+            action: targeted(),
+        }),
+        _ => None,
+    };
+    let downstream = match node_id {
+        "preflight" => Some(AnalysisNodeMenuAction {
+            label: "Run full analysis pipeline",
+            action: UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
+        }),
+        "stems.separate"
+        | "stems.vocals"
+        | "vocals.denoise"
+        | "vocals.dereverb"
+        | "stems.instrumental"
+        | "instrumental.denoise"
+        | "instrumental.dereverb"
+        | "stems.karaoke"
+        | "stems.multistem"
+        | "stems.bind_analysis_outputs" => downstream("Run stem route and downstream"),
+        "lyrics.preprocess" => downstream("Run preprocessing and lyrics route"),
+        _ => None,
+    };
+    (retry, downstream)
+}
+
+pub(crate) fn build_analysis_node_context_menu(
+    node_id: &str,
+    stage_id: &str,
+    label: &str,
+    file_hash: &str,
+    selected_run_id: Option<i64>,
+    is_expanded: bool,
+    position: Vec2,
+) -> AnalysisNodeContextMenu {
+    let (retry_action, run_downstream_action) = analysis_node_execution_actions(node_id, file_hash);
+    AnalysisNodeContextMenu {
+        node_id: node_id.to_string(),
+        stage_id: stage_id.to_string(),
+        label: label.to_string(),
+        retry_action,
+        run_downstream_action,
+        disable_node_action: app_core::node_can_be_disabled_for_run(node_id).then(|| {
+            UiAction::from(AnalysisCommand::DisableAnalysisNodeForRun(
+                file_hash.to_string(),
+                node_id.to_string(),
+            ))
+        }),
+        freeze_node_action: app_core::node_can_be_frozen_for_run(file_hash, node_id).then(|| {
+            UiAction::from(AnalysisCommand::FreezeAnalysisNodeOutputs(
+                file_hash.to_string(),
+                node_id.to_string(),
+            ))
+        }),
+        bypass_node_action: app_core::node_can_be_bypassed_for_run(node_id).then(|| {
+            UiAction::from(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
+                file_hash.to_string(),
+                node_id.to_string(),
+            ))
+        }),
+        compare_node_action: selected_run_id.map(|run_id| {
+            UiAction::from(AnalysisCommand::CompareNodeAttemptWithPrevious(
+                file_hash.to_string(),
+                node_id.to_string(),
+                run_id,
+            ))
+        }),
+        save_as_song_profile_action: app_core::node_can_be_configured_for_run(node_id).then(|| {
+            UiAction::from(AnalysisCommand::SaveNodeConfigAsSongProfile(
+                file_hash.to_string(),
+                node_id.to_string(),
+            ))
+        }),
+        open_configure_dialog_action: app_core::node_can_be_configured_for_run(node_id).then(
+            || {
+                UiAction::from(AnalysisCommand::OpenNodeConfigDialog(
+                    file_hash.to_string(),
+                    node_id.to_string(),
+                ))
+            },
+        ),
+        force_transcribe_action: node_can_force_transcribe(node_id)
+            .then(|| UiAction::from(AnalysisCommand::ForceTranscribe(file_hash.to_string()))),
+        refetch_align_action: node_can_refetch_and_align(node_id)
+            .then(|| UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))),
+        capture_intermediate_action: (node_id == "lyrics.preprocess").then(|| {
+            UiAction::from(AnalysisCommand::RequestCaptureIntermediate(
+                file_hash.to_string(),
+            ))
+        }),
+        view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAnalysisLogViewer(
+            file_hash.to_string(),
+            node_id.to_string(),
+        ))),
+        compound_toggle: analysis_node_compound_toggle_action(node_id, is_expanded),
+        position,
     }
 }
 
@@ -944,6 +1132,14 @@ pub(crate) fn artifact_kind_is_playable(kind: app_core::ArtifactKind) -> bool {
         kind,
         app_core::ArtifactKind::VocalStem
             | app_core::ArtifactKind::InstrumentalStem
+            | app_core::ArtifactKind::RawVocalStem
+            | app_core::ArtifactKind::DenoisedVocalStem
+            | app_core::ArtifactKind::DereverbedVocalStem
+            | app_core::ArtifactKind::AnalysisVocalStem
+            | app_core::ArtifactKind::HighQualityInstrumentalStem
+            | app_core::ArtifactKind::DenoisedInstrumentalStem
+            | app_core::ArtifactKind::DereverbedInstrumentalStem
+            | app_core::ArtifactKind::KaraokeInstrumentalStem
             | app_core::ArtifactKind::PreprocessedAudio
     )
 }
@@ -1011,9 +1207,25 @@ pub(crate) struct AnalysisNodeClickTarget<'a> {
     pub(crate) stage_id: &'a str,
 }
 
+pub(crate) fn clamp_analysis_node_context_position(position: Vec2, viewport: Vec2) -> Vec2 {
+    const MENU_WIDTH: f32 = 278.0;
+    const MENU_MAX_HEIGHT: f32 = 620.0;
+    const EDGE: f32 = 8.0;
+    let available_height = (viewport.y * 0.86).min(MENU_MAX_HEIGHT);
+    Vec2::new(
+        position
+            .x
+            .clamp(EDGE, (viewport.x - MENU_WIDTH - EDGE).max(EDGE)),
+        position
+            .y
+            .clamp(EDGE, (viewport.y - available_height - EDGE).max(EDGE)),
+    )
+}
+
 pub(crate) fn open_analysis_node_from_pointer(
     button: PointerButton,
     menu_position: Vec2,
+    viewport_size: Vec2,
     target: AnalysisNodeClickTarget,
     analysis: &mut AnalysisUiState,
     dialogs: &mut DialogState,
@@ -1028,6 +1240,7 @@ pub(crate) fn open_analysis_node_from_pointer(
     match button {
         PointerButton::Primary => {
             analysis.selected_analysis_stage = Some(stage_id.to_string());
+            analysis.selected_analysis_node = Some(node_id.to_string());
             dialogs.analysis_node_context = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
@@ -1035,81 +1248,18 @@ pub(crate) fn open_analysis_node_from_pointer(
             let is_expanded = analysis
                 .expanded_compound_nodes
                 .contains(&app_core::AnalysisNodeId::new(node_id));
-            dialogs.analysis_node_context = Some(AnalysisNodeContextMenu {
-                node_id: node_id.to_string(),
-                stage_id: stage_id.to_string(),
-                label: label.to_string(),
-                retry_action: analysis_node_retry_action(node_id, file_hash),
-                run_node_only_action: UiAction::from(AnalysisCommand::RunAnalysisNodeOnly(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                )),
-                run_downstream_action: UiAction::from(AnalysisCommand::RunAnalysisNodeDownstream(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                )),
-                disable_node_action: app_core::node_can_be_disabled_for_run(node_id).then(|| {
-                    UiAction::from(AnalysisCommand::DisableAnalysisNodeForRun(
-                        file_hash.to_string(),
-                        node_id.to_string(),
-                    ))
-                }),
-                freeze_node_action: app_core::node_can_be_frozen_for_run(file_hash, node_id).then(
-                    || {
-                        UiAction::from(AnalysisCommand::FreezeAnalysisNodeOutputs(
-                            file_hash.to_string(),
-                            node_id.to_string(),
-                        ))
-                    },
-                ),
-                bypass_node_action: app_core::node_can_be_bypassed_for_run(node_id).then(|| {
-                    UiAction::from(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
-                        file_hash.to_string(),
-                        node_id.to_string(),
-                    ))
-                }),
-                compare_node_action: analysis.selected_analysis_history.map(|run_id| {
-                    UiAction::from(AnalysisCommand::CompareNodeAttemptWithPrevious(
-                        file_hash.to_string(),
-                        node_id.to_string(),
-                        run_id,
-                    ))
-                }),
-                save_as_song_profile_action: app_core::node_can_be_configured_for_run(node_id)
-                    .then(|| {
-                        UiAction::from(AnalysisCommand::SaveNodeConfigAsSongProfile(
-                            file_hash.to_string(),
-                            node_id.to_string(),
-                        ))
-                    }),
-                open_configure_dialog_action: app_core::node_can_be_configured_for_run(node_id)
-                    .then(|| {
-                        UiAction::from(AnalysisCommand::OpenNodeConfigDialog(
-                            file_hash.to_string(),
-                            node_id.to_string(),
-                        ))
-                    }),
-                force_transcribe_action: node_can_force_transcribe(node_id).then(|| {
-                    UiAction::from(AnalysisCommand::ForceTranscribe(file_hash.to_string()))
-                }),
-                refetch_align_action: node_can_refetch_and_align(node_id).then(|| {
-                    UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))
-                }),
-                capture_intermediate_action: (node_id == "lyrics.preprocess").then(|| {
-                    UiAction::from(AnalysisCommand::RequestCaptureIntermediate(
-                        file_hash.to_string(),
-                    ))
-                }),
-                view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAppLogViewer(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                ))),
-                compound_toggle: analysis_node_compound_toggle_action(node_id, is_expanded),
-                position: menu_position,
-            });
+            dialogs.analysis_node_context = Some(build_analysis_node_context_menu(
+                node_id,
+                stage_id,
+                label,
+                file_hash,
+                analysis.selected_analysis_history,
+                is_expanded,
+                clamp_analysis_node_context_position(menu_position, viewport_size),
+            ));
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
-        PointerButton::Middle => return,
+        PointerButton::Middle => {}
     }
 }
 
@@ -1143,11 +1293,13 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 position_type: PositionType::Absolute,
                 left: px(left),
                 top: px(top),
-                width: px(250),
+                width: px(278),
+                max_height: percent(86),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(8)),
                 row_gap: px(2),
                 align_items: AlignItems::Stretch,
+                overflow: Overflow::scroll_y(),
                 border: UiRect::all(px(1)),
                 border_radius: BorderRadius::all(px(6)),
                 ..default()
@@ -1182,33 +1334,51 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 "Inspect view",
                 11.0,
                 UiAction::from(AnalysisCommand::OpenAnalysisInspect(
+                    context.node_id.clone(),
                     context.stage_id.clone(),
                 )),
             );
-            spawn_menu_text_button(
-                menu,
-                font.clone(),
-                theme,
-                "Retry with same configuration",
-                11.0,
-                context.retry_action.clone(),
-            );
-            spawn_menu_text_button(
-                menu,
-                font.clone(),
-                theme,
-                "Run this node only",
-                11.0,
-                context.run_node_only_action.clone(),
-            );
-            spawn_menu_text_button(
-                menu,
-                font.clone(),
-                theme,
-                "Run this node and downstream",
-                11.0,
-                context.run_downstream_action.clone(),
-            );
+            if context.retry_action.is_some() || context.run_downstream_action.is_some() {
+                menu.spawn(Node {
+                    height: px(5),
+                    ..default()
+                });
+                spawn_text(menu, font.clone(), "EXECUTION", 7.0, theme.muted_foreground);
+            }
+            if let Some(retry) = context.retry_action.clone() {
+                spawn_menu_text_button(menu, font.clone(), theme, retry.label, 11.0, retry.action);
+            }
+            if let Some(downstream) = context.run_downstream_action.clone() {
+                spawn_menu_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    downstream.label,
+                    11.0,
+                    downstream.action,
+                );
+            }
+            if context.disable_node_action.is_some()
+                || context.freeze_node_action.is_some()
+                || context.bypass_node_action.is_some()
+                || context.open_configure_dialog_action.is_some()
+                || context.save_as_song_profile_action.is_some()
+                || context.force_transcribe_action.is_some()
+                || context.refetch_align_action.is_some()
+                || context.capture_intermediate_action.is_some()
+            {
+                menu.spawn(Node {
+                    height: px(5),
+                    ..default()
+                });
+                spawn_text(
+                    menu,
+                    font.clone(),
+                    "RUN OPTIONS",
+                    7.0,
+                    theme.muted_foreground,
+                );
+            }
             if let Some(disable_action) = context.disable_node_action.clone() {
                 spawn_menu_text_button(
                     menu,
@@ -1237,16 +1407,6 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     "Bypass with original mix",
                     11.0,
                     bypass_action,
-                );
-            }
-            if let Some(compare_action) = context.compare_node_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Compare with previous attempt",
-                    11.0,
-                    compare_action,
                 );
             }
             if let Some(configure_action) = context.open_configure_dialog_action.clone() {
@@ -1307,6 +1467,21 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     toggle_label,
                     11.0,
                     toggle_action,
+                );
+            }
+            menu.spawn(Node {
+                height: px(5),
+                ..default()
+            });
+            spawn_text(menu, font.clone(), "EVIDENCE", 7.0, theme.muted_foreground);
+            if let Some(compare_action) = context.compare_node_action.clone() {
+                spawn_menu_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    "Compare with previous attempt",
+                    11.0,
+                    compare_action,
                 );
             }
             spawn_menu_text_button(

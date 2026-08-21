@@ -124,13 +124,31 @@
           ];
         in {
           default = pkgs.mkShell {
-            inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}."uta-studio" ];
-            # Keep compiler-coupled tools from the same nixpkgs toolchain.
-            # Falling through to a host clippy can load metadata produced by
-            # a different LLVM build even when both report the same Rust
-            # release and commit.
-            packages = with pkgs; [ clippy rustfmt ];
+            # Development uses the Rust toolchain already installed through
+            # rustup. Nix supplies native libraries and runtime tools only,
+            # so entering the shell never realizes another pinned rustc.
+            packages = gstPlugins ++ (with pkgs; [
+              cmake
+              ninja
+              pkg-config
+              ffmpeg-full
+              libglvnd
+              libxkbcommon
+              udev
+              wayland
+              wayland-protocols
+              shaderc
+              vulkan-headers
+              vulkan-loader
+              vulkan-tools
+              python311
+              openssl
+              uv
+            ]);
             shellHook = ''
+              if [ -d "$HOME/.cargo/bin" ]; then
+                export PATH="$HOME/.cargo/bin:$PATH"
+              fi
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_UV_PATH="${pkgs.uv}/bin/uv"
               export UTA_STUDIO_PYTHON_PATH="${pkgs.python311}/bin/python3.11"

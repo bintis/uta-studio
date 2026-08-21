@@ -163,6 +163,7 @@ pub(crate) fn spawn_library_collection(
     };
     parent
         .spawn(Node {
+            position_type: PositionType::Relative,
             min_height: px(0),
             flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
@@ -321,9 +322,19 @@ pub(crate) fn spawn_library(
             library
                 .spawn((
                     Node {
+                        position_type: PositionType::Relative,
                         width: percent(100),
                         padding: if session.library_view == LibraryView::Queue {
-                            UiRect::axes(px(22), px(10))
+                            UiRect::new(
+                                px(22),
+                                px(if session.analysis_model_panel_open {
+                                    ANALYSIS_MODEL_PANEL_WIDTH + 22.0
+                                } else {
+                                    22.0
+                                }),
+                                px(10),
+                                px(10),
+                            )
                         } else {
                             UiRect::axes(px(28), px(24))
                         },
@@ -339,6 +350,8 @@ pub(crate) fn spawn_library(
                         font.clone(),
                         if session.library_facet.is_some() {
                             "MY LIBRARY"
+                        } else if session.library_view == LibraryView::Queue {
+                            current_analysis_eyebrow(session)
                         } else {
                             session.library_view.eyebrow()
                         },
@@ -347,11 +360,15 @@ pub(crate) fn spawn_library(
                     );
                     if session.library_view == LibraryView::Queue {
                         let current = current_analysis_header(session);
+                        let file_hash = current_analysis_file_hash(session);
                         header
                             .spawn(Node {
                                 width: percent(100),
                                 align_items: AlignItems::FlexEnd,
+                                justify_content: JustifyContent::SpaceBetween,
+                                flex_wrap: FlexWrap::Wrap,
                                 column_gap: px(16),
+                                row_gap: px(8),
                                 ..default()
                             })
                             .with_children(|title_row| {
@@ -364,7 +381,7 @@ pub(crate) fn spawn_library(
                                         ..default()
                                     })
                                     .with_children(|song| {
-                                        if let Some((title, artist, _)) = current.as_ref() {
+                                        if let Some((title, artist, progress)) = current.as_ref() {
                                             spawn_text(
                                                 song,
                                                 font.clone(),
@@ -375,7 +392,7 @@ pub(crate) fn spawn_library(
                                             spawn_text(
                                                 song,
                                                 font.clone(),
-                                                artist.clone(),
+                                                format!("{artist} · {progress}%"),
                                                 11.0,
                                                 theme.muted_foreground,
                                             );
@@ -389,6 +406,16 @@ pub(crate) fn spawn_library(
                                             );
                                         }
                                     });
+                                if let Some(file_hash) = file_hash.as_deref() {
+                                    spawn_analysis_header_toolbar(
+                                        title_row,
+                                        font.clone(),
+                                        icons.clone(),
+                                        theme,
+                                        session,
+                                        file_hash,
+                                    );
+                                }
                             });
                     } else {
                         spawn_text(
@@ -403,109 +430,58 @@ pub(crate) fn spawn_library(
                             theme.foreground,
                         );
                     }
-                    spawn_text(
-                        header,
-                        font.clone(),
-                        if session.library_view == LibraryView::Queue {
-                            let active = session
-                                .analysis_tasks
-                                .iter()
-                                .filter(|task| {
-                                    matches!(
-                                        task.status,
-                                        app_core::QueuedStatus::Queued
-                                            | app_core::QueuedStatus::Analyzing(_)
-                                    )
-                                })
-                                .count();
-                            let failed = session
-                                .analysis_tasks
-                                .iter()
-                                .filter(|task| {
-                                    matches!(task.status, app_core::QueuedStatus::Failed(_))
-                                })
-                                .count();
-                            format!("{active} active · {failed} failed · live updates")
-                        } else {
+                    if session.library_view == LibraryView::Queue {
+                        if let Some(reason) = current_analysis_file_hash(session)
+                            .as_deref()
+                            .and_then(analysis_start_unavailable)
+                        {
+                            spawn_text(
+                                header,
+                                font.clone(),
+                                reason,
+                                10.0,
+                                theme.muted_foreground,
+                            );
+                        }
+                    } else {
+                        spawn_text(
+                            header,
+                            font.clone(),
                             format!(
                                 "{} tracks · production workspace{}",
                                 session.songs.processed_count,
                                 if session.scanning { " · scanning" } else { "" }
-                            )
-                        },
-                        11.0,
-                        theme.muted_foreground,
-                    );
-                    if session.library_view == LibraryView::Queue
-                        && !session.analysis_history.is_empty()
-                    {
+                            ),
+                            11.0,
+                            theme.muted_foreground,
+                        );
+                    }
+                    if session.library_view == LibraryView::Queue {
+                        let progress = current_analysis_header(session)
+                            .map(|(_, _, progress)| progress)
+                            .unwrap_or(0);
                         header
-                            .spawn(Node {
-                                width: percent(100),
-                                align_items: AlignItems::Center,
-                                flex_wrap: FlexWrap::Wrap,
-                                column_gap: px(6),
-                                row_gap: px(6),
-                                margin: UiRect::top(px(6)),
-                                ..default()
-                            })
-                            .with_children(|history| {
-                                spawn_text(
-                                    history,
-                                    font.clone(),
-                                    "RECENT",
-                                    8.0,
-                                    theme.muted_foreground,
-                                );
-                                if session.pending_analysis_history_clear {
-                                    spawn_text(
-                                        history,
-                                        font.clone(),
-                                        "Delete every saved analysis session?",
-                                        8.0,
-                                        theme.destructive,
-                                    );
-                                    spawn_text_button(
-                                        history,
-                                        font.clone(),
-                                        theme,
-                                        "Cancel",
-                                        8.0,
-                                        UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
-                                    );
-                                    spawn_text_button(
-                                        history,
-                                        font.clone(),
-                                        theme,
-                                        "Delete history",
-                                        8.0,
-                                        UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
-                                    );
-                                } else {
-                                    spawn_text_button(
-                                        history,
-                                        font.clone(),
-                                        theme,
-                                        "Clear history…",
-                                        8.0,
-                                        UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
-                                    );
-                                }
-                                for item in session.analysis_history.iter().take(5) {
-                                    let selected = session.selected_analysis_history == Some(item.id);
-                                    spawn_text_button(
-                                        history,
-                                        font.clone(),
-                                        theme,
-                                        if selected {
-                                            format!("· {}", item.title)
-                                        } else {
-                                            item.title.clone()
-                                        },
-                                        8.0,
-                                        UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(item.id))),
-                                    );
-                                }
+                            .spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: px(0),
+                                    right: px(0),
+                                    bottom: px(-1),
+                                    height: px(2),
+                                    overflow: Overflow::clip(),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.border.with_alpha(0.38)),
+                            ))
+                            .with_children(|track| {
+                                track.spawn((
+                                    Node {
+                                        width: percent(progress as f32),
+                                        height: percent(100),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.primary.with_alpha(0.92)),
+                                ));
                             });
                     }
                     if session.library_view != LibraryView::Queue {
@@ -645,11 +621,7 @@ pub(crate) fn spawn_library(
                             px(14)
                         },
                         column_gap: px(14),
-                        overflow: if session.library_view == LibraryView::Queue {
-                            Overflow::clip()
-                        } else {
-                            Overflow::scroll_y()
-                        },
+                        overflow: Overflow::scroll_y(),
                         ..default()
                     },
                 ))
@@ -727,6 +699,20 @@ pub(crate) fn spawn_library(
                         );
                     }
                 });
+
+            if session.library_view == LibraryView::Queue
+                && session.analysis_model_panel_open
+            {
+                let (node_id, status) = current_analysis_model_panel_context(session);
+                spawn_analysis_model_panel(
+                    library,
+                    font.clone(),
+                    theme,
+                    session,
+                    &node_id,
+                    &status,
+                );
+            }
 
             if let Some(context) = session.song_context.as_ref() {
                 spawn_song_context_menu(library, font.clone(), theme, context);

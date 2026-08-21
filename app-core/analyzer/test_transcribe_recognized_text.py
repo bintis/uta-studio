@@ -1,7 +1,6 @@
-"""§4.4: `transcribe.py::_build_result_from_raw_segments` must capture the
-real pre-alignment ASR output (`_pre_alignment_segments`) before wav2vec2
-forced alignment refines it into word-level timing, and that transient key
-must never leak past `pipeline.py::run_transcription`, which pops it off.
+"""§4.4: `_build_result_from_raw_segments` must freeze real ASR output
+before forced alignment. Alignment is intentionally deferred until
+`pipeline.run_transcription` has atomically committed the ASR artifacts.
 This file only covers the capture point itself (`transcribe.py`); the
 pop-and-write behavior in `pipeline.py` is covered by
 `test_transcript_artifacts.py`.
@@ -23,38 +22,23 @@ else:
 
 @unittest.skipUnless(transcribe is not None, f"transcribe import failed: {transcribe_import_error}")
 class PreAlignmentSegmentsCaptureTests(unittest.TestCase):
-    def test_captures_pre_alignment_segments_before_alignment_and_they_survive_onto_the_result(self):
+    def test_captures_pre_alignment_segments_and_defers_alignment(self):
         raw_segments = [
             {"text": "hello world", "start": 0.0, "end": 1.5, "id": "whisperx-internal-field"},
         ]
-        aligned_result = {
-            "language": "en",
-            "segments": [
-                {
-                    "text": "hello world",
-                    "start": 0.0,
-                    "end": 1.5,
-                    "words": [
-                        {"word": "hello", "start": 0.0, "end": 0.6},
-                        {"word": "world", "start": 0.7, "end": 1.5},
-                    ],
-                }
-            ],
-        }
-
         with (
             mock.patch.object(transcribe, "_filter_hallucinations", side_effect=lambda segs, _dur: segs),
-            mock.patch.object(transcribe, "_align_and_build", return_value=dict(aligned_result)) as mocked_align,
+            mock.patch.object(transcribe, "_align_and_build") as mocked_align,
         ):
             result = transcribe._build_result_from_raw_segments(
                 raw_segments, full_audio=[0.0] * 16000, language="en",
                 duration_secs=1.5, device="cpu", pre_align_cleanup=None, engine_used="whisper",
             )
-            mocked_align.assert_called_once()
+            mocked_align.assert_not_called()
 
-        # The final result is the aligned (word-level) segments, unchanged.
-        self.assertEqual(result["segments"], aligned_result["segments"])
+        self.assertEqual(result["segments"], result["_pre_alignment_segments"])
         self.assertEqual(result["source"], "generated")
+        self.assertEqual(result["_alignment_raw_segments"], raw_segments)
 
         # But the real pre-alignment ASR output was captured too -- coarse
         # (no word-level timing), stripped of whisperx's internal fields,
@@ -78,10 +62,7 @@ class PreAlignmentSegmentsCaptureTests(unittest.TestCase):
 
         with (
             mock.patch.object(transcribe, "_filter_hallucinations", return_value=filtered),
-            mock.patch.object(
-                transcribe, "_align_and_build",
-                return_value={"language": "en", "segments": filtered},
-            ),
+            mock.patch.object(transcribe, "_align_and_build"),
         ):
             result = transcribe._build_result_from_raw_segments(
                 raw_segments, full_audio=[0.0] * 16000, language="en",

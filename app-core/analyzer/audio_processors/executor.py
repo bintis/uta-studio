@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -88,15 +89,68 @@ def chain_signature(plan: AudioProcessingPlanSnapshot) -> str:
 
 def _copy_intermediate(source: Path, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.suffix.lower() == ".wav":
-        shutil.copy2(source, destination)
-        return destination
-    # Keep intermediate audio lossless. Re-encode only into WAV/float, never MP3.
-    import soundfile as sf
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        if source.suffix.lower() == ".wav":
+            shutil.copy2(source, temporary)
+        else:
+            # Keep intermediate audio lossless. Re-encode only into WAV/float,
+            # never MP3. The explicit format is required because the atomic
+            # temporary file intentionally has a non-audio suffix.
+            import soundfile as sf
 
-    data, sample_rate = sf.read(str(source), dtype="float32", always_2d=True)
-    sf.write(str(destination), data, sample_rate, subtype="FLOAT")
-    return destination
+            data, sample_rate = sf.read(str(source), dtype="float32", always_2d=True)
+            sf.write(
+                str(temporary),
+                data,
+                sample_rate,
+                format="WAV",
+                subtype="FLOAT",
+            )
+
+        # A step-completed event publishes destination to the Rust side. Flush
+        # the bytes and the atomic rename first so a hard power loss cannot turn
+        # an already-published intermediate into the zero-byte file observed in
+        # the 2026-08-21 XPU lockup.
+        with temporary.open("rb") as persisted:
+            os.fsync(persisted.fileno())
+        os.replace(temporary, destination)
+        try:
+            directory_fd = os.open(
+                destination.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+        except OSError:
+            # Directory handles are not available on every supported platform.
+            pass
+        else:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        return destination
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _selected_progress_artifacts(
+    persisted: dict[str, StemArtifact], selected_output_roles: tuple[str, ...]
+) -> list[dict[str, str]]:
+    selected = set(selected_output_roles)
+    return [
+        {"role": artifact.role, "path": str(artifact.path)}
+        for role, artifact in persisted.items()
+        if role in selected
+    ]
 
 
 def execute_audio_processing_plan(
@@ -148,13 +202,21 @@ def execute_audio_processing_plan(
                 )
             else:
                 resolved = resolve_parameters(model)
+            step_progress = None
+            if progress_sink is not None:
+                def step_progress(percent, message, **metadata):
+                    # Runners may already attach their model identity. Merge
+                    # the plan identity without passing duplicate keywords.
+                    metadata.setdefault("step_id", step.step_id)
+                    metadata.setdefault("model_id", step.model_id)
+                    progress_sink(percent, message, **metadata)
             result = runner.run(
                 model_spec=model,
                 input_path=input_path,
                 work_dir=step_dir,
                 parameters=resolved,
                 runtime_request=plan.requested_runtime,
-                progress_sink=progress_sink,
+                progress_sink=step_progress,
                 installed_dir=installed_model_dir(models_dir, model.id),
                 step_id=step.step_id,
             )
@@ -188,11 +250,34 @@ def execute_audio_processing_plan(
                 fallback_reason=result.fallback_reason,
                 effective_parameters=result.effective_parameters,
             )
+            if progress_sink is not None:
+                progress_sink(
+                    100,
+                    f"{model.display_name} complete",
+                    step_id=step.step_id,
+                    model_id=step.model_id,
+                    lifecycle="step_completed",
+                    implementation=result.architecture,
+                    requested_device=result.requested_backend,
+                    actual_device=result.actual_backend,
+                    fallback_from=result.fallback_from,
+                    fallback_reason=result.fallback_reason,
+                    artifacts=_selected_progress_artifacts(
+                        persisted, step.selected_output_roles
+                    ),
+                )
         except Exception:
             shutil.rmtree(step_dir, ignore_errors=True)
             raise
         else:
             shutil.rmtree(step_dir, ignore_errors=True)
+        finally:
+            # Release accelerators already initialized in this process. XPU
+            # model workers exit at each step boundary, and hard_free_gpu must
+            # not create a new persistent Level Zero context in this parent.
+            from gpu import hard_free_gpu
+
+            hard_free_gpu(f"audio-step:{step.step_id}")
 
     bindings: dict[str, StemArtifact] = {}
     for binding in plan.output_bindings:

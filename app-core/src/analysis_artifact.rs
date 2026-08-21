@@ -596,6 +596,8 @@ fn compatibility_paths(cache: &CacheDir, revision: &ArtifactRevision) -> Vec<Pat
         | ArtifactKind::DereverbedVocalStem
         | ArtifactKind::AnalysisVocalStem
         | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::DenoisedInstrumentalStem
+        | ArtifactKind::DereverbedInstrumentalStem
         | ArtifactKind::KaraokeInstrumentalStem
         | ArtifactKind::DrumStem
         | ArtifactKind::BassStem
@@ -608,6 +610,8 @@ fn compatibility_paths(cache: &CacheDir, revision: &ArtifactRevision) -> Vec<Pat
                 ArtifactKind::DenoisedVocalStem => "vocals_denoised",
                 ArtifactKind::DereverbedVocalStem => "vocals_dry",
                 ArtifactKind::HighQualityInstrumentalStem => "instrumental_hq",
+                ArtifactKind::DenoisedInstrumentalStem => "instrumental_denoised",
+                ArtifactKind::DereverbedInstrumentalStem => "instrumental_dry",
                 ArtifactKind::KaraokeInstrumentalStem => "instrumental_karaoke",
                 ArtifactKind::DrumStem => "drums",
                 ArtifactKind::BassStem => "bass",

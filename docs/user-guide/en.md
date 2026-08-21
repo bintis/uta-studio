@@ -141,13 +141,13 @@ Library playback includes previous/next, pause/play, repeat modes, shuffle, mute
 
 ### 6. Analysis pipeline
 
-Uta Studio uses four explicit stages. Generated files from these stages are typed **analysis artifacts**; inspect revisions, lineage, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
+Uta Studio executes an explicit node-based DAG. Generated files are typed **analysis artifacts**; inspect revisions, lineage, real node progress, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
 
-#### 01 · Vocal separation
+#### 01 · Vocal and BGM separation
 
-Creates vocal and instrumental stems before recognition. Available choices depend on platform and configured runtime, and may include the legacy UVR Karaoke / Demucs / Intel OpenVINO path or the 0.5 audio catalog (BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem).
+Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
 
-Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline. Vocal, accompaniment, karaoke, denoise, and dereverb models can be chosen independently, including cleanup order; existing chart data changes only after re-analysis.
+Available choices depend on the configured runtime and can include BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline; existing chart data changes only after re-analysis.
 
 Use a balanced profile first. Memory-saving profiles reduce peak use; quality profiles usually take longer and can require more memory.
 
@@ -262,6 +262,8 @@ In **Settings → General**:
 
 - **Application log → View log** opens the current log when one exists.
 - **Feature API diagnostics → Run checks** verifies local APIs, native audio, and real temporary UTZ/UltraStar exports. The diagnostic temporary folder is removed after the check.
+
+Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens that run and filters by `node_id`; legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
 
 Include the application version, platform, selected runtime, relevant log excerpt, and reproducible steps in a bug report. Do not attach copyrighted source media unless you have permission.
 
@@ -395,7 +397,12 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 - `preflight` — checks that the local source and runtime are usable before work starts.
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
-- `stems.separate` — vocal and instrumental stems.
+- `stems.separate` — MINI-view aggregate derived from the real stem child nodes; it is not an executable Extract step.
+- `stems.vocals` — runs the selected vocal separation model.
+- `vocals.denoise` / `vocals.dereverb` — optional vocal post-processing in the configured slot order.
+- `stems.instrumental` — runs the independent BGM separation model.
+- `instrumental.denoise` / `instrumental.dereverb` — optional BGM post-processing in the configured slot order.
+- `stems.bind_analysis_outputs` — validates and binds the final vocal and BGM products for downstream consumers.
 - `pitch.extract` — pitch curve and note-candidate evidence.
 - `lyrics.preprocess` (Vocal Preprocessing) — vocal audio prepared for recognition and alignment; ephemeral unless captured.
 - `lyrics.transcribe` — recognized text.

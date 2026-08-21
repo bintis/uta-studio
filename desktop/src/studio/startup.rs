@@ -37,6 +37,7 @@ pub fn run() {
         .insert_resource(NativeLibraryAudio(native_library_audio))
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
+        .insert_resource(EditorViewportRebuildThrottle::default())
         .insert_resource(UiInvalidated::default())
         .insert_resource(UiRebuildMetrics::default())
         .insert_resource(DebugScreenshotState::default())
@@ -110,6 +111,7 @@ pub fn run() {
         .add_systems(Update, sync_documentation_search)
         .add_systems(Update, refresh_library_while_scanning)
         .add_systems(Update, refresh_analysis_activity)
+        .add_systems(Update, handle_analysis_model_panel_scroll)
         .add_systems(
             Update,
             follow_live_analysis_node.after(refresh_analysis_activity),
@@ -130,7 +132,8 @@ pub fn run() {
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
         .add_systems(Update, handle_plan_preview_keyboard)
-        .add_systems(Update, handle_app_log_viewer_scroll)
+        .add_systems(Update, handle_plan_preview_scroll)
+        .add_systems(Update, handle_analysis_log_viewer_scroll)
         .add_systems(
             Update,
             refresh_editor_problems_cache
@@ -156,7 +159,12 @@ pub fn run() {
                 .after(rebuild_ui),
         )
         .add_systems(Update, handle_editor_keyboard)
-        .add_systems(Update, handle_editor_wheel)
+        .add_systems(
+            Update,
+            (handle_editor_wheel, flush_editor_viewport_rebuild)
+                .chain()
+                .before(rebuild_ui),
+        )
         .add_systems(Update, handle_editor_pointer_capture)
         .add_systems(Update, handle_folder_scroll)
         .add_systems(Update, handle_problems_panel_scroll)
@@ -189,7 +197,16 @@ pub(crate) fn capture_debug_screenshot(
         return;
     }
     state.settled_frames = state.settled_frames.saturating_add(1);
-    if state.settled_frames < 30 {
+    // The analysis activity timer performs its first scoped refresh about
+    // three seconds after launch.  Capturing at 30 settled frames could land
+    // in that deferred despawn/spawn frame and produce a half-empty image.
+    // Wait through that first refresh so visual smoke evidence represents a
+    // stable UI tree.
+    // Leave enough frames for the viewport's final fullscreen width to feed
+    // back through auto-Fit and rebuild once more. Capturing on that exact
+    // fit frame records the previous zoom even though the interactive app
+    // corrects it on the following frame.
+    if state.settled_frames < 120 {
         return;
     }
     state.requested = true;
@@ -208,10 +225,10 @@ pub(crate) fn studio_log_filter() -> String {
     format!("{DEFAULT_FILTER},icu_provider=error")
 }
 
-/// Real app-log capture (Node Context Menu "View logs" -- previously the
-/// last declined Phase 7 §7.5 item, since nothing captured log output
-/// anywhere before this). Writes go through `tracing_subscriber::fmt`'s own
-/// event formatting (reused, not reimplemented) into
+/// Application-lifecycle log capture. Per-song analysis progress, model
+/// output, and tracebacks belong exclusively to each run's dedicated JSONL
+/// log and must not be routed here. Writes go through
+/// `tracing_subscriber::fmt`'s own event formatting into
 /// `app_core::record_log_text`'s bounded ring buffer + best-effort log
 /// file. Composes *alongside* Bevy's own default stdout layer via
 /// `LogPlugin.custom_layer` -- stdout output is unaffected.
@@ -497,9 +514,11 @@ pub(crate) fn rebuild_ui(
         target: "uta_studio::ui_rebuild",
         bevy::log::Level::DEBUG
     );
-    let old_entities = collect_metrics
-        .then(|| count_ui_entities(&ui.roots, &ui.children))
-        .unwrap_or(0);
+    let old_entities = if collect_metrics {
+        count_ui_entities(&ui.roots, &ui.children)
+    } else {
+        0
+    };
     let window_size = ui
         .windows
         .single()
@@ -511,7 +530,11 @@ pub(crate) fn rebuild_ui(
         || regions.contains(UiDirtyRegion::Settings)
         || regions.contains(UiDirtyRegion::Documentation);
     let editor_dirty = regions.contains(UiDirtyRegion::Editor);
-    let overlay_dirty = regions.contains(UiDirtyRegion::Dialog);
+    // Editor context menus live in the lightweight overlay region. Any editor
+    // rebuild may clear one as part of an action, so keep that small region in
+    // sync without putting the menus back inside the expensive editor tree.
+    let overlay_dirty = regions.contains(UiDirtyRegion::Dialog)
+        || (editor_dirty && session.route == StudioRoute::Editor);
     let mut full_rebuild = regions.requires_full_rebuild() || ui.roots.single().is_err();
     if !full_rebuild && workspace_dirty && session.route != StudioRoute::Editor {
         full_rebuild = ui.bodies.single().is_err() || ui.workspace_regions.single().is_err();
@@ -576,7 +599,6 @@ pub(crate) fn rebuild_ui(
                         asset_server.load(ICON_ATLAS_PATH),
                         &session,
                         &theme,
-                        window_size,
                     );
                 });
                 rebuilt = true;
@@ -595,6 +617,7 @@ pub(crate) fn rebuild_ui(
                         &brand,
                         &session,
                         &theme,
+                        window_size,
                     );
                 });
                 rebuilt = true;
@@ -671,14 +694,7 @@ pub(crate) fn render_ui(
         ))
         .with_children(|root| {
             if session.route == StudioRoute::Editor {
-                spawn_editor_region(
-                    root,
-                    font.clone(),
-                    icons.clone(),
-                    session,
-                    theme,
-                    window_size,
-                );
+                spawn_editor_region(root, font.clone(), icons.clone(), session, theme);
             } else {
                 root.spawn((
                     StudioBodyRoot,
@@ -712,10 +728,11 @@ pub(crate) fn render_ui(
                     );
                 });
             }
-            spawn_overlay_region(root, font, icons, brand, session, theme);
+            spawn_overlay_region(root, font, icons, brand, session, theme, window_size);
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_workspace_region(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -761,7 +778,6 @@ fn spawn_editor_region(
     icons: Handle<Image>,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
-    window_size: Vec2,
 ) {
     parent
         .spawn((
@@ -775,7 +791,7 @@ fn spawn_editor_region(
             },
         ))
         .with_children(|region| {
-            spawn_editor(region, font, icons, session, theme, window_size);
+            spawn_editor(region, font, icons, session, theme);
         });
 }
 
@@ -786,6 +802,7 @@ fn spawn_overlay_region(
     brand: &BrandImages,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
+    window_size: Vec2,
 ) {
     parent
         .spawn((
@@ -803,6 +820,46 @@ fn spawn_overlay_region(
         .with_children(|overlay| {
             if let Some(context) = session.analysis_node_context.as_ref() {
                 spawn_analysis_node_context_menu(overlay, font.clone(), theme, context);
+            }
+            if session.route == StudioRoute::Editor
+                && let Some(editor) = session.editor.as_ref()
+            {
+                if editor.file_menu_open {
+                    spawn_editor_file_menu(overlay, font.clone(), theme, editor);
+                }
+                if editor.layout_menu_open {
+                    spawn_editor_layout_menu(overlay, font.clone(), theme, editor);
+                }
+                if let Some(context) = editor.note_context.as_ref() {
+                    spawn_note_context_menu(
+                        overlay,
+                        font.clone(),
+                        theme,
+                        editor,
+                        context,
+                        window_size,
+                    );
+                }
+                if let Some(context) = editor.lyric_context.as_ref() {
+                    spawn_lyric_context_menu(
+                        overlay,
+                        font.clone(),
+                        theme,
+                        editor,
+                        context,
+                        window_size,
+                    );
+                }
+                if let Some(context) = editor.waveform_context.as_ref() {
+                    spawn_waveform_context_menu(
+                        overlay,
+                        font.clone(),
+                        theme,
+                        editor,
+                        context,
+                        window_size,
+                    );
+                }
             }
             if session.activity_open {
                 spawn_activity_center(overlay, font.clone(), icons, session, theme);
@@ -842,7 +899,7 @@ fn spawn_overlay_region(
                     overlay,
                     font.clone(),
                     brand.logo.clone(),
-                    &session.config,
+                    session.config,
                     theme,
                 );
             }

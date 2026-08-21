@@ -54,6 +54,10 @@ const AUDIO_PROCESSORS_CONTRACTS_PY: &str =
     include_str!("../analyzer/audio_processors/contracts.py");
 const AUDIO_PROCESSORS_EXECUTOR_PY: &str = include_str!("../analyzer/audio_processors/executor.py");
 const AUDIO_PROCESSORS_OUTPUTS_PY: &str = include_str!("../analyzer/audio_processors/outputs.py");
+const AUDIO_PROCESSORS_XPU_SEGMENTED_PY: &str =
+    include_str!("../analyzer/audio_processors/xpu_segmented.py");
+const AUDIO_PROCESSORS_XPU_WORKER_PY: &str =
+    include_str!("../analyzer/audio_processors/xpu_worker.py");
 const AUDIO_PROCESSORS_RUNNERS_INIT_PY: &str =
     include_str!("../analyzer/audio_processors/runners/__init__.py");
 const AUDIO_PROCESSORS_RUNNERS_BASE_PY: &str =
@@ -139,6 +143,14 @@ const FILES: &[(&str, &str)] = &[
     ("audio_processors/executor.py", AUDIO_PROCESSORS_EXECUTOR_PY),
     ("audio_processors/outputs.py", AUDIO_PROCESSORS_OUTPUTS_PY),
     (
+        "audio_processors/xpu_segmented.py",
+        AUDIO_PROCESSORS_XPU_SEGMENTED_PY,
+    ),
+    (
+        "audio_processors/xpu_worker.py",
+        AUDIO_PROCESSORS_XPU_WORKER_PY,
+    ),
+    (
         "audio_processors/runners/__init__.py",
         AUDIO_PROCESSORS_RUNNERS_INIT_PY,
     ),
@@ -203,6 +215,8 @@ mod tests {
             "audio_models/catalog.yaml",
             "audio_models/configs/mel_band_roformer_karaoke_aufr33_viperx.yaml",
             "audio_processors/executor.py",
+            "audio_processors/xpu_segmented.py",
+            "audio_processors/xpu_worker.py",
             "audio_processors/runners/mdxc_torch.py",
             "audio_separator_adapter/offline.py",
         ] {

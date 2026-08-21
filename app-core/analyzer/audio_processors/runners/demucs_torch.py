@@ -16,6 +16,8 @@ from audio_processors.runners.base import (
     run_with_whole_model_fallback,
 )
 
+_ISOLATED_XPU_RESOURCES: list[object] = []
+
 
 class DemucsTorchRunner:
     def run(
@@ -40,6 +42,8 @@ class DemucsTorchRunner:
         models_root = installed_dir.parent.parent
 
         def execute(backend: str) -> ProcessorResult:
+            attempt_dir = work_dir / backend
+            attempt_dir.mkdir(parents=True, exist_ok=True)
             yaml_path = resolve_installed_file(
                 models_root, model_spec, model_spec.file("model_config")
             )
@@ -54,15 +58,35 @@ class DemucsTorchRunner:
                 architecture=model_spec.architecture,
                 actual_backend=backend,
             )
-            named, sample_rate, channels = _separate_demucs(
-                yaml_path=yaml_path,
-                weight_path=weight_path,
-                input_path=input_path,
-                work_dir=work_dir,
-                parameters=parameters,
-                backend=backend,
-                expected=model_spec.expected_stems,
-            )
+            if backend == "torch_xpu":
+                from audio_processors.xpu_worker import run_isolated_xpu
+
+                payload = run_isolated_xpu(
+                    {
+                        "runner": "demucs_torch",
+                        "model_id": model_spec.id,
+                        "yaml_path": str(yaml_path),
+                        "weight_path": str(weight_path),
+                        "input_path": str(input_path),
+                        "work_dir": str(attempt_dir),
+                        "parameters": parameters.as_map(),
+                    }
+                )
+                named = {
+                    stem: Path(path) for stem, path in payload["stems"].items()
+                }
+                sample_rate = int(payload["sample_rate"])
+                channels = int(payload["channels"])
+            else:
+                named, sample_rate, channels = _separate_demucs(
+                    yaml_path=yaml_path,
+                    weight_path=weight_path,
+                    input_path=input_path,
+                    work_dir=attempt_dir,
+                    parameters=parameters,
+                    backend=backend,
+                    expected=model_spec.expected_stems,
+                )
             artifacts = map_named_outputs(
                 model_spec,
                 named,
@@ -97,6 +121,7 @@ def _separate_demucs(
     parameters: ResolvedParameters,
     backend: str,
     expected: tuple[str, ...],
+    process_isolated: bool = False,
 ) -> tuple[dict[str, Path], int, int]:
     import numpy as np
     import soundfile as sf
@@ -106,56 +131,73 @@ def _separate_demucs(
 
     device_name = {"torch_cuda": "cuda", "torch_xpu": "xpu"}.get(backend, "cpu")
     device = torch.device(device_name)
-    # Architecture lives inside the Demucs checkpoint package. The YAML is
-    # only the catalog pairing (models: ['5c90dfd2']); never call get_model().
-    _ = yaml_path
-    model = load_model(str(weight_path))
-    if set(model.sources) < set(expected):
-        raise OutputContractError(
-            f"Demucs model sources {model.sources} do not cover {expected}"
-        )
-    model.to(device)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    data, sample_rate = sf.read(str(input_path), dtype="float32", always_2d=True)
-    wav = torch.from_numpy(np.ascontiguousarray(data.T)).to(device)
-    ref = wav.mean(0)
-    wav_centered = wav - ref.mean()
-    wav_scaled = wav_centered / ref.abs().max().clamp(min=1e-8)
-    shifts = int(parameters.get("demucs.shifts", 0))
-    overlap = float(parameters.get("demucs.overlapRatio", 0.25))
-    # XPU oneDNN cannot create SDPA primitives on this driver. Keep the
-    # whole HTDemucs model on XPU by using a matmul attention fallback.
-    split = False if backend == "torch_xpu" else bool(parameters.get("demucs.splitEnabled", True))
-    if backend == "torch_xpu":
-        sources = _apply_demucs_on_xpu(
-            model,
-            wav_scaled[None],
-            device=device,
-            shifts=max(shifts, 0),
-            overlap=overlap,
-            split=split,
-        )[0]
-    else:
-        sources = apply_model(
-            model,
-            wav_scaled[None],
-            device=device,
-            shifts=max(shifts, 0),
-            overlap=overlap,
-            split=split,
-        )[0]
-    named: dict[str, Path] = {}
-    peak = ref.abs().max()
-    mean = ref.mean()
-    for name, tensor in zip(model.sources, sources):
-        audio = (tensor * peak + mean).detach().cpu().to(torch.float32)
-        path = work_dir / f"step_demucs__{name}.wav"
-        peak_value = float(audio.abs().max().item())
-        if peak_value > 1.0:
-            audio = audio / (1.01 * peak_value)
-        sf.write(str(path), audio.numpy().T, sample_rate, subtype="PCM_16")
-        named[name] = path
-    return named, int(sample_rate), 2
+    model = None
+    wav = ref = wav_centered = wav_scaled = sources = peak = mean = None
+    try:
+        # Architecture lives inside the Demucs checkpoint package. The YAML is
+        # only the catalog pairing (models: ['5c90dfd2']); never call get_model().
+        _ = yaml_path
+        model = load_model(str(weight_path))
+        if set(model.sources) < set(expected):
+            raise OutputContractError(
+                f"Demucs model sources {model.sources} do not cover {expected}"
+            )
+        model.to(device)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        data, sample_rate = sf.read(str(input_path), dtype="float32", always_2d=True)
+        wav = torch.from_numpy(np.ascontiguousarray(data.T)).to(device)
+        ref = wav.mean(0)
+        wav_centered = wav - ref.mean()
+        wav_scaled = wav_centered / ref.abs().max().clamp(min=1e-8)
+        shifts = int(parameters.get("demucs.shifts", 0))
+        overlap = float(parameters.get("demucs.overlapRatio", 0.25))
+        # XPU oneDNN cannot create SDPA primitives on this driver. Keep the
+        # whole HTDemucs model on XPU by using a matmul attention fallback.
+        split = False if backend == "torch_xpu" else bool(parameters.get("demucs.splitEnabled", True))
+        if backend == "torch_xpu":
+            sources = _apply_demucs_on_xpu(
+                model,
+                wav_scaled[None],
+                device=device,
+                shifts=max(shifts, 0),
+                overlap=overlap,
+                split=split,
+            )[0]
+        else:
+            sources = apply_model(
+                model,
+                wav_scaled[None],
+                device=device,
+                shifts=max(shifts, 0),
+                overlap=overlap,
+                split=split,
+            )[0]
+        named: dict[str, Path] = {}
+        peak = ref.abs().max()
+        mean = ref.mean()
+        source_names = tuple(model.sources)
+        for name, tensor in zip(source_names, sources):
+            audio = (tensor * peak + mean).detach().cpu().to(torch.float32)
+            path = work_dir / f"step_demucs__{name}.wav"
+            peak_value = float(audio.abs().max().item())
+            if peak_value > 1.0:
+                audio = audio / (1.01 * peak_value)
+            sf.write(str(path), audio.numpy().T, sample_rate, subtype="PCM_16")
+            named[name] = path
+        return named, int(sample_rate), 2
+    finally:
+        if process_isolated:
+            # xpu_worker intentionally owns these objects until os._exit(),
+            # which destroys the complete Level Zero context at once.
+            _ISOLATED_XPU_RESOURCES.append(
+                (model, wav, ref, wav_centered, wav_scaled, sources, peak, mean)
+            )
+        else:
+            from gpu import hard_free_gpu, move_to_cpu
+
+            move_to_cpu(model)
+            model = wav = ref = wav_centered = wav_scaled = sources = peak = mean = None
+            hard_free_gpu(f"audio-model:demucs:{backend}")
 
 
 def _matmul_sdpa(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, **_kwargs):

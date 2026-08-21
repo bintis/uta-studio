@@ -4,6 +4,8 @@
 //! closes the UI layer by assigning every button, menu item, context-menu
 //! action, and direct pointer gesture a stable command id and access class.
 
+use std::{collections::HashSet, sync::OnceLock};
+
 use bevy::prelude::{Added, Button, Component, Entity, Query, With};
 use serde::Serialize;
 
@@ -127,6 +129,8 @@ const SETTINGS_COMMANDS: &[&str] = &[
 ];
 
 const ANALYSIS_COMMANDS: &[&str] = &[
+    "ui.analysis.start_analysis",
+    "ui.analysis.stop_analysis",
     "ui.analysis.select_artifact_inspector_tab",
     "ui.analysis.toggle_artifact_pinned",
     "ui.analysis.open_artifact_compatible_editor",
@@ -151,6 +155,9 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.open_analysis_inspect",
     "ui.analysis.adjust_analysis_graph_zoom",
     "ui.analysis.toggle_analysis_mini_view",
+    "ui.analysis.toggle_analysis_model_panel",
+    "ui.analysis.close_analysis_model_panel",
+    "ui.analysis.set_analysis_model_category",
     "ui.analysis.fit_analysis_graph",
     "ui.analysis.focus_analysis_graph_node",
     "ui.analysis.dismiss_analysis_node_context",
@@ -178,9 +185,9 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.close_plan_preview",
     "ui.analysis.toggle_plan_preview_disabled_node",
     "ui.analysis.run_plan_preview_draft",
-    "ui.analysis.open_app_log_viewer",
-    "ui.analysis.close_app_log_viewer",
-    "ui.analysis.open_app_log_file",
+    "ui.analysis.open_analysis_log_viewer",
+    "ui.analysis.close_analysis_log_viewer",
+    "ui.analysis.open_analysis_log_file",
     "ui.analysis.toggle_analysis_compound_node",
     "ui.analysis.request_delete_song_cache",
     "ui.analysis.cancel_analysis_run",
@@ -246,6 +253,12 @@ const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.select_editor_track",
     "ui.editor.move_selection_to_track",
     "ui.editor.set_note_kind",
+    "ui.editor.toggle_editor_file_menu",
+    "ui.editor.dismiss_editor_file_menu",
+    "ui.editor.save_editor_as_utz",
+    "ui.editor.save_editor_as_ultra_star",
+    "ui.editor.toggle_editor_layout_menu",
+    "ui.editor.dismiss_editor_layout_menu",
     "ui.editor.dismiss_lyric_context",
     "ui.editor.dismiss_note_context",
     "ui.editor.select_waveform_source",
@@ -313,7 +326,7 @@ fn classified_access(command: &str) -> &'static str {
         || command.contains("reveal_")
         || command.contains("open_source")
         || command.contains("open_log")
-        || command.contains("open_app_log_file")
+        || command.contains("open_analysis_log_file")
         || command.contains("search_lrclib")
         || command.contains("request_setup")
         || command.contains("confirm_setup")
@@ -407,23 +420,37 @@ pub(crate) fn ui_interaction_capabilities() -> Vec<UiInteractionCapability> {
         .collect()
 }
 
+fn registered_ui_commands() -> &'static HashSet<String> {
+    static REGISTERED: OnceLock<HashSet<String>> = OnceLock::new();
+    REGISTERED.get_or_init(|| {
+        ui_interaction_capabilities()
+            .into_iter()
+            .map(|capability| capability.command)
+            .collect()
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn ui_interaction_is_registered(command: &str) -> bool {
-    ui_interaction_capabilities()
-        .iter()
-        .any(|capability| capability.command == command)
+    registered_ui_commands().contains(command)
 }
+
+type AddedUiButtons<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        Option<&'static UiAction>,
+        Option<&'static UiPointerApi>,
+    ),
+    (With<Button>, Added<Button>),
+>;
 
 /// Runtime contract audit. Every pickable `Button` must either dispatch a
 /// typed `UiAction` or declare the pointer-observer API(s) that handle it.
 /// Keeping this in the normal app update catches route-specific controls that
 /// a source-only registry test cannot render.
-pub(crate) fn audit_ui_api_coverage(
-    buttons: Query<
-        (Entity, Option<&UiAction>, Option<&UiPointerApi>),
-        (With<Button>, Added<Button>),
-    >,
-) {
+pub(crate) fn audit_ui_api_coverage(buttons: AddedUiButtons) {
     // Audit each newly materialized control once. The previous implementation
     // rescanned every button and rebuilt the full capability vector for every
     // button on every frame, which made debug builds increasingly sluggish as
@@ -431,10 +458,7 @@ pub(crate) fn audit_ui_api_coverage(
     if !cfg!(debug_assertions) || buttons.is_empty() {
         return;
     }
-    let registered = ui_interaction_capabilities()
-        .into_iter()
-        .map(|capability| capability.command)
-        .collect::<std::collections::HashSet<_>>();
+    let registered = registered_ui_commands();
 
     for (entity, action, pointer) in &buttons {
         debug_assert!(

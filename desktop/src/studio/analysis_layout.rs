@@ -1,21 +1,38 @@
 //! Layered topological auto-layout for the Analysis DAG canvas
 //! (docs/analysis-dag-redesign.md Phase 7 §7.2, phase plan "首版建议实现分层拓扑布局").
 //! Pure and Bevy-independent so it's unit-testable without spawning any UI:
-//! given a graph, it returns a rectangle per node and an overall canvas
-//! size, with no hardcoded per-node coordinates anywhere in this file.
+//! given a graph, it returns rectangles and a canvas size without hardcoded node coordinates.
 //!
 //! Algorithm: rank each node by its longest path from a source (a node with
 //! no incoming edges) using the graph's own validated topological order,
-//! group nodes into columns by rank, then pull each node as far right as
-//! its successors allow so a side path such as Timed Lyrics Import sits in
+//! group nodes into columns by rank, then pull each node as far right as its
+//! successors allow so a side path such as Timed Lyrics Import sits in
 //! the lyrics column instead of the stem column. A node is only wired to
 //! the layer that feeds it and the layer it feeds; stem separation never
 //! gains a line to Timed Lyrics. Remaining long-span edges keep private
 //! rails so two pipelines never share a collinear segment.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use app_core::AnalysisNodeId;
+
+#[path = "analysis_layout_artifacts.rs"]
+mod artifacts;
+use artifacts::{
+    position_vocal_artifact_chips, positioned_vocal_artifact_chip, vocal_artifact_chip_producer,
+};
+#[path = "analysis_layout_phases.rs"]
+mod phases;
+use phases::{
+    align_authoring_nodes, align_reference_nodes, lane_bands_for_height,
+    reference_composition_present,
+};
+#[path = "analysis_layout_reference_edges.rs"]
+mod reference_edges;
+use reference_edges::override_reference_paths;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LayoutRect {
@@ -31,6 +48,7 @@ pub(crate) struct LayoutSpacing {
     pub(crate) node_height: f32,
     pub(crate) column_gap: f32,
     pub(crate) row_gap: f32,
+    pub(crate) lane_gap: f32,
     pub(crate) margin: f32,
 }
 
@@ -41,6 +59,7 @@ impl Default for LayoutSpacing {
             node_height: 78.0,
             column_gap: 70.0,
             row_gap: 24.0,
+            lane_gap: 48.0,
             margin: 24.0,
         }
     }
@@ -52,11 +71,12 @@ impl LayoutSpacing {
     /// coordinate assertions stay independent of the on-screen density.
     pub(crate) fn canvas() -> Self {
         Self {
-            node_width: 128.0,
-            node_height: 70.0,
-            column_gap: 36.0,
-            row_gap: 16.0,
-            margin: 16.0,
+            node_width: 136.0,
+            node_height: 112.0,
+            column_gap: 28.0,
+            row_gap: 28.0,
+            lane_gap: 64.0,
+            margin: 26.0,
         }
     }
 }
@@ -73,69 +93,38 @@ impl GraphLayout {
         self.rects.get(id).copied()
     }
 
-    /// Visual grouping only: the three analysis branches are rendered as
-    /// quiet, labelled surfaces behind their nodes. Shared source/merge
-    /// nodes deliberately remain outside these bounds so the grouping does
-    /// not imply any extra dependency.
+    /// Visual grouping only. Preparation and music occupy narrow left
+    /// columns, authoring/output owns the right column, and the two dense
+    /// model flows share the middle as stacked panels. This mirrors how the
+    /// workflow is read: vocal processing across the top and lyrics/timing
+    /// across the bottom, both converging on Chart.
+    #[cfg(test)]
     pub(crate) fn lane_bands(&self) -> Vec<LayoutLaneBand> {
-        let mut bounds: [Option<LayoutRect>; 3] = [None, None, None];
-        for (id, rect) in &self.rects {
-            let index = match swimlane_of(id) {
-                Swimlane::Music => 0,
-                Swimlane::Stems => 1,
-                Swimlane::Lyrics => 2,
-                Swimlane::Shared => continue,
-            };
-            bounds[index] = Some(match bounds[index] {
-                None => *rect,
-                Some(current) => LayoutRect {
-                    x: current.x.min(rect.x),
-                    y: current.y.min(rect.y),
-                    width: current.right().max(rect.right()) - current.x.min(rect.x),
-                    height: current.bottom().max(rect.bottom()) - current.y.min(rect.y),
-                },
-            });
-        }
+        lane_bands_for_height(self, self.canvas_height)
+    }
 
-        bounds
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, rect)| {
-                let rect = rect?;
-                let horizontal_padding = 10.0;
-                let header_height = 16.0;
-                let bottom_padding = 10.0;
-                Some(LayoutLaneBand {
-                    kind: match index {
-                        0 => LayoutLaneKind::Music,
-                        1 => LayoutLaneKind::VocalsAndPitch,
-                        _ => LayoutLaneKind::LyricsAndTiming,
-                    },
-                    rect: LayoutRect {
-                        x: (rect.x - horizontal_padding).max(0.0),
-                        y: (rect.y - header_height).max(0.0),
-                        width: rect.width + horizontal_padding * 2.0,
-                        height: rect.height + header_height + bottom_padding,
-                    },
-                })
-            })
-            .collect()
+    pub(crate) fn lane_bands_for_height(&self, height: f32) -> Vec<LayoutLaneBand> {
+        lane_bands_for_height(self, height)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayoutLaneKind {
+    Preparation,
     Music,
     VocalsAndPitch,
     LyricsAndTiming,
+    AuthoringAndOutput,
 }
 
 impl LayoutLaneKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::Preparation => "PREPARATION",
             Self::Music => "MUSIC INSIGHTS",
-            Self::VocalsAndPitch => "VOCALS & PITCH",
+            Self::VocalsAndPitch => "BGM · VOCALS & PITCH",
             Self::LyricsAndTiming => "LYRICS & TIMING",
+            Self::AuthoringAndOutput => "AUTHORING & OUTPUT",
         }
     }
 }
@@ -201,8 +190,39 @@ impl RoutedGraph {
     }
 }
 
+type LayoutCacheKey = (Vec<String>, Vec<(String, String)>);
+
+/// Caches topology-only canvas layout. Live progress, node state, selection,
+/// and artifact readiness do not affect geometry, so rebuilding those visual
+/// details must not rerun the layered router.
+pub(crate) fn cached_canvas_routed_layout(
+    nodes: &[AnalysisNodeId],
+    edges: &[(AnalysisNodeId, AnalysisNodeId)],
+) -> Option<Arc<RoutedGraph>> {
+    static CACHE: OnceLock<Mutex<HashMap<LayoutCacheKey, Option<Arc<RoutedGraph>>>>> =
+        OnceLock::new();
+    let key = (
+        nodes.iter().map(ToString::to_string).collect(),
+        edges
+            .iter()
+            .map(|(from, to)| (from.to_string(), to.to_string()))
+            .collect(),
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+        return cached;
+    }
+
+    let routed = layered_layout_from_edges(nodes, edges, LayoutSpacing::canvas())
+        .map(|layout| route_layered_edges(&layout, edges, LayoutSpacing::canvas()))
+        .map(Arc::new);
+    cache.lock().unwrap().insert(key, routed.clone());
+    routed
+}
+
 const RAIL_GAP: f32 = 8.0;
 const PORT_STUB: f32 = 8.0;
+const UNDER_RAIL_CLEARANCE: f32 = 28.0;
 const LONG_SPAN_COLUMNS: f32 = 1.5;
 
 fn is_long_span(from: LayoutRect, to: LayoutRect, spacing: LayoutSpacing) -> bool {
@@ -238,6 +258,29 @@ fn prefers_bottom_rail(
     from.as_str() == "lyrics.import_timed"
         || to.as_str() == "lyrics.import_timed"
         || to_rect.y >= from_rect.bottom()
+}
+
+/// A long edge between nodes on the same visual row does not need a detour
+/// when the horizontal corridor is empty. Keep this conservative by
+/// treating the source node's complete vertical span as occupied: if any
+/// intermediate card overlaps that span, the normal under-row route still
+/// wins.
+fn horizontal_corridor_is_clear(
+    layout: &GraphLayout,
+    from_id: &AnalysisNodeId,
+    to_id: &AnalysisNodeId,
+    from: LayoutRect,
+    to: LayoutRect,
+) -> bool {
+    let left = from.right().min(to.right());
+    let right = from.x.max(to.x);
+    layout.rects.iter().all(|(id, rect)| {
+        if id == from_id || id == to_id {
+            return true;
+        }
+        let overlaps_x = rect.x < right - 0.5 && rect.right() > left + 0.5;
+        !overlaps_x || !vertically_overlap(from, *rect)
+    })
 }
 
 fn of_kinds(list: &[(AnalysisNodeId, u8)], kinds: &[u8]) -> Vec<(AnalysisNodeId, u8)> {
@@ -280,7 +323,11 @@ pub(crate) fn route_layered_edges(
         };
         if is_long_span(from, to, spacing) {
             if vertically_overlap(from, to) {
-                under_edges.push((from_id.clone(), to_id.clone()));
+                if horizontal_corridor_is_clear(layout, from_id, to_id, from, to) {
+                    side_edges.push((from_id.clone(), to_id.clone()));
+                } else {
+                    under_edges.push((from_id.clone(), to_id.clone()));
+                }
             } else if prefers_bottom_rail(from_id, to_id, from, to) {
                 below_edges.push((from_id.clone(), to_id.clone()));
             } else {
@@ -581,7 +628,16 @@ pub(crate) fn route_layered_edges(
         }
     }
 
-    let mut used_under_y: Vec<f32> = Vec::new();
+    // Under-row detours are routed after long-span and side paths. Seed the
+    // allocator with every horizontal rail already emitted so a compact
+    // column gap cannot make a later detour reuse part of an existing rail.
+    let mut used_under_y: Vec<f32> = paths
+        .values()
+        .flat_map(|path| {
+            path.windows(2)
+                .filter_map(|pair| ((pair[0].y - pair[1].y).abs() <= 0.5).then_some(pair[0].y))
+        })
+        .collect();
     for (from_id, to_id) in &under_edges {
         let from = layout.rect(from_id).expect("filtered");
         let to = layout.rect(to_id).expect("filtered");
@@ -596,13 +652,44 @@ pub(crate) fn route_layered_edges(
             used_bottom_x.entry(to_id.clone()).or_default(),
         );
         let rail_y = reserve_unique_y(
-            from.bottom().max(to.bottom()) + PORT_STUB,
+            from.bottom().max(to.bottom()) + UNDER_RAIL_CLEARANCE,
             &mut used_under_y,
         );
         paths.insert(
             (from_id.clone(), to_id.clone()),
             under_row_path(from, to, exit_x, enter_x, rail_y),
         );
+    }
+
+    // The three vocal artifacts are compact leaf chips directly beneath
+    // their producer cards in the reference composition. Their connector
+    // is a short vertical provenance stem, not another routed execution
+    // edge competing for a side port.
+    for (from_id, to_id) in edges {
+        if vocal_artifact_chip_producer(to_id) != Some(from_id.as_str()) {
+            continue;
+        }
+        let Some(from) = layout.rect(from_id) else {
+            continue;
+        };
+        let Some(to) = layout.rect(to_id) else {
+            continue;
+        };
+        let x = from.x + from.width * 0.5;
+        paths.insert(
+            (from_id.clone(), to_id.clone()),
+            vec![
+                LayoutPoint {
+                    x,
+                    y: from.bottom(),
+                },
+                LayoutPoint { x, y: to.y },
+            ],
+        );
+    }
+
+    if reference_composition_present(&layout.rects) {
+        override_reference_paths(layout, edges, &mut paths);
     }
 
     let mut min_y = 0.0f32;
@@ -637,6 +724,28 @@ pub(crate) fn route_layered_edges(
         layout: shifted,
         paths,
     }
+}
+
+pub(crate) fn expand_routed_graph_to_viewport(
+    routed: &RoutedGraph,
+    edges: &[(AnalysisNodeId, AnalysisNodeId)],
+    width: f32,
+    height: f32,
+) -> RoutedGraph {
+    let width = width.max(routed.layout.canvas_width);
+    let height = height.max(routed.layout.canvas_height);
+    if width <= routed.layout.canvas_width + 1.0 && height <= routed.layout.canvas_height + 1.0 {
+        return routed.clone();
+    }
+    let spacing = LayoutSpacing::canvas();
+    let mut layout = routed.layout.clone();
+    layout.canvas_width = width;
+    layout.canvas_height = height;
+    align_reference_nodes(&mut layout.rects, width, height);
+    align_authoring_nodes(&mut layout.rects, width, height);
+    let order: Vec<_> = layout.rects.keys().cloned().collect();
+    position_vocal_artifact_chips(&order, &mut layout.rects, spacing);
+    route_layered_edges(&layout, edges, spacing)
 }
 
 fn vertical_hits_other_node(
@@ -1010,6 +1119,9 @@ pub(crate) fn layered_layout_from_edges(
     for column in nodes_by_rank.values() {
         let mut counts = [0usize; 3];
         for id in column {
+            if positioned_vocal_artifact_chip(id, &order).is_some() {
+                continue;
+            }
             if let Some(lane) = match swimlane_of(id) {
                 Swimlane::Music => Some(0),
                 Swimlane::Stems => Some(1),
@@ -1023,14 +1135,16 @@ pub(crate) fn layered_layout_from_edges(
             max_rows[lane] = max_rows[lane].max((*count).max(1));
         }
     }
-    let lane_gap = spacing.row_gap * 2.0;
     let music_height = max_rows[0] as f32 * row_step - spacing.row_gap;
     let stems_height = max_rows[1] as f32 * row_step - spacing.row_gap;
     let lyrics_height = max_rows[2] as f32 * row_step - spacing.row_gap;
     let music_top = spacing.margin;
-    let stems_top = music_top + music_height + lane_gap;
-    let lyrics_top = stems_top + stems_height + lane_gap;
-    let shared_center = (music_top + lyrics_top + lyrics_height) / 2.0;
+    let stems_top = music_top + music_height + 8.0;
+    let lyrics_top = stems_top + stems_height + spacing.lane_gap + 56.0;
+    // Preflight, Chart, and the export fork align with the main vocal row;
+    // the lower lyrics panel feeds upward into Chart rather than pulling
+    // these shared nodes halfway between the two panels.
+    let shared_center = stems_top + stems_height / 2.0;
 
     let mut rects = BTreeMap::new();
     let mut max_rank = 0u32;
@@ -1047,6 +1161,9 @@ pub(crate) fn layered_layout_from_edges(
             shared_center - (shared.len().max(1) as f32 * row_step - spacing.row_gap) / 2.0;
         let mut shared_row = 0usize;
         for id in column {
+            if positioned_vocal_artifact_chip(id, &order).is_some() {
+                continue;
+            }
             let y = match swimlane_of(id) {
                 Swimlane::Shared => {
                     let y = shared_start + shared_row as f32 * row_step;
@@ -1078,10 +1195,35 @@ pub(crate) fn layered_layout_from_edges(
         }
     }
 
-    let canvas_width = spacing.margin * 2.0
+    let ranked_canvas_width = spacing.margin * 2.0
         + (max_rank + 1) as f32 * spacing.node_width
         + max_rank as f32 * spacing.column_gap;
-    let canvas_height = lyrics_top + lyrics_height + spacing.margin;
+    position_vocal_artifact_chips(&order, &mut rects, spacing);
+    // The reference composition is a fixed five-phase canvas. Its raw
+    // topological rank count is much wider than the visual design because
+    // several branches intentionally share phase columns. Keeping a compact
+    // canonical width lets Fit preserve readable card sizes instead of
+    // shrinking a mostly empty 2700px rank canvas.
+    let canvas_width = if reference_composition_present(&rects) {
+        1800.0
+    } else {
+        ranked_canvas_width
+    };
+    let ranked_canvas_height = lyrics_top + lyrics_height + spacing.margin;
+    // The reference composition has a deliberate wide, shallow aspect
+    // ratio. Letting the generic lane-row count determine its height leaves
+    // more than half of the canvas empty and makes Fit shrink readable cards
+    // to roughly 35%. A 1800 x 620 design surface matches the supplied
+    // reference: the main processing row and lyrics row remain separated,
+    // while a normal desktop viewport fits at about 90%.
+    let canvas_height = if reference_composition_present(&rects) {
+        520.0
+    } else {
+        ranked_canvas_height
+    };
+    align_reference_nodes(&mut rects, canvas_width, canvas_height);
+    align_authoring_nodes(&mut rects, canvas_width, canvas_height);
+    position_vocal_artifact_chips(&order, &mut rects, spacing);
 
     Some(GraphLayout {
         rects,
@@ -1111,6 +1253,15 @@ mod tests {
             .map(|e| (e.from.clone(), e.to.clone()))
             .collect();
         layered_layout_from_edges(&nodes, &edges, spacing)
+    }
+
+    #[test]
+    fn canvas_layout_cache_reuses_an_unchanged_topology() {
+        let nodes = vec![id("a"), id("b")];
+        let edges = vec![(id("a"), id("b"))];
+        let first = cached_canvas_routed_layout(&nodes, &edges).expect("layout");
+        let second = cached_canvas_routed_layout(&nodes, &edges).expect("cached layout");
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
@@ -1316,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn pitch_stays_beside_the_vocal_file_instead_of_sliding_to_alignment() {
+    fn pitch_keeps_its_reference_column_when_optional_processors_are_absent() {
         let nodes = spec_nodes(&[
             "preflight",
             "stems.vocals",
@@ -1336,10 +1487,10 @@ mod tests {
             edges: vec![
                 spec_edge("preflight", "stems.vocals"),
                 spec_edge("stems.vocals", "artifact.raw_vocal"),
-                spec_edge("artifact.raw_vocal", "pitch.extract"),
+                spec_edge("stems.vocals", "pitch.extract"),
                 spec_edge("pitch.extract", "artifact.note_guide"),
                 spec_edge("artifact.note_guide", "chart.build_candidate"),
-                spec_edge("artifact.raw_vocal", "lyrics.preprocess"),
+                spec_edge("stems.vocals", "lyrics.preprocess"),
                 spec_edge("lyrics.preprocess", "lyrics.transcribe"),
                 spec_edge("lyrics.transcribe", "artifact.lyrics"),
                 spec_edge("artifact.lyrics", "lyrics.align"),
@@ -1348,21 +1499,48 @@ mod tests {
             ],
         };
         let layout = layered_layout(&graph, LayoutSpacing::default()).unwrap();
-        let vocal = layout.rect(&id("artifact.raw_vocal")).unwrap();
+        let vocal = layout.rect(&id("stems.vocals")).unwrap();
         let pitch = layout.rect(&id("pitch.extract")).unwrap();
         let align = layout.rect(&id("lyrics.align")).unwrap();
+        assert!((vocal.x / layout.canvas_width - 0.26).abs() < 0.01);
         assert!(
-            (pitch.x - vocal.x).abs()
-                <= LayoutSpacing::default().node_width + LayoutSpacing::default().column_gap + 1.0,
-            "pitch should sit in the next column after the vocal file, got vocal.x={} pitch.x={}",
-            vocal.x,
-            pitch.x
+            (pitch.x / layout.canvas_width - 0.58).abs() < 0.01,
+            "pitch keeps its reference column even when optional processors are absent"
         );
         assert!(
             pitch.x < align.x,
             "pitch must not be pulled into the alignment column (pitch.x={} align.x={})",
             pitch.x,
             align.x
+        );
+
+        let pairs: Vec<_> = graph
+            .edges
+            .iter()
+            .map(|edge| (edge.from.clone(), edge.to.clone()))
+            .collect();
+        let routed = route_layered_edges(&layout, &pairs, LayoutSpacing::default());
+        let note = routed.layout.rect(&id("artifact.note_guide")).unwrap();
+        let chart = routed.layout.rect(&id("chart.build_candidate")).unwrap();
+        let path = routed
+            .path(&id("artifact.note_guide"), &id("chart.build_candidate"))
+            .expect("note guide to chart path");
+        assert!(
+            (path[0].x - note.right()).abs() < 0.5,
+            "the reference-style corridor should leave the note guide from the side: {path:?}"
+        );
+        let note_center_y = note.y + note.height * 0.5;
+        let chart_center_y = chart.y + chart.height * 0.5;
+        assert!(
+            (note_center_y - chart_center_y).abs() < 0.5,
+            "note guide and chart must share a center line"
+        );
+        assert!(
+            path.len() == 2
+                && path
+                    .iter()
+                    .all(|point| (point.y - note_center_y).abs() < 0.5),
+            "note guide must connect directly to chart: {path:?}"
         );
     }
 
@@ -1384,33 +1562,31 @@ mod tests {
     }
 
     #[test]
-    fn lane_bands_group_branch_nodes_without_absorbing_shared_nodes() {
+    fn lane_bands_stack_vocals_over_lyrics_between_side_columns() {
         let graph = app_core::baseline_graph_spec();
         let layout = layered_layout(&graph, LayoutSpacing::default()).unwrap();
         let bands = layout.lane_bands();
-        assert_eq!(bands.len(), 3);
-        assert_eq!(bands[0].kind, LayoutLaneKind::Music);
-        assert_eq!(bands[1].kind, LayoutLaneKind::VocalsAndPitch);
-        assert_eq!(bands[2].kind, LayoutLaneKind::LyricsAndTiming);
+        assert_eq!(bands.len(), 5);
+        assert_eq!(bands[0].kind, LayoutLaneKind::Preparation);
+        assert_eq!(bands[1].kind, LayoutLaneKind::Music);
+        assert_eq!(bands[2].kind, LayoutLaneKind::VocalsAndPitch);
+        assert_eq!(bands[3].kind, LayoutLaneKind::LyricsAndTiming);
+        assert_eq!(bands[4].kind, LayoutLaneKind::AuthoringAndOutput);
 
-        for (band, node_id) in [
-            (&bands[0], "music.analysis"),
-            (&bands[1], "pitch.extract"),
-            (&bands[2], "lyrics.align"),
-        ] {
-            let node = layout.rect(&id(node_id)).unwrap();
-            assert!(band.rect.x <= node.x);
-            assert!(band.rect.y <= node.y);
-            assert!(band.rect.right() >= node.right());
-            assert!(band.rect.bottom() >= node.bottom());
-        }
-
-        let preflight = layout.rect(&id("preflight")).unwrap();
-        assert!(
-            bands
-                .iter()
-                .all(|band| { preflight.x < band.rect.x || preflight.x > band.rect.right() })
-        );
+        assert!(bands.iter().all(|band| band.rect.height > 0.0));
+        let prep = bands[0].rect;
+        let music = bands[1].rect;
+        let vocals = bands[2].rect;
+        let lyrics = bands[3].rect;
+        let output = bands[4].rect;
+        assert!((prep.right() - music.x).abs() < 0.01);
+        assert!((music.right() - vocals.x).abs() < 0.01);
+        assert!((vocals.x - lyrics.x).abs() < 0.01);
+        assert!((vocals.width - lyrics.width).abs() < 0.01);
+        assert!(vocals.bottom() < lyrics.y);
+        assert!((vocals.right() - output.x).abs() < 0.01);
+        assert!((lyrics.right() - output.x).abs() < 0.01);
+        assert!((prep.height - output.height).abs() < 0.01);
     }
 
     #[test]
@@ -1565,10 +1741,10 @@ mod tests {
         };
         let paths: Vec<_> = edges
             .iter()
-            .filter_map(|(from, to)| routed.path(from, to).map(|path| path.to_vec()))
+            .filter_map(|(from, to)| routed.path(from, to).map(|path| (from, to, path.to_vec())))
             .collect();
-        for (left_index, left) in paths.iter().enumerate() {
-            for right in paths.iter().skip(left_index + 1) {
+        for (left_index, (left_from, left_to, left)) in paths.iter().enumerate() {
+            for (right_from, right_to, right) in paths.iter().skip(left_index + 1) {
                 for a in left.windows(2) {
                     if on_node_face(a[0], a[1]) {
                         continue;
@@ -1579,7 +1755,7 @@ mod tests {
                         }
                         assert!(
                             !collinear_overlap(a[0], a[1], b[0], b[1]),
-                            "edges share a segment at {:?} {:?} vs {:?} {:?}",
+                            "edges {left_from}->{left_to} and {right_from}->{right_to} share a segment at {:?} {:?} vs {:?} {:?}",
                             a[0],
                             a[1],
                             b[0],
@@ -1801,8 +1977,9 @@ mod tests {
         );
         let rail_y = longest_horizontal_y(to_align).expect("under-row rail");
         assert!(
-            rail_y >= preprocess.bottom() && rail_y >= align.bottom(),
-            "alignment skip should run under the row at {rail_y}, boxes end at {} / {}",
+            rail_y >= preprocess.bottom() + UNDER_RAIL_CLEARANCE - 0.5
+                && rail_y >= align.bottom() + UNDER_RAIL_CLEARANCE - 0.5,
+            "alignment skip should keep clearance under the row at {rail_y}, boxes end at {} / {}",
             preprocess.bottom(),
             align.bottom()
         );

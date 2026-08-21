@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from audio_models.catalog import DEFAULT_LEGACY_KARAOKE_MODEL_ID, load_catalog
@@ -61,6 +64,55 @@ class OfflineAdapterTests(unittest.TestCase):
             adapter = OfflineSeparator(model_file_dir="/tmp", output_dir="/tmp")
             with self.assertRaises(Exception):
                 adapter.load_model("anything.ckpt")
+
+    def test_separate_clears_backend_cache_after_success_and_failure(self) -> None:
+        fake_gpu = SimpleNamespace(hard_free_gpu=MagicMock())
+        adapter = OfflineSeparator.__new__(OfflineSeparator)
+        adapter._separator = MagicMock()
+        adapter._separator.separate.return_value = ["vocals.wav"]
+
+        with patch.dict("sys.modules", {"gpu": fake_gpu}):
+            self.assertEqual(adapter.separate("song.wav"), ["vocals.wav"])
+            adapter._separator.separate.side_effect = RuntimeError("inference failed")
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                adapter.separate("song.wav")
+
+        self.assertEqual(fake_gpu.hard_free_gpu.call_count, 2)
+        fake_gpu.hard_free_gpu.assert_called_with("audio-separator-inference")
+
+    def test_process_isolated_separator_leaves_cleanup_to_process_exit(self) -> None:
+        fake_gpu = SimpleNamespace(hard_free_gpu=MagicMock())
+        adapter = OfflineSeparator.__new__(OfflineSeparator)
+        adapter._separator = MagicMock()
+        adapter._separator.separate.return_value = ["vocals.wav"]
+        adapter._process_isolated = True
+
+        with patch.dict("sys.modules", {"gpu": fake_gpu}):
+            self.assertEqual(adapter.separate("song.wav"), ["vocals.wav"])
+
+        fake_gpu.hard_free_gpu.assert_not_called()
+
+    def test_gpu_eviction_reaches_audio_separator_model_run(self) -> None:
+        moved_to: list[str] = []
+
+        class Model:
+            def to(self, device: str) -> None:
+                moved_to.append(device)
+
+        with patch.dict("sys.modules", {"torch": SimpleNamespace()}):
+            sys.modules.pop("gpu", None)
+            gpu = importlib.import_module("gpu")
+            try:
+                wrapper = SimpleNamespace(
+                    _separator=SimpleNamespace(
+                        model_instance=SimpleNamespace(model_run=Model())
+                    )
+                )
+                gpu.move_to_cpu(wrapper)
+            finally:
+                sys.modules.pop("gpu", None)
+
+        self.assertEqual(moved_to, ["cpu"])
 
     def test_legacy_karaoke_plan_is_nonempty(self) -> None:
         catalog = load_catalog()
