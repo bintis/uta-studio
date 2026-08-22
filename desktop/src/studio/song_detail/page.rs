@@ -191,7 +191,16 @@ pub(crate) fn spawn_song_detail(
                                 actions,
                                 font.clone(),
                                 theme,
-                                "View in Analysis",
+                                "Processing Studio",
+                                UiAction::from(AnalysisCommand::OpenProcessingStudio(
+                                    song.file_hash.clone(),
+                                )),
+                            );
+                            spawn_compact_action_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Advanced Graph",
                                 view_song_analysis_action(&song.file_hash),
                             );
                             // Secondary actions (phase plan §8.1: "次级操作 Play

@@ -144,36 +144,15 @@ pub(crate) fn spawn_setup_confirmation(
     theme: &StudioTheme,
     request: SetupRequest,
 ) {
-    let mms_karaoke_selected = app_core::AppConfig::load().align_backend() == "mms_karaoke";
-    let mms_karaoke_download = matches!(
-        request.target,
-        Some(app_core::ModelDownloadTarget::MmsKaraokeAlignment)
-    ) || (mms_karaoke_selected
-        && matches!(
-            request.target,
-            None | Some(app_core::ModelDownloadTarget::Alignment)
-        ));
-    let (title, description) = if mms_karaoke_download {
-        if request.target.is_some() {
-            (
-                "Download MMS Karaoke model?",
-                "Uta Studio will download the optional 1.26 GB Japanese alignment model from NextFire. The model is currently published under AGPL-3.0; confirming means you choose to install and use that separately licensed artifact.",
-            )
-        } else {
-            (
-                "Set up runtime and MMS Karaoke?",
-                "Uta Studio will prepare the analysis runtime and download the selected optional 1.26 GB Japanese alignment model. The NextFire model is currently published under AGPL-3.0; confirming means you choose to install and use that separately licensed artifact.",
-            )
-        }
-    } else if request.target.is_some() {
+    let (title, description) = if request.target.is_some() {
         (
-            "Download selected model?",
-            "Uta Studio will use the configured host tools and download only the selected artifact after you confirm.",
+            "Install selected native component?",
+            "Uta Studio will install only the selected audited artifact after confirmation. Existing model directories and source songs are never removed or replaced by this check.",
         )
     } else {
         (
-            "Set up analysis runtime?",
-            "Uta Studio will reuse compatible host tools and existing artifacts, then install only missing runtime packages and models.",
+            "Verify native runtime?",
+            "Uta Studio will verify packaged workers, the runtime lock, ffmpeg, and existing model files without downloading anything.",
         )
     };
     parent.spawn((

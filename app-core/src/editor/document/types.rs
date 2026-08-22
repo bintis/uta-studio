@@ -97,7 +97,8 @@ impl NoteKind {
 /// [`EditorDocument::recompute_track_parts`] assigns contiguous parts to every
 /// `Lead` track whenever there is more than one, so a second lead track is
 /// what makes a chart a duet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TrackRole {
     #[default]
     Lead,
@@ -184,7 +185,9 @@ pub struct TrackSummary {
 /// Addresses a lyric token as (phrase ordinal, text-token ordinal). Held notes
 /// carry continuation tokens, which are not separately addressable: they belong
 /// to the text token they continue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct LyricAddress {
     pub segment: usize,
     pub word: usize,

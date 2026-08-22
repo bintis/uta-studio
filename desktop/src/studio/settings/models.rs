@@ -22,29 +22,21 @@ pub(crate) fn spawn_model_settings(
     }
     let status = app_core::analysis_runtime_status();
     spawn_model_runtime_status_row(parent, font.clone(), theme, session.config, &status);
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "Acceleration",
-        "Choose the hardware target before installing the analysis environment.",
-        SettingsSelectKind::ComputeBackend,
-        session,
-    );
     spawn_setting_row(
         parent,
         font.clone(),
         theme,
-        "Shared analysis runtime",
-        "Setup reuses compatible host ffmpeg, uv, Python, and existing model files. Nothing downloads until you confirm.",
+        "Validated runtime routing",
+        "OpenVINO is preferred for generic experts, Vulkan is used only for validated fallbacks, and the two Qwen workers use their pinned Vulkan recipes.",
         Some((
-            if status.managed_runtime_available {
-                "Reconfigure…"
+            if status.native_analyzer_available {
+                "Verify…"
             } else {
-                "Set up…"
+                "Repair package…"
             },
-            UiAction::from(SettingsCommand::RequestSetup(None)),
+            UiAction::from(SettingsCommand::RequestSetup(Some(
+                app_core::ModelDownloadTarget::SharedRuntime,
+            ))),
         )),
     );
     spawn_settings_section(
@@ -64,7 +56,7 @@ pub(crate) fn spawn_model_settings(
         "Vocal & BGM separation",
         "Installs the model files used by the independent vocal and BGM branches.",
         vocal_separation_label(session.config),
-        &[app_core::ModelDownloadTarget::Separator],
+        &[app_core::ModelDownloadTarget::RoFormer],
     );
     spawn_audio_catalog_models(parent, font.clone(), theme, session);
     spawn_model_stage(
@@ -75,13 +67,11 @@ pub(crate) fn spawn_model_settings(
         &status.models,
         "02 · LYRICS TRANSCRIPTION",
         "Lyrics transcription",
-        "Recognizes lyrics. Compatibility and language-detection models are identified separately from the selected engine.",
+        "Combines the routed FireRed and pinned Qwen transcript experts without treating either output as final lyrics.",
         transcription_summary(session.config),
         &[
-            app_core::ModelDownloadTarget::OpenVinoWhisper,
-            app_core::ModelDownloadTarget::Parakeet,
-            app_core::ModelDownloadTarget::WhisperLanguageDetection,
-            app_core::ModelDownloadTarget::Whisper,
+            app_core::ModelDownloadTarget::FireRed,
+            app_core::ModelDownloadTarget::QwenAsr,
         ],
     );
     spawn_model_stage(
@@ -93,11 +83,8 @@ pub(crate) fn spawn_model_settings(
         "03 · WORD TIMING",
         "Word timing & alignment",
         "Refines recognized or supplied lyrics into editable word timings.",
-        align_backend_label(session.config.align_backend()),
-        &[
-            app_core::ModelDownloadTarget::Alignment,
-            app_core::ModelDownloadTarget::MmsKaraokeAlignment,
-        ],
+        "Qwen3 Forced Aligner · pinned Vulkan",
+        &[app_core::ModelDownloadTarget::QwenAlign],
     );
     spawn_model_stage(
         parent,
@@ -107,9 +94,15 @@ pub(crate) fn spawn_model_settings(
         &status.models,
         "04 · MELODY",
         "Melody & pitch",
-        "Detects the sung fundamental frequency and creates note pitches.",
+        "Keeps continuous F0, note-boundary, and auxiliary evidence separate until fusion.",
         pitch_model_label(session.config.pitch_model()),
-        &[app_core::ModelDownloadTarget::Pitch],
+        &[
+            app_core::ModelDownloadTarget::Pitch,
+            app_core::ModelDownloadTarget::Fcpe,
+            app_core::ModelDownloadTarget::Game,
+            app_core::ModelDownloadTarget::Stars,
+            app_core::ModelDownloadTarget::BasicPitch,
+        ],
     );
 }
 
@@ -128,7 +121,7 @@ pub(crate) fn spawn_audio_catalog_models(
     );
     let catalog = app_core::list_audio_models().unwrap_or(app_core::AudioModelCatalogSummary {
         schema_version: 1,
-        catalog_version: "2026.08.1".to_string(),
+        catalog_version: "native-final-v1".to_string(),
         models: Vec::new(),
     });
     spawn_wrapped_text(
@@ -222,18 +215,12 @@ pub(crate) fn model_install_role(
     config: &AppConfig,
     target: app_core::ModelDownloadTarget,
 ) -> &'static str {
+    let _ = config;
     use app_core::ModelDownloadTarget;
     match target {
-        ModelDownloadTarget::Whisper
-            if config.asr_engine() == "parakeet"
-                || config.compute_backend.as_deref() == Some("intel") =>
-        {
-            "Fallback"
-        }
-        ModelDownloadTarget::WhisperLanguageDetection => "Support",
-        ModelDownloadTarget::MmsKaraokeAlignment if config.align_backend() != "mms_karaoke" => {
-            "Optional"
-        }
+        ModelDownloadTarget::Fcpe
+        | ModelDownloadTarget::Stars
+        | ModelDownloadTarget::BasicPitch => "Conditional",
         _ => "Selected",
     }
 }
@@ -492,22 +479,36 @@ pub(crate) fn spawn_model_runtime_status_row(
                         stack,
                         font.clone(),
                         theme,
-                        "uv",
-                        status.uv_available,
+                        "Native analyzer",
+                        status.native_analyzer_available,
                     );
                     spawn_runtime_component_row(
                         stack,
                         font.clone(),
                         theme,
-                        "Python",
-                        status.system_python_available,
+                        "RoFormer Vulkan",
+                        status.roformer_runtime_available,
                     );
                     spawn_runtime_component_row(
                         stack,
                         font.clone(),
                         theme,
-                        "Analyzer",
-                        status.analyzer_available,
+                        "OpenVINO",
+                        status.openvino_runtime_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Qwen ASR Vulkan",
+                        status.qwen_asr_runtime_available,
+                    );
+                    spawn_runtime_component_row(
+                        stack,
+                        font.clone(),
+                        theme,
+                        "Qwen align Vulkan",
+                        status.qwen_align_runtime_available,
                     );
                     spawn_runtime_component_row(
                         stack,
@@ -648,35 +649,16 @@ pub(crate) fn spawn_runtime_component_row(
         });
 }
 
-pub(crate) fn transcription_summary(config: &AppConfig) -> String {
-    if config.asr_engine() == "parakeet" {
-        "Parakeet v3".to_string()
-    } else if config.compute_backend.as_deref() == Some("intel") {
-        "OpenVINO Whisper large-v3-turbo".to_string()
-    } else {
-        format!(
-            "Whisper {}",
-            settings_select_label(SettingsSelectKind::WhisperModel, config.whisper_model(),)
-        )
-    }
+pub(crate) fn transcription_summary(_config: &AppConfig) -> String {
+    "FireRedASR2-AED + Qwen3-ASR fusion".to_string()
 }
 
-pub(crate) fn transcription_model_target(config: &AppConfig) -> app_core::ModelDownloadTarget {
-    if config.asr_engine() == "parakeet" {
-        app_core::ModelDownloadTarget::Parakeet
-    } else if config.compute_backend.as_deref() == Some("intel") {
-        app_core::ModelDownloadTarget::OpenVinoWhisper
-    } else {
-        app_core::ModelDownloadTarget::Whisper
-    }
+pub(crate) fn transcription_model_target(_config: &AppConfig) -> app_core::ModelDownloadTarget {
+    app_core::ModelDownloadTarget::FireRed
 }
 
-pub(crate) fn alignment_model_target(config: &AppConfig) -> Option<app_core::ModelDownloadTarget> {
-    match config.align_backend() {
-        "qwen" => Some(app_core::ModelDownloadTarget::Alignment),
-        "mms_karaoke" => Some(app_core::ModelDownloadTarget::MmsKaraokeAlignment),
-        _ => None,
-    }
+pub(crate) fn alignment_model_target(_config: &AppConfig) -> Option<app_core::ModelDownloadTarget> {
+    Some(app_core::ModelDownloadTarget::QwenAlign)
 }
 
 pub(crate) fn analysis_stage_status(
@@ -686,7 +668,7 @@ pub(crate) fn analysis_stage_status(
     match target.and_then(|target| model_available(status, target)) {
         Some(true) => ("Installed".to_string(), true),
         Some(false) => ("Model missing".to_string(), false),
-        None if status.analyzer_available => ("Runtime managed".to_string(), true),
+        None if status.native_analyzer_available => ("Runtime managed".to_string(), true),
         None => ("Runtime missing".to_string(), false),
     }
 }
@@ -744,7 +726,7 @@ pub(crate) fn spawn_analysis_pipeline(
                         vocal_separation_label(session.config),
                         analysis_stage_status(
                             status,
-                            Some(app_core::ModelDownloadTarget::Separator),
+                            Some(app_core::ModelDownloadTarget::RoFormer),
                         ),
                     );
                     spawn_analysis_pipeline_stage(

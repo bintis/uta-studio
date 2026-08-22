@@ -15,10 +15,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Ubuntu does not currently ship Astral uv in its standard repository.
-  # The DEB therefore carries only this small helper binary; FFmpeg, Python,
-  # GStreamer and graphics libraries remain normal system dependencies.
-  UV_VERSION: "0.12.0"
 
 jobs:
   metadata:
@@ -133,11 +129,6 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install pinned uv fallback for the DEB
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: ${{ env.UV_VERSION }}
-
       - name: Build native Linux executable
         run: cargo build --release --locked -p uta-studio-desktop
 
@@ -178,8 +169,6 @@ jobs:
 
           install -Dm755 target/release/uta-studio \
             "$root/usr/lib/uta-studio/uta-studio"
-          install -Dm755 "$(command -v uv)" \
-            "$root/usr/lib/uta-studio/uv"
 
           install -Dm644 icon.png \
             "$root/usr/share/uta-studio/icon.png"
@@ -201,16 +190,6 @@ jobs:
           #!/bin/sh
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
           export WINIT_UNIX_BACKEND=wayland
-
-          # Prefer an administrator-installed uv. Ubuntu's standard repositories
-          # do not currently provide Astral uv, so the package keeps a small,
-          # pinned fallback rather than bundling the full Nix runtime closure.
-          if command -v uv >/dev/null 2>&1; then
-            export UTA_STUDIO_UV_PATH="$(command -v uv)"
-          else
-            export UTA_STUDIO_UV_PATH=/usr/lib/uta-studio/uv
-          fi
-
           exec /usr/lib/uta-studio/uta-studio "$@"
           SH
           chmod 0755 "$root/usr/bin/uta-studio"
@@ -233,7 +212,6 @@ jobs:
           shlib_deps=$(
             dpkg-shlibdeps -O \
               -e"$root/usr/lib/uta-studio/uta-studio" \
-              -e"$root/usr/lib/uta-studio/uv" \
               | sed -n 's/^shlibs:Depends=//p'
           )
           popd >/dev/null
@@ -254,7 +232,7 @@ jobs:
           Maintainer: Uta Studio contributors <noreply@github.com>
           Homepage: https://github.com/${GITHUB_REPOSITORY}
           Installed-Size: ${installed_size}
-          Depends: ${shlib_deps}, ca-certificates, ffmpeg, python3 (>= 3.10), tar, unzip, xz-utils, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libegl1, libgles2, libvulkan1
+          Depends: ${shlib_deps}, ca-certificates, ffmpeg, tar, unzip, xz-utils, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libegl1, libgles2, libvulkan1
           Recommends: gstreamer1.0-pipewire, xdg-desktop-portal
           Description: AI-assisted song chart editor
            Native Wayland desktop editor for analysing local songs, correcting
@@ -412,8 +390,6 @@ jobs:
           AutoReqProv:    yes
 
           Requires:       /usr/bin/ffmpeg
-          Requires:       /usr/bin/python3
-          Requires:       uv
           Requires:       ca-certificates
           Requires:       tar
           Requires:       unzip

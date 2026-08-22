@@ -229,6 +229,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
                 a.frozen_artifacts.extend(b.frozen_artifacts);
                 a.bypassed_nodes.extend(b.bypassed_nodes);
                 a.run_override = a.run_override.or(b.run_override);
+                a.workflow_execution = a.workflow_execution.or(b.workflow_execution);
                 Some(a)
             }
             (Some(a), None) | (None, Some(a)) => Some(a),
@@ -252,6 +253,9 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
         .map(|i| i.bypassed_nodes.clone())
         .unwrap_or_default();
     let run_override = intent.as_ref().and_then(|i| i.run_override.clone());
+    let workflow_execution = intent
+        .as_ref()
+        .and_then(|intent| intent.workflow_execution.clone());
     let capture_intermediate = intent
         .as_ref()
         .and_then(|intent| intent.capture_intermediate.clone());
@@ -298,13 +302,17 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     // them). The `Err` fallback mirrors `pipeline_flags_for_targets`'s own
     // fail-open: `run_analysis_plan` already rejects an unhonorable disable
     // before it's ever queued, so this should be unreachable in practice.
-    let flags = pipeline_flags_for_request(
-        &node_targets,
-        &disabled_nodes,
-        &frozen_artifacts,
-        &bypassed_nodes,
-    )
-    .unwrap_or_default();
+    let flags = if workflow_execution.is_some() {
+        PipelineFlags::default()
+    } else {
+        pipeline_flags_for_request(
+            &node_targets,
+            &disabled_nodes,
+            &frozen_artifacts,
+            &bypassed_nodes,
+        )
+        .unwrap_or_default()
+    };
     let PipelineFlags {
         skip_transcription,
         skip_separation,
@@ -372,6 +380,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
         crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&audio_settings);
     let mut cmd_json = serde_json::json!({
         "type": "analyze",
+        "protocol": crate::native_runtime::NATIVE_WORKER_PROTOCOL_VERSION,
         "audio_path": local_path.to_string_lossy(),
         "cache_path": cache.path.to_string_lossy(),
         "hash": file_hash,
@@ -384,8 +393,6 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
             "overlap": config.separator_overlap(),
             "batch_size": config.separator_batch_size(),
             "normalization_pct": config.separator_normalization_pct(),
-            "demucs_shifts": config.demucs_shifts(),
-            "demucs_overlap_pct": config.demucs_overlap_pct(),
         },
         "audio_processing": audio_processing,
         "run_work_dir": run_work_dir,
@@ -417,6 +424,10 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     if capture_intermediate.is_some() {
         cmd_json["capture_preprocessed_audio"] = serde_json::json!(true);
     }
+    if let Some(workflow_execution) = workflow_execution {
+        cmd_json["workflow_execution"] =
+            serde_json::to_value(workflow_execution).unwrap_or(serde_json::Value::Null);
+    }
 
     if let Some(ref lp) = lyrics_path {
         cmd_json["lyrics"] = serde_json::json!(lp.to_string_lossy());
@@ -428,7 +439,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
         .map(|language| normalize_analysis_language(&language))
         .filter(|lang| {
             // "unknown"/empty is not a real language: passing it as a forced
-            // alignment language crashes whisperx, so let the worker detect it.
+            // alignment language crashes native aligner, so let the worker detect it.
             let normalized = lang.trim().to_ascii_lowercase();
             !normalized.is_empty() && normalized != "unknown" && normalized != "und"
         });
@@ -688,6 +699,7 @@ pub(crate) fn run_key_pass(
     let config = AppConfig::load();
     let cmd_json = serde_json::json!({
         "type": "analyze",
+        "protocol": crate::native_runtime::NATIVE_WORKER_PROTOCOL_VERSION,
         "audio_path": local_path.to_string_lossy(),
         "cache_path": cache.path.to_string_lossy(),
         "hash": file_hash,
@@ -700,8 +712,6 @@ pub(crate) fn run_key_pass(
             "overlap": config.separator_overlap(),
             "batch_size": config.separator_batch_size(),
             "normalization_pct": config.separator_normalization_pct(),
-            "demucs_shifts": config.demucs_shifts(),
-            "demucs_overlap_pct": config.demucs_overlap_pct(),
         },
         "engine": config.asr_engine(),
         "align_backend": config.align_backend(),
@@ -983,13 +993,11 @@ pub(crate) fn send_and_monitor(
             continue;
         }
 
-        let event: ServerEvent = match serde_json::from_str(line) {
-            Ok(ev) => ev,
-            Err(e) => {
-                warn!("[analyzer] Skipping unparseable event: {e}; line={line:?}");
-                continue;
-            }
-        };
+        let event: ServerEvent = serde_json::from_str(line).map_err(|error| {
+            UtaStudioError::Other(format!(
+                "native analyzer polluted stdout with a non-protocol line: {error}"
+            ))
+        })?;
 
         match event {
             ServerEvent::Progress {

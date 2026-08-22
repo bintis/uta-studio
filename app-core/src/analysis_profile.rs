@@ -24,9 +24,9 @@ pub struct AnalysisProfileSnapshot {
 impl Default for AnalysisProfileSnapshot {
     fn default() -> Self {
         Self {
-            separator: "karaoke".to_string(),
-            alignment_backend: "whisperx".to_string(),
-            asr_engine: "whisper".to_string(),
+            separator: "native_workflow".to_string(),
+            alignment_backend: "qwen3_forced_aligner".to_string(),
+            asr_engine: "transcript_fusion".to_string(),
             requested_device: "auto".to_string(),
             language_override: None,
         }
@@ -148,10 +148,10 @@ mod tests {
     #[test]
     fn snapshot_round_trips_through_json() {
         let snapshot = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
-            alignment_backend: "mms_karaoke".to_string(),
-            asr_engine: "parakeet".to_string(),
-            requested_device: "cuda".to_string(),
+            separator: "roformer".to_string(),
+            alignment_backend: "qwen3_forced_aligner".to_string(),
+            asr_engine: "qwen3_asr_1_7b".to_string(),
+            requested_device: "auto".to_string(),
             language_override: Some("ja".to_string()),
         };
         let json = serde_json::to_string(&snapshot).expect("serialize");
@@ -180,7 +180,7 @@ mod tests {
     fn song_profile_persists_and_is_retrievable() {
         let _guard = isolated_test_db("persist");
         let snapshot = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
+            separator: "roformer".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
         set_song_analysis_profile("songA", &snapshot).unwrap();
@@ -192,7 +192,7 @@ mod tests {
     fn song_profile_only_affects_the_named_song() {
         let _guard = isolated_test_db("scoped");
         let snapshot = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
+            separator: "roformer".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
         set_song_analysis_profile("songA", &snapshot).unwrap();
@@ -213,19 +213,21 @@ mod tests {
     }
 
     #[test]
-    fn from_app_config_reflects_real_config_values_not_hardcoded_defaults() {
-        let config = config_with("demucs", "parakeet", "mms_karaoke");
+    fn from_app_config_normalizes_old_values_to_native_defaults() {
+        let config = config_with("old", "old", "old");
         let snapshot = AnalysisProfileSnapshot::from_app_config(&config, "songA");
-        assert_eq!(snapshot.separator, "demucs");
-        assert_eq!(snapshot.asr_engine, "parakeet");
-        assert_eq!(snapshot.alignment_backend, "mms_karaoke");
-        // Distinct from the hardcoded ::default() stand-ins.
-        assert_ne!(snapshot, AnalysisProfileSnapshot::default());
+        assert_eq!(snapshot.separator, "native_workflow");
+        assert_eq!(snapshot.asr_engine, "transcript_fusion");
+        assert_eq!(snapshot.alignment_backend, "qwen3_forced_aligner");
     }
 
     #[test]
     fn from_app_config_picks_up_the_per_song_language_override() {
-        let mut config = config_with("karaoke", "whisper", "whisperx");
+        let mut config = config_with(
+            "native_workflow",
+            "transcript_fusion",
+            "qwen3_forced_aligner",
+        );
         config.set_language_override("songA".to_string(), "ja".to_string());
         let snapshot = AnalysisProfileSnapshot::from_app_config(&config, "songA");
         assert_eq!(snapshot.language_override.as_deref(), Some("ja"));
@@ -236,20 +238,20 @@ mod tests {
     #[test]
     fn resolve_profile_field_prefers_run_override_over_song_over_global() {
         let global = AnalysisProfileSnapshot {
-            separator: "karaoke".to_string(),
+            separator: "native_workflow".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
         let song = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
+            separator: "roformer".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
 
         let global_only = resolve_profile_field(ProfileField::Separator, &global, None, None);
-        assert_eq!(global_only.value, "karaoke");
+        assert_eq!(global_only.value, "native_workflow");
         assert_eq!(global_only.source, ProfileSource::GlobalDefault);
 
         let with_song = resolve_profile_field(ProfileField::Separator, &global, Some(&song), None);
-        assert_eq!(with_song.value, "demucs");
+        assert_eq!(with_song.value, "roformer");
         assert_eq!(with_song.source, ProfileSource::SongProfile);
 
         let with_run_override = resolve_profile_field(
@@ -265,18 +267,18 @@ mod tests {
     #[test]
     fn resolve_profile_field_reads_the_field_matching_the_variant() {
         let global = AnalysisProfileSnapshot {
-            separator: "karaoke".to_string(),
-            asr_engine: "whisper".to_string(),
-            alignment_backend: "whisperx".to_string(),
+            separator: "native_workflow".to_string(),
+            asr_engine: "transcript_fusion".to_string(),
+            alignment_backend: "qwen3_forced_aligner".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
         assert_eq!(
             resolve_profile_field(ProfileField::AsrEngine, &global, None, None).value,
-            "whisper"
+            "transcript_fusion"
         );
         assert_eq!(
             resolve_profile_field(ProfileField::AlignmentBackend, &global, None, None).value,
-            "whisperx"
+            "qwen3_forced_aligner"
         );
     }
 

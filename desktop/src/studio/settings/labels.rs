@@ -77,20 +77,11 @@ pub(crate) fn rewrite_cleanup_slot(chain: &[String], slot: usize, value: &str) -
 }
 
 pub(crate) fn vocal_separation_model_id(config: &AppConfig) -> &str {
-    match config.separator() {
-        "karaoke" => config
-            .audio_processing
-            .as_ref()
-            .and_then(|settings| settings.vocal_model_id.as_deref())
-            .unwrap_or(app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID),
-        "demucs" => config
-            .audio_processing
-            .as_ref()
-            .and_then(|settings| settings.multistem_model_id.as_deref())
-            .unwrap_or("htdemucs_6s"),
-        "openvino_demucs" => "openvino_demucs",
-        _ => app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID,
-    }
+    config
+        .audio_processing
+        .as_ref()
+        .and_then(|settings| settings.vocal_model_id.as_deref())
+        .unwrap_or(app_core::DEFAULT_VOCAL_MODEL_ID)
 }
 
 pub(crate) fn vocal_separation_label(config: &AppConfig) -> &'static str {
@@ -100,21 +91,12 @@ pub(crate) fn vocal_separation_label(config: &AppConfig) -> &'static str {
     )
 }
 
-pub(crate) fn asr_engine_label(value: &str) -> &'static str {
-    if value == "parakeet" {
-        "Parakeet v3 (Experimental)"
-    } else {
-        "Whisper"
-    }
+pub(crate) fn asr_engine_label(_value: &str) -> &'static str {
+    "FireRed + Qwen transcript fusion"
 }
 
-pub(crate) fn align_backend_label(value: &str) -> &'static str {
-    match value {
-        "ctc" => "CTC Forced Alignment",
-        "qwen" => "Qwen Forced Alignment",
-        "mms_karaoke" => "MMS Karaoke (Japanese)",
-        _ => "WhisperX",
-    }
+pub(crate) fn align_backend_label(_value: &str) -> &'static str {
+    "Qwen3 Forced Aligner"
 }
 
 pub(crate) fn pitch_model_label(value: &str) -> &'static str {
@@ -138,12 +120,12 @@ pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig
             .audio_processing
             .as_ref()
             .and_then(|settings| settings.vocal_model_id.as_deref())
-            .unwrap_or(app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID),
+            .unwrap_or(app_core::DEFAULT_VOCAL_MODEL_ID),
         SettingsSelectKind::AudioMultistemModel => config
             .audio_processing
             .as_ref()
             .and_then(|settings| settings.multistem_model_id.as_deref())
-            .unwrap_or("htdemucs_6s"),
+            .unwrap_or("melband_roformer_harmony"),
         SettingsSelectKind::AudioAccompanimentModel => config
             .audio_processing
             .as_ref()
@@ -158,21 +140,16 @@ pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig
         SettingsSelectKind::AudioVocalPostprocess2 => vocal_postprocess_value(config, 1),
         SettingsSelectKind::AudioBgmPostprocess1 => bgm_postprocess_value(config, 0),
         SettingsSelectKind::AudioBgmPostprocess2 => bgm_postprocess_value(config, 1),
-        SettingsSelectKind::AudioTorchBackend => config
+        SettingsSelectKind::AudioRuntimePolicy => config
             .audio_processing
             .as_ref()
-            .map(|settings| settings.torch_backend.as_str())
-            .unwrap_or("torch_cpu"),
-        SettingsSelectKind::AudioOnnxBackend => config
-            .audio_processing
-            .as_ref()
-            .map(|settings| settings.onnx_backend.as_str())
-            .unwrap_or("onnx_cpu"),
+            .map(|settings| settings.runtime_policy.as_str())
+            .unwrap_or("validated_auto"),
         SettingsSelectKind::AudioPrecisionPolicy => config
             .audio_processing
             .as_ref()
             .map(|settings| settings.precision_policy.as_str())
-            .unwrap_or("fp32"),
+            .unwrap_or("model_pinned"),
     }
 }
 
@@ -187,9 +164,7 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
         SettingsSelectKind::ComputeBackend => compute_backend_label(value),
         SettingsSelectKind::Separator => match value {
             "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317",
-            "htdemucs_6s" | "demucs" => "HTDemucs 6-stem",
-            "openvino_demucs" => "OpenVINO Demucs v4 (Intel GPU)",
-            _ => "Default karaoke (aufr33 + viperx)",
+            _ => "BS-RoFormer Vocals EP317",
         },
         SettingsSelectKind::SeparatorPreset => match value {
             "memory" => "Memory saver",
@@ -198,32 +173,23 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
             _ => "Balanced",
         },
         SettingsSelectKind::AsrEngine => asr_engine_label(value),
-        SettingsSelectKind::WhisperModel => match value {
-            "large-v3" => "Large v3",
-            "large-v3-turbo" => "Large v3 Turbo",
-            "medium" => "Medium",
-            "small" => "Small",
-            "base" => "Base",
-            "tiny" => "Tiny",
-            _ => "Large v3",
-        },
+        SettingsSelectKind::WhisperModel => "Qwen3-ASR-1.7B",
         SettingsSelectKind::AlignBackend => align_backend_label(value),
         SettingsSelectKind::PitchModel => pitch_model_label(value),
         SettingsSelectKind::AudioVocalModel => match value {
             "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317",
-            "melband_roformer_karaoke_aufr33_viperx" => "Default karaoke (aufr33 + viperx)",
-            _ => "Default karaoke (aufr33 + viperx)",
+            _ => "BS-RoFormer Vocals EP317",
         },
         SettingsSelectKind::AudioMultistemModel => match value {
-            "htdemucs_6s" => "HTDemucs 6-stem",
-            _ => "HTDemucs 6-stem",
+            "melband_roformer_harmony" => "MelBand-RoFormer Lead / Back",
+            _ => "MelBand-RoFormer Lead / Back",
         },
         SettingsSelectKind::AudioAccompanimentModel => match value {
             "melband_roformer_inst_v2" => "MelBand-RoFormer Inst V2",
             _ => "MelBand-RoFormer Inst V2",
         },
         SettingsSelectKind::AudioKaraokeModel => match value {
-            "uvr_mdxnet_karaoke_2" => "UVR MDX-NET Karaoke 2",
+            "melband_roformer_harmony" => "MelBand-RoFormer Lead / Back",
             _ => "Off",
         },
         SettingsSelectKind::AudioVocalPostprocess1
@@ -234,22 +200,13 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
             "melband_roformer_dereverb_anvuew" => "Dereverb",
             _ => "Off",
         },
-        SettingsSelectKind::AudioTorchBackend => match value {
-            "torch_cuda" => "PyTorch CUDA",
-            "torch_xpu" => "PyTorch XPU",
-            _ => "PyTorch CPU",
-        },
-        SettingsSelectKind::AudioOnnxBackend => match value {
-            "openvino_gpu" => "OpenVINO GPU",
-            "openvino_cpu" => "OpenVINO CPU",
-            "onnx_cuda" => "ONNX CUDA",
-            _ => "ONNX CPU",
+        SettingsSelectKind::AudioRuntimePolicy => match value {
+            "validated_auto" => "Validated automatic routing",
+            _ => "Unsupported",
         },
         SettingsSelectKind::AudioPrecisionPolicy => match value {
-            "fp16" => "FP16",
-            "bf16" => "BF16",
-            "auto" => "Auto",
-            _ => "FP32",
+            "model_pinned" => "Pinned by model recipe",
+            _ => "Pinned by model recipe",
         },
     }
 }
@@ -266,65 +223,40 @@ pub(crate) fn settings_select_options(
             ("ja", "日本語"),
         ],
         SettingsSelectKind::ComputeBackend => &[
-            ("cpu", "CPU"),
-            ("cuda", "NVIDIA CUDA"),
-            ("intel", "Intel Arc"),
+            ("auto", "Validated automatic routing"),
+            ("openvino", "Prefer validated OpenVINO"),
+            ("vulkan", "Validated Vulkan only"),
+            ("diagnostic_cpu", "CPU diagnostics only"),
         ],
-        SettingsSelectKind::Separator if intel_backend => &[
-            (
-                "melband_roformer_karaoke_aufr33_viperx",
-                "Default karaoke (aufr33 + viperx)",
-            ),
-            ("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317"),
-            ("htdemucs_6s", "HTDemucs 6-stem"),
-            ("openvino_demucs", "OpenVINO Demucs v4"),
-        ],
-        SettingsSelectKind::Separator => &[
-            (
-                "melband_roformer_karaoke_aufr33_viperx",
-                "Default karaoke (aufr33 + viperx)",
-            ),
-            ("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317"),
-            ("htdemucs_6s", "HTDemucs 6-stem"),
-        ],
+        SettingsSelectKind::Separator if intel_backend => {
+            &[("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317")]
+        }
+        SettingsSelectKind::Separator => {
+            &[("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317")]
+        }
         SettingsSelectKind::SeparatorPreset => &[
             ("balanced", "Balanced · recommended"),
             ("memory", "Memory saver · lower peak usage"),
             ("quality", "Quality · slower, more context"),
         ],
-        SettingsSelectKind::AsrEngine => &[
-            ("whisper", "Whisper"),
-            ("parakeet", "Parakeet v3 (Experimental)"),
-        ],
-        SettingsSelectKind::WhisperModel => &[
-            ("large-v3", "Large v3"),
-            ("large-v3-turbo", "Large v3 Turbo"),
-            ("medium", "Medium"),
-            ("small", "Small"),
-            ("base", "Base"),
-            ("tiny", "Tiny"),
-        ],
-        SettingsSelectKind::AlignBackend => &[
-            ("whisperx", "WhisperX"),
-            ("ctc", "CTC Forced Alignment"),
-            ("qwen", "Qwen Forced Alignment"),
-            ("mms_karaoke", "MMS Karaoke (Japanese)"),
-        ],
+        SettingsSelectKind::AsrEngine => {
+            &[("transcript_fusion", "FireRed + Qwen transcript fusion")]
+        }
+        SettingsSelectKind::WhisperModel => &[("qwen3_asr_1_7b", "Qwen3-ASR-1.7B")],
+        SettingsSelectKind::AlignBackend => &[("qwen3_forced_aligner", "Qwen3 Forced Aligner")],
         SettingsSelectKind::PitchModel => &[("rmvpe", "RMVPE")],
-        SettingsSelectKind::AudioVocalModel => &[
-            (
-                "melband_roformer_karaoke_aufr33_viperx",
-                "Default karaoke (aufr33 + viperx)",
-            ),
-            ("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317"),
-        ],
-        SettingsSelectKind::AudioMultistemModel => &[("htdemucs_6s", "HTDemucs 6-stem")],
+        SettingsSelectKind::AudioVocalModel => {
+            &[("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317")]
+        }
+        SettingsSelectKind::AudioMultistemModel => {
+            &[("melband_roformer_harmony", "MelBand-RoFormer Lead / Back")]
+        }
         SettingsSelectKind::AudioAccompanimentModel => {
             &[("melband_roformer_inst_v2", "MelBand-RoFormer Inst V2")]
         }
         SettingsSelectKind::AudioKaraokeModel => &[
             ("none", "Off"),
-            ("uvr_mdxnet_karaoke_2", "UVR MDX-NET Karaoke 2"),
+            ("melband_roformer_harmony", "MelBand-RoFormer Lead / Back"),
         ],
         SettingsSelectKind::AudioVocalPostprocess1
         | SettingsSelectKind::AudioVocalPostprocess2
@@ -334,91 +266,53 @@ pub(crate) fn settings_select_options(
             ("melband_roformer_denoise_aufr33", "Denoise"),
             ("melband_roformer_dereverb_anvuew", "Dereverb"),
         ],
-        SettingsSelectKind::AudioTorchBackend => &[
-            ("torch_cpu", "PyTorch CPU"),
-            ("torch_xpu", "PyTorch XPU"),
-            ("torch_cuda", "PyTorch CUDA"),
-        ],
-        SettingsSelectKind::AudioOnnxBackend => &[
-            ("onnx_cpu", "ONNX CPU"),
-            ("openvino_gpu", "OpenVINO GPU"),
-            ("openvino_cpu", "OpenVINO CPU"),
-            ("onnx_cuda", "ONNX CUDA"),
-        ],
-        SettingsSelectKind::AudioPrecisionPolicy => &[
-            ("fp32", "FP32"),
-            ("fp16", "FP16"),
-            ("bf16", "BF16"),
-            ("auto", "Auto"),
-        ],
+        SettingsSelectKind::AudioRuntimePolicy => {
+            &[("validated_auto", "Validated automatic routing")]
+        }
+        SettingsSelectKind::AudioPrecisionPolicy => &[("model_pinned", "Pinned by model recipe")],
     }
 }
 
 pub(crate) fn separator_preset(config: &AppConfig) -> &'static str {
-    match config.separator() {
-        "karaoke"
-            if config.separator_segment_size.is_none()
-                && config.separator_overlap() == 8
-                && config.separator_batch_size() == 1
-                && config.separator_normalization_pct() == 90 =>
-        {
-            "balanced"
-        }
-        "karaoke"
-            if config.separator_segment_size == Some(128)
-                && config.separator_overlap() == 4
-                && config.separator_batch_size() == 1
-                && config.separator_normalization_pct() == 90 =>
-        {
-            "memory"
-        }
-        "karaoke"
-            if config.separator_segment_size == Some(512)
-                && config.separator_overlap() == 16
-                && config.separator_batch_size() == 1
-                && config.separator_normalization_pct() == 95 =>
-        {
-            "quality"
-        }
-        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 25 => "balanced",
-        "demucs" if config.demucs_shifts() == 1 && config.demucs_overlap_pct() == 15 => "memory",
-        "demucs" if config.demucs_shifts() == 2 && config.demucs_overlap_pct() == 50 => "quality",
-        "openvino_demucs" => "balanced",
-        _ => "custom",
+    if config.separator_segment_size == Some(128)
+        && config.separator_overlap() == 4
+        && config.separator_normalization_pct() == 90
+    {
+        "memory"
+    } else if config.separator_segment_size == Some(512)
+        && config.separator_overlap() == 16
+        && config.separator_normalization_pct() == 95
+    {
+        "quality"
+    } else if config.separator_segment_size.is_none()
+        && config.separator_overlap() == 8
+        && config.separator_normalization_pct() == 90
+    {
+        "balanced"
+    } else {
+        "custom"
     }
 }
 
 pub(crate) fn apply_separator_preset(config: &mut AppConfig, preset: &str) {
-    match (config.separator(), preset) {
-        ("karaoke", "balanced") => {
+    match preset {
+        "balanced" => {
             config.separator_segment_size = None;
             config.separator_overlap = None;
             config.separator_batch_size = None;
             config.separator_normalization_pct = None;
         }
-        ("karaoke", "memory") => {
+        "memory" => {
             config.separator_segment_size = Some(128);
             config.separator_overlap = Some(4);
             config.separator_batch_size = Some(1);
             config.separator_normalization_pct = Some(90);
         }
-        ("karaoke", "quality") => {
+        "quality" => {
             config.separator_segment_size = Some(512);
             config.separator_overlap = Some(16);
             config.separator_batch_size = Some(1);
             config.separator_normalization_pct = Some(95);
-        }
-        ("demucs", "balanced") => {
-            config.demucs_shifts = None;
-            config.demucs_overlap_pct = None;
-        }
-        ("demucs", "memory") => {
-            config.demucs_shifts = Some(1);
-            config.demucs_overlap_pct = Some(15);
-        }
-        ("demucs", "quality") => {
-            config.demucs_shifts = Some(2);
-            config.demucs_overlap_pct = Some(50);
         }
         _ => {}
     }

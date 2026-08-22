@@ -828,11 +828,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                             if let Some(audio) = plan.audio_processing.as_ref() {
                                 spawn_text(body, font.clone(), "AUDIO MODEL PLAN", 9.0, theme.primary);
                                 for (index, step) in audio.steps.iter().enumerate() {
-                                    let backend = if step.model_id.contains("mdxnet") {
-                                        &audio.requested_runtime.onnx_backend
-                                    } else {
-                                        &audio.requested_runtime.torch_backend
-                                    };
+                                    let backend = &audio.requested_runtime.routing_policy;
                                     spawn_wrapped_text(
                                         body,
                                         font.clone(),

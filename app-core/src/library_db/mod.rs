@@ -30,6 +30,7 @@ mod queries;
 mod rebase;
 mod schema;
 mod song_analysis_profiles;
+mod song_workflows;
 mod songs;
 
 pub use analysis_artifacts::{
@@ -68,6 +69,7 @@ pub use rebase::{rebase_song_album_art_cache_paths, rebase_song_album_art_paths}
 pub use song_analysis_profiles::{
     song_analysis_profile_delete, song_analysis_profile_get, song_analysis_profile_set,
 };
+pub use song_workflows::{song_workflow_get, song_workflow_set};
 pub use songs::{
     append_songs_for_scan, delete_songs_not_in_paths, load_all_songs, load_song_by_hash,
     load_song_path_strings, read_library_meta, replace_all_songs_sorted, update_library_meta,

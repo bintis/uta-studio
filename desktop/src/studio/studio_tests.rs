@@ -164,7 +164,7 @@ mod tests {
                 target: Some(app_core::ModelDownloadTarget::Pitch),
             },
         );
-        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Intel);
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::OpenVino);
         assert_eq!(
             folders.model_target,
             Some(app_core::ModelDownloadTarget::Pitch)
@@ -172,7 +172,7 @@ mod tests {
 
         config.compute_backend = Some("cuda".to_string());
         let folders = setup_folders(&config, SetupRequest { target: None });
-        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Cuda);
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Vulkan);
         assert_eq!(folders.model_target, None);
     }
 

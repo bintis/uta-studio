@@ -114,6 +114,7 @@ pub(crate) enum StudioRoute {
     Settings,
     Documentation,
     Editor,
+    ProcessingStudio,
     AnalysisInspect,
 }
 

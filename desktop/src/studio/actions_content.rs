@@ -1277,6 +1277,84 @@ pub(crate) fn apply_content_action(
             }
             invalidated.invalidate(action.0.dirty_region());
         }
+        UiCommand::Editor(EditorCommand::ToggleEvidence(kind)) => {
+            if let Some(editor) = studio.editor.editor.as_mut()
+                && !editor.visible_evidence.remove(kind)
+            {
+                editor.visible_evidence.insert(*kind);
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::ReviewPrevious)
+        | UiCommand::Editor(EditorCommand::ReviewNext) => {
+            if let Some(editor) = studio.editor.editor.as_mut()
+                && !editor.evidence.review_regions.is_empty()
+            {
+                let count = editor.evidence.review_regions.len();
+                let current = editor.review_index.unwrap_or(0).min(count - 1);
+                let next = if matches!(&action.0, UiCommand::Editor(EditorCommand::ReviewPrevious))
+                {
+                    current.checked_sub(1).unwrap_or(count - 1)
+                } else {
+                    (current + 1) % count
+                };
+                editor.review_index = Some(next);
+                let region = &editor.evidence.review_regions[next];
+                let padding = (region.end - region.start).max(0.5);
+                editor.viewport_start = (region.start - padding).max(0.0);
+                editor.viewport_duration = (region.end - region.start + padding * 2.0).max(2.0);
+                editor.hold_manual_scroll();
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::MarkReviewRegion) => {
+            if let Some(editor) = studio.editor.editor.as_mut()
+                && let Some(index) = editor.review_index
+                && let Some(region) = editor.evidence.review_regions.get_mut(index)
+            {
+                region.reviewed = true;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::AcceptSuggestion(suggestion_id)) => {
+            if let Some(editor) = studio.editor.editor.as_mut()
+                && let Some(index) = editor
+                    .suggestions
+                    .iter()
+                    .position(|suggestion| suggestion.id == *suggestion_id)
+            {
+                let suggestion = editor.suggestions[index].clone();
+                editor.checkpoint("Accept analysis suggestion");
+                match app_core::apply_editor_suggestion(&mut editor.document, &suggestion) {
+                    Ok(true) => {
+                        editor.dirty = true;
+                        editor.suggestions.remove(index);
+                        studio.shell.notice =
+                            Some("Suggestion accepted. Undo is available.".to_string());
+                    }
+                    Ok(false) => {
+                        editor.undo.pop();
+                        studio.shell.notice =
+                            Some("This suggestion only changes the evidence view.".to_string());
+                    }
+                    Err(error) => {
+                        editor.undo.pop();
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::IgnoreSuggestion(suggestion_id)) => {
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                editor
+                    .suggestions
+                    .retain(|suggestion| suggestion.id != *suggestion_id);
+                studio.shell.notice =
+                    Some("Suggestion ignored; the chart was not changed.".to_string());
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
         UiCommand::Editor(EditorCommand::DismissProblemsPanel) => {
             if let Some(editor) = studio.editor.editor.as_mut() {
                 editor.problems_panel_open = false;

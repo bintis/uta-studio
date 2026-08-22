@@ -450,6 +450,9 @@ pub(crate) fn spawn_workspace(
                 StudioRoute::Documentation => {
                     spawn_documentation(workspace, font.clone(), session, theme)
                 }
+                StudioRoute::ProcessingStudio => {
+                    spawn_processing_studio(workspace, font.clone(), session, theme)
+                }
                 StudioRoute::AnalysisInspect => {
                     spawn_analysis_inspect_page(workspace, font.clone(), session, theme)
                 }
@@ -567,6 +570,7 @@ pub(crate) fn spawn_top_bar(
                 StudioRoute::Folders => Some("Folders"),
                 StudioRoute::SongDetail => Some("Song"),
                 StudioRoute::Editor => Some("Editor"),
+                StudioRoute::ProcessingStudio => Some("Processing"),
                 StudioRoute::Documentation => Some("Documentation"),
                 StudioRoute::AnalysisInspect => Some("Inspect view"),
                 StudioRoute::Library | StudioRoute::Settings => None,
@@ -822,10 +826,10 @@ pub(crate) fn spawn_about_dialog(
             spawn_text(dialog, font.clone(), "ATTRIBUTIONS", 9.0, theme.primary);
             for attribution in [
                 "Lyrics data · LRCLIB",
-                "Stem separation · UVR / Demucs",
+                "Stem separation · native RoFormer",
                 "Stem architecture · audio-separator (MIT)",
-                "Speech recognition · WhisperX / OpenAI Whisper / NVIDIA Parakeet",
-                "Forced alignment · WhisperX / torchaudio / Qwen3-ForcedAligner / FA-Kara (MIT)",
+                "Transcript fusion · FireRedASR2-AED / Qwen3-ASR",
+                "Forced alignment · pinned Qwen3 Forced Aligner",
                 "Optional Japanese model · NextFire MMS Karaoke (AGPL-3.0)",
                 "CJK romanization · fugashi / pypinyin / hangul-romanize / ToJyutping",
             ] {

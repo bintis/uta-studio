@@ -328,6 +328,24 @@ pub fn compute_config_hash(
     input_content_hashes: &[&str],
     model_digest: Option<&str>,
 ) -> String {
+    compute_native_config_hash(
+        node_id,
+        algorithm_version,
+        normalized_parameters_json,
+        input_content_hashes,
+        model_digest,
+        None,
+    )
+}
+
+pub fn compute_native_config_hash(
+    node_id: &AnalysisNodeId,
+    algorithm_version: &str,
+    normalized_parameters_json: &str,
+    input_content_hashes: &[&str],
+    model_digest: Option<&str>,
+    runtime_recipe_digest: Option<&str>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(node_id.as_str().as_bytes());
     hasher.update(b"\0");
@@ -341,6 +359,8 @@ pub fn compute_config_hash(
     }
     hasher.update(b"\0");
     hasher.update(model_digest.unwrap_or("").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(runtime_recipe_digest.unwrap_or("").as_bytes());
     hasher.finalize().to_hex()[..32].to_string()
 }
 
@@ -642,7 +662,19 @@ fn compatibility_paths(cache: &CacheDir, revision: &ArtifactRevision) -> Vec<Pat
         | ArtifactKind::KeyAnalysis
         | ArtifactKind::RhythmAnalysis
         | ArtifactKind::AudioDescriptors
-        | ArtifactKind::PreprocessedAudio => Vec::new(),
+        | ArtifactKind::PreprocessedAudio
+        | ArtifactKind::AudioStem
+        | ArtifactKind::PitchEvidence
+        | ArtifactKind::BoundaryEvidence
+        | ArtifactKind::TechniqueEvidence
+        | ArtifactKind::AcousticEvidence
+        | ArtifactKind::CanonicalLyrics
+        | ArtifactKind::TranscriptEvidence
+        | ArtifactKind::AlignmentEvidence
+        | ArtifactKind::EvidenceBundle
+        | ArtifactKind::CandidateGraph
+        | ArtifactKind::CanonicalSingingTrack
+        | ArtifactKind::HumanCorrectionSet => Vec::new(),
     }
 }
 
@@ -1041,7 +1073,13 @@ mod tests {
     fn different_parameters_produce_different_signatures() {
         let node = AnalysisNodeId::new("stems.separate");
         let a = compute_config_hash(&node, "1", r#"{"separator":"karaoke"}"#, &["abc123"], None);
-        let b = compute_config_hash(&node, "1", r#"{"separator":"demucs"}"#, &["abc123"], None);
+        let b = compute_config_hash(
+            &node,
+            "1",
+            r#"{"separator":"native_workflow"}"#,
+            &["abc123"],
+            None,
+        );
         assert_ne!(a, b);
     }
 
@@ -1162,8 +1200,8 @@ mod tests {
     fn stem_signature_excludes_key_and_bpm_by_construction() {
         // The signature function has no key/tempo/bpm parameter at all, so
         // a music-analysis algorithm change has nothing to plumb through
-        // here -- mirrors the Python-side guarantee tested in
-        // app-core/analyzer/test_pipeline_cache.py.
+        // here -- mirrors the native-worker guarantee tested in
+        // the frozen legacy cache-signature fixture.
         let node = AnalysisNodeId::new("stems.separate");
         let signature_with_context = |extra: &str| {
             compute_config_hash(

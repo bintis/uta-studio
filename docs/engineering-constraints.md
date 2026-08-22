@@ -10,13 +10,11 @@ Source music is read-only. Removing a watched folder only disconnects it from th
 
 ## Runtime acquisition
 
-Desktop and Nix builds use system/packaged `ffmpeg`, `uv`, and Python. The preferred explicit variables are:
+Desktop and Nix builds use packaged native workers plus system/packaged `ffmpeg`. Explicit paths use `UTA_STUDIO_FFMPEG_PATH`, `UTA_STUDIO_NATIVE_ANALYZER_PATH`, and the component-specific native worker variables. Production inference has no script runtime or package environment.
 
-- `UTA_STUDIO_FFMPEG_PATH`
-- `UTA_STUDIO_UV_PATH`
-- `UTA_STUDIO_PYTHON_PATH`
+Generic production models consume source-verified, pinned OpenVINO IR and fail closed when that exact model/runtime combination is not validated. Qwen3-ASR-1.7B and Qwen3 Forced Aligner are the only pinned GGML/Vulkan exceptions defined by `native-inference/runtime-lock.json`. CPU is an explicit reference/diagnostic lane only.
 
-The app may discover those tools on `PATH`. It must not start downloading tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, shows what is missing, lets the user choose the compute backend and model family/size, and downloads only after explicit confirmation. Every selected model family has its own status and download/reinstall action; this includes the RMVPE frequency-analysis model even while it is the only pitch option. The shared runtime remains a separate setup action. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
+The app must not download tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, reports each native component/model separately, and downloads only after explicit confirmation. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
 
 ## Audio policy
 
@@ -64,11 +62,14 @@ The expected checks are:
 
 ```sh
 nix develop path:. -c cargo fmt --all -- --check
-nix develop path:. -c cargo check --workspace --all-targets
-nix develop path:. -c cargo test --workspace --all-targets
-python3 -m py_compile app-core/analyzer/*.py
+nix develop path:. -c cargo check --workspace --all-targets --locked
+nix develop path:. -c cargo test --workspace --all-targets --locked
+nix develop path:. -c cargo clippy --workspace --all-targets --locked -- -D warnings
+nix develop path:. -c cargo xtask docs check
 nix build path:.#uta-studio --print-build-logs
 ```
+
+The repository must contain no tracked script-runtime source files, and a packaged analysis run must have no script-runtime process in its process tree. Native worker stdout is protocol-only NDJSON; cancellation, timeout, crash cleanup, runtime-lock identity, and fail-closed routing are release gates.
 
 In addition, use an analyzed fixture to decode editor audio with ffmpeg and perform real UTZ and UltraStar exports. Validate the UTZ ZIP/manifest/hash metadata, parse the UltraStar chart, decode both exported audio assets, confirm temporary cleanup, and smoke-launch the wrapped Nix executable.
 

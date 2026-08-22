@@ -599,7 +599,7 @@ pub fn build_usdx_song(path: &Path, cache: &CacheDir) -> Result<Song, UtaStudioE
         &transcript_path,
         serde_json::to_string_pretty(&transcript_json)?,
     )?;
-    // §4.4: USDX import doesn't go through the Python pipeline's
+    // §4.4: USDX import doesn't go through the native pipeline's
     // `chart.build_candidate` either, so it must also write the dedicated
     // TimedTranscript artifact itself, matching `lyrics.rs::write_transcript_json`.
     std::fs::write(

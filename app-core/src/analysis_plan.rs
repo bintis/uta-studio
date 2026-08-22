@@ -4,7 +4,7 @@
 //! run, which will be reused/frozen, and which are blocked. This is the
 //! "only-read" API surface Phase 1 ships (`get_analysis_graph`,
 //! `preview_analysis_plan`) — it does not touch the filesystem, the queue,
-//! or the existing Python worker.
+//! or the native worker supervisor.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,8 +62,7 @@ pub enum NodeState {
 pub enum LyricsRoute {
     TimedLrc,
     KnownLyrics,
-    WhisperAsr,
-    ParakeetAsr,
+    GeneratedLyrics,
 }
 
 impl LyricsRoute {
@@ -71,8 +70,9 @@ impl LyricsRoute {
         let ids: &[&str] = match self {
             LyricsRoute::TimedLrc => &["lyrics.import_timed"],
             LyricsRoute::KnownLyrics => &["lyrics.preprocess", "lyrics.align"],
-            LyricsRoute::WhisperAsr => &["lyrics.preprocess", "lyrics.transcribe", "lyrics.align"],
-            LyricsRoute::ParakeetAsr => &["lyrics.preprocess", "lyrics.transcribe"],
+            LyricsRoute::GeneratedLyrics => {
+                &["lyrics.preprocess", "lyrics.transcribe", "lyrics.align"]
+            }
         };
         ids.iter().map(|s| AnalysisNodeId::new(*s)).collect()
     }
@@ -116,6 +116,11 @@ pub struct AnalysisRequest {
     /// `None` keeps plans written before the catalog pipeline readable.
     #[serde(default)]
     pub audio_processing: Option<AudioProcessingPlanSnapshot>,
+    /// Exact compiled workflow used by new Processing Studio runs. Historical
+    /// requests omit it and continue to use the legacy baseline graph.
+    #[serde(default)]
+    #[ts(skip)]
+    pub workflow_execution: Option<crate::workflow::WorkflowExecutionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -144,6 +149,9 @@ pub struct AnalysisPlan {
     pub profile_snapshot: AnalysisProfileSnapshot,
     #[serde(default)]
     pub audio_processing: Option<AudioProcessingPlanSnapshot>,
+    #[serde(default)]
+    #[ts(skip)]
+    pub workflow_execution: Option<crate::workflow::WorkflowExecutionSnapshot>,
     pub warnings: Vec<PlanWarning>,
 }
 
@@ -387,6 +395,7 @@ pub fn build_plan(
         target_nodes: request.targets.clone(),
         profile_snapshot: request.profile_snapshot.clone(),
         audio_processing: request.audio_processing.clone(),
+        workflow_execution: request.workflow_execution.clone(),
         warnings,
     })
 }
@@ -396,8 +405,13 @@ pub fn build_plan(
 /// same graph today. A future phase may need per-song graph variants (e.g.
 /// USDX-imported songs); keeping the parameter now avoids a breaking
 /// signature change later.
-pub fn get_analysis_graph(_file_hash: &str) -> AnalysisGraphSpec {
-    baseline_graph_spec()
+pub fn get_analysis_graph(file_hash: &str) -> AnalysisGraphSpec {
+    crate::workflow::load_song_workflow(file_hash)
+        .ok()
+        .filter(|stored| stored.updated_at_ms > 0)
+        .and_then(|stored| crate::workflow::compile_workflow(&stored.definition).ok())
+        .map(|snapshot| snapshot.graph)
+        .unwrap_or_else(baseline_graph_spec)
 }
 
 pub fn preview_analysis_plan(
@@ -405,7 +419,12 @@ pub fn preview_analysis_plan(
     mut request: AnalysisRequest,
 ) -> Result<AnalysisPlan, PlanError> {
     request.file_hash = file_hash.to_string();
-    build_plan(&baseline_graph_spec(), &request)
+    let graph = request
+        .workflow_execution
+        .as_ref()
+        .map(|snapshot| snapshot.graph.clone())
+        .unwrap_or_else(baseline_graph_spec);
+    build_plan(&graph, &request)
 }
 
 #[cfg(test)]
@@ -424,6 +443,7 @@ mod tests {
             profile_snapshot: AnalysisProfileSnapshot::default(),
             active_stem_nodes: BTreeSet::new(),
             audio_processing: None,
+            workflow_execution: None,
         }
     }
 
@@ -432,7 +452,7 @@ mod tests {
         let graph = baseline_graph_spec();
         let plan = build_plan(
             &graph,
-            &request(&["pitch.extract"], LyricsRoute::WhisperAsr),
+            &request(&["pitch.extract"], LyricsRoute::GeneratedLyrics),
         )
         .unwrap();
         assert!(
@@ -480,7 +500,7 @@ mod tests {
         let graph = baseline_graph_spec();
         let plan = build_plan(
             &graph,
-            &request(&["music.analysis"], LyricsRoute::WhisperAsr),
+            &request(&["music.analysis"], LyricsRoute::GeneratedLyrics),
         )
         .unwrap();
         assert!(
@@ -506,7 +526,7 @@ mod tests {
     #[test]
     fn frozen_artifact_satisfies_downstream_input_without_rerunning_upstream() {
         let graph = baseline_graph_spec();
-        let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["pitch.extract"], LyricsRoute::GeneratedLyrics);
         req.frozen_artifacts.insert(ArtifactKind::AnalysisVocalStem);
 
         let plan = build_plan(&graph, &req).unwrap();
@@ -539,7 +559,7 @@ mod tests {
         // "reusing this node's own stale output" apart from "using a
         // substitute input entirely."
         let graph = baseline_graph_spec();
-        let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["pitch.extract"], LyricsRoute::GeneratedLyrics);
         req.bypassed_nodes
             .insert(AnalysisNodeId::new("stems.separate"));
 
@@ -563,7 +583,7 @@ mod tests {
     #[test]
     fn disabling_an_always_required_node_blocks_the_plan() {
         let graph = baseline_graph_spec();
-        let mut req = request(&["preflight"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["preflight"], LyricsRoute::GeneratedLyrics);
         req.disabled_nodes.insert(AnalysisNodeId::new("preflight"));
 
         let plan = build_plan(&graph, &req).unwrap();
@@ -580,7 +600,7 @@ mod tests {
     #[test]
     fn disabling_optional_node_blocks_downstream_without_bypass() {
         let graph = baseline_graph_spec();
-        let mut req = request(&["chart.build_candidate"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["chart.build_candidate"], LyricsRoute::GeneratedLyrics);
         req.disabled_nodes
             .insert(AnalysisNodeId::new("stems.separate"));
 
@@ -633,32 +653,11 @@ mod tests {
     }
 
     #[test]
-    fn parakeet_route_excludes_alignment_node() {
+    fn generated_lyrics_route_runs_transcription_and_alignment() {
         let graph = baseline_graph_spec();
         let plan = build_plan(
             &graph,
-            &request(&["chart.build_candidate"], LyricsRoute::ParakeetAsr),
-        )
-        .unwrap();
-        assert!(
-            plan.node(&AnalysisNodeId::new("lyrics.transcribe"))
-                .unwrap()
-                .will_run
-        );
-        assert_eq!(
-            plan.node(&AnalysisNodeId::new("lyrics.align"))
-                .unwrap()
-                .state,
-            NodeState::NotApplicable
-        );
-    }
-
-    #[test]
-    fn whisper_route_generates_asr_and_alignment() {
-        let graph = baseline_graph_spec();
-        let plan = build_plan(
-            &graph,
-            &request(&["chart.build_candidate"], LyricsRoute::WhisperAsr),
+            &request(&["chart.build_candidate"], LyricsRoute::GeneratedLyrics),
         )
         .unwrap();
         assert!(
@@ -702,7 +701,7 @@ mod tests {
         // running without any model-setup dependency, plus the explicit
         // Blocked-state assertion below.
         let graph = baseline_graph_spec();
-        let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["pitch.extract"], LyricsRoute::GeneratedLyrics);
         req.model_availability
             .insert(AnalysisNodeId::new("pitch.extract"), false);
 
@@ -736,7 +735,7 @@ mod tests {
         let graph = baseline_graph_spec();
         let plan = build_plan(
             &graph,
-            &request(&["chart.build_candidate"], LyricsRoute::WhisperAsr),
+            &request(&["chart.build_candidate"], LyricsRoute::GeneratedLyrics),
         )
         .unwrap();
         for unused in [
@@ -771,7 +770,7 @@ mod tests {
     #[test]
     fn selected_cleanup_and_accompaniment_are_required_for_pitch() {
         let graph = baseline_graph_spec();
-        let mut req = request(&["pitch.extract"], LyricsRoute::WhisperAsr);
+        let mut req = request(&["pitch.extract"], LyricsRoute::GeneratedLyrics);
         req.active_stem_nodes = [
             "stems.vocals",
             "vocals.denoise",
@@ -809,7 +808,7 @@ mod tests {
         let graph = baseline_graph_spec();
         let plan = build_plan(
             &graph,
-            &request(&["chart.build_candidate"], LyricsRoute::WhisperAsr),
+            &request(&["chart.build_candidate"], LyricsRoute::GeneratedLyrics),
         )
         .unwrap();
         let json = serde_json::to_string(&plan).expect("serialize plan");
@@ -819,7 +818,7 @@ mod tests {
 
     #[test]
     fn catalog_audio_snapshot_flows_into_the_plan() {
-        let mut request = request(&["chart.build_candidate"], LyricsRoute::WhisperAsr);
+        let mut request = request(&["chart.build_candidate"], LyricsRoute::GeneratedLyrics);
         let settings =
             crate::audio_processing::AudioProcessingSettings::from_legacy_separator("karaoke");
         let audio = crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&settings);

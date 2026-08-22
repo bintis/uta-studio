@@ -104,7 +104,7 @@ Music/
 4. 阅读确认信息，包括模型大小和许可证提示。
 5. 明确确认后才开始设置。
 
-Uta Studio 会尽量复用兼容的本地 `ffmpeg`、`uv`、Python 和已有模型文件。应用启动本身不会自动下载模型。
+Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，并复用已有模型文件。应用启动、打开页面或运行诊断都不会自动下载运行时或模型。
 
 #### 3.5 打开文档中心
 
@@ -147,19 +147,19 @@ Uta Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分
 
 人声与 BGM 使用彼此独立的分离分支。每个分支单独选择分离模型，之后有两个按顺序执行的后处理槽；每个槽可设为关闭、降噪或降回声。BGM 产物直接进入谱面构建，人声产物则进入音高与歌词分析。
 
-可用选项取决于已配置的运行环境，包括 BS-RoFormer 人声、MelBand BGM、Karaoke 2、降噪、降回声和 HTDemucs 六声部。目录模型只能在 **设置 > 模型与运行环境** 中，确认名称、来源、体积和许可后安装。分析过程保持离线；已有制谱数据只会在重新分析后改变。
+可用选项包括经过验证的 RoFormer 人声/BGM、主唱/和声分离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
 
 建议先使用“均衡”配置。节省内存配置可降低峰值占用；高质量配置通常更慢，并需要更多内存。
 
 #### 02 · 歌词转录
 
-从人声源识别歌词。根据运行环境和已下载文件，可使用 Whisper 或 Parakeet 系列选项。
+FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
 
 更大的识别模型可能改善困难素材，但会增加内存和处理时间。请在**模型与运行环境**中确认所选模型已安装。
 
 #### 03 · 单词时间与对齐
 
-将识别或手工提供的歌词细化为可编辑的逐词时间。后端可能包括 WhisperX、CTC 强制对齐、Qwen 强制对齐，以及可选的日语 MMS Karaoke 后端。
+固定版本的 Qwen3 Forced Aligner 消费 Canonical Lyrics 和选定的主唱音频。边界在融合前始终是证据，并可在编辑器中复核。
 
 NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确认后才会下载。请仅在其许可证和日语专用行为符合项目需求时使用。
 
@@ -424,3 +424,9 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 - **AuthoredChart** — 你编辑并导出的谱面。
 
 ---
+
+## Processing Studio 与证据复核
+
+从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；Vocal、BGM、Lead 与 Back/Harmony 保持独立 lane。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
+
+完成的运行会生成可替换的 Candidate revision。编辑器始终让人工音符保持最高视觉与语义优先级，并提供只读 Evidence 和 disagreement-first Review queue。接受建议会进入正常 undo 历史；重新分析绝不会静默替换 Authored revision。出现新 Candidate 时请使用 Compare 或 Merge。

@@ -111,7 +111,7 @@ fn compact_analysis_model_label(label: &str) -> &str {
     match label {
         "BS-RoFormer Vocals EP317" => "BS-RoFormer · EP317",
         "Default karaoke (aufr33 + viperx)" => "MelBand Karaoke",
-        "OpenVINO Demucs v4 (Intel GPU)" => "OpenVINO Demucs",
+        "OpenVINO native worker" => "OpenVINO native worker",
         "MelBand-RoFormer Denoise" => "MelBand Denoise",
         "MelBand-RoFormer Dereverb" => "MelBand Dereverb",
         "MMS Karaoke (Japanese)" => "MMS Karaoke · JA",

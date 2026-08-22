@@ -528,6 +528,34 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Remove a song's parameter override, falling back to global defaults"
     ),
     capability!(
+        "workflow",
+        "list_workflow_capabilities",
+        "read",
+        true,
+        "List typed Processing Studio node capabilities"
+    ),
+    capability!(
+        "workflow",
+        "load_song_workflow",
+        "read",
+        true,
+        "Load a song workflow or a non-persisting legacy migration"
+    ),
+    capability!(
+        "workflow",
+        "save_song_workflow",
+        "mutation",
+        true,
+        "Validate and persist versioned per-song workflow intent and layout"
+    ),
+    capability!(
+        "workflow",
+        "preview_workflow_compile",
+        "read",
+        true,
+        "Validate typed workflow connections and preview the exact compiled DAG"
+    ),
+    capability!(
         "authoring",
         "replace_authored_chart_with_fresh_analysis",
         "destructive",

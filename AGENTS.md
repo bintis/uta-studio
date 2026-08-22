@@ -10,8 +10,10 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 
 ## Runtime and downloads
 
-- Prefer the host or packaged `ffmpeg`, `uv`, and Python through `UTA_STUDIO_FFMPEG_PATH`, `UTA_STUDIO_UV_PATH`, and `UTA_STUDIO_PYTHON_PATH`, with normal `PATH` discovery as the fallback.
-- Never download tools, Python packages, or AI models merely because the application launched, a page rendered, or a diagnostic ran.
+- Prefer packaged native workers and host or packaged `ffmpeg` through `UTA_STUDIO_NATIVE_ANALYZER_PATH`, component-specific native worker variables, and `UTA_STUDIO_FFMPEG_PATH`, with normal executable discovery only where explicitly supported.
+- Production inference is native-only. Generic experts use validated OpenVINO first, then a separately validated Vulkan implementation, otherwise fail closed. Qwen3-ASR-1.7B and Qwen3 Forced Aligner use the recipes pinned in `native-inference/runtime-lock.json`.
+- CPU is an explicit reference/diagnostic lane, never an automatic production fallback. Do not introduce a script-runtime or network-service fallback.
+- Never download tools, packages, or AI models merely because the application launched, a page rendered, or a diagnostic ran.
 - Model/runtime installation requires an explicit user action and confirmation in **Settings > Models & runtime**. When unavailable, analysis controls must be disabled and explain where setup lives.
 - Existing configured model directories are user data. Do not delete or replace them in tests. Destructive cache operations require an explicit user action.
 
@@ -58,7 +60,7 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 - Never expose an unauthenticated HTTP control server. Feature APIs stay inside the local process unless the user explicitly requests and approves a different security design.
 - Keep user source media read-only. Opening, revealing, scanning, editing cached chart data, and exporting must never move or delete source songs.
 - Use the repository's Nix dev shell for Rust/Node tools when they are not on `PATH`. Do not treat Nix environment realization as a request to download models.
-- Before final handoff, run Rust formatting/checks/tests, Python compile checks, native UI tests/build, the API registry contract test, real audio decode, real UTZ and UltraStar smoke exports, project-name scan, and a Nix package build.
+- Before final handoff, run Rust formatting/checks/tests/clippy, native worker builds/tests, native UI tests/build, docs checks, the API registry contract test, zero-script-runtime and source-size gates, real audio decode, real UTZ and UltraStar smoke exports, project-name scan, and a Nix package build.
 - Editor audio is not verified merely because a PipeWire stream exists. Audition a real chart continuously, confirm the stream is running/unmuted, inspect PipeWire quantum errors/xruns, and keep waveform/timeline rendering from blocking playback. Do not judge playback while a high-parallelism build is saturating the machine.
 - The final packaged artifact must be produced by `nix build path:.#uta-studio` and smoke-launched from its wrapped executable.
 

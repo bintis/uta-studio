@@ -6,7 +6,7 @@ pub fn shutdown_server() {
         info!("[analyzer] Graceful shutdown of server (pid={pid})");
         // A process killed here must not remain in the singleton.  Otherwise
         // `ensure_server` sees `Some` and the next analysis attempts to reuse
-        // a dead connection (or, during setup, an old Python environment).
+        // a dead connection (or, during setup, an stale native worker).
         if let Ok(mut guard) = ANALYZER_SERVER.try_lock() {
             if let Some(server) = guard.as_mut() {
                 let _ = server.writer.write_all(b"{\"type\":\"quit\"}\n");

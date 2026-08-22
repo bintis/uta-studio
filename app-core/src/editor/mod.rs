@@ -8,19 +8,28 @@
 //! appear only at the rendering and audio-seek boundary.
 
 mod actions;
+mod corrections;
 mod document;
+mod evidence;
 mod problems;
+mod suggestions;
 mod syllabize;
 
 pub use actions::{
     EDITOR_ACTIONS, EditorActionAccess, EditorActionDef, EditorActionGroup, KeyChord,
     editor_action, editor_action_for_chord, editor_actions,
 };
+pub use corrections::{CorrectionType, HumanCorrection};
 pub use document::{
     ChartLyric, ChartNote, ClipboardNote, EditorDocument, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
     TrackRole, TrackSummary,
 };
+pub use evidence::{
+    EditorAudioArtifact, EditorSourceContext, EvidenceKind, EvidencePoint, EvidenceTrack,
+    ReviewReason, ReviewRegion, ReviewSeverity, SingingEvidenceBundle,
+};
 pub use problems::{ChartProblem, ProblemKind, ProblemReport, Severity};
+pub use suggestions::{EditorSuggestion, EditorSuggestionKind, apply_editor_suggestion};
 pub use syllabize::{Syllable, kana_morae, syllables};
 
 pub(crate) fn seconds_to_units(seconds: f64, timebase: u64) -> u64 {

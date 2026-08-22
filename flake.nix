@@ -62,20 +62,42 @@
               wayland
               wayland-protocols
               vulkan-loader
-              python311
               openssl
-              uv
             ]);
 
             buildPhase = ''
               runHook preBuild
-              cargo build --release --locked -p uta-studio-desktop
+              cargo build --release --locked -p uta-studio-desktop -p uta-native-analyzer -p uta-openvino-worker -p uta-qwen-worker
               runHook postBuild
             '';
 
             installPhase = ''
               runHook preInstall
               install -Dm755 target/release/uta-studio $out/bin/.uta-studio-unwrapped
+              install -Dm755 target/release/uta-native-analyzer $out/bin/uta-native-analyzer
+              install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
+              install -Dm755 target/release/uta-qwen-asr-worker $out/bin/uta-qwen-asr-worker
+              install -Dm755 target/release/uta-qwen-align-worker $out/bin/uta-qwen-align-worker
+              install -Dm644 native-inference/openvino-worker/THIRD_PARTY_NOTICES.md \
+                $out/share/uta-studio/licenses/openvino-worker-THIRD_PARTY_NOTICES.md
+              install -Dm755 native-inference/openvino-worker/build-openvino-runtime.sh \
+                $out/share/uta-studio/native-inference/openvino-worker/build-openvino-runtime.sh
+              install -Dm755 native-inference/openvino-worker/convert-rmvpe-to-ir.sh \
+                $out/share/uta-studio/native-inference/openvino-worker/convert-rmvpe-to-ir.sh
+              install -Dm644 native-inference/openvino-worker/runtime-recipe.json \
+                $out/share/uta-studio/native-inference/openvino-worker/runtime-recipe.json
+              install -Dm644 native-inference/openvino-worker/tools/convert-model.cpp \
+                $out/share/uta-studio/native-inference/openvino-worker/tools/convert-model.cpp
+              install -Dm644 native-inference/qwen-worker/THIRD_PARTY_NOTICES.md \
+                $out/share/uta-studio/licenses/qwen-worker-THIRD_PARTY_NOTICES.md
+              install -Dm755 native-inference/qwen-worker/build-qwen-engines.sh \
+                $out/share/uta-studio/native-inference/qwen-worker/build-qwen-engines.sh
+              install -Dm755 native-inference/qwen-worker/install-local-qwen-assets.sh \
+                $out/share/uta-studio/native-inference/qwen-worker/install-local-qwen-assets.sh
+              install -Dm644 native-inference/qwen-worker/patches/predict-woo-require-gpu.patch \
+                $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-require-gpu.patch
+              install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
+                $out/share/uta-studio/licenses/roformer-THIRD_PARTY_NOTICES.md
               install -Dm644 icon.png $out/share/uta-studio/icon.png
               install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
                 $out/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf
@@ -83,13 +105,17 @@
                 $out/share/uta-studio/desktop/assets/icons/ui-icons.svg
               install -Dm644 desktop/assets/icons/ui-icons.png \
                 $out/share/uta-studio/desktop/assets/icons/ui-icons.png
+              install -Dm644 desktop/assets/icons/music-placeholder.png \
+                $out/share/uta-studio/desktop/assets/icons/music-placeholder.png
               install -Dm644 icon.png $out/share/icons/hicolor/512x512/apps/uta-studio.png
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               makeWrapper $out/bin/.uta-studio-unwrapped $out/bin/uta-studio \
                 --set UTA_STUDIO_ASSET_PATH $out/share/uta-studio \
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg \
-                --set UTA_STUDIO_UV_PATH ${pkgs.uv}/bin/uv \
-                --set UTA_STUDIO_PYTHON_PATH ${pkgs.python311}/bin/python3.11 \
+                --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer \
+                --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker \
+                --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker \
+                --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker \
                 --set WINIT_UNIX_BACKEND wayland \
                 --set __EGL_VENDOR_LIBRARY_DIRS /run/opengl-driver/share/glvnd/egl_vendor.d \
                 --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${gstPluginPath}" \
@@ -141,17 +167,17 @@
               vulkan-headers
               vulkan-loader
               vulkan-tools
-              python311
               openssl
-              uv
             ]);
             shellHook = ''
               if [ -d "$HOME/.cargo/bin" ]; then
                 export PATH="$HOME/.cargo/bin:$PATH"
               fi
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
-              export UTA_STUDIO_UV_PATH="${pkgs.uv}/bin/uv"
-              export UTA_STUDIO_PYTHON_PATH="${pkgs.python311}/bin/python3.11"
+              export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
+              export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
+              export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"
+              export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/debug/uta-qwen-align-worker"
               export WINIT_UNIX_BACKEND=wayland
               export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"

@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 11;
+pub(crate) const SCHEMA_VERSION: i32 = 12;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -122,9 +122,15 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS song_workflows (
+            file_hash TEXT PRIMARY KEY,
+            workflow_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         -- Phase 2/3 (docs/analysis-dag-redesign.md, phase plan §2.3): one
         -- row per real node id that a completed/failed run's
-        -- `stage_routes` recorded (i.e. the emitting Python call site had
+        -- `stage_routes` recorded (i.e. the emitting native worker call site had
         -- migrated to `progress_node`/`artifact_reused`; routes without a
         -- node_id -- pre-Phase-3 call sites -- don't produce a row). A
         -- separate `analysis_runs` table was in the original phase plan's
@@ -198,7 +204,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
     // SCHEMA_VERSION 5 -> 6: Phase 7 "Duration 检查器字段" gap closed --
     // per-node Start/Finish wall-clock timestamps
-    // (`server.py::_progress_payload`). Nullable (not `DEFAULT 0`, unlike
+    // (native worker progress frames). Nullable (not `DEFAULT 0`, unlike
     // `invalidated` above): 0 would read as a real Unix-epoch timestamp
     // instead of "unknown," and every row recorded before this migration
     // genuinely has no timing data to backfill.

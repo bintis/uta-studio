@@ -100,16 +100,14 @@ cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 
 Uta Studio thanks the following projects for technical and interface references:
 
-- **[audio-separator](https://github.com/nomadkaraoke/python-audio-separator)**
-  by [nomadkaraoke](https://github.com/nomadkaraoke). Uta Studio's offline
-  vocal-separation adapter is based on audio-separator 0.44.5 (MIT). Analysis
-  loads already-installed catalog files only and does not use that project's
-  download directory.
-- **[FA-Kara](https://github.com/moriwx/FA-Kara)** by
-  [moriwx](https://github.com/moriwx). FA-Kara's Japanese karaoke alignment
-  workflow, pronunciation mapping, and silence-aware timing directly informed the
-  optional MMS Karaoke backend. It is Copyright (c) 2025 moriwx and licensed
-  under MIT.
+- **[BSRoformer.cpp](https://github.com/yasoukyoku/BSRoformer.cpp)** and
+  **[GGML](https://github.com/ggml-org/ggml)** for the native RoFormer graph and
+  Vulkan runtime foundations. Exact vendored source and patch identities are
+  recorded with the packaged runtime notices.
+- **[transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)** and
+  **[qwen3-asr.cpp](https://github.com/predict-woo/qwen3-asr.cpp)** for the two
+  separately pinned Qwen native runtime recipes. Their exact commits, GGML
+  revisions, and model identities are locked in `native-inference/runtime-lock.json`.
 - **[USKMaker](https://github.com/walterfr/UltraStarKaraokeMaker)**,
   **[Yass](https://github.com/SarutaSan72/Yass)**, and
   **[UltraStar Play](https://github.com/UltraStar-Deluxe/Play)** for editor

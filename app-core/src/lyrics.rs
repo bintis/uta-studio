@@ -203,7 +203,7 @@ fn build_lrc_transcript(
 ) -> serde_json::Value {
     serde_json::json!({
         // Leave language null when unknown so it isn't later mistaken for a
-        // forced alignment language override (whisperx has no "unknown" model).
+        // forced alignment language override (native aligner has no "unknown" model).
         "language": language,
         "source": "lrc",
         "key": key,
@@ -220,7 +220,7 @@ fn write_transcript_json(
 ) -> std::io::Result<()> {
     let out = cache.transcript_path(file_hash);
     std::fs::write(&out, serde_json::to_string_pretty(value).unwrap())?;
-    // §4.4: known-lyrics/Timed-LRC routes never run through the Python
+    // §4.4: known-lyrics/Timed-LRC routes never run through the native
     // pipeline's `chart.build_candidate`, so this Rust-side writer is the
     // one place that needs to also produce the dedicated TimedTranscript
     // artifact for those routes.
@@ -324,7 +324,7 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
 /// `lyrics.import_timed`'s own real event/history record
 /// (docs/analysis-dag-redesign.md Phase 3 status note). This Rust-side
 /// Timed LRC import path completes synchronously and entirely outside the
-/// Python-queue-driven `process_song`/`LIVE_ANALYSIS`/`ANALYSIS_STARTED`
+/// native-queue-driven `process_song`/`LIVE_ANALYSIS`/`ANALYSIS_STARTED`
 /// machinery -- there is no "in-flight" window for a progress poll to ever
 /// observe, so it never produced a run history entry the way a queued
 /// analysis does, and "Last successful run" always read "None yet" after a
@@ -544,7 +544,7 @@ mod chart_protection_tests {
     #[test]
     fn write_transcript_json_also_writes_the_dedicated_timed_transcript_file() {
         // §4.4: the known-lyrics/Timed-LRC routes never run through the
-        // Python pipeline's `chart.build_candidate`, so this Rust-side
+        // native pipeline's `chart.build_candidate`, so this Rust-side
         // writer is the one place that has to produce TimedTranscript for
         // those routes.
         let cache = temp_cache();

@@ -106,6 +106,9 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
     pub(crate) analysis_model_category: AnalysisModelCategory,
+    pub(crate) workflow: Option<app_core::StoredWorkflow>,
+    pub(crate) selected_workflow_node: Option<app_core::WorkflowNodeId>,
+    pub(crate) workflow_compile_error: Option<String>,
 }
 
 #[derive(Resource)]
@@ -272,6 +275,9 @@ impl StudioStateBundle {
                 analysis_mini_view: false,
                 analysis_model_panel_open: false,
                 analysis_model_category: AnalysisModelCategory::default(),
+                workflow: None,
+                selected_workflow_node: None,
+                workflow_compile_error: None,
             },
             editor: EditorUiState { editor: None },
             dialogs: DialogState {
@@ -461,6 +467,9 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
     pub(crate) analysis_model_category: AnalysisModelCategory,
+    pub(crate) workflow: &'a Option<app_core::StoredWorkflow>,
+    pub(crate) selected_workflow_node: &'a Option<app_core::WorkflowNodeId>,
+    pub(crate) workflow_compile_error: &'a Option<String>,
     pub(crate) pending_analysis_history_clear: bool,
     pub(crate) search_open: bool,
     pub(crate) activity_open: bool,
@@ -546,6 +555,9 @@ impl<'a> StudioSessionView<'a> {
             analysis_mini_view: analysis.analysis_mini_view,
             analysis_model_panel_open: analysis.analysis_model_panel_open,
             analysis_model_category: analysis.analysis_model_category,
+            workflow: &analysis.workflow,
+            selected_workflow_node: &analysis.selected_workflow_node,
+            workflow_compile_error: &analysis.workflow_compile_error,
             pending_analysis_history_clear: dialogs.pending_analysis_history_clear,
             search_open: dialogs.search_open,
             activity_open: dialogs.activity_open,

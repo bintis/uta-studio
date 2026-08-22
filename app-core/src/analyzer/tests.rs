@@ -501,9 +501,9 @@ mod preview_full_analysis_plan_tests {
         let _guard = isolated_test_db("flows-in");
         let hash = "preview-plan-test-song-c";
         let saved = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
+            separator: "native_workflow".to_string(),
             alignment_backend: "mms_karaoke".to_string(),
-            asr_engine: "parakeet".to_string(),
+            asr_engine: "transcript_fusion".to_string(),
             requested_device: "cuda".to_string(),
             language_override: Some("ja".to_string()),
         };
@@ -557,11 +557,12 @@ mod preview_full_analysis_plan_tests {
             disabled_nodes: BTreeSet::from([AnalysisNodeId::new("pitch.extract")]),
             frozen_artifacts: BTreeSet::new(),
             bypassed_nodes: BTreeSet::new(),
-            lyrics_route: LyricsRoute::WhisperAsr,
+            lyrics_route: LyricsRoute::GeneratedLyrics,
             model_availability: std::collections::BTreeMap::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
             active_stem_nodes: BTreeSet::new(),
             audio_processing: None,
+            workflow_execution: None,
         };
         let plan =
             build_plan(&baseline_graph_spec(), &request).expect("baseline graph always plans");
@@ -829,9 +830,9 @@ mod compare_analysis_runs_tests {
         let result = compare_analysis_runs_from(
             &history,
             1,
-            vec![attempt(1, "stems.separate", "succeeded", "Demucs")],
+            vec![attempt(1, "stems.separate", "succeeded", "RoFormer")],
             2,
-            vec![attempt(2, "stems.separate", "succeeded", "UVR")],
+            vec![attempt(2, "stems.separate", "succeeded", "RoFormer v2")],
         )
         .unwrap();
         let diff = result

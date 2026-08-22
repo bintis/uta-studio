@@ -21,23 +21,25 @@ mod library_menu;
 mod library_model;
 mod lrc;
 mod lyrics;
+mod native_runtime;
 mod scanner;
+mod singing;
 mod song;
 mod source;
 mod ultrastar_export;
 mod usdx;
 mod utz_export;
 mod vendor;
-mod vendor_scripts;
 mod vocal_chart;
+mod workflow;
 
 pub use analysis_artifact::{
     ArtifactRevision, ArtifactRevisionComparison, ArtifactStore, ArtifactSummary, artifact_present,
     cached_artifact_presence, cached_artifact_presence_for_song, compare_artifact_revisions,
-    compute_config_hash, delete_artifact_revision, hash_file_contents, import_legacy_artifacts,
-    invalidate_artifact_revision, load_active_artifact, load_analysis_artifacts,
-    load_artifact_revisions, migrate_artifact_revisions_to_store, record_artifact_revision,
-    set_active_artifact_revision,
+    compute_config_hash, compute_native_config_hash, delete_artifact_revision, hash_file_contents,
+    import_legacy_artifacts, invalidate_artifact_revision, load_active_artifact,
+    load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
+    record_artifact_revision, set_active_artifact_revision,
 };
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
@@ -92,15 +94,13 @@ pub use artifact_workbench::{
 pub use audio_model::{
     AudioModelCatalogSummary, AudioModelFileStatus, AudioModelLicense, AudioModelStatus,
     AudioParameterMap, AudioParameterSpec, AudioParameterValue, DEFAULT_BGM_MODEL_ID,
-    DEFAULT_LEGACY_KARAOKE_MODEL_ID, REQUIRED_AUDIO_MODEL_IDS, audio_model_dir,
-    audio_processing_root,
+    DEFAULT_VOCAL_MODEL_ID, REQUIRED_AUDIO_MODEL_IDS, audio_model_dir, audio_processing_root,
 };
 pub use audio_processing::{
     AudioInputReference, AudioOutputBinding, AudioProcessingPlanSnapshot, AudioProcessingSettings,
     AudioProcessingStep, AudioRuntimeRequest, ResolvedAudioParameter, cleanup_model_enabled,
-    get_audio_model_status, install_audio_model, list_audio_models, list_audio_models_from_python,
-    preview_effective_audio_params, reinstall_audio_model, remove_audio_model,
-    validate_audio_processing_profile,
+    get_audio_model_status, install_audio_model, list_audio_models, preview_effective_audio_params,
+    reinstall_audio_model, remove_audio_model, validate_audio_processing_profile,
 };
 pub use authoring::{
     AudioPaths, ShiftDone, ShiftResult, get_audio_paths, load_pitch_guide, load_transcript,
@@ -118,9 +118,12 @@ pub use chart::{
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{
-    ChartLyric, ChartNote, ChartProblem, ClipboardNote, EDITOR_ACTIONS, EditorActionAccess,
-    EditorActionDef, EditorActionGroup, EditorDocument, KeyChord, LyricAddress, MIN_NOTE_SECONDS,
-    NoteKind, ProblemKind, ProblemReport, Severity, Syllable, TrackRole, TrackSummary,
+    ChartLyric, ChartNote, ChartProblem, ClipboardNote, CorrectionType, EDITOR_ACTIONS,
+    EditorActionAccess, EditorActionDef, EditorActionGroup, EditorAudioArtifact, EditorDocument,
+    EditorSourceContext, EditorSuggestion, EditorSuggestionKind, EvidenceKind, EvidencePoint,
+    EvidenceTrack, HumanCorrection, KeyChord, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
+    ProblemKind, ProblemReport, ReviewReason, ReviewRegion, ReviewSeverity, Severity,
+    SingingEvidenceBundle, Syllable, TrackRole, TrackSummary, apply_editor_suggestion,
     editor_action, editor_action_for_chord, editor_actions, kana_morae, syllables,
 };
 pub use export_destination::{
@@ -134,7 +137,25 @@ pub use lyrics::{
     LrclibCandidate, LyricsFile, apply_timed_lyrics, load_lyrics_file, provide_lrc,
     save_lyrics_and_realign, search_lrclib_for_hash,
 };
+pub use native_runtime::{
+    BackendCapability, NATIVE_WORKER_PROTOCOL_VERSION, NativeBackend, NativeModelRuntime,
+    NativeRuntimeLock, NativeTask, NativeTaskOutput, NativeTaskResult,
+    OPENVINO_WORKER_RECIPE_SHA256, RUNTIME_LOCK_JSON, RUNTIME_LOCK_SHA256, ResolvedNativeRuntime,
+    RuntimeRouteError, ValidationState, WorkerCommand, WorkerFrame, component_executable,
+    native_analyzer_path, native_runtime_lock, native_runtime_registry, resolve_native_runtime,
+    run_native_task, runtime_recipe_digest,
+};
 pub use scanner::{clear_library_index, start_scan};
+pub use singing::{
+    CANONICAL_TIMELINE_STEP_MS, CalibrationMethod, CanonicalLyrics, CanonicalNote,
+    CanonicalNoteEvidence, CanonicalSingingTrack, CanonicalWordBoundary, EvidenceFrame,
+    EvidenceProvenance, EvidenceSeries, ExpertTask, F0Point, FusedEstimate, HarmonyMetadata,
+    PitchAlternative, PitchBendPoint, ScalarEvidence, ScoreCalibrator, SegmentCandidate,
+    SingingReviewReason, SingingReviewRegion, TechniqueScores, TimeRange, TranscriptHypothesis,
+    TranscriptTokenEvidence, WeightedEstimate, WordBoundaryEvidence, build_canonical_singing_track,
+    build_review_regions, correlation_aware_score, decode_candidate_graph, fuse_scalar,
+    fuse_transcripts, fuse_word_boundaries,
+};
 pub use song::{
     MusicAnalysis, MusicAnalysisDescriptors, MusicKeyAnalysis, MusicRhythmAnalysis, Song,
     SongOrigin, TranscriptSource, load_music_analysis, update_song_settings,
@@ -149,23 +170,30 @@ pub use utz_export::{
 };
 pub use vendor::{
     AnalysisRuntimeStatus, ComputeBackend, ModelDownloadTarget, ModelInstallStatus, SetupFolders,
-    SetupProgress, SetupStep, SetupTask, SetupTaskState, analysis_runtime_status, is_ready,
-    mark_ready, model_install_statuses, refresh_analyzer_scripts_if_ready, resolve_data_path_input,
-    run_vendor_setup, step_create_venv, step_download_ffmpeg, step_download_model,
-    step_download_pitch_model, step_download_selected_models, step_download_uv,
-    step_extract_scripts, step_install_packages, step_install_python,
+    SetupProgress, SetupStep, SetupTask, SetupTaskState, analysis_runtime_status, ffmpeg_path,
+    is_ready, model_install_statuses, resolve_data_path_input, run_vendor_setup,
+    step_download_model,
 };
 pub use vocal_chart::migrate_analyzer_chart;
+pub use workflow::{
+    AnalyzerBinding, AudioArtifactDescriptor, AudioRole, CapabilityClass, CapabilityId,
+    CompiledArtifactBinding, CompiledNodeBinding, ConditionalExecution, ExecutionPolicy,
+    NodeCapability, NodePosition, QualityMode, ResolvedRuntimeKind, StoredWorkflow,
+    WorkflowCompileError, WorkflowDefinition, WorkflowEdge, WorkflowExecutionSnapshot, WorkflowId,
+    WorkflowLayout, WorkflowNodeId, WorkflowNodeInstance, WorkflowPortRef, WorkflowPortSpec,
+    WorkflowPortType, WorkflowValidationCode, WorkflowValidationIssue, WorkflowValidationReport,
+    bind_workflow_analyzer, compile_workflow, default_workflow, duplicate_audio_transformation,
+    list_workflow_capabilities, load_song_workflow, preview_workflow_compile,
+    reorder_audio_transformation, save_song_workflow, set_workflow_execution_policy,
+    set_workflow_priority, validate_workflow, workflow_definition_digest,
+    workflow_from_audio_settings,
+};
 
 pub fn startup() -> Result<(), String> {
     // Load and repair configuration before opening SQLite: the configured
     // data root decides which library database belongs to this process.
     let config = AppConfig::load();
     init_library().map_err(|e| e.to_string())?;
-
-    if let Err(e) = refresh_analyzer_scripts_if_ready() {
-        tracing::warn!("Failed to refresh analyzer scripts: {e}");
-    }
 
     if is_ready() {
         // The queue is persisted so a desktop restart must not erase work the

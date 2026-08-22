@@ -84,6 +84,242 @@ pub(crate) fn apply_chrome_action(
                 .then(|| "No saved analysis session is available for this song.".to_string());
             invalidated.invalidate(action.0.dirty_region());
         }
+        UiCommand::Analysis(AnalysisCommand::OpenProcessingStudio(file_hash)) => {
+            studio.library.selected_song = Some(file_hash.clone());
+            match app_core::load_song_workflow(file_hash) {
+                Ok(workflow) => {
+                    studio.analysis.workflow = Some(workflow);
+                    studio.analysis.workflow_compile_error = None;
+                    studio.analysis.selected_workflow_node = None;
+                    studio.shell.route = StudioRoute::ProcessingStudio;
+                    studio.shell.notice = None;
+                }
+                Err(error) => {
+                    studio.shell.notice = Some(format!("Could not load workflow: {error}"));
+                }
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::SelectWorkflowNode(node_id)) => {
+            studio.analysis.selected_workflow_node = Some(app_core::WorkflowNodeId::new(node_id));
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::MoveWorkflowNode(node_id, earlier)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                let result = app_core::reorder_audio_transformation(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    *earlier,
+                );
+                studio.analysis.workflow_compile_error = result.err();
+                studio.shell.notice = studio
+                    .analysis
+                    .workflow_compile_error
+                    .clone()
+                    .or_else(|| Some("Workflow order changed. Save to keep it.".to_string()));
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::DuplicateWorkflowNode(node_id)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::duplicate_audio_transformation(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                ) {
+                    Ok(duplicate) => {
+                        studio.analysis.selected_workflow_node = Some(duplicate);
+                        studio.analysis.workflow_compile_error = None;
+                        studio.shell.notice =
+                            Some("Transformation duplicated in the audio dataflow.".to_string());
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::CycleWorkflowPolicy(node_id)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                let node_id = app_core::WorkflowNodeId::new(node_id);
+                let current = workflow
+                    .definition
+                    .nodes
+                    .iter()
+                    .find(|node| node.instance_id == node_id)
+                    .map(|node| node.execution_policy.clone());
+                let next = match current {
+                    Some(app_core::ExecutionPolicy::Always) => {
+                        app_core::ExecutionPolicy::Conditional {
+                            condition: app_core::ConditionalExecution::OnDisagreement,
+                        }
+                    }
+                    Some(app_core::ExecutionPolicy::Conditional {
+                        condition: app_core::ConditionalExecution::OnDisagreement,
+                    }) => app_core::ExecutionPolicy::Conditional {
+                        condition: app_core::ConditionalExecution::DisagreementWindows,
+                    },
+                    Some(app_core::ExecutionPolicy::Conditional { .. }) => {
+                        app_core::ExecutionPolicy::Disabled
+                    }
+                    Some(app_core::ExecutionPolicy::Disabled) => app_core::ExecutionPolicy::Always,
+                    None => app_core::ExecutionPolicy::Always,
+                };
+                match app_core::set_workflow_execution_policy(
+                    &mut workflow.definition,
+                    &node_id,
+                    next,
+                ) {
+                    Ok(()) => {
+                        studio.analysis.workflow_compile_error = None;
+                        studio.shell.notice = Some("Execution policy changed.".to_string());
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::AdjustWorkflowPriority(node_id, delta)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                let node_id = app_core::WorkflowNodeId::new(node_id);
+                let current = workflow
+                    .definition
+                    .nodes
+                    .iter()
+                    .find(|node| node.instance_id == node_id)
+                    .map(|node| node.priority)
+                    .unwrap_or_default();
+                studio.shell.notice = match app_core::set_workflow_priority(
+                    &mut workflow.definition,
+                    &node_id,
+                    current.saturating_add(*delta),
+                ) {
+                    Ok(()) => {
+                        Some("Analyzer priority changed; dependencies are unchanged.".to_string())
+                    }
+                    Err(error) => Some(error),
+                };
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::RebindWorkflowAnalyzer(
+            analyzer,
+            source_node,
+            source_port,
+        )) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::bind_workflow_analyzer(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(analyzer),
+                    app_core::WorkflowPortRef {
+                        node: app_core::WorkflowNodeId::new(source_node),
+                        port: source_port.clone(),
+                    },
+                ) {
+                    Ok(()) => {
+                        studio.analysis.workflow_compile_error = None;
+                        studio.shell.notice = Some("Analyzer input artifact changed.".to_string());
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::PreviewWorkflow) => {
+            if let Some(workflow) = studio.analysis.workflow.as_ref() {
+                studio.analysis.workflow_compile_error =
+                    app_core::preview_workflow_compile(&workflow.definition)
+                        .err()
+                        .map(|error| error.to_string());
+                studio.shell.notice = Some(
+                    studio
+                        .analysis
+                        .workflow_compile_error
+                        .clone()
+                        .unwrap_or_else(|| "Workflow compiles to a valid DAG.".to_string()),
+                );
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::SaveWorkflow) => {
+            if let (Some(file_hash), Some(workflow)) = (
+                studio.library.selected_song.as_deref(),
+                studio.analysis.workflow.as_ref(),
+            ) {
+                match app_core::save_song_workflow(
+                    file_hash,
+                    workflow.definition.clone(),
+                    workflow.layout.clone(),
+                ) {
+                    Ok(saved) => {
+                        studio.analysis.workflow = Some(saved);
+                        studio.analysis.workflow_compile_error = None;
+                        studio.shell.notice = Some("Workflow saved.".to_string());
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(format!("Workflow was not saved: {error}"));
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::RunWorkflow) => {
+            if !app_core::analysis_runtime_status().ready {
+                studio.shell.route = StudioRoute::Settings;
+                studio.shell.settings_tab = SettingsTab::Models;
+                studio.shell.notice = Some(
+                    "Analysis is disabled until all selected native components are available."
+                        .to_string(),
+                );
+            } else if let (Some(file_hash), Some(workflow)) = (
+                studio.library.selected_song.as_ref(),
+                studio.analysis.workflow.as_ref(),
+            ) {
+                match app_core::preview_workflow_compile(&workflow.definition) {
+                    Ok(execution) => {
+                        let targets = execution
+                            .node_bindings
+                            .iter()
+                            .filter(|binding| {
+                                binding.capability_id.as_str() == "finalize.canonical_singing_track"
+                            })
+                            .map(|binding| binding.analysis_node.clone())
+                            .collect();
+                        let request = app_core::AnalysisRequest {
+                            file_hash: file_hash.clone(),
+                            targets,
+                            disabled_nodes: Default::default(),
+                            frozen_artifacts: Default::default(),
+                            bypassed_nodes: Default::default(),
+                            lyrics_route: app_core::LyricsRoute::GeneratedLyrics,
+                            model_availability: Default::default(),
+                            profile_snapshot: app_core::AnalysisProfileSnapshot::from_app_config(
+                                &studio.shell.config,
+                                file_hash,
+                            ),
+                            active_stem_nodes: Default::default(),
+                            audio_processing: None,
+                            workflow_execution: Some(execution),
+                        };
+                        studio.shell.notice = Some(match app_core::run_analysis_request(request) {
+                            Ok(()) => "Compiled workflow queued through the analysis request API."
+                                .to_string(),
+                            Err(error) => error,
+                        });
+                    }
+                    Err(error) => studio.shell.notice = Some(error.to_string()),
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
         UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(node_id, stage)) => {
             studio.analysis.selected_analysis_stage = Some(stage.clone());
             studio.analysis.selected_analysis_node = Some(node_id.clone());
@@ -198,6 +434,10 @@ pub(crate) fn apply_chrome_action(
                     studio.shell.route = StudioRoute::SongDetail;
                     studio.shell.notice = None;
                 }
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.shell.route == StudioRoute::ProcessingStudio {
+                studio.shell.route = StudioRoute::SongDetail;
+                studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route == StudioRoute::AnalysisInspect {
                 studio.shell.route = StudioRoute::Library;

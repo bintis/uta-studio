@@ -156,7 +156,97 @@ fn finish_native_editor_load(
         editor_audio_status(audio.load_path(std::path::Path::new(&chart.audio.instrumental)));
     bevy::log::info!("Native editor is ready");
     let mut editor = NativeEditor::new(chart, status, waveform, waveform_source, "instrumental");
-    editor.artifact_source = source;
+    editor.artifact_source = source.clone();
+    let revisions = app_core::load_analysis_artifacts(&editor.chart.file_hash);
+    if let Some(evidence_revision) = revisions
+        .iter()
+        .filter(|revision| revision.kind == app_core::ArtifactKind::EvidenceBundle)
+        .max_by_key(|revision| revision.created_at_ms)
+        && let Ok(bytes) = std::fs::read(&evidence_revision.path)
+        && let Ok(bundle) = serde_json::from_slice::<app_core::SingingEvidenceBundle>(&bytes)
+    {
+        editor.evidence = bundle;
+        editor.review_index = (!editor.evidence.review_regions.is_empty()).then_some(0);
+    }
+    let opened_chart = source.or_else(|| {
+        revisions
+            .iter()
+            .find(|revision| {
+                revision.active
+                    && matches!(
+                        revision.kind,
+                        app_core::ArtifactKind::AuthoredChart
+                            | app_core::ArtifactKind::CandidateChart
+                    )
+            })
+            .map(|revision| app_core::ArtifactRef {
+                file_hash: revision.file_hash.clone(),
+                kind: revision.kind,
+                revision_id: revision.id.clone(),
+            })
+    });
+    if let Some(opened_chart) = opened_chart {
+        let workflow_revision = app_core::load_song_workflow(&editor.chart.file_hash)
+            .ok()
+            .map(|workflow| workflow.definition.revision.to_string());
+        let audio_artifacts = revisions
+            .iter()
+            .filter(|revision| {
+                revision.active
+                    && matches!(
+                        revision.kind,
+                        app_core::ArtifactKind::AudioStem
+                            | app_core::ArtifactKind::VocalStem
+                            | app_core::ArtifactKind::InstrumentalStem
+                            | app_core::ArtifactKind::AnalysisVocalStem
+                    )
+            })
+            .map(|revision| app_core::EditorAudioArtifact {
+                revision: app_core::ArtifactRef {
+                    file_hash: revision.file_hash.clone(),
+                    kind: revision.kind,
+                    revision_id: revision.id.clone(),
+                },
+                role: match revision.kind {
+                    app_core::ArtifactKind::InstrumentalStem => app_core::AudioRole::Instrumental,
+                    app_core::ArtifactKind::AnalysisVocalStem => app_core::AudioRole::LeadVocal,
+                    _ => app_core::AudioRole::Vocal,
+                },
+                label: format!("{:?} · {}", revision.kind, revision.producer_node),
+                producer: app_core::WorkflowNodeId::new(revision.producer_node.as_str()),
+                model_id: None,
+            })
+            .collect();
+        let evidence_bundle = revisions
+            .iter()
+            .find(|revision| {
+                revision.active && revision.kind == app_core::ArtifactKind::EvidenceBundle
+            })
+            .map(|revision| app_core::ArtifactRef {
+                file_hash: revision.file_hash.clone(),
+                kind: revision.kind,
+                revision_id: revision.id.clone(),
+            });
+        let newer_candidate = revisions
+            .iter()
+            .filter(|revision| {
+                revision.active && revision.kind == app_core::ArtifactKind::CandidateChart
+            })
+            .max_by_key(|revision| revision.created_at_ms)
+            .map(|revision| app_core::ArtifactRef {
+                file_hash: revision.file_hash.clone(),
+                kind: revision.kind,
+                revision_id: revision.id.clone(),
+            });
+        editor.source_context = Some(app_core::EditorSourceContext {
+            opened_chart,
+            workflow_revision,
+            run_id: None,
+            evidence_bundle,
+            audio_artifacts,
+            newer_candidate,
+        });
+    }
     Ok(editor)
 }
 
@@ -212,14 +302,24 @@ pub(crate) fn select_editor_audio_source(
     editor: &mut NativeEditor,
     source: &str,
 ) -> Result<(), String> {
-    if !matches!(source, "vocals" | "instrumental" | "original") {
-        return Err("That audition source is not supported.".to_string());
-    }
-    if source == "vocals" && editor.chart.audio.vocals.is_none() {
-        return Err("This chart has no separate vocal source.".to_string());
-    }
     let was_playing = editor.audio_status.playing;
-    let mut status = audio.load(&editor.chart.file_hash, source)?;
+    let position = editor.visible_position;
+    let mut status = if let Some(revision_id) = source.strip_prefix("artifact:") {
+        let revision = app_core::load_analysis_artifacts(&editor.chart.file_hash)
+            .into_iter()
+            .find(|revision| revision.id == revision_id)
+            .ok_or_else(|| "That artifact revision is no longer available.".to_string())?;
+        audio.load_path(&revision.path)?
+    } else {
+        if !matches!(source, "vocals" | "instrumental" | "original") {
+            return Err("That audition source is not supported.".to_string());
+        }
+        if source == "vocals" && editor.chart.audio.vocals.is_none() {
+            return Err("This chart has no separate vocal source.".to_string());
+        }
+        audio.load(&editor.chart.file_hash, source)?
+    };
+    status = audio.seek(position.min(status.duration_secs))?;
     // The overview waveform is independent of playback source — it's set
     // separately with a right-click on the waveform (`set_editor_waveform_source`).
     if was_playing {
@@ -227,7 +327,7 @@ pub(crate) fn select_editor_audio_source(
     }
     editor.audio_source = source.to_string();
     editor.audio_status = status;
-    editor.visible_position = 0.0;
+    editor.visible_position = position.min(editor.audio_status.duration_secs);
     editor.last_audio_sync = Instant::now();
     Ok(())
 }

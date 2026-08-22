@@ -220,13 +220,13 @@ pub(crate) fn build_graph_view_model(
 pub(crate) fn audio_step_node_id(step_id: &str) -> Option<&'static str> {
     match step_id {
         "extract_vocals" => Some("stems.vocals"),
-        "denoise_vocals" => Some("vocals.denoise"),
-        "dereverb_vocals" => Some("vocals.dereverb"),
-        "extract_accompaniment" => Some("stems.instrumental"),
-        "denoise_accompaniment" => Some("instrumental.denoise"),
-        "dereverb_accompaniment" => Some("instrumental.dereverb"),
-        "extract_karaoke" => Some("stems.karaoke"),
-        "separate_6s" | "legacy_htdemucs" => Some("stems.multistem"),
+        id if id.starts_with("vocal_denoise_") => Some("vocals.denoise"),
+        id if id.starts_with("vocal_dereverb_") => Some("vocals.dereverb"),
+        "extract_instrumental" => Some("stems.instrumental"),
+        id if id.starts_with("bgm_denoise_") => Some("instrumental.denoise"),
+        id if id.starts_with("bgm_dereverb_") => Some("instrumental.dereverb"),
+        "harmony_split" => Some("stems.karaoke"),
+        "optional_multistem" => Some("stems.multistem"),
         _ => None,
     }
 }
@@ -252,7 +252,7 @@ fn analysis_plan_node_detail(plan: &AnalysisPlan, node_id: &str) -> Option<Strin
             format!(
                 "{} · {} / {}",
                 step.model_id,
-                audio.requested_runtime.torch_backend,
+                audio.requested_runtime.routing_policy,
                 audio.requested_runtime.precision_policy
             )
         })
@@ -962,7 +962,7 @@ pub(crate) fn build_render_graph(
     // lyrics.import_timed. lyrics.transcribe is one layer further up and
     // already feeds lyrics.align, so drawing it here would skip a layer
     // and, after longest-path ranking, sit on the same skip rail as stem
-    // outputs. Parakeet (no align/import in the view) is the one case
+    // outputs. A direct-timestamp legacy route is the one case
     // where transcribe is the immediate producer.
     let timing_layer = ["lyrics.align", "lyrics.import_timed"]
         .into_iter()
@@ -1609,6 +1609,7 @@ mod tests {
                 profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
                 active_stem_nodes: BTreeSet::new(),
                 audio_processing: None,
+                workflow_execution: None,
             },
         )
         .unwrap();
@@ -1803,11 +1804,12 @@ mod tests {
                 disabled_nodes: BTreeSet::new(),
                 frozen_artifacts: BTreeSet::new(),
                 bypassed_nodes: BTreeSet::new(),
-                lyrics_route: app_core::LyricsRoute::WhisperAsr,
+                lyrics_route: app_core::LyricsRoute::GeneratedLyrics,
                 model_availability: Default::default(),
                 profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
                 active_stem_nodes: BTreeSet::new(),
                 audio_processing: None,
+                workflow_execution: None,
             },
         )
         .unwrap();
@@ -1858,9 +1860,10 @@ mod tests {
     }
 
     #[test]
-    fn catalog_multistem_plan_renders_model_outputs_and_chart_consumers() {
+    fn optional_multistem_plan_renders_outputs_without_replacing_chart_sources() {
         let graph = app_core::baseline_graph_spec();
-        let settings = app_core::AudioProcessingSettings::from_legacy_separator("demucs");
+        let mut settings = app_core::AudioProcessingSettings::from_legacy_separator("old");
+        settings.multistem_model_id = Some("melband_roformer_harmony".to_string());
         let audio = app_core::AudioProcessingPlanSnapshot::from_settings(&settings);
         let active_stem_nodes = app_core::active_stem_nodes_from_settings(&settings);
         let model_availability = [(id("stems.separate"), true), (id("stems.multistem"), true)]
@@ -1874,11 +1877,12 @@ mod tests {
                 disabled_nodes: BTreeSet::new(),
                 frozen_artifacts: BTreeSet::new(),
                 bypassed_nodes: BTreeSet::new(),
-                lyrics_route: app_core::LyricsRoute::WhisperAsr,
+                lyrics_route: app_core::LyricsRoute::GeneratedLyrics,
                 model_availability,
                 profile_snapshot: app_core::AnalysisProfileSnapshot::default(),
                 active_stem_nodes,
                 audio_processing: Some(audio),
+                workflow_execution: None,
             },
         )
         .unwrap();
@@ -1897,7 +1901,7 @@ mod tests {
             view.node(&id("stems.multistem"))
                 .unwrap()
                 .detail
-                .contains("htdemucs_6s")
+                .contains("melband_roformer_harmony")
         );
         let render = build_render_graph(&graph, &view, &|_| false);
         for artifact in [
@@ -1911,10 +1915,10 @@ mod tests {
         ] {
             assert!(render.node(&id(artifact)).is_some(), "missing {artifact}");
         }
-        assert!(render.edges.iter().any(|edge| {
+        assert!(!render.edges.iter().any(|edge| {
             edge.from == id("artifact.multistem_vocal") && edge.to == id("pitch.extract")
         }));
-        assert!(render.edges.iter().any(|edge| {
+        assert!(!render.edges.iter().any(|edge| {
             edge.from == id("artifact.multistem_vocal") && edge.to == id("lyrics.preprocess")
         }));
     }

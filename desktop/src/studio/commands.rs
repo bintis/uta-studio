@@ -97,8 +97,6 @@ pub(crate) enum SettingsCommand {
     AdjustSeparatorOverlap(i32),
     AdjustSeparatorBatchSize(i32),
     AdjustSeparatorNormalization(i32),
-    AdjustDemucsShifts(i32),
-    AdjustDemucsOverlap(i32),
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     AdjustVocalThreshold(i8),
@@ -147,6 +145,16 @@ pub(crate) enum AnalysisCommand {
     RevealLastExport(String, app_core::ExportPackageKind),
     SelectAnalysisHistory(Option<i64>),
     OpenSongAnalysis(String),
+    OpenProcessingStudio(String),
+    SelectWorkflowNode(String),
+    MoveWorkflowNode(String, bool),
+    DuplicateWorkflowNode(String),
+    CycleWorkflowPolicy(String),
+    AdjustWorkflowPriority(String, i32),
+    RebindWorkflowAnalyzer(String, String, String),
+    SaveWorkflow,
+    PreviewWorkflow,
+    RunWorkflow,
     OpenAnalysisInspect(String, String),
     #[allow(dead_code)] // Ctrl+wheel is the visible gesture; automation still uses this command
     AdjustAnalysisGraphZoom(i32),
@@ -262,6 +270,12 @@ pub(crate) enum EditorCommand {
     SelectWaveformSource(WaveformSource),
     SelectWaveformStyle(WaveformStyle),
     DismissWaveformContext,
+    ToggleEvidence(app_core::EvidenceKind),
+    ReviewPrevious,
+    ReviewNext,
+    MarkReviewRegion,
+    AcceptSuggestion(String),
+    IgnoreSuggestion(String),
     SetProblemsFilter(ProblemsFilter),
     ApplyAllLyricsEdit,
     ExtendLyricOverNote(WordSelection, usize),
@@ -289,7 +303,10 @@ impl UiCommand {
             // overlay tree on the old route for a frame.  Replacing the
             // whole route tree in one deferred command batch keeps Bevy
             // from submitting that mixed-generation tree to Wayland.
-            Self::Analysis(AnalysisCommand::OpenAnalysisInspect(_, _)) => UiDirtyRegion::Chrome,
+            Self::Analysis(
+                AnalysisCommand::OpenAnalysisInspect(_, _)
+                | AnalysisCommand::OpenProcessingStudio(_),
+            ) => UiDirtyRegion::Chrome,
             Self::Analysis(
                 AnalysisCommand::DismissAnalysisNodeContext
                 | AnalysisCommand::ShowArtifactLineage(_)

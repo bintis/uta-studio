@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "component": "uta-openvino-worker",
+  "worker_protocol": "native-openvino-ir-v1",
+  "openvino": {
+    "version": "2026.3.0",
+    "source_url": "https://github.com/openvinotoolkit/openvino.git",
+    "source_commit": "8a17657b995fd3b4a52f8484acfcf2bb61214623",
+    "build": {
+      "shared": true,
+      "threading": "SEQ",
+      "python": false,
+      "intel_cpu": false,
+      "intel_gpu": true,
+      "intel_npu": false,
+      "onednn_for_gpu": false,
+      "cm_for_gpu": false,
+      "auto_plugins": false,
+      "frontends": ["IR", "ONNX"],
+      "bundled_opencl_icd_loader": true,
+      "install_rpath": "$ORIGIN"
+    },
+    "gpu_properties": {
+      "INFERENCE_PRECISION_HINT": "f32",
+      "EXECUTION_MODE_HINT": "ACCURACY",
+      "GPU_ENABLE_LOOP_UNROLLING": false
+    }
+  },
+  "model_policy": {
+    "production_format": "openvino_ir_v11",
+    "source_graph_loading_during_inference": false,
+    "cpu_fallback": false,
+    "model_specific_identity": "installed-model-manifest"
+  }
+}

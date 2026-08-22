@@ -67,13 +67,27 @@ pub enum ArtifactKind {
     GuitarStem,
     PianoStem,
     OtherStem,
+    /// Generic workflow audio. Semantic role and processing history live in
+    /// the audio descriptor and immutable lineage rather than enum variants.
+    AudioStem,
     PitchTrack,
     PitchNoteCandidates,
+    PitchEvidence,
+    BoundaryEvidence,
+    TechniqueEvidence,
+    AcousticEvidence,
     LyricsInput,
+    CanonicalLyrics,
     PreprocessedAudio,
     RecognizedText,
     AsrSegments,
+    TranscriptEvidence,
+    AlignmentEvidence,
     TimedTranscript,
+    EvidenceBundle,
+    CandidateGraph,
+    CanonicalSingingTrack,
+    HumanCorrectionSet,
     CandidateChart,
     AuthoredChart,
 }
@@ -600,11 +614,6 @@ pub fn baseline_graph_spec() -> AnalysisGraphSpec {
         edge("lyrics.align", "chart.build_candidate"),
         edge("lyrics.import_timed", "chart.build_candidate"),
         edge("stems.bind_analysis_outputs", "chart.build_candidate"),
-        // Parakeet's ASR step emits word timing directly (no separate
-        // alignment pass) -- docs/analysis-dag-redesign.md §5 dynamic
-        // branch rules. lyrics.align stays the edge used by Known
-        // Lyrics/Whisper routes; this is the Parakeet-only path.
-        edge("lyrics.transcribe", "chart.build_candidate"),
     ];
 
     AnalysisGraphSpec {
@@ -676,10 +685,6 @@ pub fn active_stem_nodes_from_settings(
 ) -> BTreeSet<AnalysisNodeId> {
     let mut nodes = BTreeSet::new();
     nodes.insert(AnalysisNodeId::new("stems.bind_analysis_outputs"));
-    if crate::audio_processing::is_demucs_chart_path(settings) {
-        nodes.insert(AnalysisNodeId::new("stems.multistem"));
-        return nodes;
-    }
     nodes.insert(AnalysisNodeId::new("stems.vocals"));
     for model_id in settings
         .vocal_cleanup_chain
@@ -719,13 +724,13 @@ pub fn active_stem_nodes_from_settings(
 pub fn analysis_node_for_audio_step(step_id: &str) -> AnalysisNodeId {
     AnalysisNodeId::new(match step_id {
         "extract_vocals" => "stems.vocals",
-        "denoise_vocals" => "vocals.denoise",
-        "dereverb_vocals" => "vocals.dereverb",
-        "extract_accompaniment" => "stems.instrumental",
-        "denoise_accompaniment" => "instrumental.denoise",
-        "dereverb_accompaniment" => "instrumental.dereverb",
-        "extract_karaoke" => "stems.karaoke",
-        "separate_6s" | "legacy_htdemucs" => "stems.multistem",
+        id if id.starts_with("vocal_denoise_") => "vocals.denoise",
+        id if id.starts_with("vocal_dereverb_") => "vocals.dereverb",
+        "extract_instrumental" => "stems.instrumental",
+        id if id.starts_with("bgm_denoise_") => "instrumental.denoise",
+        id if id.starts_with("bgm_dereverb_") => "instrumental.dereverb",
+        "harmony_split" => "stems.karaoke",
+        "optional_multistem" => "stems.multistem",
         _ => "stems.separate",
     })
 }

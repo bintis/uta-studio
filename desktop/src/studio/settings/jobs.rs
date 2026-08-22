@@ -100,9 +100,10 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
         data_path: None,
         cache_paths: config.cache_paths.clone(),
         compute_backend: match config.compute_backend.as_deref() {
-            Some("cuda") => app_core::ComputeBackend::Cuda,
-            Some("intel") => app_core::ComputeBackend::Intel,
-            _ => app_core::ComputeBackend::Cpu,
+            Some("openvino" | "intel") => app_core::ComputeBackend::OpenVino,
+            Some("vulkan" | "cuda") => app_core::ComputeBackend::Vulkan,
+            Some("diagnostic_cpu") => app_core::ComputeBackend::DiagnosticCpu,
+            _ => app_core::ComputeBackend::Auto,
         },
         model_target: request.target,
     }
@@ -173,8 +174,8 @@ pub(crate) fn poll_native_setup(
             }
         }
     }
-    // Rebuilding the Models page on every pip/uv line steals the scroll
-    // container and feels like the page has frozen. Keep the latest
+    // Rebuilding the Models page on every worker progress line steals the
+    // scroll container and feels like the page has frozen. Keep the latest
     // progress in memory and paint at most a few times a second until
     // the job finishes.
     let now = Instant::now();

@@ -1,0 +1,15 @@
+diff --git a/src/forced_aligner.cpp b/src/forced_aligner.cpp
+index 09a4f08..b340633 100644
+--- a/src/forced_aligner.cpp
++++ b/src/forced_aligner.cpp
+@@ -108,6 +108,11 @@ bool Qwen3ForcedAligner::load_model(const std::string& model_path) {
+ 
+     state_.backend_gpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
++    if (!state_.backend_gpu && getenv("QWEN_REQUIRE_GPU") != nullptr) {
++        error_msg_ = "Required GPU backend is unavailable";
++        return false;
++    }
++
+ 
+     std::vector<ggml_backend_t> backends;
+     std::vector<ggml_backend_buffer_type_t> backend_bufts;

@@ -56,7 +56,7 @@ pub struct AnalysisProgressSnapshot {
     pub backend_fallback_reason: Option<String>,
     pub stage_routes: Vec<AnalysisStageRoute>,
     /// Structured Node event fields (analysis DAG redesign Phase 3,
-    /// docs/analysis-dag-redesign.md). `None` for events the Python
+    /// docs/analysis-dag-redesign.md). `None` for events the native worker
     /// pipeline hasn't migrated to `progress_node`/`artifact_reused` yet,
     /// and always `None` on history rows persisted before this field
     /// existed -- `#[serde(default)]` is required here, not optional
@@ -126,7 +126,7 @@ pub struct AnalysisStageRoute {
     pub backend_fallback_from: Option<String>,
     pub backend_fallback_reason: Option<String>,
     /// Phase 7 "Duration 检查器字段" gap, closed: real wall-clock timestamps
-    /// from the analyzer process itself (`server.py::_progress_payload`),
+    /// from the native analyzer process itself (NDJSON progress frame),
     /// not something Rust infers from socket receive time. `started_at_ms`
     /// is set once, the first time this route appears; `finished_at_ms`
     /// only by a terminal event (`node_completed`/`node_failed`/

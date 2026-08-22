@@ -30,6 +30,7 @@ pub(crate) fn media_type(kind: ArtifactKind) -> ArtifactMediaType {
         | ArtifactKind::GuitarStem
         | ArtifactKind::PianoStem
         | ArtifactKind::OtherStem
+        | ArtifactKind::AudioStem
         | ArtifactKind::PreprocessedAudio => ArtifactMediaType::Audio,
         ArtifactKind::LyricsInput => ArtifactMediaType::Text,
         ArtifactKind::RecognizedText => ArtifactMediaType::Json,
@@ -40,8 +41,19 @@ pub(crate) fn media_type(kind: ArtifactKind) -> ArtifactMediaType {
         | ArtifactKind::AudioDescriptors
         | ArtifactKind::PitchTrack
         | ArtifactKind::PitchNoteCandidates
+        | ArtifactKind::PitchEvidence
+        | ArtifactKind::BoundaryEvidence
+        | ArtifactKind::TechniqueEvidence
+        | ArtifactKind::AcousticEvidence
+        | ArtifactKind::CanonicalLyrics
+        | ArtifactKind::TranscriptEvidence
+        | ArtifactKind::AlignmentEvidence
         | ArtifactKind::AsrSegments
-        | ArtifactKind::TimedTranscript => ArtifactMediaType::Json,
+        | ArtifactKind::TimedTranscript
+        | ArtifactKind::EvidenceBundle
+        | ArtifactKind::CandidateGraph
+        | ArtifactKind::CanonicalSingingTrack
+        | ArtifactKind::HumanCorrectionSet => ArtifactMediaType::Json,
     }
 }
 
@@ -309,6 +321,7 @@ pub fn artifact_capabilities(revision: &ArtifactRevision) -> Vec<ArtifactCapabil
         | ArtifactKind::GuitarStem
         | ArtifactKind::PianoStem
         | ArtifactKind::OtherStem
+        | ArtifactKind::AudioStem
         | ArtifactKind::PreprocessedAudio => values.push(PreviewAudio),
         ArtifactKind::LyricsInput => {
             values.push(PreviewText);
@@ -322,7 +335,15 @@ pub fn artifact_capabilities(revision: &ArtifactRevision) -> Vec<ArtifactCapabil
             values.push(PreviewJson);
             values.push(OpenLyricsEditor);
         }
-        ArtifactKind::PitchTrack | ArtifactKind::PitchNoteCandidates => {
+        ArtifactKind::PitchTrack
+        | ArtifactKind::PitchNoteCandidates
+        | ArtifactKind::PitchEvidence
+        | ArtifactKind::BoundaryEvidence
+        | ArtifactKind::TechniqueEvidence
+        | ArtifactKind::AcousticEvidence
+        | ArtifactKind::EvidenceBundle
+        | ArtifactKind::CandidateGraph
+        | ArtifactKind::CanonicalSingingTrack => {
             values.push(PreviewJson);
             values.push(OpenChartEditor);
         }
@@ -333,7 +354,11 @@ pub fn artifact_capabilities(revision: &ArtifactRevision) -> Vec<ArtifactCapabil
         ArtifactKind::MusicAnalysis
         | ArtifactKind::KeyAnalysis
         | ArtifactKind::RhythmAnalysis
-        | ArtifactKind::AudioDescriptors => values.push(PreviewJson),
+        | ArtifactKind::AudioDescriptors
+        | ArtifactKind::CanonicalLyrics
+        | ArtifactKind::TranscriptEvidence
+        | ArtifactKind::AlignmentEvidence
+        | ArtifactKind::HumanCorrectionSet => values.push(PreviewJson),
         ArtifactKind::SourceMedia => values.push(PreviewMetadata),
     }
     if !revision.active && !revision.invalidated {

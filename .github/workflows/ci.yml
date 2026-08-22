@@ -67,9 +67,6 @@ jobs:
       - name: Check generated documentation
         run: cargo xtask docs check
 
-      - name: Compile Python analyzer sources
-        run: python3 -m compileall -q app-core/analyzer
-
   windows:
     name: Windows workspace and native audio
     runs-on: windows-2025

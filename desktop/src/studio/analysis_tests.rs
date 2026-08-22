@@ -459,19 +459,19 @@ mod graph_view_polish_tests {
     #[test]
     fn selected_stage_parameter_covers_the_remaining_profile_controlled_nodes() {
         let profile = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
-            alignment_backend: "whisperx".to_string(),
-            asr_engine: "parakeet".to_string(),
+            separator: "native_workflow".to_string(),
+            alignment_backend: "qwen3_forced_aligner".to_string(),
+            asr_engine: "transcript_fusion".to_string(),
             requested_device: "auto".to_string(),
             language_override: None,
         };
         assert_eq!(
             selected_stage_parameter("lyrics.transcribe", &profile),
-            Some(("ASR ENGINE", "parakeet".to_string()))
+            Some(("ASR ENGINE", "transcript_fusion".to_string()))
         );
         assert_eq!(
             selected_stage_parameter("lyrics.align", &profile),
-            Some(("ALIGNMENT BACKEND", "whisperx".to_string()))
+            Some(("ALIGNMENT BACKEND", "qwen3_forced_aligner".to_string()))
         );
     }
 
@@ -623,7 +623,7 @@ mod node_config_field_tests {
             ..AnalysisProfileSnapshot::default()
         };
         let song = AnalysisProfileSnapshot {
-            separator: "demucs".to_string(),
+            separator: "native_workflow".to_string(),
             ..AnalysisProfileSnapshot::default()
         };
 
@@ -681,6 +681,7 @@ mod plan_preview_tests {
             target_nodes: BTreeSet::new(),
             profile_snapshot: AnalysisProfileSnapshot::default(),
             audio_processing: None,
+            workflow_execution: None,
             warnings: Vec::new(),
         }
     }
@@ -817,6 +818,7 @@ mod failed_node_overlay_tests {
             target_nodes: Default::default(),
             profile_snapshot: Default::default(),
             audio_processing: None,
+            workflow_execution: None,
             warnings: Vec::new(),
         }
     }
@@ -1115,11 +1117,11 @@ mod format_node_attempt_comparison_tests {
     fn changed_implementation_shows_previous_to_current() {
         let copy = format_node_attempt_comparison(&NodeAttemptComparison {
             node_id: "stems.separate".to_string(),
-            attempt_a: Some(attempt("UVR", "succeeded")),
-            attempt_b: Some(attempt("Demucs", "succeeded")),
+            attempt_a: Some(attempt("RoFormer", "succeeded")),
+            attempt_b: Some(attempt("RoFormer", "succeeded")),
             changed_fields: vec!["implementation"],
         });
-        assert!(copy.contains("Demucs → UVR"));
+        assert!(copy.contains("RoFormer → RoFormer"));
     }
 
     #[test]
@@ -1166,6 +1168,7 @@ mod stale_candidate_overlay_tests {
             target_nodes: Default::default(),
             profile_snapshot: Default::default(),
             audio_processing: None,
+            workflow_execution: None,
             warnings: Vec::new(),
         }
     }

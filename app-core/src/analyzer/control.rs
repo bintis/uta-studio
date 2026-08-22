@@ -526,7 +526,7 @@ pub(crate) fn capture_committed_outputs_in(
 /// are resolved into `skip_transcription`/`skip_separation`/`skip_pitch`
 /// booleans through `analysis_plan::build_plan`
 /// (`pipeline_flags_for_request` below) instead of three independent
-/// boolean special cases -- the Python wire protocol is unchanged; only how
+/// boolean special cases -- the native worker protocol is unchanged; only how
 /// Rust decides those booleans changed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingNodeIntent {
@@ -575,6 +575,7 @@ pub(crate) struct PendingNodeIntent {
     /// `None` keeps preprocessing ephemeral and preserves ordinary-run
     /// storage behavior.
     pub(crate) capture_intermediate: Option<crate::artifact_workbench::CaptureIntermediateRequest>,
+    pub(crate) workflow_execution: Option<crate::workflow::WorkflowExecutionSnapshot>,
 }
 
 pub(crate) static PENDING_NODE_INTENTS: LazyLock<Mutex<HashMap<String, PendingNodeIntent>>> =
@@ -722,11 +723,12 @@ pub(crate) fn build_execution_plan(
         disabled_nodes: disabled_nodes.clone(),
         frozen_artifacts: frozen_artifacts.clone(),
         bypassed_nodes: bypassed_nodes.clone(),
-        lyrics_route: LyricsRoute::WhisperAsr,
+        lyrics_route: LyricsRoute::GeneratedLyrics,
         model_availability: BTreeMap::new(),
         profile_snapshot: AnalysisProfileSnapshot::default(),
         active_stem_nodes,
         audio_processing: Some(audio_processing),
+        workflow_execution: None,
     };
     build_plan(&graph, &request)
 }
@@ -841,7 +843,7 @@ pub(crate) fn pipeline_flags_for_request(
 /// for. Every other Optional node (`music.descriptors`) is computed
 /// unconditionally inside `analyze_music`'s single atomic call alongside
 /// `music.key`/`music.rhythm` -- accepting a disable request for it would
-/// silently have no effect on what Python actually runs, so
+/// silently have no effect on what native worker actually runs, so
 /// `run_analysis_plan` rejects it up front instead.
 pub(crate) fn pipeline_can_honor_disable(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
     matches!(
@@ -867,7 +869,7 @@ pub(crate) fn pipeline_can_honor_disable(id: &crate::analysis_graph::AnalysisNod
 /// file-existence), so freezing it is currently equivalent to ordinary
 /// cache reuse -- wired anyway for API/UI symmetry and so it stays correct
 /// if pitch ever grows parameterized cache invalidation. Lyrics outputs are
-/// now split into typed artifacts, but the Python pipeline still has no
+/// now split into typed artifacts, but the native pipeline still has no
 /// independent freeze control for those stages, so this predicate remains
 /// deliberately narrower than the artifact schema.
 pub(crate) fn pipeline_can_honor_freeze(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
@@ -950,18 +952,24 @@ pub fn run_analysis_request(request: crate::analysis_plan::AnalysisRequest) -> R
             ));
         }
     }
-    let plan =
-        crate::analysis_plan::build_plan(&crate::analysis_graph::baseline_graph_spec(), &request)
-            .map_err(|error| error.to_string())?;
+    let execution_graph = request
+        .workflow_execution
+        .as_ref()
+        .map(|snapshot| snapshot.graph.clone())
+        .unwrap_or_else(crate::analysis_graph::baseline_graph_spec);
+    let plan = crate::analysis_plan::build_plan(&execution_graph, &request)
+        .map_err(|error| error.to_string())?;
     if let Some(warning) = plan.warnings.first() {
         return Err(format!("{}: {}", warning.node, warning.message));
     }
-    if let Err(warnings) = pipeline_flags_for_request(
-        &request.targets,
-        &request.disabled_nodes,
-        &request.frozen_artifacts,
-        &request.bypassed_nodes,
-    ) {
+    if request.workflow_execution.is_none()
+        && let Err(warnings) = pipeline_flags_for_request(
+            &request.targets,
+            &request.disabled_nodes,
+            &request.frozen_artifacts,
+            &request.bypassed_nodes,
+        )
+    {
         return Err(match warnings.first() {
             Some(warning) => format!("{}: {}", warning.node, warning.message),
             None => "invalid analysis request: unknown or not-applicable target node".to_string(),
@@ -974,6 +982,7 @@ pub fn run_analysis_request(request: crate::analysis_plan::AnalysisRequest) -> R
         intent.disabled_nodes.extend(request.disabled_nodes);
         intent.frozen_artifacts.extend(request.frozen_artifacts);
         intent.bypassed_nodes.extend(request.bypassed_nodes);
+        intent.workflow_execution = request.workflow_execution;
     }
     enqueue_one(&request.file_hash);
     Ok(())
@@ -1270,7 +1279,7 @@ pub fn save_node_config_as_song_profile(file_hash: &str, node_id: &str) -> Resul
 /// bug before: the canvas/inspector percentage mismatch, the PARAMETER
 /// SOURCE binary check). Only `disabled_nodes` varies by caller; target is
 /// always the default full run (`chart.build_candidate`) and route is
-/// always `WhisperAsr`, matching every other existing call site's
+/// always `GeneratedLyrics`, matching every other existing call site's
 /// placeholder (`build_execution_plan`) -- no code path anywhere lets a
 /// user pick a route today.
 pub(crate) fn preview_analysis_request_for(
@@ -1322,11 +1331,12 @@ pub(crate) fn preview_analysis_request_for(
         disabled_nodes,
         frozen_artifacts: pending.frozen_artifacts,
         bypassed_nodes: pending.bypassed_nodes,
-        lyrics_route: LyricsRoute::WhisperAsr,
+        lyrics_route: LyricsRoute::GeneratedLyrics,
         model_availability,
         profile_snapshot,
         active_stem_nodes,
         audio_processing: Some(audio_processing),
+        workflow_execution: None,
     }
 }
 
@@ -1487,7 +1497,7 @@ pub(crate) fn queue_entry_blocks_enqueue(status: Option<&QueuedStatus>) -> bool 
 
 /// Phase 6 `cancel_analysis_run`. Deliberately scoped to the *queued, not
 /// yet started* case only: the single background worker thread
-/// (`spawn_worker`) runs `process_song` synchronously against a live Python
+/// (`spawn_worker`) runs `process_song` synchronously against a live native worker
 /// subprocess with no interrupt hook in the wire protocol, so a genuinely
 /// running analysis cannot be safely cancelled mid-node today (killing the
 /// analyzer server outright would corrupt whatever node was mid-write and

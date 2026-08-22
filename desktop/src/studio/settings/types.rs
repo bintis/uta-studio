@@ -29,14 +29,17 @@ impl SettingsTab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsSelectKind {
     UiLanguage,
+    #[allow(dead_code)]
     ComputeBackend,
     Separator,
+    #[allow(dead_code)]
     SeparatorPreset,
     AsrEngine,
     WhisperModel,
     AlignBackend,
     PitchModel,
     AudioVocalModel,
+    #[allow(dead_code)]
     AudioMultistemModel,
     AudioAccompanimentModel,
     AudioKaraokeModel,
@@ -44,8 +47,9 @@ pub(crate) enum SettingsSelectKind {
     AudioVocalPostprocess2,
     AudioBgmPostprocess1,
     AudioBgmPostprocess2,
-    AudioTorchBackend,
-    AudioOnnxBackend,
+    #[allow(dead_code)]
+    AudioRuntimePolicy,
+    #[allow(dead_code)]
     AudioPrecisionPolicy,
 }
 
@@ -105,8 +109,6 @@ pub(crate) enum NumericSetting {
     SeparatorOverlap,
     SeparatorBatchSize,
     SeparatorNormalization,
-    DemucsShifts,
-    DemucsOverlap,
     BeamSize,
     BatchSize,
     VocalThreshold,

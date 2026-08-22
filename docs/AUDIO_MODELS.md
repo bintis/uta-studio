@@ -1,54 +1,41 @@
-# Audio processing models
+# Native audio model catalog
 
-Uta Studio 0.5 introduces a fixed, offline Model Catalog for vocal
-separation, accompaniment, karaoke, denoise, dereverb, and six-stem
-Demucs. Analysis never downloads models. Installation happens only from
-**Settings > Models & runtime** after the user confirms the model name,
-source, size, and license.
+Uta Studio keeps audio transformations, analysis experts, and runtime recipes separate.
 
-## First catalog
+- Audio transformation models are listed by `app-core/src/audio_model.rs`.
+- Speech, pitch, boundary, and technique experts are represented by the workflow capability and native runtime registries.
+- Exact Qwen runtime identities are locked in `native-inference/runtime-lock.json`.
+- Generic production models are converted during explicit installation to pinned
+  OpenVINO IR; production workers do not parse source ONNX/checkpoint formats.
+  The locked Qwen GGML/Vulkan recipes are the only format/backend exceptions.
 
-| Model ID | Purpose | Architecture | Runner |
-| --- | --- | --- | --- |
-| `bs_roformer_vocals_ep317` | Vocal extraction | BS-RoFormer / MDXC | PyTorch (`torch_cuda` / `torch_xpu` / `torch_cpu`) |
-| `melband_roformer_inst_v2` | High-quality accompaniment | MelBand-RoFormer / MDXC | PyTorch |
-| `htdemucs_6s` | Six-stem separation | Demucs | PyTorch |
-| `melband_roformer_denoise_aufr33` | Vocal denoise | MelBand-RoFormer / MDXC | PyTorch |
-| `melband_roformer_dereverb_anvuew` | Vocal dereverb | MelBand-RoFormer / MDXC | PyTorch |
-| `uvr_mdxnet_karaoke_2` | Karaoke accompaniment | MDX ONNX | OpenVINO / ONNX Runtime in a helper process |
-| `melband_roformer_karaoke_aufr33_viperx` | Default analysis karaoke | MelBand-RoFormer / MDXC | PyTorch |
+A catalog entry is not production support. Every `(model revision, backend, runtime recipe)` is classified independently as production-pinned, benchmark candidate, experimental, or unsupported. The router uses only production-pinned combinations and fails closed when no validated backend is available.
 
-Checkpoint filenames are catalog internals. Saved settings store only
-stable model IDs.
+Models and runtime components are installed only after confirmation in **Settings > Models & runtime**. Startup, page rendering, status checks, diagnostics, and workflow compilation are read-only and never download artifacts. Existing model directories are user data and are not automatically removed or replaced.
 
-## Integrity and licenses
+Workflow nodes store catalog model IDs, never arbitrary checkpoint paths. Model file hashes, runtime recipe digests, exact input revisions, normalized parameters, and algorithm versions participate in artifact provenance and cache identity.
 
-Every catalog file has a full SHA-256. UVR's short MD5 is stored only as
-`uvr_metadata_hash` for MDX metadata lookup and is never used as an
-integrity check.
+## RMVPE OpenVINO worker
 
-Weights are not packaged with Uta Studio. Users download them from the
-recorded sources after confirmation. Model licenses are recorded per
-entry in `app-core/analyzer/audio_models/catalog.yaml` and remain
-separate from the MIT-licensed reference code.
+`uta-openvino-worker` implements the RMVPE continuous-F0 contract with a native
+Rust log-mel frontend and OpenVINO `GPU` inference. It rejects CPU fallback.
+Explicit installation verifies the source RMVPE ONNX SHA-256
+`5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`
+and writes a new, atomic OpenVINO IR v11 installation without moving, replacing,
+or loading the source ONNX in production. The Worker verifies the IR manifest
+and every consumed graph/weights hash, then emits 10 ms pitch evidence without
+rounding frames directly to MIDI notes.
 
-The `audio-separator` integration keeps its MIT copyright and license
-text. Uta Studio does not copy the reference project's online model
-directory into the runtime. Production inference goes through
-`app-core/analyzer/audio_separator_adapter/`, which loads already-installed
-files via `load_model_from_spec`, honors an explicit device (including
-Intel XPU), and never calls `download_model_files`.
-
-The default analysis karaoke model is
-`melband_roformer_karaoke_aufr33_viperx`. If that checkpoint already
-exists under `models/audio_separator/`, Settings install copies and
-verifies it instead of downloading it again.
-
-## Developer import
-
-```sh
-python3 tools/import_uvr_audio_catalog.py --print-catalog
-```
-
-This tool is not invoked by application startup, Settings rendering,
-analysis, or diagnostics.
+The generic OpenVINO Worker/runtime recipe identity is
+`bd349389e6d0d0b742ae103892c1e5774599dd8733460aec80cb74bcf20ddab6`.
+RMVPE's independently pinned bucket-conversion recipe remains
+`ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876`.
+It pins source-built OpenVINO 2026.3.0 commit
+`8a17657b995fd3b4a52f8484acfcf2bb61214623`; CPU, NPU, Python bindings,
+and unused frontends are disabled. OpenVINO 2026.3 requires static IR shapes
+plus `GPU_ENABLE_LOOP_UNROLLING=NO` for RMVPE's GRU graph. The installer creates
+32–1024-frame IR buckets sharing one immutable weights file; inference uses
+128-frame overlap so song tails do not receive long artificial padding.
+A synthetic 440 Hz real-decode/OpenVINO Arc smoke produced a 440.72 Hz mean F0;
+full-song golden, repeat, cancellation, and contention acceptance remain
+required before the complete native workflow can be declared finished.

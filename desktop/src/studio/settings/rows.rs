@@ -388,9 +388,8 @@ pub(crate) fn sync_numeric_settings(
             NumericSetting::VocalThreshold => (0, 60),
             NumericSetting::SeparatorSegmentSize => (64, 1024),
             NumericSetting::SeparatorOverlap => (2, 32),
-            NumericSetting::SeparatorBatchSize | NumericSetting::DemucsShifts => (1, 8),
+            NumericSetting::SeparatorBatchSize => (1, 8),
             NumericSetting::SeparatorNormalization => (1, 100),
-            NumericSetting::DemucsOverlap => (1, 95),
         };
         let clamped = parsed.clamp(minimum, maximum);
         if clamped != parsed {
@@ -406,8 +405,6 @@ pub(crate) fn sync_numeric_settings(
             NumericSetting::SeparatorOverlap => shell.config.separator_overlap(),
             NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size(),
             NumericSetting::SeparatorNormalization => shell.config.separator_normalization_pct(),
-            NumericSetting::DemucsShifts => shell.config.demucs_shifts(),
-            NumericSetting::DemucsOverlap => shell.config.demucs_overlap_pct(),
         };
         if clamped == current {
             continue;
@@ -426,8 +423,6 @@ pub(crate) fn sync_numeric_settings(
             NumericSetting::SeparatorNormalization => {
                 shell.config.separator_normalization_pct = Some(clamped)
             }
-            NumericSetting::DemucsShifts => shell.config.demucs_shifts = Some(clamped),
-            NumericSetting::DemucsOverlap => shell.config.demucs_overlap_pct = Some(clamped),
         }
         if let Some(error) = save_config_error(&shell.config) {
             shell.notice = Some(error);

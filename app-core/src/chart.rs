@@ -802,7 +802,7 @@ fn atomic_write_json(destination: &Path, value: &serde_json::Value) -> Result<()
 }
 
 /// Build the versioned analyzer chart proposal at the Rust schema boundary.
-/// Python produces the exact timed transcript; Rust combines it with the
+/// The native worker produces the exact timed transcript; Rust combines it with the
 /// pitch-note evidence into the same validated UTZ chart type used by the
 /// editor. This prevents transcript JSON from masquerading as a chart.
 pub(crate) fn materialize_candidate_chart(

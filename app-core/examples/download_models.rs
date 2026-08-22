@@ -8,7 +8,7 @@
 
 fn main() {
     for target in [
-        app_core::ModelDownloadTarget::Separator,
+        app_core::ModelDownloadTarget::RoFormer,
         app_core::ModelDownloadTarget::Pitch,
     ] {
         println!("=== downloading {target:?} ===");

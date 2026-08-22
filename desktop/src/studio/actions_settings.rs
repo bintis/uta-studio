@@ -108,45 +108,13 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     studio.shell.config.compute_backend = Some(value.clone());
                 }
                 SettingsSelectKind::Separator => {
-                    let previous = audio_settings(&studio.shell.config);
-                    let separator = match value.as_str() {
-                        "htdemucs_6s" | "demucs" => "demucs",
-                        "openvino_demucs" => "openvino_demucs",
-                        _ => "karaoke",
-                    };
-                    let mut next = if studio.shell.config.separator() == separator {
-                        previous.clone()
-                    } else {
-                        app_core::AudioProcessingSettings::from_legacy_separator(separator)
-                    };
-                    match value.as_str() {
-                        "melband_roformer_karaoke_aufr33_viperx" | "bs_roformer_vocals_ep317" => {
-                            next.legacy_profile = Some("legacy_karaoke_roformer".to_string());
-                            next.multistem_model_id = None;
-                            next.vocal_model_id = Some(value.clone());
-                        }
-                        "htdemucs_6s" => {
-                            next.legacy_profile = Some("legacy_htdemucs".to_string());
-                            next.multistem_model_id = Some(value.clone());
-                            next.vocal_model_id = None;
-                            next.vocal_cleanup_chain.clear();
-                            next.accompaniment_model_id = None;
-                            next.accompaniment_cleanup_chain.clear();
-                            next.karaoke_model_id = None;
-                        }
-                        _ => {}
-                    }
-                    // Changing the separation family must not silently discard
-                    // runtime policy or model-specific tuning. Incompatible
-                    // route selections reset; shared execution settings stay.
-                    next.common_overrides = previous.common_overrides;
-                    next.per_model_overrides = previous.per_model_overrides;
-                    next.torch_backend = previous.torch_backend;
-                    next.onnx_backend = previous.onnx_backend;
-                    next.precision_policy = previous.precision_policy;
-                    next.memory_policy = previous.memory_policy;
-                    studio.shell.config.separator = Some(separator.to_string());
-                    studio.shell.config.audio_processing = Some(next);
+                    let mut settings = audio_settings(&studio.shell.config);
+                    settings.vocal_model_id = Some(value.clone());
+                    settings.multistem_model_id = None;
+                    settings.migrated_profile = None;
+                    settings.runtime_policy = "validated_auto".to_string();
+                    studio.shell.config.separator = Some("native_workflow".to_string());
+                    studio.shell.config.audio_processing = Some(settings);
                 }
                 SettingsSelectKind::SeparatorPreset => {
                     apply_separator_preset(&mut studio.shell.config, value);
@@ -165,13 +133,13 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 }
                 SettingsSelectKind::AudioVocalModel => {
                     let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.migrated_profile = None;
                     settings.multistem_model_id = None;
                     settings.vocal_model_id = Some(value.clone());
                 }
                 SettingsSelectKind::AudioMultistemModel => {
                     let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.legacy_profile = Some("legacy_htdemucs".to_string());
+                    settings.migrated_profile = None;
                     settings.multistem_model_id = Some(value.clone());
                     settings.vocal_model_id = None;
                     settings.vocal_cleanup_chain.clear();
@@ -181,11 +149,11 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 }
                 SettingsSelectKind::AudioAccompanimentModel => {
                     let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.migrated_profile = None;
                     settings.multistem_model_id = None;
-                    settings.vocal_model_id.get_or_insert_with(|| {
-                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
-                    });
+                    settings
+                        .vocal_model_id
+                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
                     settings.accompaniment_model_id = Some(value.clone());
                 }
                 SettingsSelectKind::AudioKaraokeModel => {
@@ -198,11 +166,11 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     let slot =
                         usize::from(matches!(kind, SettingsSelectKind::AudioVocalPostprocess2));
                     let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.migrated_profile = None;
                     settings.multistem_model_id = None;
-                    settings.vocal_model_id.get_or_insert_with(|| {
-                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
-                    });
+                    settings
+                        .vocal_model_id
+                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
                     settings.vocal_cleanup_chain = rewrite_cleanup_slot(&current, slot, value);
                 }
                 SettingsSelectKind::AudioBgmPostprocess1
@@ -211,19 +179,16 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     let slot =
                         usize::from(matches!(kind, SettingsSelectKind::AudioBgmPostprocess2));
                     let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.legacy_profile = Some("legacy_karaoke_roformer".to_string());
+                    settings.migrated_profile = None;
                     settings.multistem_model_id = None;
-                    settings.vocal_model_id.get_or_insert_with(|| {
-                        app_core::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string()
-                    });
+                    settings
+                        .vocal_model_id
+                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
                     settings.accompaniment_cleanup_chain =
                         rewrite_cleanup_slot(&current, slot, value);
                 }
-                SettingsSelectKind::AudioTorchBackend => {
-                    audio_settings_mut(&mut studio.shell.config).torch_backend = value.clone();
-                }
-                SettingsSelectKind::AudioOnnxBackend => {
-                    audio_settings_mut(&mut studio.shell.config).onnx_backend = value.clone();
+                SettingsSelectKind::AudioRuntimePolicy => {
+                    audio_settings_mut(&mut studio.shell.config).runtime_policy = value.clone();
                 }
                 SettingsSelectKind::AudioPrecisionPolicy => {
                     audio_settings_mut(&mut studio.shell.config).precision_policy = value.clone();
@@ -242,11 +207,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             ) {
                 let derived = audio_settings(&studio.shell.config).derived_legacy_separator();
                 studio.shell.config.separator = Some(derived.to_string());
-            }
-            if studio.shell.config.compute_backend.as_deref() != Some("intel")
-                && studio.shell.config.separator() == "openvino_demucs"
-            {
-                studio.shell.config.separator = Some("karaoke".to_string());
             }
             studio.dialogs.open_settings_select = None;
             studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
@@ -531,22 +491,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.notice = save_config_error(&studio.shell.config);
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiCommand::Settings(SettingsCommand::AdjustDemucsShifts(delta)) => {
-            studio.shell.config.demucs_shifts = Some(
-                (i64::from(studio.shell.config.demucs_shifts()) + i64::from(*delta)).clamp(1, 8)
-                    as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustDemucsOverlap(delta)) => {
-            studio.shell.config.demucs_overlap_pct = Some(
-                (i64::from(studio.shell.config.demucs_overlap_pct()) + i64::from(*delta))
-                    .clamp(1, 95) as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
         UiCommand::Settings(SettingsCommand::AdjustUiFontScale(delta)) => {
             let current = ui_font_size_percent_to_points(studio.shell.config.font_scale_percent());
             let next = (i64::from(current) + i64::from(*delta) * i64::from(UI_FONT_SIZE_STEP_PX))
@@ -583,21 +527,19 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RestoreAnalysisDefaults) => {
-            studio.shell.config.separator = Some("karaoke".to_string());
+            studio.shell.config.separator = Some("native_workflow".to_string());
             studio.shell.config.separator_segment_size = None;
             studio.shell.config.separator_overlap = None;
             studio.shell.config.separator_batch_size = None;
             studio.shell.config.separator_normalization_pct = None;
-            studio.shell.config.demucs_shifts = None;
-            studio.shell.config.demucs_overlap_pct = None;
-            studio.shell.config.asr_engine = Some("whisper".to_string());
-            studio.shell.config.align_backend = Some("whisperx".to_string());
+            studio.shell.config.asr_engine = Some("transcript_fusion".to_string());
+            studio.shell.config.align_backend = Some("qwen3_forced_aligner".to_string());
             studio.shell.config.pitch_model = Some("rmvpe".to_string());
             studio.shell.config.vocal_detection_threshold_pct = Some(0.15);
-            studio.shell.config.whisper_model = Some("large-v3".to_string());
+            studio.shell.config.whisper_model = None;
             studio.shell.config.beam_size = Some(8);
             studio.shell.config.batch_size = Some(8);
-            studio.shell.config.compute_backend = Some("cpu".to_string());
+            studio.shell.config.compute_backend = Some("auto".to_string());
             studio.shell.config.auto_analyze = Some(false);
             studio.shell.notice = save_config_error(&studio.shell.config)
                 .or_else(|| Some("Analysis defaults restored.".to_string()));

@@ -8,19 +8,18 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const AUDIO_CATALOG_VERSION: &str = "2026.08.1";
+pub const AUDIO_CATALOG_VERSION: &str = "native-final-v1";
 pub const AUDIO_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 pub const REQUIRED_AUDIO_MODEL_IDS: &[&str] = &[
     "bs_roformer_vocals_ep317",
     "melband_roformer_inst_v2",
-    "htdemucs_6s",
+    "melband_roformer_harmony",
     "melband_roformer_denoise_aufr33",
     "melband_roformer_dereverb_anvuew",
-    "uvr_mdxnet_karaoke_2",
 ];
 
-pub const DEFAULT_LEGACY_KARAOKE_MODEL_ID: &str = "melband_roformer_karaoke_aufr33_viperx";
+pub const DEFAULT_VOCAL_MODEL_ID: &str = "bs_roformer_vocals_ep317";
 pub const DEFAULT_BGM_MODEL_ID: &str = "melband_roformer_inst_v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -122,6 +121,6 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), REQUIRED_AUDIO_MODEL_IDS.len());
-        assert_eq!(AUDIO_CATALOG_VERSION, "2026.08.1");
+        assert_eq!(AUDIO_CATALOG_VERSION, "native-final-v1");
     }
 }

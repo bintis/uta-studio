@@ -104,7 +104,7 @@ Open **Settings → Models & runtime**.
 4. Read the confirmation, including model size and license notices.
 5. Confirm the setup explicitly.
 
-Uta Studio may reuse compatible local `ffmpeg`, `uv`, Python, and existing model files. It does not download models merely because the application was launched.
+Uta Studio uses packaged native workers plus compatible local or packaged `ffmpeg` and existing model files. It does not download runtime components or models merely because the application was launched, a page opened, or diagnostics ran.
 
 #### 3.5 Open the Documentation Center
 
@@ -147,19 +147,19 @@ Uta Studio executes an explicit node-based DAG. Generated files are typed **anal
 
 Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
 
-Available choices depend on the configured runtime and can include BS-RoFormer vocals, MelBand accompaniment, Karaoke 2, denoise, dereverb, and HTDemucs 6-stem. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis itself stays offline; existing chart data changes only after re-analysis.
+Available choices include validated RoFormer vocal/BGM, lead/back separation, denoise, and dereverb models. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis stays local; existing chart data changes only after explicit re-analysis.
 
 Use a balanced profile first. Memory-saving profiles reduce peak use; quality profiles usually take longer and can require more memory.
 
 #### 02 · Lyrics transcription
 
-Recognizes lyrics from the vocal source. Whisper and Parakeet-family options may be available, depending on the configured runtime and downloaded files.
+FireRedASR2-AED and Qwen3-ASR produce independent transcript evidence. Uta Studio fuses their token evidence into Canonical Lyrics instead of silently choosing one complete transcript.
 
 A larger recognition model can improve difficult material but costs more memory and processing time. Confirm the selected model is installed on **Models & runtime**.
 
 #### 03 · Word timing and alignment
 
-Refines recognized or supplied lyrics into editable word timings. Supported backends can include WhisperX, CTC forced alignment, Qwen forced alignment, and the optional Japanese MMS Karaoke backend.
+The pinned Qwen3 Forced Aligner consumes Canonical Lyrics and selected lead-vocal audio. Its boundaries remain evidence until fusion and can be reviewed in the Editor.
 
 The optional NextFire MMS Karaoke model is separately licensed under AGPL-3.0 and is downloaded only after a dedicated confirmation. Use it only when its license and Japanese-specific behavior fit your project.
 
@@ -424,3 +424,9 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 - **AuthoredChart** — the chart you edit and export.
 
 ---
+
+## Processing Studio and evidence review
+
+Open **Processing Studio** from a song page to edit the machine workflow. Audio transformations rewrite real typed dataflow; Vocal, BGM, Lead, and Back/Harmony remain separate lanes. Analyzer attachments choose a concrete audio artifact, while analyzer order only changes ready-node priority. Invalid types, missing hard dependencies, and cycles cannot be saved. **Advanced Graph** displays the exact compiled DAG.
+
+A completed run creates a replaceable Candidate revision. The Editor keeps authored notes visually and semantically dominant, exposes read-only evidence and a disagreement-first Review queue, and applies accepted suggestions through normal undo history. Re-analysis never silently replaces an Authored revision. Use Compare or Merge when a newer Candidate is available.

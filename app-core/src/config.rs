@@ -33,8 +33,8 @@ pub struct AppConfig {
     pub export_path: Option<PathBuf>,
     pub fullscreen: Option<bool>,
     pub dark_mode: Option<bool>,
-    /// Python AI runtime selected during setup: `cpu`, `cuda`, or `intel`.
-    /// Changing it requires re-running setup so the virtualenv is rebuilt.
+    /// Native acceleration preference. Production still uses only validated
+    /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
     pub whisper_model: Option<String>,
     pub beam_size: Option<u32>,
@@ -48,10 +48,6 @@ pub struct AppConfig {
     pub separator_batch_size: Option<u32>,
     #[serde(default)]
     pub separator_normalization_pct: Option<u32>,
-    #[serde(default)]
-    pub demucs_shifts: Option<u32>,
-    #[serde(default)]
-    pub demucs_overlap_pct: Option<u32>,
     /// Purpose-oriented audio-processing settings. Legacy `separator*` fields
     /// stay on disk for one release so older clients keep loading.
     #[serde(default)]
@@ -96,8 +92,6 @@ impl Default for AppConfig {
             separator_overlap: None,
             separator_batch_size: None,
             separator_normalization_pct: None,
-            demucs_shifts: None,
-            demucs_overlap_pct: None,
             audio_processing: None,
             asr_engine: None,
             align_backend: None,
@@ -127,12 +121,21 @@ impl AppConfig {
         if self.data_path.is_none() {
             self.data_path = Some(Self::default_data_path());
         }
-        if !matches!(
-            self.separator.as_deref(),
-            None | Some("karaoke" | "demucs" | "openvino_demucs")
-        ) {
-            self.separator = Some("karaoke".to_string());
+        if self.separator.as_deref() != Some("native_workflow") {
+            self.separator = Some("native_workflow".to_string());
         }
+        self.compute_backend = Some(
+            match self.compute_backend.as_deref() {
+                Some("openvino") => "openvino",
+                Some("vulkan") => "vulkan",
+                Some("diagnostic_cpu") => "diagnostic_cpu",
+                _ => "auto",
+            }
+            .to_string(),
+        );
+        self.asr_engine = Some("transcript_fusion".to_string());
+        self.align_backend = Some("qwen3_forced_aligner".to_string());
+        self.whisper_model = None;
         if self.audio_processing.is_none() {
             self.audio_processing = Some(
                 crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
@@ -151,12 +154,6 @@ impl AppConfig {
         if !matches!(self.pitch_model.as_deref(), None | Some("rmvpe")) {
             self.pitch_model = Some("rmvpe".to_string());
         }
-        if !matches!(
-            self.align_backend.as_deref(),
-            None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
-        ) {
-            self.align_backend = Some("whisperx".to_string());
-        }
         if self
             .ui_language
             .as_deref()
@@ -165,82 +162,6 @@ impl AppConfig {
             self.ui_language = None;
         }
         self
-    }
-
-    fn recover_previous_install(self) -> (Self, bool) {
-        if std::env::var_os("UTA_STUDIO_DATA_PATH").is_some_and(|path| !path.is_empty()) {
-            return (self, false);
-        }
-        let default_root = Self::default_data_path();
-        let candidate = dirs::document_dir().map(|documents| documents.join("uta-studio"));
-        self.recover_previous_install_from(&default_root, candidate.as_deref())
-    }
-
-    fn recover_previous_install_from(
-        mut self,
-        default_root: &std::path::Path,
-        candidate: Option<&std::path::Path>,
-    ) -> (Self, bool) {
-        let active_root = self.effective_data_path();
-        let Some(candidate) = candidate else {
-            return (self, false);
-        };
-        if active_root != default_root
-            || candidate == default_root
-            || active_root.join("vendor/.ready").is_file()
-        {
-            return (self, false);
-        }
-
-        let Ok(marker) = std::fs::read_to_string(candidate.join("vendor/.ready")) else {
-            return (self, false);
-        };
-        let backend = marker
-            .trim()
-            .strip_prefix("runtime-v5:")
-            .or_else(|| marker.trim().strip_prefix("runtime-v4:"));
-        let Some(backend) = backend else {
-            return (self, false);
-        };
-        if !matches!(backend, "cpu" | "cuda" | "intel") {
-            return (self, false);
-        }
-
-        self.data_path = Some(candidate.to_path_buf());
-        if self.library_source.is_none() && candidate.join("songs.db").is_file() {
-            self.library_source = Some(LibrarySource::Folders {
-                paths: vec![candidate.to_path_buf()],
-            });
-        }
-        self.compute_backend
-            .get_or_insert_with(|| backend.to_string());
-
-        let models = candidate.join("models");
-        if self.whisper_model.is_none() && models.join("whisper/openvino-large-v3-turbo").is_dir() {
-            self.whisper_model = Some("large-v3-turbo".to_string());
-        }
-        if self.separator.is_none()
-            && models
-                .join("separation/openvino-demucs/htdemucs_v4")
-                .is_dir()
-        {
-            self.separator = Some("openvino_demucs".to_string());
-        }
-        if self.asr_engine.is_none() && models.join("whisper").is_dir() {
-            self.asr_engine = Some("whisper".to_string());
-        }
-        if self.align_backend.is_none()
-            && models
-                .join("huggingface/hub/models--Qwen--Qwen3-ForcedAligner-0.6B-hf")
-                .is_dir()
-        {
-            self.align_backend = Some("qwen".to_string());
-        }
-        if self.pitch_model.is_none() && models.join("pitch/rmvpe/manifest.json").is_file() {
-            self.pitch_model = Some("rmvpe".to_string());
-        }
-
-        (self, true)
     }
 
     pub fn library_paths(&self) -> Vec<PathBuf> {
@@ -260,16 +181,11 @@ impl AppConfig {
         let (config, should_save) = match loaded {
             Some(cfg) => {
                 let had_data_path = cfg.data_path.is_some();
-                let had_invalid_separator = !matches!(
-                    cfg.separator.as_deref(),
-                    None | Some("karaoke" | "demucs" | "openvino_demucs")
-                );
+                let had_invalid_separator = cfg.separator.as_deref() != Some("native_workflow");
                 let had_invalid_pitch_model =
                     !matches!(cfg.pitch_model.as_deref(), None | Some("rmvpe"));
-                let had_invalid_align_backend = !matches!(
-                    cfg.align_backend.as_deref(),
-                    None | Some("whisperx" | "ctc" | "qwen" | "mms_karaoke")
-                );
+                let had_invalid_align_backend =
+                    cfg.align_backend.as_deref() != Some("qwen3_forced_aligner");
                 let had_invalid_ui_language = cfg
                     .ui_language
                     .as_deref()
@@ -291,11 +207,7 @@ impl AppConfig {
             }
             None => (Self::default().with_defaults(), true),
         };
-        let (config, recovered_previous_install) = config.recover_previous_install();
-
-        if (should_save || recovered_previous_install)
-            && let Err(error) = config.save()
-        {
+        if should_save && let Err(error) = config.save() {
             tracing::error!("Could not save Uta Studio configuration: {error}");
         }
 
@@ -315,7 +227,7 @@ impl AppConfig {
     }
 
     pub fn whisper_model(&self) -> &str {
-        self.whisper_model.as_deref().unwrap_or("large-v3")
+        "qwen3_asr_1_7b"
     }
 
     pub fn beam_size(&self) -> u32 {
@@ -327,7 +239,7 @@ impl AppConfig {
     }
 
     pub fn separator(&self) -> &str {
-        self.separator.as_deref().unwrap_or("karaoke")
+        "native_workflow"
     }
 
     pub fn separator_segment_size(&self) -> u32 {
@@ -346,20 +258,12 @@ impl AppConfig {
         self.separator_normalization_pct.unwrap_or(90).clamp(1, 100)
     }
 
-    pub fn demucs_shifts(&self) -> u32 {
-        self.demucs_shifts.unwrap_or(1).clamp(1, 8)
-    }
-
-    pub fn demucs_overlap_pct(&self) -> u32 {
-        self.demucs_overlap_pct.unwrap_or(25).clamp(1, 95)
-    }
-
     pub fn asr_engine(&self) -> &str {
-        self.asr_engine.as_deref().unwrap_or("whisper")
+        "transcript_fusion"
     }
 
     pub fn align_backend(&self) -> &str {
-        self.align_backend.as_deref().unwrap_or("whisperx")
+        "qwen3_forced_aligner"
     }
 
     pub fn pitch_model(&self) -> &str {
@@ -457,7 +361,7 @@ fn write_config_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{AppConfig, LibrarySource, write_config_atomically};
+    use super::{AppConfig, write_config_atomically};
 
     #[test]
     fn defaults_do_not_invent_an_empty_library_source() {
@@ -488,20 +392,19 @@ mod tests {
     }
 
     #[test]
-    fn mms_karaoke_is_a_valid_alignment_backend() {
-        let config = AppConfig {
-            align_backend: Some("mms_karaoke".to_string()),
-            ..AppConfig::default()
-        }
-        .with_defaults();
-        assert_eq!(config.align_backend(), "mms_karaoke");
-
+    fn old_runtime_values_migrate_to_native_fail_closed_defaults() {
         let repaired = AppConfig {
-            align_backend: Some("not-a-backend".to_string()),
+            compute_backend: Some("intel".to_string()),
+            separator: Some("old_separator".to_string()),
+            asr_engine: Some("old_transcriber".to_string()),
+            align_backend: Some("old_aligner".to_string()),
             ..AppConfig::default()
         }
         .with_defaults();
-        assert_eq!(repaired.align_backend(), "whisperx");
+        assert_eq!(repaired.compute_backend.as_deref(), Some("auto"));
+        assert_eq!(repaired.separator(), "native_workflow");
+        assert_eq!(repaired.asr_engine(), "transcript_fusion");
+        assert_eq!(repaired.align_backend(), "qwen3_forced_aligner");
     }
 
     #[test]
@@ -509,9 +412,7 @@ mod tests {
         let config = AppConfig {
             separator: Some("karaoke".to_string()),
             audio_processing: Some(crate::audio_processing::AudioProcessingSettings {
-                vocal_model_id: Some(
-                    crate::audio_model::DEFAULT_LEGACY_KARAOKE_MODEL_ID.to_string(),
-                ),
+                vocal_model_id: Some(crate::audio_model::DEFAULT_VOCAL_MODEL_ID.to_string()),
                 ..Default::default()
             }),
             ..AppConfig::default()
@@ -525,58 +426,6 @@ mod tests {
                 .and_then(|settings| settings.accompaniment_model_id.as_deref()),
             Some(crate::audio_model::DEFAULT_BGM_MODEL_ID)
         );
-    }
-
-    #[test]
-    fn recovers_a_complete_previous_runtime_without_moving_user_data() {
-        let test_root = std::env::temp_dir().join(format!(
-            "uta-studio-config-recovery-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let default_root = test_root.join("default");
-        let previous_root = test_root.join("previous");
-        std::fs::create_dir_all(previous_root.join("vendor")).unwrap();
-        std::fs::create_dir_all(previous_root.join("models/whisper/openvino-large-v3-turbo"))
-            .unwrap();
-        std::fs::create_dir_all(
-            previous_root.join("models/separation/openvino-demucs/htdemucs_v4"),
-        )
-        .unwrap();
-        std::fs::create_dir_all(previous_root.join("models/pitch/rmvpe")).unwrap();
-        std::fs::write(previous_root.join("vendor/.ready"), "runtime-v4:intel").unwrap();
-        std::fs::write(previous_root.join("models/pitch/rmvpe/manifest.json"), "{}").unwrap();
-        std::fs::write(previous_root.join("songs.db"), []).unwrap();
-
-        let config = AppConfig {
-            data_path: Some(default_root.clone()),
-            ..AppConfig::default()
-        };
-        let (recovered, changed) =
-            config.recover_previous_install_from(&default_root, Some(&previous_root));
-
-        assert!(changed);
-        assert_eq!(
-            recovered.data_path.as_deref(),
-            Some(previous_root.as_path())
-        );
-        assert_eq!(recovered.compute_backend.as_deref(), Some("intel"));
-        assert_eq!(recovered.whisper_model.as_deref(), Some("large-v3-turbo"));
-        assert_eq!(recovered.separator.as_deref(), Some("openvino_demucs"));
-        assert_eq!(recovered.pitch_model.as_deref(), Some("rmvpe"));
-        assert_eq!(
-            recovered.library_source,
-            Some(LibrarySource::Folders {
-                paths: vec![previous_root.clone()]
-            })
-        );
-        assert!(!default_root.join("vendor").exists());
-        assert!(previous_root.join("vendor/.ready").is_file());
-
-        std::fs::remove_dir_all(test_root).unwrap();
     }
 
     #[test]

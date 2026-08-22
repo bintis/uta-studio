@@ -1198,7 +1198,7 @@ fn spawn_analysis_session_surface(
                             // above already uses, ERROR from the selected
                             // history run, DURATION from the same route's
                             // real `started_at_ms`/`finished_at_ms`
-                            // (`server.py::_progress_payload`, Phase 7's
+                            // (native worker progress frames, Phase 7's
                             // "Duration 检查器字段" gap closed), and the
                             // node's one profile parameter (+ its source)
                             // only when the selected node actually has one

@@ -705,7 +705,7 @@ pub(crate) fn format_node_attempt_comparison(
 
 /// §7.4 "DURATION" inspector fact -- Phase 7's "Duration 检查器字段" gap
 /// closed by real per-node `started_at_ms`/`finished_at_ms`
-/// (`server.py::_progress_payload`), not something inferred from socket
+/// (native worker progress frames), not something inferred from transport
 /// receive time. `None`/incomplete data (still running, predates this
 /// field, or a corrupt `finished < started`) reads as "Not yet available"
 /// rather than a wrong or negative duration.

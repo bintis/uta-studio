@@ -241,6 +241,84 @@ pub(crate) fn spawn_editor(
                         UiAction::from(EditorCommand::Editor(EditorAction::EditLyricLine)),
                         false,
                     );
+                    spawn_toolbar_button(
+                        toolbar,
+                        font.clone(),
+                        icons.clone(),
+                        theme,
+                        UiIcon::Music,
+                        if editor.visible_evidence.contains(&app_core::EvidenceKind::Disagreement) {
+                            "Evidence on"
+                        } else {
+                            "Evidence off"
+                        },
+                        UiAction::from(EditorCommand::ToggleEvidence(
+                            app_core::EvidenceKind::Disagreement,
+                        )),
+                        false,
+                    );
+                    if !editor.evidence.review_regions.is_empty() {
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::ArrowLeft,
+                            "Previous review",
+                            UiAction::from(EditorCommand::ReviewPrevious),
+                            false,
+                        );
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::Play,
+                            format!(
+                                "Review · {}/{}",
+                                editor.review_index.unwrap_or(0) + 1,
+                                editor.evidence.review_regions.len()
+                            ),
+                            UiAction::from(EditorCommand::ReviewNext),
+                            false,
+                        );
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::CircleCheck,
+                            "Mark reviewed",
+                            UiAction::from(EditorCommand::MarkReviewRegion),
+                            false,
+                        );
+                    }
+                    if let Some(suggestion) = editor.suggestions.first() {
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::CircleCheck,
+                            "Accept suggestion",
+                            UiAction::from(EditorCommand::AcceptSuggestion(
+                                suggestion.id.clone(),
+                            )),
+                            false,
+                        );
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::Trash,
+                            "Ignore suggestion",
+                            UiAction::from(EditorCommand::IgnoreSuggestion(
+                                suggestion.id.clone(),
+                            )),
+                            false,
+                        );
+                    }
                     {
                         let problems = &editor.problems_cache.1;
                         spawn_toolbar_button(
@@ -526,11 +604,30 @@ pub(crate) fn spawn_editor_dock(
                     TextColor(theme.foreground),
                     TextLayout::no_wrap(),
                 ));
-                let mut audio_options = vec![("instrumental", "Instrumental")];
+                let mut audio_options = vec![
+                    ("instrumental".to_string(), "Instrumental".to_string()),
+                    ("original".to_string(), "Original".to_string()),
+                ];
                 if editor.chart.audio.vocals.is_some() {
-                    audio_options.insert(0, ("vocals", "Vocals"));
+                    audio_options.insert(0, ("vocals".to_string(), "Vocals".to_string()));
                 }
-                audio_options.push(("original", "Original"));
+                if let Some(context) = editor.source_context.as_ref() {
+                    audio_options.extend(context.audio_artifacts.iter().map(|artifact| {
+                        (
+                            format!("artifact:{}", artifact.revision.revision_id),
+                            artifact.label.clone(),
+                        )
+                    }));
+                }
+                let audio_option_refs = audio_options
+                    .iter()
+                    .map(|(value, label)| (value.as_str(), label.as_str()))
+                    .collect::<Vec<_>>();
+                let audio_label = audio_options
+                    .iter()
+                    .find(|(value, _)| value == &editor.audio_source)
+                    .map(|(_, label)| label.as_str())
+                    .unwrap_or("Workflow artifact");
                 spawn_editor_select(
                     dock,
                     font.clone(),
@@ -538,13 +635,9 @@ pub(crate) fn spawn_editor_dock(
                     theme,
                     EditorDockSelectKind::AudioSource,
                     UiIcon::Music,
-                    match editor.audio_source.as_str() {
-                        "vocals" => "Vocals",
-                        "original" => "Original",
-                        _ => "Instrumental",
-                    },
+                    audio_label,
                     editor.audio_source.as_str(),
-                    &audio_options,
+                    &audio_option_refs,
                     open_select == Some(EditorDockSelectKind::AudioSource),
                 );
                 spawn_editor_select(
