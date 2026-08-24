@@ -21,7 +21,7 @@ Download the package for your system from the project’s GitHub Releases page. 
 
 1. Download `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
-3. Start `uta-studio.exe` from the extracted folder.
+3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
 
 Windows 10/11 x86-64 is supported. Editor and library audition use the system WASAPI output and do not require a separately installed codec pack for FLAC, MP3, WAV, Ogg/Vorbis, or common AAC/MP4 inputs.

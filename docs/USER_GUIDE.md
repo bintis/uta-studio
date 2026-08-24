@@ -33,7 +33,7 @@ Download the package for your system from the project’s GitHub Releases page. 
 
 1. Download `uta-studio-0.6.0-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
-3. Start `uta-studio.exe` from the extracted folder.
+3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
 
 Windows 10/11 x86-64 is supported. Editor and library audition use the system WASAPI output and do not require a separately installed codec pack for FLAC, MP3, WAV, Ogg/Vorbis, or common AAC/MP4 inputs.
@@ -468,7 +468,7 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 1. 下载 `uta-studio-0.6.0-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
-3. 从解压后的文件夹运行 `uta-studio.exe`。
+3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
 Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
@@ -903,7 +903,7 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 1. `uta-studio-0.6.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
-3. 展開先の `uta-studio.exe` を起動します。
+3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
 
 Windows 10/11 x86-64 は正式対応です。エディターとライブラリの試聴にはシステムの WASAPI 出力を使い、FLAC、MP3、WAV、Ogg/Vorbis、一般的な AAC/MP4 入力に別途コーデックパックは不要です。

@@ -21,7 +21,7 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 1. 下载 `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
-3. 从解压后的文件夹运行 `uta-studio.exe`。
+3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
 Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
