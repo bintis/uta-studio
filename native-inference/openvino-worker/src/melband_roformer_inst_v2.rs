@@ -293,6 +293,7 @@ fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, S
         )
         .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
     }
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     let band_paths = island_paths(directory, &manifest.islands[0])?;
     let band = compile_paths(
         &mut core,

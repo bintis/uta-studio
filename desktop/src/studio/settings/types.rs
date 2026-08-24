@@ -31,29 +31,19 @@ impl SettingsTab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsSelectKind {
     UiLanguage,
-    #[allow(dead_code)]
-    ComputeBackend,
     Separator,
-    #[allow(dead_code)]
-    SeparatorPreset,
     AsrEngine,
     WhisperModel,
     AlignBackend,
     PitchModel,
     AnalysisTarget,
     AudioVocalModel,
-    #[allow(dead_code)]
-    AudioMultistemModel,
     AudioAccompanimentModel,
     AudioKaraokeModel,
     AudioVocalPostprocess1,
     AudioVocalPostprocess2,
     AudioBgmPostprocess1,
     AudioBgmPostprocess2,
-    #[allow(dead_code)]
-    AudioRuntimePolicy,
-    #[allow(dead_code)]
-    AudioPrecisionPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

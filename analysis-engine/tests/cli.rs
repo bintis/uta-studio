@@ -18,8 +18,7 @@ fn isolated_command(binary: &str) -> (Command, PathBuf) {
         .env("UTA_STUDIO_MODELS_PATH", &root)
         .env_remove("UTA_STUDIO_OPENVINO_RUNTIME_PATH")
         .env_remove("UTA_STUDIO_QWEN_ASR_RUNTIME_PATH")
-        .env_remove("UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH")
-        .env_remove("UTA_STUDIO_ROFORMER_RUNTIME_PATH");
+        .env_remove("UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH");
     (command, root)
 }
 

@@ -310,6 +310,11 @@ impl UiCommand {
     pub(crate) const fn dirty_region(&self) -> UiDirtyRegion {
         match self {
             Self::App(_) => UiDirtyRegion::Chrome,
+            Self::Library(
+                LibraryCommand::SetLibraryView(_)
+                | LibraryCommand::OpenSong(_)
+                | LibraryCommand::OpenEditor(_),
+            ) => UiDirtyRegion::Chrome,
             Self::Library(_) => UiDirtyRegion::Library,
             Self::Settings(_) => UiDirtyRegion::Settings,
             // This command changes the top-level route.  Rebuilding only the
@@ -319,6 +324,7 @@ impl UiCommand {
             // from submitting that mixed-generation tree to Wayland.
             Self::Analysis(
                 AnalysisCommand::OpenAnalysisInspect(_, _)
+                | AnalysisCommand::OpenSongAnalysis(_)
                 | AnalysisCommand::OpenProcessingStudio(_)
                 | AnalysisCommand::OpenSongModelSelection(_),
             ) => UiDirtyRegion::Chrome,
@@ -435,6 +441,16 @@ mod tests {
             UiCommand::Library(LibraryCommand::LoadMoreSongs).dirty_region(),
             UiDirtyRegion::Library
         );
+        for command in [
+            LibraryCommand::SetLibraryView(LibraryView::Queue),
+            LibraryCommand::OpenSong("song".to_string()),
+            LibraryCommand::OpenEditor("song".to_string()),
+        ] {
+            assert_eq!(
+                UiCommand::Library(command).dirty_region(),
+                UiDirtyRegion::Chrome
+            );
+        }
         assert_eq!(
             UiCommand::Settings(SettingsCommand::RefreshRuntimeStatus).dirty_region(),
             UiDirtyRegion::Settings
@@ -485,15 +501,18 @@ mod tests {
     }
 
     #[test]
-    fn opening_inspect_rebuilds_the_route_chrome_as_one_tree() {
-        assert_eq!(
-            UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(
-                "pitch.extract".to_string(),
-                "pitch".to_string(),
-            ))
-            .dirty_region(),
-            UiDirtyRegion::Chrome
-        );
+    fn opening_analysis_routes_rebuilds_the_route_chrome_as_one_tree() {
+        for command in [
+            AnalysisCommand::OpenAnalysisInspect("pitch.extract".to_string(), "pitch".to_string()),
+            AnalysisCommand::OpenSongAnalysis("song".to_string()),
+            AnalysisCommand::OpenProcessingStudio("song".to_string()),
+            AnalysisCommand::OpenSongModelSelection("song".to_string()),
+        ] {
+            assert_eq!(
+                UiCommand::Analysis(command).dirty_region(),
+                UiDirtyRegion::Chrome
+            );
+        }
     }
 
     #[test]

@@ -13,6 +13,8 @@ fn runtime_status_is_read_only_and_reports_the_runtime_lock() {
         std::path::PathBuf::from("missing-ffmpeg"),
     );
     assert_eq!(status.runtime_lock_sha256, crate::native_runtime::RUNTIME_LOCK_SHA256);
+    let serialized = serde_json::to_value(&status).expect("runtime status serializes");
+    assert!(serialized.get("openvinoRuntimeAvailable").is_some());
 }
 
 #[test]

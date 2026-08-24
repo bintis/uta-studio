@@ -102,6 +102,7 @@ pub fn infer(
         ],
     )
     .map_err(|error| error.to_string())?;
+    runtime::configure_low_impact_gpu_queue(&mut core)?;
     let graph = core
         .read_model_from_file(
             directory.join("basic-pitch.xml").to_string_lossy().as_ref(),

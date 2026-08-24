@@ -276,9 +276,7 @@ pub(crate) enum UiMessage {
     LanguageReprocessQueued,
     ArtifactRevisionsRecorded,
     FolderStoppedWatching,
-    AccelerationSet,
     FlacEstimatedUpperBound,
-    SeparationProfileApplied,
     AnalysisEngineSelected,
     DiagnosticsSummary,
 }
@@ -305,9 +303,7 @@ impl UiMessage {
             Self::LanguageReprocessQueued => "message.language_reprocess_queued",
             Self::ArtifactRevisionsRecorded => "message.artifact_revisions_recorded",
             Self::FolderStoppedWatching => "message.folder_stopped_watching",
-            Self::AccelerationSet => "message.acceleration_set",
             Self::FlacEstimatedUpperBound => "message.flac_estimated_upper_bound",
-            Self::SeparationProfileApplied => "message.separation_profile_applied",
             Self::AnalysisEngineSelected => "message.analysis_engine_selected",
             Self::DiagnosticsSummary => "message.diagnostics_summary",
         }
@@ -336,14 +332,8 @@ impl UiMessage {
             Self::FolderStoppedWatching => {
                 "Stopped watching {path}. No source media was moved or deleted."
             }
-            Self::AccelerationSet => {
-                "Acceleration set to {backend}. Reconfigure the runtime to apply it."
-            }
             Self::FlacEstimatedUpperBound => {
                 "Estimated upper bound before FLAC compression: {size} MiB."
-            }
-            Self::SeparationProfileApplied => {
-                "{profile} separation profile applied. Existing stems change only after re-analysis."
             }
             Self::AnalysisEngineSelected => {
                 "{engine} selected. Existing charts change only after re-analysis."

@@ -202,6 +202,13 @@ pub(crate) fn follow_live_analysis_node(
     invalidated.invalidate(UiDirtyRegion::Analysis);
 }
 
+fn stable_analysis_viewport(value: f32) -> f32 {
+    // UI scale, scrollbars and deferred entity replacement can make the same
+    // viewport oscillate by fractions of a logical pixel. Quantizing here keeps
+    // those layout jitters from rebuilding the entire Analysis workspace.
+    (value / 8.0).round() * 8.0
+}
+
 /// Scales the DAG so the full flow fits the current viewport, then leaves
 /// zoom alone until the user clicks Fit or switches MINI/Full. Needs a
 /// laid-out `AnalysisGraphViewport` so it waits a frame after spawn.
@@ -218,7 +225,11 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     let Ok((computed, canvas)) = viewports.single() else {
         return;
     };
-    let viewport = computed.size() * computed.inverse_scale_factor();
+    let measured = computed.size() * computed.inverse_scale_factor();
+    let viewport = Vec2::new(
+        stable_analysis_viewport(measured.x),
+        stable_analysis_viewport(measured.y),
+    );
     if viewport.x < 16.0
         || viewport.y < 16.0
         || canvas.unscaled_width < 8.0
@@ -226,15 +237,17 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     {
         return;
     }
-    let viewport_changed = (analysis.analysis_graph_viewport_width - viewport.x).abs() > 1.0
-        || (analysis.analysis_graph_viewport_height - viewport.y).abs() > 1.0;
+    let viewport_changed = (analysis.analysis_graph_viewport_width - viewport.x).abs() >= 8.0
+        || (analysis.analysis_graph_viewport_height - viewport.y).abs() >= 8.0;
     if !analysis.analysis_graph_needs_fit
         && !(analysis.analysis_graph_fit_active && viewport_changed)
     {
+        // Geometry metadata is useful to later focus commands, but it does not
+        // justify replacing every analysis entity. The next explicit Fit,
+        // MINI/Full switch, or meaningful resize will rebuild once.
         if viewport_changed {
             analysis.analysis_graph_viewport_width = viewport.x;
             analysis.analysis_graph_viewport_height = viewport.y;
-            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         return;
     }
@@ -257,6 +270,18 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     if (fitted - analysis.analysis_graph_zoom).abs() > 0.01 || viewport_changed {
         analysis.analysis_graph_zoom = fitted;
         invalidated.invalidate(UiDirtyRegion::Analysis);
+    }
+}
+
+#[cfg(test)]
+mod viewport_stability_tests {
+    use super::stable_analysis_viewport;
+
+    #[test]
+    fn viewport_jitter_quantizes_to_one_layout_size() {
+        assert_eq!(stable_analysis_viewport(799.4), 800.0);
+        assert_eq!(stable_analysis_viewport(800.6), 800.0);
+        assert_eq!(stable_analysis_viewport(804.1), 808.0);
     }
 }
 

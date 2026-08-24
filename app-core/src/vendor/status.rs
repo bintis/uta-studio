@@ -273,7 +273,6 @@ pub(super) fn analysis_runtime_status_with_clients(
         runtime_contract_current: analysis_ready && runtime_client.is_some(),
         ffmpeg_available,
         native_analyzer_available: runtime_executable_ready("native_analyzer"),
-        roformer_runtime_available: runtime_executable_ready("roformer_runtime"),
         openvino_runtime_available: runtime_executable_ready("openvino_2026_3"),
         qwen_asr_runtime_available: runtime_executable_ready("qwen_asr_runtime"),
         qwen_align_runtime_available: runtime_executable_ready("qwen_align_runtime"),
@@ -306,7 +305,6 @@ fn runtime_status_cache() -> &'static Mutex<RuntimeStatusCache> {
     RUNTIME_STATUS_CACHE.get_or_init(|| Mutex::new(RuntimeStatusCache::default()))
 }
 
-#[allow(dead_code)]
 pub fn invalidate_analysis_runtime_status_cache() {
     if let Ok(mut cache) = runtime_status_cache().lock() {
         cache.value = None;

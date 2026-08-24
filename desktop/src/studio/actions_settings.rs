@@ -128,9 +128,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 SettingsSelectKind::UiLanguage => {
                     studio.shell.config.ui_language = (value != "system").then(|| value.clone());
                 }
-                SettingsSelectKind::ComputeBackend => {
-                    studio.shell.config.compute_backend = Some(value.clone());
-                }
                 SettingsSelectKind::Separator => {
                     let mut settings = audio_settings(&studio.shell.config);
                     settings.vocal_model_id = Some(value.clone());
@@ -139,9 +136,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     settings.runtime_policy = "validated_auto".to_string();
                     studio.shell.config.separator = Some("native_workflow".to_string());
                     studio.shell.config.audio_processing = Some(settings);
-                }
-                SettingsSelectKind::SeparatorPreset => {
-                    apply_separator_preset(&mut studio.shell.config, value);
                 }
                 SettingsSelectKind::AsrEngine => {
                     studio.shell.config.asr_engine = Some(value.clone());
@@ -169,16 +163,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     settings.migrated_profile = None;
                     settings.multistem_model_id = None;
                     settings.vocal_model_id = Some(value.clone());
-                }
-                SettingsSelectKind::AudioMultistemModel => {
-                    let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.migrated_profile = None;
-                    settings.multistem_model_id = Some(value.clone());
-                    settings.vocal_model_id = None;
-                    settings.vocal_cleanup_chain.clear();
-                    settings.accompaniment_model_id = None;
-                    settings.accompaniment_cleanup_chain.clear();
-                    settings.karaoke_model_id = None;
                 }
                 SettingsSelectKind::AudioAccompanimentModel => {
                     let settings = audio_settings_mut(&mut studio.shell.config);
@@ -220,17 +204,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     settings.accompaniment_cleanup_chain =
                         rewrite_cleanup_slot(&current, slot, value);
                 }
-                SettingsSelectKind::AudioRuntimePolicy => {
-                    audio_settings_mut(&mut studio.shell.config).runtime_policy = value.clone();
-                }
-                SettingsSelectKind::AudioPrecisionPolicy => {
-                    audio_settings_mut(&mut studio.shell.config).precision_policy = value.clone();
-                }
             }
             if matches!(
                 kind,
                 SettingsSelectKind::AudioVocalModel
-                    | SettingsSelectKind::AudioMultistemModel
                     | SettingsSelectKind::AudioAccompanimentModel
                     | SettingsSelectKind::AudioKaraokeModel
                     | SettingsSelectKind::AudioVocalPostprocess1
@@ -245,16 +222,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
                 Some(match kind {
                     SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
-                    SettingsSelectKind::ComputeBackend => localized_message(
-                        &studio.shell.config,
-                        UiMessage::AccelerationSet,
-                        &[("{backend}", settings_select_label(*kind, value))],
-                    ),
-                    SettingsSelectKind::SeparatorPreset => localized_message(
-                        &studio.shell.config,
-                        UiMessage::SeparationProfileApplied,
-                        &[("{profile}", settings_select_label(*kind, value))],
-                    ),
                     _ => localized_message(
                         &studio.shell.config,
                         UiMessage::AnalysisEngineSelected,

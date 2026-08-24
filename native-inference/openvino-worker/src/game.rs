@@ -203,6 +203,7 @@ fn core() -> Result<Core, String> {
         ],
     )
     .map_err(|error| error.to_string())?;
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     Ok(core)
 }
 

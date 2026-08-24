@@ -237,6 +237,7 @@ pub fn infer(
         ],
     )
     .map_err(|error| format!("could not configure OpenVINO GPU accuracy mode: {error}"))?;
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     let bin_text = model
         .bin
         .to_str()

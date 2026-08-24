@@ -71,7 +71,29 @@ pub(crate) fn navigation_repeat(
     None
 }
 
+fn route_back_action(route: StudioRoute, library_view: LibraryView) -> Option<UiAction> {
+    if route == StudioRoute::Documentation {
+        Some(UiAction::from(AppCommand::DocumentationBack))
+    } else if route != StudioRoute::Library || library_view == LibraryView::Queue {
+        Some(UiAction::from(AppCommand::Back))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<UiAction> {
+    if session.plan_preview_draft.is_some() {
+        return Some(UiAction::from(AnalysisCommand::ClosePlanPreview));
+    }
+    if session.analysis_log_viewer.is_some() {
+        return Some(UiAction::from(AnalysisCommand::CloseAnalysisLogViewer));
+    }
+    if session.node_config_dialog.is_some() {
+        return Some(UiAction::from(AnalysisCommand::CloseNodeConfigDialog));
+    }
+    if session.artifact_diff.is_some() {
+        return Some(UiAction::from(AnalysisCommand::CloseArtifactDiff));
+    }
     if session.artifact_impact.is_some() {
         return Some(UiAction::from(AnalysisCommand::CloseArtifactImpact));
     }
@@ -105,6 +127,11 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
             AnalysisCommand::CancelInvalidateArtifactRevision,
         ));
     }
+    if session.pending_artifact_active.is_some() {
+        return Some(UiAction::from(
+            AnalysisCommand::CancelSetActiveArtifactRevision,
+        ));
+    }
     if session.pending_intermediate_capture.is_some() {
         return Some(UiAction::from(AnalysisCommand::CancelCaptureIntermediate));
     }
@@ -134,6 +161,11 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     }
     if session.song_context.is_some() {
         return Some(UiAction::from(LibraryCommand::DismissSongContext));
+    }
+    if session.analysis_artifact_context.is_some() {
+        return Some(UiAction::from(
+            AnalysisCommand::DismissAnalysisArtifactContext,
+        ));
     }
     if session.analysis_node_context.is_some() {
         return Some(UiAction::from(AnalysisCommand::DismissAnalysisNodeContext));
@@ -165,11 +197,7 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
             EditorAction::ToggleInspector,
         )));
     }
-    if session.route == StudioRoute::Documentation {
-        Some(UiAction::from(AppCommand::DocumentationBack))
-    } else {
-        (session.route != StudioRoute::Library).then_some(UiAction::from(AppCommand::Back))
-    }
+    route_back_action(session.route, session.library_view)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -313,4 +341,29 @@ pub(crate) struct PrimaryWindowAndAnalysisViewport<'w, 's> {
     pub(crate) windows: Query<'w, 's, (Entity, &'static mut Window), With<PrimaryWindow>>,
     pub(crate) analysis_graph_viewport:
         Query<'w, 's, &'static ComputedNode, With<AnalysisGraphViewport>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_is_a_back_navigable_library_subview() {
+        assert_eq!(
+            route_back_action(StudioRoute::Library, LibraryView::Queue),
+            Some(UiAction::from(AppCommand::Back))
+        );
+        assert_eq!(
+            route_back_action(StudioRoute::Library, LibraryView::All),
+            None
+        );
+    }
+
+    #[test]
+    fn documentation_keeps_its_history_aware_back_command() {
+        assert_eq!(
+            route_back_action(StudioRoute::Documentation, LibraryView::All),
+            Some(UiAction::from(AppCommand::DocumentationBack))
+        );
+    }
 }

@@ -280,30 +280,6 @@ impl ResourceCatalog {
         use NativeBackend::*;
         use ValidationState::*;
         self.insert_runtime(RuntimeCatalogEntry {
-            id: "roformer_runtime".to_string(),
-            display_name: "RoFormer Runtime".to_string(),
-            purpose: "Vulkan RoFormer source separation worker".to_string(),
-            backends: vec![BackendCapability {
-                backend: Vulkan,
-                validation: BenchmarkCandidate,
-                evidence_id: None,
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "roformer_runtime".to_string(),
-            supported_models: [
-                "bs_roformer_vocals_ep317",
-                "melband_roformer_inst_v2",
-                "melband_roformer_dereverb_anvuew",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            recipe_digest: None,
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
             id: "openvino_2026_3".to_string(),
             display_name: "OpenVINO 2026.3 Worker".to_string(),
             purpose: "Pinned OpenVINO CPU/GPU inference worker".to_string(),
@@ -405,35 +381,30 @@ impl ResourceCatalog {
             (
                 "bs_roformer_vocals_ep317",
                 "BS-RoFormer Vocals EP317",
-                "Vocal extraction baseline for original_mix",
                 "audio.extract_vocals",
             ),
             (
                 "melband_roformer_inst_v2",
                 "MelBand-RoFormer Inst V2",
-                "Instrumental extraction for karaoke and UTZ",
                 "audio.extract_instrumental",
             ),
             (
                 "melband_roformer_harmony",
                 "MelBand-RoFormer Lead / Back",
-                "Lead and supporting vocal isolation candidate",
                 "audio.lead_isolate",
             ),
             (
                 "melband_roformer_denoise_aufr33",
                 "MelBand-RoFormer Denoise",
-                "Optional vocal or instrumental cleanup",
                 "audio.denoise",
             ),
             (
                 "melband_roformer_dereverb_anvuew",
                 "MelBand-RoFormer Dereverb",
-                "Optional dereverb cleanup",
                 "audio.dereverb",
             ),
         ];
-        for (id, display_name, purpose, capability) in roformer {
+        for (id, display_name, capability) in roformer {
             let (mut source, license, estimated_download_bytes) = roformer_source(id);
             if id == "bs_roformer_vocals_ep317" {
                 source.converted_artifact = Some(ConvertedArtifactIdentity {
@@ -457,20 +428,13 @@ impl ResourceCatalog {
                         "explicit import of the accepted 34-island BS-RoFormer OpenVINO generation",
                     )],
                     dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![
-                        BackendCapability {
-                            backend: OpenVino,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some(
-                                "validation:bs-roformer-exact-context-split-openvino".to_string(),
-                            ),
-                        },
-                        BackendCapability {
-                            backend: Vulkan,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some("historical:vulkan-candidate".to_string()),
-                        },
-                    ],
+                    backends: vec![BackendCapability {
+                        backend: OpenVino,
+                        validation: BenchmarkCandidate,
+                        evidence_id: Some(
+                            "validation:bs-roformer-exact-context-split-openvino".to_string(),
+                        ),
+                    }],
                     pinned_backend: Some(OpenVino),
                     estimated_download_bytes,
                     estimated_installed_bytes: Some(646_225_000),
@@ -501,20 +465,13 @@ impl ResourceCatalog {
                         "explicit import of the accepted 33-island Inst V2 OpenVINO generation",
                     )],
                     dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![
-                        BackendCapability {
-                            backend: OpenVino,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some(
-                                "validation:inst-v2-exact-context-split-openvino".to_string(),
-                            ),
-                        },
-                        BackendCapability {
-                            backend: Vulkan,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some("historical:vulkan-candidate".to_string()),
-                        },
-                    ],
+                    backends: vec![BackendCapability {
+                        backend: OpenVino,
+                        validation: BenchmarkCandidate,
+                        evidence_id: Some(
+                            "validation:inst-v2-exact-context-split-openvino".to_string(),
+                        ),
+                    }],
                     pinned_backend: Some(OpenVino),
                     estimated_download_bytes,
                     estimated_installed_bytes: Some(1_583_142_000),
@@ -545,20 +502,13 @@ impl ResourceCatalog {
                         "explicit import of the accepted Karaoke OpenVINO neural island and dual-output residual contract",
                     )],
                     dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![
-                        BackendCapability {
-                            backend: OpenVino,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some(
-                                "validation:harmony-karaoke-dual-residual-openvino".to_string(),
-                            ),
-                        },
-                        BackendCapability {
-                            backend: Vulkan,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some("historical:vulkan-candidate".to_string()),
-                        },
-                    ],
+                    backends: vec![BackendCapability {
+                        backend: OpenVino,
+                        validation: BenchmarkCandidate,
+                        evidence_id: Some(
+                            "validation:harmony-karaoke-dual-residual-openvino".to_string(),
+                        ),
+                    }],
                     pinned_backend: Some(OpenVino),
                     estimated_download_bytes,
                     estimated_installed_bytes: Some(914_688_155),
@@ -589,20 +539,13 @@ impl ResourceCatalog {
                         "explicit import of the accepted R03 OpenVINO neural island and exact Denoise config",
                     )],
                     dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![
-                        BackendCapability {
-                            backend: OpenVino,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some(
-                                "validation:r03b-roformer-denoise-native-integration".to_string(),
-                            ),
-                        },
-                        BackendCapability {
-                            backend: Vulkan,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some("historical:vulkan-candidate".to_string()),
-                        },
-                    ],
+                    backends: vec![BackendCapability {
+                        backend: OpenVino,
+                        validation: BenchmarkCandidate,
+                        evidence_id: Some(
+                            "validation:r03b-roformer-denoise-native-integration".to_string(),
+                        ),
+                    }],
                     pinned_backend: Some(OpenVino),
                     estimated_download_bytes,
                     estimated_installed_bytes: Some(914_692_150),
@@ -634,20 +577,13 @@ impl ResourceCatalog {
                         "explicit import of the accepted R04 OpenVINO neural island and exact Dereverb config",
                     )],
                     dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![
-                        BackendCapability {
-                            backend: OpenVino,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some(
-                                "validation:roformer-dereverb-native-integration".to_string(),
-                            ),
-                        },
-                        BackendCapability {
-                            backend: Vulkan,
-                            validation: BenchmarkCandidate,
-                            evidence_id: Some("historical:vulkan-candidate".to_string()),
-                        },
-                    ],
+                    backends: vec![BackendCapability {
+                        backend: OpenVino,
+                        validation: BenchmarkCandidate,
+                        evidence_id: Some(
+                            "validation:roformer-dereverb-native-integration".to_string(),
+                        ),
+                    }],
                     pinned_backend: Some(OpenVino),
                     estimated_download_bytes,
                     estimated_installed_bytes: Some(914_694_000),
@@ -656,36 +592,6 @@ impl ResourceCatalog {
                 })?;
                 continue;
             }
-            self.insert_model(ModelCatalogEntry {
-                id: ModelId::new(id)?,
-                display_name: display_name.to_string(),
-                purpose: purpose.to_string(),
-                capabilities: vec![capability.to_string()],
-                source,
-                license,
-                acquisition: vec![acquisition(
-                    AcquisitionMethod::Unavailable,
-                    "pinned checkpoint is known, but native GGUF conversion/install is not production-audited",
-                )],
-                dependencies: vec![ResourceRef::runtime("roformer_runtime")?],
-                backends: vec![
-                    BackendCapability {
-                        backend: OpenVino,
-                        validation: Unsupported,
-                        evidence_id: None,
-                    },
-                    BackendCapability {
-                        backend: Vulkan,
-                        validation: BenchmarkCandidate,
-                        evidence_id: None,
-                    },
-                ],
-                pinned_backend: None,
-                estimated_download_bytes,
-                estimated_installed_bytes: None,
-                recipe_digest: catalog_recipe_digest(id),
-                runtime_recipe_digest: None,
-            })?;
         }
 
         self.insert_optional_openvino_expert(
@@ -1421,7 +1327,6 @@ mod tests {
             assert!(catalog.models.contains_key(model), "{model}");
         }
         for runtime in [
-            "roformer_runtime",
             "openvino_2026_3",
             "qwen_asr_runtime",
             "qwen_align_runtime",
@@ -1459,10 +1364,15 @@ mod tests {
             ),
         ];
         for (id, sha256) in expected {
+            let model = catalog.model(id).unwrap();
+            assert_eq!(model.source.sha256.as_deref(), Some(sha256));
+            assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
             assert_eq!(
-                catalog.model(id).unwrap().source.sha256.as_deref(),
-                Some(sha256)
+                model.dependencies,
+                vec![ResourceRef::runtime("openvino_2026_3").unwrap()]
             );
+            assert_eq!(model.backends.len(), 1);
+            assert_eq!(model.backends[0].backend, NativeBackend::OpenVino);
         }
         assert_eq!(
             catalog
@@ -1708,13 +1618,6 @@ mod tests {
                 .supported_models
                 .contains(&model.id.as_str().to_string())
         );
-        assert!(
-            !catalog
-                .runtime("roformer_runtime")
-                .unwrap()
-                .supported_models
-                .contains(&model.id.as_str().to_string())
-        );
     }
 
     #[test]
@@ -1748,13 +1651,6 @@ mod tests {
         assert!(
             catalog
                 .runtime("openvino_2026_3")
-                .unwrap()
-                .supported_models
-                .contains(&model.id.as_str().to_string())
-        );
-        assert!(
-            !catalog
-                .runtime("roformer_runtime")
                 .unwrap()
                 .supported_models
                 .contains(&model.id.as_str().to_string())

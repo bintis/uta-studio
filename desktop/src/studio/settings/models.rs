@@ -15,11 +15,35 @@ pub(crate) fn spawn_model_settings(
         theme,
         "LOCAL INTELLIGENCE",
         "Models & runtime",
-        "Install, verify, and tune local resources. Provider choice remains in the Analysis workspace model selector.",
+        "Install or verify local resources, then tune the parameters owned by each model. Provider choice exists only in the Analysis workspace model selector.",
     );
     if native_setup.receiver.is_some() || native_setup.progress.is_some() {
         spawn_setup_progress_panel(parent, font.clone(), icons.clone(), native_setup, theme);
     }
+
+    spawn_settings_section(
+        parent,
+        font.clone(),
+        theme,
+        "MODEL RUNTIME PARAMETERS",
+        "These are the concrete values consumed by local model routes. Editing them never selects, enables, installs, or substitutes a model.",
+    );
+    spawn_advanced_controls(parent, font.clone(), theme, session);
+    spawn_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Models without exposed controls",
+        "FireRed, Qwen Aligner, GAME, FCPE, STARS, and Basic Pitch currently use packaged runtime contracts without user-adjustable parameters.",
+        None::<(String, UiAction)>,
+    );
+    spawn_settings_section(
+        parent,
+        font.clone(),
+        theme,
+        "LOCAL RESOURCES",
+        "Installation and verification are lifecycle operations only. The exact model used by a song is chosen from Quick model selection in the Analysis workspace.",
+    );
 
     if let Some(snapshot) = session.model_settings_job.current.as_ref() {
         let status = &snapshot.runtime_status;
@@ -46,21 +70,7 @@ pub(crate) fn spawn_model_settings(
             font.clone(),
             theme,
             "RESOURCES BY CAPABILITY",
-            "Manage installation state here. Exact request readiness is evaluated by Plan Preview, while provider choice is owned by Quick model selection in the Analysis workspace.",
-        );
-        let model_selection_action = session.selected_song.as_ref().map(|file_hash| {
-            (
-                "Open quick model selection".to_string(),
-                UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
-            )
-        });
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Provider selection",
-            "This page does not choose analysis providers. Open a song's Analysis workspace and use Quick model selection to assign models to workflow nodes.",
-            model_selection_action,
+            "Manage installation state here. Exact request readiness is evaluated by Plan Preview; this page never writes provider preferences.",
         );
         spawn_model_stage(
             parent,
@@ -167,23 +177,6 @@ pub(crate) fn spawn_model_settings(
             )),
         );
     }
-
-    spawn_settings_section(
-        parent,
-        font.clone(),
-        theme,
-        "MODEL RUNTIME PARAMETERS",
-        "Only parameters consumed by a concrete local model route appear below. Changing these values does not select a provider.",
-    );
-    spawn_advanced_controls(parent, font.clone(), theme, session);
-    spawn_setting_row(
-        parent,
-        font,
-        theme,
-        "Models without exposed controls",
-        "FireRed, Qwen Aligner, GAME, FCPE, STARS, and Basic Pitch currently use their packaged runtime contracts without user-adjustable parameters.",
-        None::<(String, UiAction)>,
-    );
 }
 
 pub(crate) fn spawn_audio_catalog_models(
@@ -324,8 +317,10 @@ pub(crate) fn spawn_model_install_row(
                 min_height: px(86),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(15)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -333,7 +328,8 @@ pub(crate) fn spawn_model_install_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(5),
@@ -369,9 +365,9 @@ pub(crate) fn spawn_model_install_row(
                         title,
                         font.clone(),
                         if model.available {
-                            "Usable for testing"
+                            "Ready to test"
                         } else {
-                            "Unavailable"
+                            "Needs setup"
                         },
                         if model.available {
                             theme.primary
@@ -384,7 +380,7 @@ pub(crate) fn spawn_model_install_row(
                     copy,
                     font.clone(),
                     format!(
-                        "{} Capability group: {stage}. Validation label: {} · selected backend: {}.",
+                        "{} Capability group: {stage}. Route: {} · backend: {}.",
                         model.description, model.validation, model.backend
                     ),
                     9.0,
@@ -392,9 +388,11 @@ pub(crate) fn spawn_model_install_row(
                 );
             });
             row.spawn(Node {
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 1.0,
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })
@@ -570,14 +568,7 @@ pub(crate) fn spawn_model_runtime_status_row(
                         stack,
                         font.clone(),
                         theme,
-                        "RoFormer Vulkan",
-                        status.roformer_runtime_available,
-                    );
-                    spawn_runtime_component_row(
-                        stack,
-                        font.clone(),
-                        theme,
-                        "OpenVINO",
+                        "OpenVINO model worker",
                         status.openvino_runtime_available,
                     );
                     spawn_runtime_component_row(
@@ -600,13 +591,6 @@ pub(crate) fn spawn_model_runtime_status_row(
                         theme,
                         "Pitch model",
                         status.pitch_model_available,
-                    );
-                    spawn_runtime_component_row(
-                        stack,
-                        font.clone(),
-                        theme,
-                        "Selected models",
-                        status.selected_models_available,
                     );
                     spawn_runtime_contract_row(
                         stack,
@@ -730,198 +714,6 @@ pub(crate) fn spawn_runtime_component_row(
                     TextColor(color),
                 )],
             ));
-        });
-}
-
-#[allow(
-    dead_code,
-    reason = "retained for legacy history/settings compatibility"
-)]
-pub(crate) fn transcription_summary(_config: &AppConfig) -> String {
-    "FireRedASR2-AED + Qwen3-ASR fusion".to_string()
-}
-
-#[allow(
-    dead_code,
-    reason = "retained for legacy history/settings compatibility"
-)]
-pub(crate) fn transcription_model_target(_config: &AppConfig) -> app_core::ModelDownloadTarget {
-    app_core::ModelDownloadTarget::FireRed
-}
-
-#[allow(
-    dead_code,
-    reason = "retained for legacy history/settings compatibility"
-)]
-pub(crate) fn alignment_model_target(_config: &AppConfig) -> Option<app_core::ModelDownloadTarget> {
-    Some(app_core::ModelDownloadTarget::QwenAlign)
-}
-
-pub(crate) fn analysis_stage_status(
-    status: &app_core::AnalysisRuntimeStatus,
-    target: Option<app_core::ModelDownloadTarget>,
-) -> (String, bool) {
-    let Some(target) = target else {
-        return if status.native_analyzer_available {
-            ("Runtime ready".to_string(), true)
-        } else {
-            ("Runtime unavailable".to_string(), false)
-        };
-    };
-    let Some(model) = status.models.iter().find(|model| model.target == target) else {
-        return ("Runtime status unavailable".to_string(), false);
-    };
-    if model.available {
-        let backend = match model.backend.as_str() {
-            "openvino" => "OpenVINO",
-            "vulkan" => "Vulkan",
-            "native" => "Native",
-            _ => "resolved backend",
-        };
-        return (format!("Ready · {backend}"), true);
-    }
-    let label = match model.validation.as_str() {
-        "benchmark_candidate" => "Unavailable · Candidate label",
-        "experimental" => "Unavailable · Experimental label",
-        "unsupported" => "Unavailable · Unsupported label",
-        _ => "Unavailable for current testing route",
-    };
-    (label.to_string(), false)
-}
-
-#[allow(
-    dead_code,
-    reason = "replaced by capability rows; retained during staged migration"
-)]
-pub(crate) fn spawn_analysis_pipeline(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    session: &StudioSessionView<'_>,
-    status: &app_core::AnalysisRuntimeStatus,
-) {
-    parent
-        .spawn((
-            Node {
-                width: percent(100),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(16)),
-                row_gap: px(10),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
-                ..default()
-            },
-            BackgroundColor(theme.background.with_alpha(0.3)),
-            BorderColor::all(theme.border.with_alpha(0.58)),
-        ))
-        .with_children(|panel| {
-            spawn_text(
-                panel,
-                font.clone(),
-                "CURRENT ANALYSIS PIPELINE",
-                8.0,
-                theme.primary,
-            );
-            spawn_wrapped_text(
-                panel,
-                font.clone(),
-                "The same four stages and names are used on Models & runtime.",
-                9.0,
-                theme.muted_foreground,
-            );
-            panel
-                .spawn(Node {
-                    width: percent(100),
-                    flex_wrap: FlexWrap::Wrap,
-                    row_gap: px(8),
-                    column_gap: px(8),
-                    ..default()
-                })
-                .with_children(|pipeline| {
-                    spawn_analysis_pipeline_stage(
-                        pipeline,
-                        font.clone(),
-                        theme,
-                        "01 · Vocals",
-                        vocal_separation_label(session.config),
-                        analysis_stage_status(
-                            status,
-                            Some(app_core::ModelDownloadTarget::RoFormer),
-                        ),
-                    );
-                    spawn_analysis_pipeline_stage(
-                        pipeline,
-                        font.clone(),
-                        theme,
-                        "02 · Lyrics",
-                        transcription_summary(session.config),
-                        analysis_stage_status(
-                            status,
-                            Some(transcription_model_target(session.config)),
-                        ),
-                    );
-                    spawn_analysis_pipeline_stage(
-                        pipeline,
-                        font.clone(),
-                        theme,
-                        "03 · Timing",
-                        align_backend_label(session.config.align_backend()),
-                        analysis_stage_status(status, alignment_model_target(session.config)),
-                    );
-                    spawn_analysis_pipeline_stage(
-                        pipeline,
-                        font.clone(),
-                        theme,
-                        "04 · Pitch",
-                        pitch_model_label(session.config.pitch_model()),
-                        analysis_stage_status(status, Some(app_core::ModelDownloadTarget::Pitch)),
-                    );
-                });
-        });
-}
-
-#[allow(
-    dead_code,
-    reason = "replaced by capability rows; retained during staged migration"
-)]
-pub(crate) fn spawn_analysis_pipeline_stage(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    stage: &'static str,
-    selected: impl Into<String>,
-    status: (String, bool),
-) {
-    parent
-        .spawn((
-            Node {
-                min_width: px(190),
-                min_height: px(70),
-                flex_basis: px(220),
-                flex_grow: 1.0,
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(11)),
-                row_gap: px(5),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
-                ..default()
-            },
-            BackgroundColor(theme.card.with_alpha(0.48)),
-            BorderColor::all(theme.border.with_alpha(0.46)),
-        ))
-        .with_children(|card| {
-            spawn_text(card, font.clone(), stage, 8.0, theme.muted_foreground);
-            spawn_text(card, font.clone(), selected, 10.0, theme.foreground);
-            spawn_settings_badge(
-                card,
-                font,
-                status.0,
-                if status.1 {
-                    theme.primary
-                } else {
-                    theme.destructive
-                },
-            );
         });
 }
 

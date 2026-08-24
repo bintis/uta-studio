@@ -163,6 +163,33 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
         },
         &config.analysis_experience,
     );
+    match &draft.engine_preview {
+        Ok(preview) if preview.ready => {
+            bevy::log::info!(
+                target: "uta_studio::analysis_preview",
+                file_hash = %draft.file_hash,
+                request_id = %preview.request_id,
+                "Exact Engine plan preview is ready"
+            );
+        }
+        Ok(preview) => {
+            bevy::log::warn!(
+                target: "uta_studio::analysis_preview",
+                file_hash = %draft.file_hash,
+                request_id = %preview.request_id,
+                blockers = %preview.blockers.join(" | "),
+                "Exact Engine plan preview is blocked"
+            );
+        }
+        Err(error) => {
+            bevy::log::error!(
+                target: "uta_studio::analysis_preview",
+                file_hash = %draft.file_hash,
+                error = %error,
+                "Exact Engine plan preview could not be built"
+            );
+        }
+    }
 }
 
 /// Buckets a plan's nodes into the phase-plan's real, non-fabricated

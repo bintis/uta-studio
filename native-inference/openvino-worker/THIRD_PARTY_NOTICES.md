@@ -8,6 +8,9 @@ with the following independently licensed components:
   Group, and contributors. Runtime source and third-party license texts are
   copied by the explicit source-build recipe.
 - **rustfft** — dual-licensed MIT OR Apache-2.0; Copyright its contributors.
+- **BSRoformer.cpp** — MIT; Copyright (c) 2026 沉默の金. The accepted
+  OpenVINO RoFormer implementations retain independently validated native DSP
+  and converted graph semantics derived from this technical reference.
 - **RMVPE reference algorithm and model** — MIT; reference implementation
   copyright 2023 liujing04, 源文雨, and Ftps; model lineage copyright 2022
   lj1995. The model is not bundled and is installed only after explicit user

@@ -448,7 +448,7 @@ pub(crate) fn spawn_library(
                             header,
                             font.clone(),
                             format!(
-                                "{} tracks · production workspace{}",
+                                "{} tracks · analysis workspace{}",
                                 session.songs.processed_count,
                                 if session.scanning { " · scanning" } else { "" }
                             ),

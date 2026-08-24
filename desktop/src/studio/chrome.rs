@@ -552,16 +552,25 @@ pub(crate) fn spawn_top_bar(
             BorderColor::all(theme.border.with_alpha(0.4)),
         ))
         .with_children(|bar| {
-            spawn_icon_button(
-                bar,
-                icons.clone(),
-                theme,
-                UiIcon::ArrowLeft,
-                UiAction::from(AppCommand::Back),
-                false,
-                false,
-                34.0,
-            );
+            if let Some(back_action) = navigation_back_action(session) {
+                spawn_icon_button(
+                    bar,
+                    icons.clone(),
+                    theme,
+                    UiIcon::ArrowLeft,
+                    back_action,
+                    false,
+                    false,
+                    34.0,
+                );
+            } else {
+                bar.spawn(Node {
+                    width: px(34),
+                    height: px(34),
+                    flex_shrink: 0.0,
+                    ..default()
+                });
+            }
             bar.spawn(Node {
                 flex_grow: 1.0,
                 ..default()

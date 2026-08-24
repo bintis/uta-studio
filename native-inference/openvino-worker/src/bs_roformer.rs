@@ -1,7 +1,6 @@
 #![allow(clippy::needless_range_loop)] // Explicit DSP and tensor-axis indexing.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use openvino::{CompiledModel, Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
@@ -308,6 +307,7 @@ fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, S
         )
         .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
     }
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     let band = compile_paths(
         &mut core,
         &paths(directory, &manifest.islands[0]),
@@ -387,103 +387,137 @@ fn run_model(
     Ok(values)
 }
 
-fn run_pipeline(pipeline: &mut Pipeline, gathered: &[f32]) -> Result<Vec<f32>, String> {
-    if gathered.len() != FRAMES * GATHERED_WIDTH {
-        return Err("BS-RoFormer gathered STFT shape is invalid".to_string());
+fn run_pipeline(
+    pipeline: &mut Pipeline,
+    gathered_chunks: Vec<Vec<f32>>,
+) -> Result<Vec<Vec<f32>>, String> {
+    if gathered_chunks.is_empty()
+        || gathered_chunks
+            .iter()
+            .any(|gathered| gathered.len() != FRAMES * GATHERED_WIDTH)
+    {
+        return Err("BS-RoFormer gathered STFT shapes are invalid".to_string());
     }
-    let mut features = run_model(
-        &mut pipeline.band,
-        gathered,
-        &[1, FRAMES as i64, GATHERED_WIDTH as i64],
-        &[1, FRAMES as i64, BANDS as i64, DIM as i64],
-    )?;
-    for (time_paths, frequency_paths) in &pipeline.layers {
+
+    let mut feature_chunks = Vec::with_capacity(gathered_chunks.len());
+    for gathered in gathered_chunks {
+        feature_chunks.push(run_model(
+            &mut pipeline.band,
+            &gathered,
+            &[1, FRAMES as i64, GATHERED_WIDTH as i64],
+            &[1, FRAMES as i64, BANDS as i64, DIM as i64],
+        )?);
+    }
+
+    for (layer, (time_paths, frequency_paths)) in pipeline.layers.iter().enumerate() {
+        eprintln!(
+            "[uta-openvino-worker] BS-RoFormer stage-major layer {}/12 time",
+            layer + 1
+        );
         let mut time_model = compile_paths(&mut pipeline.core, time_paths, DeviceType::GPU)?;
-        let mut time_output = vec![0.0; features.len()];
-        for band_start in (0..BANDS).step_by(TIME_BATCH) {
-            let valid = (BANDS - band_start).min(TIME_BATCH);
-            let mut input = vec![0.0; TIME_BATCH * FRAMES * DIM];
-            for band in 0..valid {
-                for frame in 0..FRAMES {
-                    let source = (frame * BANDS + band_start + band) * DIM;
-                    let destination = (band * FRAMES + frame) * DIM;
+        let mut time_chunks = Vec::with_capacity(feature_chunks.len());
+        for features in std::mem::take(&mut feature_chunks) {
+            let mut time_output = vec![0.0; features.len()];
+            for band_start in (0..BANDS).step_by(TIME_BATCH) {
+                let valid = (BANDS - band_start).min(TIME_BATCH);
+                let mut input = vec![0.0; TIME_BATCH * FRAMES * DIM];
+                for band in 0..valid {
+                    for frame in 0..FRAMES {
+                        let source = (frame * BANDS + band_start + band) * DIM;
+                        let destination = (band * FRAMES + frame) * DIM;
+                        input[destination..destination + DIM]
+                            .copy_from_slice(&features[source..source + DIM]);
+                    }
+                }
+                let output = run_model(
+                    &mut time_model,
+                    &input,
+                    &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                    &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                )?;
+                for band in 0..valid {
+                    for frame in 0..FRAMES {
+                        let source = (band * FRAMES + frame) * DIM;
+                        let destination = (frame * BANDS + band_start + band) * DIM;
+                        time_output[destination..destination + DIM]
+                            .copy_from_slice(&output[source..source + DIM]);
+                    }
+                }
+            }
+            time_chunks.push(time_output);
+        }
+        drop(time_model);
+
+        eprintln!(
+            "[uta-openvino-worker] BS-RoFormer stage-major layer {}/12 frequency",
+            layer + 1
+        );
+        let mut frequency_model =
+            compile_paths(&mut pipeline.core, frequency_paths, DeviceType::GPU)?;
+        feature_chunks.reserve(time_chunks.len());
+        for time_output in time_chunks {
+            let mut frequency_output = vec![0.0; time_output.len()];
+            for frame_start in (0..FRAMES).step_by(FREQUENCY_BATCH) {
+                let valid = (FRAMES - frame_start).min(FREQUENCY_BATCH);
+                let count = valid * BANDS * DIM;
+                let source = frame_start * BANDS * DIM;
+                let mut input = vec![0.0; FREQUENCY_BATCH * BANDS * DIM];
+                input[..count].copy_from_slice(&time_output[source..source + count]);
+                let output = run_model(
+                    &mut frequency_model,
+                    &input,
+                    &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
+                    &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
+                )?;
+                frequency_output[source..source + count].copy_from_slice(&output[..count]);
+            }
+            feature_chunks.push(frequency_output);
+        }
+        drop(frequency_model);
+    }
+
+    for features in &mut feature_chunks {
+        *features = run_model(
+            &mut pipeline.norm,
+            features,
+            &[1, FRAMES as i64, BANDS as i64, DIM as i64],
+            &[1, FRAMES as i64, BANDS as i64, DIM as i64],
+        )?;
+    }
+
+    let mut gathered_masks = vec![vec![0.0; FRAMES * GATHERED_WIDTH]; feature_chunks.len()];
+    let mut width_offset = 0;
+    for mask in &mut pipeline.masks {
+        let bands = mask.end - mask.start;
+        for (features, gathered_mask) in feature_chunks.iter().zip(&mut gathered_masks) {
+            let mut input = vec![0.0; FRAMES * bands * DIM];
+            for frame in 0..FRAMES {
+                for band in 0..bands {
+                    let source = (frame * BANDS + mask.start + band) * DIM;
+                    let destination = (frame * bands + band) * DIM;
                     input[destination..destination + DIM]
                         .copy_from_slice(&features[source..source + DIM]);
                 }
             }
             let output = run_model(
-                &mut time_model,
+                &mut mask.model,
                 &input,
-                &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
-                &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                &[1, FRAMES as i64, bands as i64, DIM as i64],
+                &[1, FRAMES as i64, mask.output_width as i64],
             )?;
-            for band in 0..valid {
-                for frame in 0..FRAMES {
-                    let source = (band * FRAMES + frame) * DIM;
-                    let destination = (frame * BANDS + band_start + band) * DIM;
-                    time_output[destination..destination + DIM]
-                        .copy_from_slice(&output[source..source + DIM]);
-                }
+            for frame in 0..FRAMES {
+                let source = frame * mask.output_width;
+                let destination = frame * GATHERED_WIDTH + width_offset;
+                gathered_mask[destination..destination + mask.output_width]
+                    .copy_from_slice(&output[source..source + mask.output_width]);
             }
-        }
-        drop(time_model);
-        let mut frequency_model =
-            compile_paths(&mut pipeline.core, frequency_paths, DeviceType::GPU)?;
-        let mut frequency_output = vec![0.0; features.len()];
-        for frame_start in (0..FRAMES).step_by(FREQUENCY_BATCH) {
-            let valid = (FRAMES - frame_start).min(FREQUENCY_BATCH);
-            let count = valid * BANDS * DIM;
-            let source = frame_start * BANDS * DIM;
-            let mut input = vec![0.0; FREQUENCY_BATCH * BANDS * DIM];
-            input[..count].copy_from_slice(&time_output[source..source + count]);
-            let output = run_model(
-                &mut frequency_model,
-                &input,
-                &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
-                &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
-            )?;
-            frequency_output[source..source + count].copy_from_slice(&output[..count]);
-        }
-        drop(frequency_model);
-        features = frequency_output;
-    }
-    features = run_model(
-        &mut pipeline.norm,
-        &features,
-        &[1, FRAMES as i64, BANDS as i64, DIM as i64],
-        &[1, FRAMES as i64, BANDS as i64, DIM as i64],
-    )?;
-    let mut gathered_mask = vec![0.0; FRAMES * GATHERED_WIDTH];
-    let mut width_offset = 0;
-    for mask in &mut pipeline.masks {
-        let bands = mask.end - mask.start;
-        let mut input = vec![0.0; FRAMES * bands * DIM];
-        for frame in 0..FRAMES {
-            for band in 0..bands {
-                let source = (frame * BANDS + mask.start + band) * DIM;
-                let destination = (frame * bands + band) * DIM;
-                input[destination..destination + DIM]
-                    .copy_from_slice(&features[source..source + DIM]);
-            }
-        }
-        let output = run_model(
-            &mut mask.model,
-            &input,
-            &[1, FRAMES as i64, bands as i64, DIM as i64],
-            &[1, FRAMES as i64, mask.output_width as i64],
-        )?;
-        for frame in 0..FRAMES {
-            let source = frame * mask.output_width;
-            let destination = frame * GATHERED_WIDTH + width_offset;
-            gathered_mask[destination..destination + mask.output_width]
-                .copy_from_slice(&output[source..source + mask.output_width]);
         }
         width_offset += mask.output_width;
     }
     if width_offset != GATHERED_WIDTH {
         return Err("BS-RoFormer mask groups do not cover the gathered spectrum".to_string());
     }
-    Ok(gathered_mask)
+    Ok(gathered_masks)
 }
 
 pub fn infer(
@@ -524,9 +558,9 @@ pub fn infer(
     let mut pipeline = compile_pipeline(&model_dir, &manifest)?;
     progress(
         0.03,
-        "Running rolling exact-context BS-RoFormer GPU islands",
+        "Running stage-major exact-context BS-RoFormer GPU islands",
     );
-    let result = overlap_add(&audio, |chunk| infer_chunk(&mut pipeline, chunk))?;
+    let result = process_audio_staged(&audio, &mut pipeline)?;
     if result.iter().flatten().any(|sample| !sample.is_finite()) {
         return Err("BS-RoFormer returned non-finite vocal audio".to_string());
     }
@@ -539,45 +573,104 @@ pub fn infer(
     crate::audio::encode_stereo_flac(&output, output_dir, "guide-vocals.flac")
 }
 
-fn infer_chunk(
+fn process_audio_staged(
+    audio: &[Vec<f32>; CHANNELS],
     pipeline: &mut Pipeline,
-    chunk: &[Vec<f32>; CHANNELS],
 ) -> Result<[Vec<f32>; CHANNELS], String> {
-    let spectrum = stft(chunk)?;
-    let mut gathered = vec![0.0; FRAMES * GATHERED_WIDTH];
-    for frame in 0..FRAMES {
-        for frequency in 0..FREQUENCIES {
-            for channel in 0..CHANNELS {
-                let value = spectrum[channel][frame * FREQUENCIES + frequency];
-                let model_frequency = frequency * CHANNELS + channel;
-                let offset = (frame * MODEL_FREQUENCIES + model_frequency) * 2;
-                gathered[offset] = value.re;
-                gathered[offset + 1] = value.im;
+    let samples = audio[0].len();
+    if samples == 0 || samples > MAX_SAMPLES || audio[1].len() != samples {
+        return Err("BS-RoFormer input is empty, malformed, or exceeds one hour".to_string());
+    }
+    let pad = CHUNK_SAMPLES / 2;
+    let padded_samples = samples + 2 * pad;
+    let chunks = (padded_samples - CHUNK_SAMPLES) / CHUNK_STEP + 1;
+    let mut spectra = Vec::with_capacity(chunks);
+    let mut gathered_chunks = Vec::with_capacity(chunks);
+    for chunk_index in 0..chunks {
+        let offset = chunk_index * CHUNK_STEP;
+        let chunk = std::array::from_fn(|channel| {
+            (0..CHUNK_SAMPLES)
+                .map(|index| {
+                    let padded_index = offset + index;
+                    audio[channel][reflect_padded_index(padded_index, samples, pad)]
+                })
+                .collect::<Vec<_>>()
+        });
+        eprintln!(
+            "[uta-openvino-worker] BS-RoFormer prepare chunk {}/{}",
+            chunk_index + 1,
+            chunks
+        );
+        let spectrum = stft(&chunk)?;
+        let mut gathered = vec![0.0; FRAMES * GATHERED_WIDTH];
+        for frame in 0..FRAMES {
+            for frequency in 0..FREQUENCIES {
+                for channel in 0..CHANNELS {
+                    let value = spectrum[channel][frame * FREQUENCIES + frequency];
+                    let model_frequency = frequency * CHANNELS + channel;
+                    let gathered_offset = (frame * MODEL_FREQUENCIES + model_frequency) * 2;
+                    gathered[gathered_offset] = value.re;
+                    gathered[gathered_offset + 1] = value.im;
+                }
             }
         }
+        spectra.push(spectrum);
+        gathered_chunks.push(gathered);
     }
-    let masks = run_pipeline(pipeline, &gathered)?;
-    if masks.len() != FRAMES * GATHERED_WIDTH || masks.iter().any(|value| !value.is_finite()) {
+
+    let masks = run_pipeline(pipeline, gathered_chunks)?;
+    if masks.len() != chunks
+        || masks.iter().any(|mask| {
+            mask.len() != FRAMES * GATHERED_WIDTH || mask.iter().any(|value| !value.is_finite())
+        })
+    {
         return Err("BS-RoFormer returned malformed or non-finite masks".to_string());
     }
-    let mut masked = [
-        vec![Complex32::new(0.0, 0.0); FREQUENCIES * FRAMES],
-        vec![Complex32::new(0.0, 0.0); FREQUENCIES * FRAMES],
-    ];
-    for frequency in 0..FREQUENCIES {
-        for channel in 0..CHANNELS {
-            let model_frequency = frequency * CHANNELS + channel;
-            for frame in 0..FRAMES {
-                let offset = (frame * MODEL_FREQUENCIES + model_frequency) * 2;
-                let mask = Complex32::new(masks[offset], masks[offset + 1]);
-                masked[channel][frame * FREQUENCIES + frequency] =
-                    spectrum[channel][frame * FREQUENCIES + frequency] * mask;
+
+    let window = periodic_hann(CHUNK_SAMPLES)
+        .into_iter()
+        .map(|value| value + 1.0e-8)
+        .collect::<Vec<_>>();
+    let mut mixed = [vec![0.0_f32; padded_samples], vec![0.0_f32; padded_samples]];
+    let mut weights = vec![0.0_f32; padded_samples];
+    for (chunk_index, (spectrum, mask)) in spectra.into_iter().zip(masks).enumerate() {
+        let mut masked = [
+            vec![Complex32::new(0.0, 0.0); FREQUENCIES * FRAMES],
+            vec![Complex32::new(0.0, 0.0); FREQUENCIES * FRAMES],
+        ];
+        for frequency in 0..FREQUENCIES {
+            for channel in 0..CHANNELS {
+                let model_frequency = frequency * CHANNELS + channel;
+                for frame in 0..FRAMES {
+                    let gathered_offset = (frame * MODEL_FREQUENCIES + model_frequency) * 2;
+                    let value = Complex32::new(mask[gathered_offset], mask[gathered_offset + 1]);
+                    masked[channel][frame * FREQUENCIES + frequency] =
+                        spectrum[channel][frame * FREQUENCIES + frequency] * value;
+                }
             }
         }
+        let separated = istft(&masked)?;
+        let offset = chunk_index * CHUNK_STEP;
+        for index in 0..CHUNK_SAMPLES {
+            let weight = window[index];
+            for channel in 0..CHANNELS {
+                mixed[channel][offset + index] += separated[channel][index] * weight;
+            }
+            weights[offset + index] += weight;
+        }
     }
-    istft(&masked)
+
+    Ok(std::array::from_fn(|channel| {
+        (0..samples)
+            .map(|index| {
+                let padded_index = pad + index;
+                mixed[channel][padded_index] / weights[padded_index].max(1.0e-8)
+            })
+            .collect()
+    }))
 }
 
+#[cfg(test)]
 fn overlap_add(
     audio: &[Vec<f32>; CHANNELS],
     mut process: impl FnMut(&[Vec<f32>; CHANNELS]) -> Result<[Vec<f32>; CHANNELS], String>,
@@ -729,159 +822,6 @@ fn istft(spectrum: &[Vec<Complex32>; CHANNELS]) -> Result<[Vec<f32>; CHANNELS], 
             })
             .collect()
     }))
-}
-
-#[allow(dead_code)]
-fn read_float_stereo_wav(path: &Path) -> Result<[Vec<f32>; CHANNELS], String> {
-    let mut file =
-        File::open(path).map_err(|error| format!("could not open input WAV: {error}"))?;
-    let mut header = [0_u8; 12];
-    file.read_exact(&mut header)
-        .map_err(|error| format!("could not read input WAV header: {error}"))?;
-    if &header[..4] != b"RIFF" || &header[8..] != b"WAVE" {
-        return Err("BS-RoFormer input must be a RIFF/WAVE file".to_string());
-    }
-    let mut format = None;
-    let mut data = None;
-    loop {
-        let mut chunk_header = [0_u8; 8];
-        match file.read_exact(&mut chunk_header) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(format!("could not read WAV chunk: {error}")),
-        }
-        let size = u32::from_le_bytes(chunk_header[4..8].try_into().unwrap()) as u64;
-        let position = file.stream_position().map_err(|error| error.to_string())?;
-        match &chunk_header[..4] {
-            b"fmt " => {
-                let mut bytes =
-                    vec![0_u8; usize::try_from(size).map_err(|_| "WAV fmt chunk is too large")?];
-                file.read_exact(&mut bytes)
-                    .map_err(|error| error.to_string())?;
-                if bytes.len() < 16 {
-                    return Err("WAV fmt chunk is truncated".to_string());
-                }
-                format = Some((
-                    u16::from_le_bytes(bytes[0..2].try_into().unwrap()),
-                    u16::from_le_bytes(bytes[2..4].try_into().unwrap()),
-                    u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                    u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
-                ));
-            }
-            b"data" => {
-                data = Some((position, size));
-                file.seek(SeekFrom::Current(
-                    i64::try_from(size).map_err(|_| "WAV data is too large")?,
-                ))
-                .map_err(|error| error.to_string())?;
-            }
-            _ => {
-                file.seek(SeekFrom::Current(
-                    i64::try_from(size).map_err(|_| "WAV chunk is too large")?,
-                ))
-                .map_err(|error| error.to_string())?;
-            }
-        }
-        if size % 2 == 1 {
-            file.seek(SeekFrom::Current(1))
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    let (tag, channels, sample_rate, bits) =
-        format.ok_or_else(|| "WAV has no fmt chunk".to_string())?;
-    if tag != 3
-        || channels as usize != CHANNELS
-        || sample_rate as usize != SAMPLE_RATE
-        || bits != 32
-    {
-        return Err("BS-RoFormer requires 44.1 kHz stereo IEEE-float32 WAV input".to_string());
-    }
-    let (offset, size) = data.ok_or_else(|| "WAV has no data chunk".to_string())?;
-    if size == 0 || !size.is_multiple_of((CHANNELS * 4) as u64) {
-        return Err("WAV data is empty or malformed".to_string());
-    }
-    let samples = usize::try_from(size / (CHANNELS * 4) as u64)
-        .map_err(|_| "WAV sample count exceeds this platform".to_string())?;
-    if samples > MAX_SAMPLES {
-        return Err("BS-RoFormer input exceeds the one-hour safety bound".to_string());
-    }
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|error| error.to_string())?;
-    let mut bytes = vec![0_u8; usize::try_from(size).map_err(|_| "WAV data is too large")?];
-    file.read_exact(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    let mut result = [Vec::with_capacity(samples), Vec::with_capacity(samples)];
-    for frame in bytes.chunks_exact(CHANNELS * 4) {
-        for channel in 0..CHANNELS {
-            let start = channel * 4;
-            let sample = f32::from_le_bytes(frame[start..start + 4].try_into().unwrap());
-            if !sample.is_finite() {
-                return Err("WAV input contains non-finite samples".to_string());
-            }
-            result[channel].push(sample);
-        }
-    }
-    Ok(result)
-}
-
-#[allow(dead_code)]
-fn write_float_stereo_wav_atomic(path: &Path, audio: &[Vec<f32>; CHANNELS]) -> Result<(), String> {
-    let samples = audio[0].len();
-    if samples == 0 || audio[1].len() != samples {
-        return Err("BS-RoFormer output audio is malformed".to_string());
-    }
-    let data_bytes = samples
-        .checked_mul(CHANNELS * 4)
-        .and_then(|bytes| u32::try_from(bytes).ok())
-        .ok_or_else(|| "BS-RoFormer output exceeds RIFF size limits".to_string())?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "output path has no parent".to_string())?;
-    if !parent.is_dir() {
-        return Err("authorized output directory is unavailable".to_string());
-    }
-    let temporary = parent.join(format!(".bs-roformer-{}.tmp.wav", std::process::id()));
-    let write_result = (|| -> Result<(), String> {
-        let mut file = File::create(&temporary).map_err(|error| error.to_string())?;
-        file.write_all(b"RIFF").map_err(|error| error.to_string())?;
-        file.write_all(&(36 + data_bytes).to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(b"WAVEfmt ")
-            .map_err(|error| error.to_string())?;
-        file.write_all(&16_u32.to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&3_u16.to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&(CHANNELS as u16).to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&(SAMPLE_RATE as u32).to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&((SAMPLE_RATE * CHANNELS * 4) as u32).to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&((CHANNELS * 4) as u16).to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(&32_u16.to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(b"data").map_err(|error| error.to_string())?;
-        file.write_all(&data_bytes.to_le_bytes())
-            .map_err(|error| error.to_string())?;
-        for index in 0..samples {
-            for channel in 0..CHANNELS {
-                file.write_all(&audio[channel][index].to_le_bytes())
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        file.sync_all().map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, path).map_err(|error| error.to_string())?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    write_result
 }
 
 #[cfg(test)]

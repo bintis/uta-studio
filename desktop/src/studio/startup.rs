@@ -349,6 +349,15 @@ pub(crate) struct StartupUiResources<'w> {
 }
 
 pub(crate) fn setup(mut commands: Commands, resources: StartupUiResources) {
+    let executable = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("unavailable ({error})"));
+    bevy::log::info!(
+        target: "uta_studio::lifecycle",
+        version = env!("CARGO_PKG_VERSION"),
+        executable = %executable,
+        "Uta Studio session started"
+    );
     let StartupUiResources {
         asset_server,
         mut images,

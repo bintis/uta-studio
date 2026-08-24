@@ -31,8 +31,10 @@ pub(crate) fn spawn_select_setting_row(
                 min_height: px(76),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -41,7 +43,8 @@ pub(crate) fn spawn_select_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -59,10 +62,12 @@ pub(crate) fn spawn_select_setting_row(
             });
             row.spawn(Node {
                 position_type: PositionType::Relative,
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 1.0,
                 height: if open { Val::Auto } else { px(36) },
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
@@ -201,8 +206,10 @@ pub(crate) fn spawn_setting_row(
                 min_height: px(76),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -210,7 +217,8 @@ pub(crate) fn spawn_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -228,9 +236,11 @@ pub(crate) fn spawn_setting_row(
             });
             if let Some((label, action)) = action {
                 row.spawn(Node {
-                    width: px(SETTINGS_CONTROL_WIDTH),
+                    min_width: px(180),
+                    max_width: px(SETTINGS_CONTROL_WIDTH),
+                    flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                    flex_grow: 1.0,
                     margin: UiRect::top(px(2)),
-                    flex_shrink: 0.0,
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
                 })
@@ -258,8 +268,10 @@ pub(crate) fn spawn_setting_row_with_actions(
                 min_height: px(92),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -267,7 +279,8 @@ pub(crate) fn spawn_setting_row_with_actions(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -295,9 +308,11 @@ pub(crate) fn spawn_setting_actions(
 ) {
     parent
         .spawn(Node {
-            width: px(SETTINGS_CONTROL_WIDTH),
+            min_width: px(180),
+            max_width: px(SETTINGS_CONTROL_WIDTH),
+            flex_basis: px(SETTINGS_CONTROL_WIDTH),
+            flex_grow: 1.0,
             margin: UiRect::top(px(2)),
-            flex_shrink: 0.0,
             justify_content: JustifyContent::FlexEnd,
             flex_wrap: FlexWrap::Wrap,
             row_gap: px(8),

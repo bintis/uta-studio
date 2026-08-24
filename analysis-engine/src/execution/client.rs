@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,72 @@ const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const OPENVINO_PROCESS_QUIESCENCE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const OPENVINO_PROCESS_QUIESCENCE: Duration = Duration::ZERO;
+const OPENVINO_GATE_POLL: Duration = Duration::from_millis(25);
+
+#[derive(Default)]
+struct OpenVinoGate {
+    last_exit: Option<Instant>,
+}
+
+struct OpenVinoLease {
+    gate: MutexGuard<'static, OpenVinoGate>,
+}
+
+impl Drop for OpenVinoLease {
+    fn drop(&mut self) {
+        self.gate.last_exit = Some(Instant::now());
+    }
+}
+
+fn uses_openvino_worker(expectation: &WorkerExpectation) -> bool {
+    expectation.component == "uta-openvino-worker"
+}
+
+fn acquire_openvino_lease(
+    expectation: &WorkerExpectation,
+    cancellation: &CancellationToken,
+) -> EngineResult<Option<OpenVinoLease>> {
+    if !uses_openvino_worker(expectation) {
+        return Ok(None);
+    }
+    static GATE: OnceLock<Mutex<OpenVinoGate>> = OnceLock::new();
+    let gate = GATE.get_or_init(|| Mutex::new(OpenVinoGate::default()));
+    let mut guard = loop {
+        if cancellation.is_cancelled() {
+            return Err(EngineError::new(
+                EngineErrorCode::Cancelled,
+                "analysis task was cancelled while waiting for the OpenVINO runtime",
+            ));
+        }
+        match gate.try_lock() {
+            Ok(guard) => break guard,
+            Err(TryLockError::Poisoned(error)) => break error.into_inner(),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(OPENVINO_GATE_POLL),
+        }
+    };
+    if let Some(last_exit) = guard.last_exit {
+        let deadline = last_exit + OPENVINO_PROCESS_QUIESCENCE;
+        while Instant::now() < deadline {
+            if cancellation.is_cancelled() {
+                return Err(EngineError::new(
+                    EngineErrorCode::Cancelled,
+                    "analysis task was cancelled during OpenVINO runtime quiescence",
+                ));
+            }
+            std::thread::sleep(
+                OPENVINO_GATE_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+    // The lease remains held through process shutdown, preventing another
+    // in-process analysis job from creating a concurrent OpenVINO GPU context.
+    guard.last_exit = None;
+    Ok(Some(OpenVinoLease { gate: guard }))
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
@@ -81,6 +147,7 @@ impl SupervisedWorker {
                 format!("could not authorize worker output directory: {error}"),
             )
         })?;
+        let _openvino_lease = acquire_openvino_lease(expectation, cancellation)?;
         let mut process = WorkerProcess::spawn(executable)?;
         let deadline = Instant::now() + task.timeout;
         let ready = process.next_frame(deadline, cancellation)?;
@@ -550,6 +617,18 @@ mod tests {
         let clone = token.clone();
         clone.cancel();
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn only_openvino_workers_use_the_process_quiescence_gate() {
+        assert!(uses_openvino_worker(&WorkerExpectation {
+            component: "uta-openvino-worker".to_string(),
+            runtime_recipe_digest: None,
+        }));
+        assert!(!uses_openvino_worker(&WorkerExpectation {
+            component: "uta-qwen-asr-worker".to_string(),
+            runtime_recipe_digest: None,
+        }));
     }
 
     fn temporary_root() -> PathBuf {

@@ -53,6 +53,22 @@ pub(crate) fn spawn_settings(
                         10.0,
                         UiAction::from(AppCommand::Home),
                     );
+                    if matches!(
+                        session.settings_tab,
+                        SettingsTab::Models | SettingsTab::Analysis
+                    ) && let Some(file_hash) = session.selected_song.as_ref()
+                    {
+                        spawn_text_button(
+                            nav,
+                            font.clone(),
+                            theme,
+                            "Return to model selection",
+                            9.0,
+                            UiAction::from(AnalysisCommand::OpenSongModelSelection(
+                                file_hash.clone(),
+                            )),
+                        );
+                    }
                     nav.spawn(Node {
                         height: px(18),
                         ..default()
@@ -107,6 +123,8 @@ pub(crate) fn spawn_settings(
                     Node {
                         min_width: px(0),
                         min_height: px(0),
+                        height: percent(100),
+                        flex_basis: percent(0),
                         flex_grow: 1.0,
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::axes(

@@ -708,6 +708,7 @@ pub(crate) fn infer_pcm(
         ],
     )
     .map_err(|error| format!("could not configure OpenVINO GPU accuracy mode: {error}"))?;
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     let xml = artifact
         .xml
         .to_str()

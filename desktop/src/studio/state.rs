@@ -337,6 +337,20 @@ impl StudioStateBundle {
     }
 
     fn with_debug_navigation(mut self) -> Self {
+        if let Ok(tab) = std::env::var("UTA_STUDIO_DEBUG_OPEN_SETTINGS") {
+            self.shell.route = StudioRoute::Settings;
+            self.shell.settings_tab = match tab.trim().to_ascii_lowercase().as_str() {
+                "storage" => SettingsTab::Storage,
+                "models" | "models-runtime" | "runtime" => SettingsTab::Models,
+                "analysis" => SettingsTab::Analysis,
+                _ => SettingsTab::General,
+            };
+        }
+        if let Ok(offset) = std::env::var("UTA_STUDIO_DEBUG_SETTINGS_SCROLL")
+            && let Ok(offset) = offset.parse::<f32>()
+        {
+            self.shell.settings_scroll_offsets[self.shell.settings_tab.index()] = offset.max(0.0);
+        }
         if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_OPEN_SONG") {
             self.library.selected_song = Some(hash);
             self.shell.route = StudioRoute::SongDetail;

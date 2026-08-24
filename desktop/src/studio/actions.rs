@@ -33,6 +33,13 @@ pub(crate) fn handle_actions(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        let request = action.api_request();
+        bevy::log::info!(
+            target: "uta_studio::ui_action",
+            command = %request.command,
+            access = request.access,
+            "UI action pressed"
+        );
         // The node-menu backdrop guarantees that every action received while
         // this menu is open came from the menu or its dismiss surface. Tear
         // down that overlay before dispatching the selected command so no

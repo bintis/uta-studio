@@ -73,6 +73,23 @@ pub fn configure_process_environment() {
     }
 }
 
+pub fn configure_low_impact_gpu_queue(core: &mut openvino::Core) -> Result<(), String> {
+    core.set_properties(
+        &openvino::DeviceType::GPU,
+        [
+            (
+                openvino::RwPropertyKey::Other("GPU_QUEUE_THROTTLE".into()),
+                "LOW",
+            ),
+            (
+                openvino::RwPropertyKey::Other("GPU_QUEUE_PRIORITY".into()),
+                "LOW",
+            ),
+        ],
+    )
+    .map_err(|error| format!("could not configure low-impact OpenVINO GPU queue: {error}"))
+}
+
 pub fn sha256(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|error| format!("could not open runtime library {}: {error}", path.display()))?;

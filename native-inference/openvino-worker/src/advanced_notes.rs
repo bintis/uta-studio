@@ -445,6 +445,9 @@ fn configured_core(device: DiagnosticDevice) -> Result<Core, String> {
     }
     core.set_properties(&selected, properties)
         .map_err(|error| format!("could not configure OpenVINO accuracy mode: {error}"))?;
+    if matches!(device, DiagnosticDevice::Gpu) {
+        crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
+    }
     Ok(core)
 }
 

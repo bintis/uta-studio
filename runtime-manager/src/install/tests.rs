@@ -363,20 +363,20 @@ fn one_roformer_generation_does_not_install_the_family_bundle() {
     model.source.filename = Some("vocals.gguf".to_string());
     model.source.sha256 = Some(format!("{:x}", Sha256::digest(b"audited fixture")));
     model.source.converted_artifact = None;
-    model.dependencies = vec![ResourceRef::runtime("roformer_runtime").unwrap()];
-    model.pinned_backend = Some(crate::catalog::NativeBackend::Vulkan);
+    model.dependencies = vec![ResourceRef::runtime("openvino_2026_3").unwrap()];
+    model.pinned_backend = Some(crate::catalog::NativeBackend::OpenVino);
     model.runtime_recipe_digest = None;
     model.acquisition = vec![AcquisitionSpec {
         method: AcquisitionMethod::ManagedDownload,
         label: "fixture download".to_string(),
         license_id: None,
     }];
-    let worker = fixture.write_executable("roformer-worker");
+    let worker = fixture.write_executable("openvino-worker");
     let manager = RuntimeManager::new(
         catalog,
         StorePaths::default()
             .with_store_root(&fixture.root)
-            .with_runtime_override("roformer_runtime", worker),
+            .with_runtime_override("openvino_2026_3", worker),
     );
     let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
     manager

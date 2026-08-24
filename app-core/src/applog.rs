@@ -39,6 +39,14 @@ fn now_ms() -> i64 {
 /// log file -- a write failure here must never panic or itself log through
 /// `tracing` (that would recurse back into this same function).
 pub fn record_log_text(text: &str) {
+    if text.trim_end_matches('\n').is_empty() {
+        return;
+    }
+    let path = get_log_path();
+    record_log_text_at(text, path.as_deref());
+}
+
+fn record_log_text_at(text: &str, path: Option<&std::path::Path>) {
     let text = text.trim_end_matches('\n');
     if text.is_empty() {
         return;
@@ -54,11 +62,11 @@ pub fn record_log_text(text: &str) {
         }
         buffer.push_back(line);
     }
-    if let Some(path) = get_log_path()
+    if let Some(path) = path
         && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path)
+            .open(path)
     {
         let _ = writeln!(file, "{text}");
     }
@@ -112,7 +120,7 @@ mod tests {
         let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
         clear_buffer();
         for i in 0..MAX_BUFFERED_LINES + 5 {
-            record_log_text(&format!("line-{i}"));
+            record_log_text_at(&format!("line-{i}"), None);
         }
         let buffer = LOG_BUFFER.lock().unwrap();
         assert_eq!(buffer.len(), MAX_BUFFERED_LINES);
@@ -127,9 +135,9 @@ mod tests {
     fn empty_and_whitespace_only_lines_are_not_recorded() {
         let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
         clear_buffer();
-        record_log_text("");
-        record_log_text("\n");
-        record_log_text("real line");
+        record_log_text_at("", None);
+        record_log_text_at("\n", None);
+        record_log_text_at("real line", None);
         let buffer = LOG_BUFFER.lock().unwrap();
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer[0].text, "real line");
@@ -140,7 +148,7 @@ mod tests {
         let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
         clear_buffer();
         for i in 0..10 {
-            record_log_text(&format!("line-{i}"));
+            record_log_text_at(&format!("line-{i}"), None);
         }
         let recent = get_recent_logs(3);
         let texts: Vec<&str> = recent.iter().map(|l| l.text.as_str()).collect();
@@ -151,7 +159,7 @@ mod tests {
     fn get_recent_logs_with_a_limit_larger_than_the_buffer_returns_everything() {
         let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
         clear_buffer();
-        record_log_text("only line");
+        record_log_text_at("only line", None);
         assert_eq!(get_recent_logs(80).len(), 1);
     }
 

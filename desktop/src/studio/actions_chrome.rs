@@ -64,6 +64,9 @@ pub(crate) fn apply_chrome_action(
         UiCommand::Analysis(AnalysisCommand::OpenSongAnalysis(file_hash)) => {
             // Refresh before resolving the run so a just-finished analysis can be
             // opened directly from the song page without waiting for the timer.
+            // Keep the song identity as the graph's return destination; Queue is a
+            // Library sub-view rather than a separate top-level route.
+            studio.library.selected_song = Some(file_hash.clone());
             studio.analysis.analysis_history = app_core::load_analysis_history(500);
             studio.analysis.selected_analysis_history =
                 completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
@@ -294,15 +297,85 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::RunWorkflow) => {
-            if let Some(workflow) = studio.analysis.workflow.as_ref() {
-                studio.shell.notice = Some(
-                    match app_core::preview_workflow_compile(&workflow.definition) {
-                        Ok(_) => "This custom workflow topology is not representable by the exact Engine v1 request contract. Nothing was queued; use Run Analysis for a supported product target.".to_string(),
-                        Err(error) => error.to_string(),
-                    },
-                );
+            let file_hash = studio.library.selected_song.clone();
+            let workflow = studio
+                .analysis
+                .workflow
+                .as_ref()
+                .map(|workflow| (workflow.definition.clone(), workflow.layout.clone()));
+            match (file_hash, workflow) {
+                (Some(file_hash), Some((definition, layout))) => {
+                    let persisted =
+                        app_core::load_song_workflow(&file_hash)
+                            .ok()
+                            .filter(|stored| {
+                                stored.definition == definition && stored.layout == layout
+                            });
+                    let saved = if let Some(persisted) = persisted {
+                        Ok(persisted)
+                    } else {
+                        app_core::save_song_workflow(&file_hash, definition, layout)
+                    };
+                    match saved {
+                        Ok(saved) => {
+                            let revision = saved.definition.revision;
+                            studio.analysis.workflow = Some(saved);
+                            studio.analysis.workflow_compile_error = None;
+                            let mut draft = PlanPreviewDraft {
+                                file_hash: file_hash.clone(),
+                                target: studio.shell.config.analysis_default_target(),
+                                target_overridden: false,
+                                run_override: app_core::AnalysisExperienceOverride::default(),
+                                effective_settings: None,
+                                engine_preview: Err(
+                                    "Preview has not been compiled yet.".to_string()
+                                ),
+                            };
+                            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
+                            let ready = draft
+                                .engine_preview
+                                .as_ref()
+                                .is_ok_and(|preview| preview.ready);
+                            bevy::log::info!(
+                                target: "uta_studio::workflow",
+                                file_hash = %file_hash,
+                                revision,
+                                ready,
+                                "Processing Studio opened exact Engine plan preview"
+                            );
+                            studio.dialogs.plan_preview_draft = Some(draft);
+                            studio.shell.notice = None;
+                            invalidated.invalidate(UiDirtyRegion::Dialog);
+                        }
+                        Err(error) => {
+                            bevy::log::error!(
+                                target: "uta_studio::workflow",
+                                file_hash = %file_hash,
+                                error = %error,
+                                "Processing Studio workflow could not be saved for execution"
+                            );
+                            studio.analysis.workflow_compile_error = Some(error.clone());
+                            studio.shell.notice = Some(format!(
+                                "Workflow was not run because it could not be saved: {error}"
+                            ));
+                            invalidated.invalidate(UiDirtyRegion::Chrome);
+                            invalidated.invalidate(UiDirtyRegion::Analysis);
+                        }
+                    }
+                }
+                (None, _) => {
+                    studio.shell.notice =
+                        Some("Choose a song before running its workflow.".to_string());
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                }
+                (_, None) => {
+                    studio.shell.notice = Some(
+                        "Workflow is unavailable. Return to the song and reopen Processing Studio."
+                            .to_string(),
+                    );
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                }
             }
-            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(node_id, stage)) => {
             studio.analysis.selected_analysis_stage = Some(stage.clone());
@@ -434,6 +507,16 @@ pub(crate) fn apply_chrome_action(
                 invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route != StudioRoute::Library {
                 studio.shell.route = StudioRoute::Library;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.library.library_view == LibraryView::Queue {
+                if studio.library.selected_song.is_some() {
+                    studio.shell.route = StudioRoute::SongDetail;
+                } else {
+                    studio.library.library_view = LibraryView::All;
+                    studio.library.refresh();
+                }
+                studio.library.library_facet = None;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             }

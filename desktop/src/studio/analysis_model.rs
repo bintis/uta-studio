@@ -67,17 +67,6 @@ pub(crate) struct GraphNodeView {
     pub(crate) label: String,
     pub(crate) detail: String,
     pub(crate) state: GraphNodeState,
-    /// Non-zero only when this is a collapsed compound node -- how many
-    /// children `Expand` would reveal. A node is compound iff this can be
-    /// non-zero; there's no separate `is_compound` flag on this view (the
-    /// Node Context Menu's expand/collapse toggle looks that up directly
-    /// from `AnalysisGraphSpec` instead, via
-    /// `analysis_node_compound_toggle_action` in `desktop/src/studio/
-    /// analysis.rs`, since it needs the answer independent of this node's
-    /// current expand state -- `collapsed_child_count` alone can't tell an
-    /// already-expanded compound node apart from a plain one, both read 0).
-    #[allow(dead_code)]
-    pub(crate) collapsed_child_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,11 +185,6 @@ pub(crate) fn build_graph_view_model(
             is_live_node,
             stage_complete,
         );
-        let collapsed_child_count = if node.is_compound() && !expanded.contains(&node.id) {
-            node.compound_children.len()
-        } else {
-            0
-        };
         nodes.push(GraphNodeView {
             id: node.id.clone(),
             label: node.label.clone(),
@@ -208,7 +192,6 @@ pub(crate) fn build_graph_view_model(
                 .and_then(|plan| analysis_plan_node_detail(plan, node.id.as_str()))
                 .unwrap_or_default(),
             state,
-            collapsed_child_count,
         });
     }
     GraphViewModel {
@@ -1333,8 +1316,6 @@ mod tests {
         assert!(view.node(&id("music.key")).is_none());
         assert!(view.node(&id("music.rhythm")).is_none());
         assert!(view.node(&id("music.descriptors")).is_none());
-        let parent = view.node(&id("music.analysis")).unwrap();
-        assert_eq!(parent.collapsed_child_count, 3);
     }
 
     #[test]
@@ -1358,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn expanding_a_compound_node_reveals_its_children_with_zero_collapsed_count() {
+    fn expanding_a_compound_node_reveals_its_children() {
         let graph = app_core::baseline_graph_spec();
         let mut expanded = BTreeSet::new();
         expanded.insert(id("music.analysis"));
@@ -1374,12 +1355,7 @@ mod tests {
         assert!(view.node(&id("music.key")).is_some());
         assert!(view.node(&id("music.rhythm")).is_some());
         assert!(view.node(&id("music.descriptors")).is_some());
-        assert_eq!(
-            view.node(&id("music.analysis"))
-                .unwrap()
-                .collapsed_child_count,
-            0
-        );
+        assert!(view.node(&id("music.analysis")).is_some());
     }
 
     #[test]

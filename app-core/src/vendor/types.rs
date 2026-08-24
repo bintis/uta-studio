@@ -101,7 +101,6 @@ pub struct AnalysisRuntimeStatus {
     pub runtime_contract_current: bool,
     pub ffmpeg_available: bool,
     pub native_analyzer_available: bool,
-    pub roformer_runtime_available: bool,
     pub openvino_runtime_available: bool,
     pub qwen_asr_runtime_available: bool,
     pub qwen_align_runtime_available: bool,

@@ -297,6 +297,7 @@ fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, S
         )
         .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
     }
+    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     let band_paths = island_paths(directory, &manifest.islands[0])?;
     let band = compile_paths(
         &mut core,
@@ -399,7 +400,12 @@ fn run_pipeline(
             &[1, FRAMES as i64, BANDS as i64, DIM as i64],
         )?);
     }
-    for (time_paths, frequency_paths) in &pipeline.layers {
+    for (layer, (time_paths, frequency_paths)) in pipeline.layers.iter().enumerate() {
+        eprintln!(
+            "[uta-openvino-worker] Harmony stage-major layer {}/{} time",
+            layer + 1,
+            DEPTH
+        );
         let mut time_model = compile_paths(
             &mut pipeline.core,
             &time_paths.name,
@@ -439,6 +445,11 @@ fn run_pipeline(
         }
         drop(time_model);
 
+        eprintln!(
+            "[uta-openvino-worker] Harmony stage-major layer {}/{} frequency",
+            layer + 1,
+            DEPTH
+        );
         let mut frequency_model = compile_paths(
             &mut pipeline.core,
             &frequency_paths.name,

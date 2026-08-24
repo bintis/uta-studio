@@ -78,19 +78,32 @@ pub(crate) fn spawn_analysis_settings(
             UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
-    let model_selection_action = session.selected_song.as_ref().map(|file_hash| {
+    let (model_selection_description, model_selection_action) = if let Some(file_hash) =
+        session.selected_song.as_ref()
+    {
         (
-            "Open quick model selection".to_string(),
-            UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
+            "Return to the selected song's Analysis workspace and use Quick model selection. That view owns provider choice for transcription, alignment, pitch, separation, and cleanup nodes.",
+            (
+                "Open quick model selection".to_string(),
+                UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
+            ),
         )
-    });
+    } else {
+        (
+            "Choose a song from the library, open Analysis, then use Quick model selection. Settings never writes provider preferences.",
+            (
+                "Choose a song".to_string(),
+                UiAction::from(AppCommand::Home),
+            ),
+        )
+    };
     spawn_setting_row(
         parent,
         font.clone(),
         theme,
         "Where to choose models",
-        "Open a song, enter Analysis, then use Quick model selection. That view owns provider choice for transcription, alignment, pitch, separation, and cleanup nodes.",
-        model_selection_action,
+        model_selection_description,
+        Some(model_selection_action),
     );
     spawn_setting_row(
         parent,
@@ -166,8 +179,10 @@ fn spawn_quality_setting_row(
                 min_height: px(92),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -175,7 +190,8 @@ fn spawn_quality_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -192,10 +208,12 @@ fn spawn_quality_setting_row(
                 );
             });
             row.spawn(Node {
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 1.0,
                 height: px(36),
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 ..default()
             })
             .with_children(|choices| {
@@ -254,7 +272,7 @@ pub(crate) fn spawn_advanced_controls(
         parent,
         font.clone(),
         theme,
-        "RoFormer runtime parameters",
+        "RoFormer model parameters",
         "These values are consumed by compatible RoFormer separation and cleanup workers. Provider selection remains in the Analysis workspace.",
         Some((
             if separation_open { "Hide" } else { "Show" },
@@ -400,8 +418,10 @@ pub(crate) fn spawn_number_setting_row(
                 min_height: px(76),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -409,7 +429,8 @@ pub(crate) fn spawn_number_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -426,9 +447,11 @@ pub(crate) fn spawn_number_setting_row(
                 );
             });
             row.spawn(Node {
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 1.0,
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })
@@ -496,8 +519,10 @@ pub(crate) fn spawn_switch_setting_row(
                 min_height: px(76),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -505,7 +530,8 @@ pub(crate) fn spawn_switch_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(260),
+                flex_basis: px(360),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -522,9 +548,11 @@ pub(crate) fn spawn_switch_setting_row(
                 );
             });
             row.spawn(Node {
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 1.0,
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })

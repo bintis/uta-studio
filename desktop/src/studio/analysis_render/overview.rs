@@ -1,17 +1,12 @@
 use super::*;
 use crate::studio::*;
 
-pub(crate) fn analysis_start_unavailable(file_hash: &str) -> Option<String> {
-    if !app_core::is_ready() {
-        return Some("Start unavailable · set up Models & runtime in Settings".to_string());
-    }
-    match app_core::preview_full_analysis_plan(file_hash) {
-        Ok(plan) => plan
-            .warnings
-            .first()
-            .map(|warning| format!("Start unavailable · {}", warning.message)),
-        Err(error) => Some(format!("Start unavailable · {error}")),
-    }
+pub(crate) fn analysis_start_unavailable(_file_hash: &str) -> Option<String> {
+    // Start always opens the exact Engine Plan Preview. Global component health
+    // and legacy Production warnings are advisory in the testing build; the
+    // exact request remains the only place that may block on a genuinely absent,
+    // corrupt, or non-executable required resource.
+    None
 }
 
 pub(crate) fn current_analysis_header(

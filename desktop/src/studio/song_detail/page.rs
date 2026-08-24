@@ -227,7 +227,7 @@ pub(crate) fn spawn_song_detail(
                 spawn_wrapped_text(
                     empty,
                     font.clone(),
-                    "Open a track from the library to see its production page.",
+                    "Open a track from the library to see its song workspace.",
                     11.0,
                     theme.muted_foreground,
                 );

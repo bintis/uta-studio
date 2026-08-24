@@ -548,19 +548,14 @@ pub(crate) fn spawn_analysis_header_toolbar(
     let current_focus = live
         .and_then(|live| live.node_id.as_deref())
         .and_then(focus_target);
-    let problem_focus = app_core::preview_full_analysis_plan(file_hash)
-        .ok()
-        .and_then(|plan| {
-            plan.nodes
-                .into_iter()
-                .find(|node| {
-                    matches!(
-                        node.state,
-                        app_core::NodeState::Failed | app_core::NodeState::Stale
-                    )
-                })
-                .and_then(|node| focus_target(node.id.as_str()))
-        });
+    let problem_focus = live.and_then(|snapshot| {
+        snapshot
+            .stage_routes
+            .iter()
+            .find(|route| route.node_event.as_deref() == Some("node_failed"))
+            .and_then(|route| route.node_id.as_deref())
+            .and_then(focus_target)
+    });
     parent
         .spawn(Node {
             flex_shrink: 0.0,

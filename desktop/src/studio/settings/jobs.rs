@@ -315,35 +315,29 @@ fn settings_scroll_max(
 
 pub(crate) fn handle_settings_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut shell: ResMut<ShellState>,
-    mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SettingsContent>>,
+    mut contents: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        With<SettingsContent>,
+    >,
     pages: Query<&ComputedNode, With<SettingsPageContent>>,
 ) {
     if shell.route != StudioRoute::Settings {
         return;
     }
-    let delta = wheel
-        .read()
-        .map(|event| {
-            let scale = match event.unit {
-                bevy::input::mouse::MouseScrollUnit::Line => 34.0,
-                bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
-            };
-            -event.y * scale
-        })
-        .sum::<f32>();
-    if delta == 0.0 {
-        return;
-    }
-
+    let pointer = windows.single().ok().and_then(Window::cursor_position);
     let page_height = pages
         .iter()
         .map(|page| page.size().y * page.inverse_scale_factor())
         .fold(0.0_f32, f32::max);
     let mut found_content = false;
+    let mut pointer_over_content = pointer.is_none();
     let mut max_scroll = 0.0_f32;
-    for (computed, _) in contents.iter_mut() {
+    for (computed, transform, _) in contents.iter_mut() {
         found_content = true;
+        pointer_over_content |=
+            pointer.is_some_and(|position| ui_node_contains_pointer(computed, transform, position));
         let viewport_height = computed.size().y * computed.inverse_scale_factor();
         let reported_content_height = computed.content_size().y * computed.inverse_scale_factor();
         max_scroll = max_scroll.max(settings_scroll_max(
@@ -352,21 +346,42 @@ pub(crate) fn handle_settings_scroll(
             page_height,
         ));
     }
-    if !found_content || (max_scroll == 0.0 && page_height == 0.0) {
+    if !found_content || !pointer_over_content {
+        return;
+    }
+    let delta = wheel
+        .read()
+        .map(|event| {
+            let scale = match event.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => 38.0,
+                bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+            };
+            -event.y * scale
+        })
+        .sum::<f32>();
+    if delta.abs() < f32::EPSILON {
         return;
     }
 
-    // During a deferred rebuild, both the outgoing and replacement settings
-    // scroll nodes can exist for one frame. Derive the new offset from the
-    // persisted tab value and apply it to every live node, so the gesture cannot
-    // land only on an entity that is about to be despawned.
+    // A newly rebuilt page can receive a wheel gesture one frame before Bevy
+    // publishes its intrinsic height. Preserve that gesture instead of dropping
+    // it; the same ScrollPosition becomes valid as soon as layout catches up.
     let tab_index = shell.settings_tab.index();
-    let next = (shell.settings_scroll_offsets[tab_index] + delta).clamp(0.0, max_scroll);
-    for (computed, mut position) in contents.iter_mut() {
+    let measurement_ready = page_height > 0.0;
+    let next = if measurement_ready {
+        (shell.settings_scroll_offsets[tab_index] + delta).clamp(0.0, max_scroll)
+    } else {
+        (shell.settings_scroll_offsets[tab_index] + delta).max(0.0)
+    };
+    for (computed, _, mut position) in contents.iter_mut() {
         let viewport_height = computed.size().y * computed.inverse_scale_factor();
         let reported_content_height = computed.content_size().y * computed.inverse_scale_factor();
         let local_max = settings_scroll_max(viewport_height, reported_content_height, page_height);
-        position.y = next.clamp(0.0, local_max);
+        position.y = if measurement_ready {
+            next.clamp(0.0, local_max)
+        } else {
+            next
+        };
     }
     shell.settings_scroll_offsets[tab_index] = next;
 }

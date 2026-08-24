@@ -55,11 +55,18 @@ impl AnalysisCliClient {
         if !executable.is_file() {
             return Err(BackendCliError::ExecutableMissing(executable));
         }
-        let mut child = native_command(&executable)
+        let mut command = native_command(&executable);
+        command
             .args(["worker", "--stdio-json"])
+            .env("UTA_STUDIO_MODELS_DIR", crate::cache::models_dir())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        let ffmpeg = crate::vendor::ffmpeg_path();
+        if ffmpeg.is_file() {
+            command.env("UTA_STUDIO_FFMPEG_PATH", ffmpeg);
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| BackendCliError::SpawnFailed(error.to_string()))?;
         let stdin = child.stdin.take().ok_or_else(|| {

@@ -134,10 +134,10 @@ cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 
 Uta Studio thanks the following projects for technical and interface references:
 
-- **[BSRoformer.cpp](https://github.com/yasoukyoku/BSRoformer.cpp)** and
-  **[GGML](https://github.com/ggml-org/ggml)** for the native RoFormer graph and
-  Vulkan runtime foundations. Exact vendored source and patch identities are
-  recorded with the packaged runtime notices.
+- **[BSRoformer.cpp](https://github.com/yasoukyoku/BSRoformer.cpp)** for the
+  RoFormer graph and DSP technical reference used by the accepted OpenVINO
+  conversions. Current RoFormer execution is provided only by the packaged
+  OpenVINO worker.
 - **[transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)** and
   **[qwen3-asr.cpp](https://github.com/predict-woo/qwen3-asr.cpp)** for the two
   separately pinned Qwen native runtime recipes. Their exact commits, GGML

@@ -99,8 +99,6 @@
                 $out/share/uta-studio/native-inference/qwen-worker/install-local-qwen-assets.sh
               install -Dm644 native-inference/qwen-worker/patches/predict-woo-require-gpu.patch \
                 $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-require-gpu.patch
-              install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/roformer-THIRD_PARTY_NOTICES.md
               install -Dm644 icon.png $out/share/uta-studio/icon.png
               install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
                 $out/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf

@@ -51,9 +51,11 @@ pub(crate) fn spawn_settings_stage_header(
                 min_height: px(92),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
                 padding: UiRect::axes(px(20), px(16)),
                 margin: UiRect::top(px(16)),
-                column_gap: px(32),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::all(px(1)),
                 border_radius: BorderRadius::all(px(8)),
                 ..default()
@@ -64,7 +66,8 @@ pub(crate) fn spawn_settings_stage_header(
         .with_children(|header| {
             header
                 .spawn(Node {
-                    min_width: px(0),
+                    min_width: px(260),
+                    flex_basis: px(420),
                     flex_grow: 1.0,
                     flex_direction: FlexDirection::Column,
                     row_gap: px(4),
@@ -83,9 +86,11 @@ pub(crate) fn spawn_settings_stage_header(
                 });
             header
                 .spawn(Node {
-                    width: px(SETTINGS_CONTROL_WIDTH),
+                    min_width: px(180),
+                    max_width: px(SETTINGS_CONTROL_WIDTH),
+                    flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                    flex_grow: 1.0,
                     margin: UiRect::top(px(2)),
-                    flex_shrink: 0.0,
                     align_items: AlignItems::FlexStart,
                     flex_direction: FlexDirection::Column,
                     row_gap: px(8),
@@ -120,6 +125,9 @@ pub(crate) fn spawn_settings_badge(
 ) {
     parent.spawn((
         Node {
+            min_height: px(22),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
             padding: UiRect::axes(px(8), px(3)),
             border: UiRect::all(px(1)),
             border_radius: BorderRadius::MAX,
@@ -129,19 +137,4 @@ pub(crate) fn spawn_settings_badge(
         BorderColor::all(color.with_alpha(0.38)),
         children![(Text::new(label), ui_text_font(font, 8.0), TextColor(color),)],
     ));
-}
-
-#[allow(
-    dead_code,
-    reason = "retained for the legacy Models pipeline during staged migration"
-)]
-pub(crate) fn model_available(
-    status: &app_core::AnalysisRuntimeStatus,
-    target: app_core::ModelDownloadTarget,
-) -> Option<bool> {
-    status
-        .models
-        .iter()
-        .find(|model| model.target == target)
-        .map(|model| model.available)
 }

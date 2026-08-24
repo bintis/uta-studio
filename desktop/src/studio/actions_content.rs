@@ -596,6 +596,13 @@ pub(crate) fn apply_content_action(
                 });
             match queued {
                 Ok(queued) => {
+                    bevy::log::info!(
+                        target: "uta_studio::analysis",
+                        request_id = %queued.request_id,
+                        file_hash = %queued.file_hash,
+                        status = %queued.status,
+                        "Exact Engine analysis request accepted"
+                    );
                     studio.dialogs.plan_preview_draft = None;
                     studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
                     studio.library.refresh();
@@ -605,6 +612,11 @@ pub(crate) fn apply_content_action(
                     ));
                 }
                 Err(error) => {
+                    bevy::log::error!(
+                        target: "uta_studio::analysis",
+                        error = %error,
+                        "Exact Engine analysis request was not queued"
+                    );
                     studio.shell.notice = Some(format!(
                         "Nothing was queued. Rebuild the exact preview and try again: {error}"
                     ));

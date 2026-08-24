@@ -29,14 +29,36 @@ impl StorePaths {
             runtime_overrides: Vec::new(),
             tool_overrides: Vec::new(),
         };
-        for (runtime_id, variable) in [
-            ("roformer_runtime", "UTA_STUDIO_ROFORMER_RUNTIME_PATH"),
-            ("openvino_2026_3", "UTA_STUDIO_OPENVINO_RUNTIME_PATH"),
-            ("qwen_asr_runtime", "UTA_STUDIO_QWEN_ASR_RUNTIME_PATH"),
-            ("qwen_align_runtime", "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH"),
-            ("native_analyzer", "UTA_STUDIO_NATIVE_ANALYZER_PATH"),
+        let executable_directory = std::env::current_exe()
+            .ok()
+            .and_then(|executable| executable.parent().map(Path::to_path_buf));
+        for (runtime_id, variable, executable_name) in [
+            (
+                "openvino_2026_3",
+                "UTA_STUDIO_OPENVINO_RUNTIME_PATH",
+                "uta-openvino-worker",
+            ),
+            (
+                "qwen_asr_runtime",
+                "UTA_STUDIO_QWEN_ASR_RUNTIME_PATH",
+                "uta-qwen-asr-worker",
+            ),
+            (
+                "qwen_align_runtime",
+                "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH",
+                "uta-qwen-align-worker",
+            ),
+            (
+                "native_analyzer",
+                "UTA_STUDIO_NATIVE_ANALYZER_PATH",
+                "uta-native-analyzer",
+            ),
         ] {
-            if let Some(path) = std::env::var_os(variable).map(PathBuf::from) {
+            let configured = std::env::var_os(variable).map(PathBuf::from);
+            let packaged = executable_directory
+                .as_deref()
+                .and_then(|directory| sibling_executable(directory, executable_name));
+            if let Some(path) = configured.or(packaged) {
                 paths = paths.with_runtime_override(runtime_id, path);
             }
         }
@@ -163,6 +185,16 @@ pub struct PathsSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentPointer {
     pub generation: String,
+}
+
+fn sibling_executable(directory: &Path, executable_name: &str) -> Option<PathBuf> {
+    let filename = if cfg!(windows) {
+        format!("{executable_name}.exe")
+    } else {
+        executable_name.to_string()
+    };
+    let path = directory.join(filename);
+    executable_file(&path).then_some(path)
 }
 
 #[cfg(unix)]

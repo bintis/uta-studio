@@ -14,8 +14,8 @@ use crate::backend_cli::{
     AnalysisProfileWireV1, AnalysisSpecWireV1, AnalyzeRequestWireV1, AudioRoleWireV1,
     AudioSourceKindWireV1, AudioSourceWireV1, CANONICAL_TIMEBASE, ContextAuthorityWireV1,
     ExecutionPolicyWireV1, LyricTokenWireV1, LyricsModeWireV1, LyricsWireV1, MusicalContextWireV1,
-    QuantizationGridWireV1, RequestedArtifactsWireV1, RuntimePolicyWireV1, SourceTimelineWireV1,
-    TimeSignatureWireV1, TrackTargetWireV1,
+    QuantizationGridWireV1, RequestedArtifactsWireV1, RuntimePolicyWireV1,
+    RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1, TrackTargetWireV1,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,14 +503,8 @@ pub fn preview_analyze_request_v1(
     let mut blockers = Vec::new();
     for capability in &plan.required_capabilities {
         match capabilities.get(capability.as_str()) {
-            Some(item) if item.implementation_exists && item.runtime_policy_satisfied => {}
-            Some(item) if !item.implementation_exists => {
-                blockers.push(format!("{} is not implemented", capability))
-            }
-            Some(_) => blockers.push(format!(
-                "{} is unavailable under the current testing policy",
-                capability
-            )),
+            Some(item) if item.implementation_exists => {}
+            Some(_) => blockers.push(format!("{} is not implemented", capability)),
             None => blockers.push(format!(
                 "{} was omitted from Engine capabilities",
                 capability
@@ -521,20 +515,21 @@ pub fn preview_analyze_request_v1(
         if !resource.requirement.required {
             continue;
         }
-        if let Some(error) = &resource.resolution_error {
-            blockers.push(format!("{}: {error}", resource.requirement.resource));
-        } else if let Some(status) = &resource.status {
-            if !status.usable {
-                blockers.push(format!(
-                    "{} is unavailable for testing: {:?}",
-                    resource.requirement.resource, status.reasons
-                ));
-            }
-        } else {
-            blockers.push(format!(
-                "{} has no Runtime Manager status",
-                resource.requirement.resource
-            ));
+        match resource.status.as_ref() {
+            Some(status) if testing_resource_ready(status) => {}
+            Some(status) => blockers.push(format!(
+                "{} is not runnable for local testing ({})",
+                resource.requirement.resource,
+                runtime_status_reason(status)
+            )),
+            None => blockers.push(format!(
+                "{} could not be resolved ({})",
+                resource.requirement.resource,
+                resource
+                    .resolution_error
+                    .as_deref()
+                    .unwrap_or("no status returned")
+            )),
         }
     }
     blockers.sort();
@@ -556,6 +551,23 @@ pub fn preview_analyze_request_v1(
         created_at_ms,
         invalidated: false,
     })
+}
+
+fn testing_resource_ready(status: &RuntimeResourceStatusWireV1) -> bool {
+    status.usable || (status.runnable && status.executable_ready)
+}
+
+fn runtime_status_reason(status: &RuntimeResourceStatusWireV1) -> String {
+    if status.reasons.is_empty() {
+        format!("state {:?}", status.install_state).to_lowercase()
+    } else {
+        status
+            .reasons
+            .iter()
+            .map(|reason| format!("{reason:?}").to_lowercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -23,7 +23,8 @@ impl RuntimeCliClient {
         Ok(Self::new(discover_executable(
             "UTA_STUDIO_RUNTIME_CLI_PATH",
             "uta-runtime",
-        )?))
+        )?)
+        .with_legacy_models(crate::cache::models_dir()))
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
