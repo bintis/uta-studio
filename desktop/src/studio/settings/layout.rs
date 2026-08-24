@@ -11,6 +11,7 @@ pub(crate) fn spawn_settings_section(
     parent
         .spawn(Node {
             width: percent(100),
+            flex_shrink: 0.0,
             flex_direction: FlexDirection::Column,
             padding: UiRect {
                 left: px(20),
@@ -48,6 +49,7 @@ pub(crate) fn spawn_settings_stage_header(
             Node {
                 width: percent(100),
                 min_height: px(92),
+                flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 margin: UiRect::top(px(16)),
@@ -82,8 +84,9 @@ pub(crate) fn spawn_settings_stage_header(
             header
                 .spawn(Node {
                     width: px(SETTINGS_CONTROL_WIDTH),
+                    margin: UiRect::top(px(2)),
                     flex_shrink: 0.0,
-                    align_items: AlignItems::FlexEnd,
+                    align_items: AlignItems::FlexStart,
                     flex_direction: FlexDirection::Column,
                     row_gap: px(8),
                     ..default()
@@ -128,6 +131,10 @@ pub(crate) fn spawn_settings_badge(
     ));
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for the legacy Models pipeline during staged migration"
+)]
 pub(crate) fn model_available(
     status: &app_core::AnalysisRuntimeStatus,
     target: app_core::ModelDownloadTarget,

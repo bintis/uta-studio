@@ -1,4 +1,6 @@
 mod analysis_artifact;
+mod analysis_engine_adapter;
+mod analysis_experience;
 mod analysis_graph;
 mod analysis_plan;
 mod analysis_profile;
@@ -10,6 +12,7 @@ mod audio_format;
 mod audio_model;
 mod audio_processing;
 mod authoring;
+mod backend_cli;
 mod cache;
 mod chart;
 mod config;
@@ -41,6 +44,18 @@ pub use analysis_artifact::{
     load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
     record_artifact_revision, set_active_artifact_revision,
 };
+pub use analysis_engine_adapter::{
+    AnalysisRequestIntent, EngineRunDraft, EngineRunPreview, QueuedEngineRun,
+    ResolvedAnalysisSource, StudioLyricToken, StudioLyricsContext, StudioLyricsContextProjection,
+    StudioLyricsMode, compile_analyze_request_v1, preview_analyze_request_v1, preview_engine_run,
+    project_lyrics_context, queue_exact_preview, resolve_true_source,
+};
+pub use analysis_experience::{
+    ANALYSIS_EXPERIENCE_SCHEMA_VERSION, AnalysisAudioPreferences, AnalysisDefaultTarget,
+    AnalysisExperienceOverride, AnalysisExperienceSettings, AnalysisLyricsPreferences,
+    AnalysisQualityProfile, AnalysisSettingSource, AnalysisSingingPreferences, AutomaticStrategy,
+    EffectiveAnalysisExperience, EffectiveAnalysisSetting, resolve_analysis_experience,
+};
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
     DisablePolicy, GraphValidationError, active_stem_nodes_from_settings,
@@ -58,20 +73,20 @@ pub use analysis_profile::{
 };
 pub use analyzer::{
     AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison, AnalysisRunHistory,
-    AnalysisStageRoute, AnalysisTask, NodeAttempt, NodeAttemptComparison, PendingAnalysisIntent,
-    QueuedStatus, SongAuthoringState, analysis_log_lines, analysis_log_path_for,
-    analysis_stop_requested, bypass_analysis_node_with_original_mix_for_run, cancel_analysis_run,
-    clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
-    configure_analysis_node_for_run, delete_cache, disable_analysis_node_for_run,
-    downstream_node_ids, enqueue_all, enqueue_one, freeze_analysis_node_outputs_for_run,
-    frozen_artifact_kinds_for_node_id, load_analysis_history, load_analysis_node_attempts,
-    load_analysis_tasks, node_can_be_bypassed_for_run, node_can_be_configured_for_run,
-    node_can_be_disabled_for_run, node_can_be_frozen_for_run, pending_analysis_intent,
-    pending_run_override_for, preview_analysis_plan_for_selection, preview_full_analysis_plan,
-    realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
-    resolve_song_authoring_state, run_analysis_node, run_analysis_node_downstream,
-    run_analysis_plan, run_analysis_request, save_node_config_as_song_profile, shutdown_server,
-    stop_analysis_run,
+    AnalysisStageRoute, AnalysisTask, EngineRunHistoryProjection, NodeAttempt,
+    NodeAttemptComparison, PendingAnalysisIntent, QueuedStatus, SongAuthoringState,
+    analysis_log_lines, analysis_log_path_for, analysis_stop_requested,
+    bypass_analysis_node_with_original_mix_for_run, cancel_analysis_run, clear_analysis_history,
+    compare_analysis_runs, compare_node_attempt_with_previous_run, configure_analysis_node_for_run,
+    delete_cache, disable_analysis_node_for_run, downstream_node_ids, enqueue_all, enqueue_one,
+    freeze_analysis_node_outputs_for_run, frozen_artifact_kinds_for_node_id, load_analysis_history,
+    load_analysis_node_attempts, load_analysis_tasks, node_can_be_bypassed_for_run,
+    node_can_be_configured_for_run, node_can_be_disabled_for_run, node_can_be_frozen_for_run,
+    pending_analysis_intent, pending_run_override_for, preview_analysis_plan_for_selection,
+    preview_full_analysis_plan, realign, reanalyze_force_transcribe, reanalyze_full,
+    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, run_analysis_node,
+    run_analysis_node_downstream, run_analysis_plan, run_analysis_request,
+    save_node_config_as_song_profile, shutdown_server, stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -105,6 +120,10 @@ pub use audio_processing::{
 pub use authoring::{
     AudioPaths, ShiftDone, ShiftResult, get_audio_paths, load_pitch_guide, load_transcript,
     shift_key, shift_key_done_payload, shift_tempo, shift_tempo_done_payload,
+};
+pub use backend_cli::{
+    AnalysisCliClient, AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalyzeRequestWireV1,
+    BackendCliError, RuntimeCliClient, RuntimeResourceDetailsWireV1, RuntimeResourceStatusWireV1,
 };
 pub use cache::{
     CacheDir, CachePaths, CacheStats, cache_roots, clear_models, default_uta_studio_dir,
@@ -171,8 +190,8 @@ pub use utz_export::{
 pub use vendor::{
     AnalysisRuntimeStatus, ComputeBackend, ModelDownloadTarget, ModelInstallStatus, SetupFolders,
     SetupProgress, SetupStep, SetupTask, SetupTaskState, analysis_runtime_status, ffmpeg_path,
-    is_ready, model_install_statuses, resolve_data_path_input, run_vendor_setup,
-    step_download_model,
+    invalidate_analysis_runtime_status_cache, is_ready, model_install_statuses,
+    resolve_data_path_input, run_vendor_setup, step_download_model,
 };
 pub use vocal_chart::migrate_analyzer_chart;
 pub use workflow::{
@@ -195,28 +214,34 @@ pub fn startup() -> Result<(), String> {
     let config = AppConfig::load();
     init_library().map_err(|e| e.to_string())?;
 
-    if is_ready() {
-        // The queue is persisted so a desktop restart must not erase work the
-        // user explicitly requested. An interrupted `Analyzing` entry is safe
-        // to resume from the beginning because generated files are committed
-        // by the analyzer only after each stage succeeds.
-        let resumable = AnalysisQueue::load()
-            .entries
-            .into_iter()
-            .filter_map(|(file_hash, status)| {
-                matches!(
-                    status,
-                    analyzer::QueuedStatus::Queued | analyzer::QueuedStatus::Analyzing(_)
-                )
-                .then_some(file_hash)
-            })
-            .collect::<Vec<_>>();
-        for file_hash in resumable {
+    // Exact Engine requests resume from their durable snapshots independently
+    // of the legacy aggregate readiness signal. Request-specific readiness was
+    // already confirmed by uta-analyze before queueing; startup must not route
+    // them through a different global heuristic or reconstruct their intent.
+    let resumable = AnalysisQueue::load()
+        .entries
+        .into_iter()
+        .filter_map(|(file_hash, status)| {
+            matches!(
+                status,
+                analyzer::QueuedStatus::Queued | analyzer::QueuedStatus::Analyzing(_)
+            )
+            .then_some(file_hash)
+        })
+        .collect::<Vec<_>>();
+    for file_hash in resumable {
+        if library_db::analysis_queue_engine_intent(&file_hash)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            analyzer::resume_engine_intent(&file_hash);
+        } else if is_ready() {
             analyzer::enqueue_one(&file_hash);
         }
-        if config.auto_analyze() {
-            analyzer::enqueue_all(&LibraryMenuFilters::default());
-        }
+    }
+    if is_ready() && config.auto_analyze() {
+        analyzer::enqueue_all(&LibraryMenuFilters::default());
     }
 
     Ok(())

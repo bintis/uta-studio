@@ -400,6 +400,7 @@ fn record_timed_lyrics_import(
         node_event: Some("completed".to_string()),
         artifact_reused_reason: None,
         analysis_log_path: None,
+        engine: None,
     };
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {

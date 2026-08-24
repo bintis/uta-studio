@@ -12,7 +12,7 @@ Source music is read-only. Removing a watched folder only disconnects it from th
 
 Desktop and Nix builds use packaged native workers plus system/packaged `ffmpeg`. Explicit paths use `UTA_STUDIO_FFMPEG_PATH`, `UTA_STUDIO_NATIVE_ANALYZER_PATH`, and the component-specific native worker variables. Production inference has no script runtime or package environment.
 
-Generic production models consume source-verified, pinned OpenVINO IR and fail closed when that exact model/runtime combination is not validated. Qwen3-ASR-1.7B and Qwen3 Forced Aligner are the only pinned GGML/Vulkan exceptions defined by `native-inference/runtime-lock.json`. CPU is an explicit reference/diagnostic lane only.
+Generic production models consume source-verified, pinned OpenVINO IR and fail closed when that exact model/runtime combination is not validated. Qwen3-ASR-1.7B and Qwen3 Forced Aligner remain pinned GGML/Vulkan product exceptions defined by `native-inference/runtime-lock.json`, but **current AI-agent development/acceptance on this host may not execute Vulkan inference** after the 2026-08-22 black-screen/reboot incident. Active agent GPU validation is OpenVINO-only. Vulkan-only paths may be statically audited and may reuse exact prior evidence; any new Vulkan execution requires separate explicit user authorization and the exact model-specific validation procedure. CPU is normally an explicit reference/diagnostic lane; the only product exception is an exact converted-artifact manifest that pins named CPU islands inside an explicit CPU/GPU OpenVINO topology. Such CPU placement is required execution, never fallback, and the worker must fail closed if either plugin is unavailable.
 
 The app must not download tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, reports each native component/model separately, and downloads only after explicit confirmation. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
 
@@ -56,20 +56,33 @@ The interface is informed by Roon's calm music-library hierarchy and navigation,
 - native audio remains the authoritative editor clock. Lyric/note jumps seek accurately without dropping the current play intent, Space toggles transport once outside editable fields, and the visible playhead interpolates on animation frames between low-frequency native status checks.
 - collision-free timed lyrics at every window size: coincident or short word ranges occupy separate visual lanes and long words wrap within their own controls rather than covering neighboring text.
 
-## Definition of done
+## Definition of done — final repository acceptance only
 
-The expected checks are:
+The commands below are **not** per-agent acceptance. Each of the two current coding tasks runs only the package-scoped verification in its own `TASK_*.md`. The full suite below is run once after both tasks converge, as defined by `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`.
+
+The final repository checks are:
 
 ```sh
-nix develop path:. -c cargo fmt --all -- --check
-nix develop path:. -c cargo check --workspace --all-targets --locked
-nix develop path:. -c cargo test --workspace --all-targets --locked
-nix develop path:. -c cargo clippy --workspace --all-targets --locked -- -D warnings
-nix develop path:. -c cargo xtask docs check
+bash dev.sh -c cargo fmt --all -- --check
+bash dev.sh -c cargo check --workspace --all-targets --locked
+bash dev.sh -c cargo test --workspace --all-targets --locked
+bash dev.sh -c cargo clippy --workspace --all-targets --locked -- -D warnings
+bash dev.sh -c cargo xtask docs check
 nix build path:.#uta-studio --print-build-logs
 ```
 
+The development-shell commands above use the small independently locked
+`nix/dev-shell` flake rather than the repository root. Do not replace them with
+`nix develop path:.` during routine development: the root working tree contains
+large mutable build output and is intentionally not the dev-shell flake source.
+The pinned shell closure is stable across Git commits and dirty working-tree
+changes, so already-realized store paths are reused. `UTA_STUDIO_NIX_OFFLINE=1`
+is available only for an already-realized shell; normal bootstrap should retain
+binary substitutes rather than forcing source builds.
+
 The repository must contain no tracked script-runtime source files, and a packaged analysis run must have no script-runtime process in its process tree. Native worker stdout is protocol-only NDJSON; cancellation, timeout, crash cleanup, runtime-lock identity, and fail-closed routing are release gates.
+
+During current agent and final-acceptance work, GPU inference tests are OpenVINO-only. Do not run Vulkan smoke, benchmark, stress, full-track, or intentional Vulkan-context commands. Historical RoFormer validation records document machine-level failures and make clear that even passing configurations are graph-specific; there is no general safe Vulkan mode. If future user authorization permits Vulkan again, follow the exact model-specific validation document in a fresh isolated process and never extrapolate another graph's parameters.
 
 In addition, use an analyzed fixture to decode editor audio with ffmpeg and perform real UTZ and UltraStar exports. Validate the UTZ ZIP/manifest/hash metadata, parse the UltraStar chart, decode both exported audio assets, confirm temporary cleanup, and smoke-launch the wrapped Nix executable.
 

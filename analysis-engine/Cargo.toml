@@ -1,0 +1,26 @@
+[package]
+name = "uta-analysis-engine"
+version = "0.6.0"
+authors = ["bintis"]
+edition = "2024"
+license = "GPL-3.0-only"
+
+[lib]
+name = "uta_analysis_engine"
+
+[[bin]]
+name = "uta-analyze"
+path = "src/bin/uta-analyze.rs"
+
+[[bin]]
+name = "uta-analysis-engine"
+path = "src/bin/uta-analysis-engine.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uta-runtime-manager = { path = "../runtime-manager" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

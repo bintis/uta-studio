@@ -52,6 +52,7 @@ fn artifact_kind(port: &WorkflowPortType) -> ArtifactKind {
 }
 
 fn resolved_runtime(
+    runtimes: &BTreeMap<String, crate::native_runtime::NativeModelRuntime>,
     capability_class: &CapabilityClass,
     model_id: Option<&str>,
 ) -> (ResolvedRuntimeKind, Option<String>) {
@@ -65,20 +66,11 @@ fn resolved_runtime(
             }
         };
     };
-    let Some(model) = crate::native_runtime::native_runtime_registry()
-        .into_iter()
-        .find(|model| model.model_id == model_id)
-    else {
+    let Some(model) = runtimes.get(model_id) else {
         return (ResolvedRuntimeKind::Unresolved, None);
     };
     let recipe = model.runtime_recipe_digest.clone();
-    let production = model.backends.iter().find(|capability| {
-        capability.validation == crate::native_runtime::ValidationState::ProductionPinned
-            && model
-                .pinned_backend
-                .is_none_or(|backend| backend == capability.backend)
-    });
-    let runtime = match production.map(|capability| capability.backend) {
+    let runtime = match model.pinned_backend {
         Some(crate::native_runtime::NativeBackend::OpenVino) => ResolvedRuntimeKind::OpenVino,
         Some(crate::native_runtime::NativeBackend::Vulkan) if model_id == "qwen3_asr_1_7b" => {
             ResolvedRuntimeKind::PinnedQwenAsrVulkan
@@ -90,9 +82,10 @@ fn resolved_runtime(
         }
         Some(crate::native_runtime::NativeBackend::Vulkan) => ResolvedRuntimeKind::Vulkan,
         Some(crate::native_runtime::NativeBackend::NativeDsp) => ResolvedRuntimeKind::NativeDsp,
-        Some(crate::native_runtime::NativeBackend::CpuReference) | None => {
-            ResolvedRuntimeKind::Unresolved
+        Some(crate::native_runtime::NativeBackend::CpuReference) => {
+            ResolvedRuntimeKind::CpuReference
         }
+        None => ResolvedRuntimeKind::Unresolved,
     };
     (runtime, recipe)
 }
@@ -121,6 +114,13 @@ pub fn compile_workflow(
     let registry = builtin_capabilities()
         .into_iter()
         .map(|capability| (capability.id.clone(), capability))
+        .collect::<BTreeMap<_, _>>();
+    // Runtime Manager is a process boundary and can be comparatively expensive.
+    // Resolve its testing-policy projection once per compile, then reuse it for
+    // every workflow node instead of launching list/show subprocesses per node.
+    let runtimes = crate::native_runtime::native_runtime_registry()
+        .into_iter()
+        .map(|model| (model.model_id.clone(), model))
         .collect::<BTreeMap<_, _>>();
     let node_ids = definition
         .nodes
@@ -166,7 +166,7 @@ pub fn compile_workflow(
             compound_children: Vec::new(),
         });
         let (runtime, runtime_recipe_digest) =
-            resolved_runtime(&capability.class, node.model_id.as_deref());
+            resolved_runtime(&runtimes, &capability.class, node.model_id.as_deref());
         bindings.push(CompiledNodeBinding {
             workflow_node: node.instance_id.clone(),
             capability_id: node.capability_id.clone(),

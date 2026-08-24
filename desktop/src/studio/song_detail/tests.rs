@@ -36,6 +36,7 @@ mod last_successful_run_tests {
                 node_event: None,
                 artifact_reused_reason: None,
                 analysis_log_path: None,
+                engine: None,
             },
         }
     }
@@ -296,6 +297,7 @@ mod view_song_analysis_tests {
                 node_event: None,
                 artifact_reused_reason: None,
                 analysis_log_path: None,
+                engine: None,
             },
         }
     }

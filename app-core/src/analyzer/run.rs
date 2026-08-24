@@ -20,7 +20,12 @@ pub(crate) fn spawn_worker() {
                 }
             };
 
-            process_song(&file_hash, &cache);
+            match library_db::analysis_queue_engine_intent(&file_hash) {
+                Ok(Some(intent)) => {
+                    super::engine_run::process_engine_queue_intent(&file_hash, &cache, intent)
+                }
+                _ => process_song(&file_hash, &cache),
+            }
 
             let mut state = ANALYZER.lock().unwrap();
             state.active_hash = None;
@@ -105,6 +110,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
             node_event: Some("started".to_string()),
             artifact_reused_reason: None,
             analysis_log_path: analysis_log_path.clone(),
+            engine: None,
         },
     );
     // Note: a `reanalyze_pitch`-style backup recorded into
@@ -1048,6 +1054,7 @@ pub(crate) fn send_and_monitor(
                             node_event: event,
                             artifact_reused_reason,
                             analysis_log_path,
+                            engine: None,
                         },
                     );
                     update_queue_status(hash, QueuedStatus::Analyzing(pct as usize));

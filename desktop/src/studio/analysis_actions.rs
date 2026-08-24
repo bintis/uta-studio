@@ -112,24 +112,57 @@ pub(crate) struct NativeNodeConfigDialog {
     pub(crate) picker_open: bool,
 }
 
-/// Top-level controls shown by Plan Preview. Vocal Preprocessing is an
-/// internal hand-off, not a useful user choice here. The two selected vocal
-/// cleanup stages are displayed directly beneath Stem Separation instead.
-pub(crate) const PLAN_PREVIEW_DISABLEABLE_NODES: &[&str] = &[
-    "stems.separate",
-    "pitch.extract",
-    "lyrics.transcribe",
-    "lyrics.align",
-    "lyrics.import_timed",
-];
-
-/// Phase 7/8 Plan Preview panel: a staged, not-yet-committed disabled-node
-/// combination for one song. Purely additive -- doesn't change how any
-/// existing immediate-fire Node Context Menu action behaves; this is a
-/// separate, more deliberate multi-node staging tool.
+/// Temporary Run Analysis state. The compiled `EngineRunPreview` is the exact
+/// request/plan snapshot shown to the user; changing a run control invalidates
+/// and replaces it without mutating Global or Song settings.
 pub(crate) struct PlanPreviewDraft {
     pub(crate) file_hash: String,
-    pub(crate) disabled_nodes: std::collections::BTreeSet<app_core::AnalysisNodeId>,
+    pub(crate) target: app_core::AnalysisDefaultTarget,
+    pub(crate) target_overridden: bool,
+    pub(crate) run_override: app_core::AnalysisExperienceOverride,
+    /// Studio-owned inheritance projection. Backend presentation remains
+    /// limited to the frozen `EngineRunPreview` view fields.
+    pub(crate) effective_settings: Option<app_core::EffectiveAnalysisExperience>,
+    pub(crate) engine_preview: Result<app_core::EngineRunPreview, String>,
+}
+
+impl PlanPreviewDraft {
+    pub(crate) fn invalidate(&mut self) {
+        if let Ok(preview) = self.engine_preview.as_mut() {
+            preview.invalidate();
+        }
+    }
+}
+
+pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: &AppConfig) {
+    draft.invalidate();
+    let song_profile = app_core::get_song_analysis_profile(&draft.file_hash);
+    let effective = app_core::resolve_analysis_experience(
+        &config.analysis_experience,
+        song_profile
+            .as_ref()
+            .map(|profile| &profile.analysis_experience),
+        Some(&draft.run_override),
+    );
+    if !draft.target_overridden {
+        draft.target = effective.default_target.value;
+    }
+    draft.effective_settings = Some(effective);
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    draft.engine_preview = app_core::preview_engine_run(
+        app_core::EngineRunDraft {
+            file_hash: draft.file_hash.clone(),
+            request_id: format!("studio-{nonce}"),
+            lyrics: Default::default(),
+            target_override: draft.target_overridden.then_some(draft.target),
+            run_override: draft.run_override.clone(),
+        },
+        &config.analysis_experience,
+    );
 }
 
 /// Buckets a plan's nodes into the phase-plan's real, non-fabricated
@@ -142,6 +175,7 @@ pub(crate) struct PlanPreviewDraft {
 /// panel never stages Freeze or applies the Failed/Stale overlays the
 /// canvas separately adds -- so those buckets are correctly absent, not
 /// silently dropped.
+#[cfg(test)]
 pub(crate) fn plan_preview_groups(
     plan: &app_core::AnalysisPlan,
 ) -> Vec<(&'static str, Vec<String>)> {
@@ -650,24 +684,6 @@ pub(crate) fn spawn_plan_preview_dialog(
     draft: &PlanPreviewDraft,
     notice: Option<&str>,
 ) {
-    let graph = app_core::baseline_graph_spec();
-    let node_label = |node_id: &str| -> String {
-        graph
-            .node(&app_core::AnalysisNodeId::new(node_id))
-            .map(|spec| spec.label.clone())
-            .unwrap_or_else(|| node_id.to_string())
-    };
-    let plan = app_core::preview_analysis_plan_for_selection(
-        &draft.file_hash,
-        draft.disabled_nodes.clone(),
-    )
-    .ok();
-
-    // Click-outside-to-close backdrop: a full-screen `Button` sibling
-    // *behind* the centered dialog, same pattern as
-    // `spawn_analysis_node_context_menu`'s dismiss layer. The centering
-    // wrapper spawned below it is `Pickable::IGNORE` so it doesn't itself
-    // swallow clicks meant for this backdrop outside the 520px panel.
     parent.spawn((
         Button,
         UiAction::from(AnalysisCommand::ClosePlanPreview),
@@ -693,6 +709,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                 bottom: px(0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                padding: UiRect::all(px(18)),
                 ..default()
             },
             ZIndex(93),
@@ -702,15 +719,16 @@ pub(crate) fn spawn_plan_preview_dialog(
             overlay
                 .spawn((
                     Node {
-                        width: px(560),
-                        height: percent(84),
-                        max_height: px(760),
+                        width: percent(92),
+                        max_width: px(820),
+                        height: percent(90),
+                        max_height: px(860),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(px(24)),
-                        row_gap: px(11),
+                        row_gap: px(12),
                         overflow: Overflow::scroll_y(),
                         border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(8)),
+                        border_radius: BorderRadius::all(px(10)),
                         ..default()
                     },
                     PlanPreviewScroll,
@@ -719,172 +737,92 @@ pub(crate) fn spawn_plan_preview_dialog(
                     BorderColor::all(theme.border),
                 ))
                 .with_children(|body| {
-                    spawn_text(body, font.clone(), "PLAN PREVIEW", 8.0, theme.primary);
+                    spawn_text(body, font.clone(), "RUN ANALYSIS", 8.0, theme.primary);
                     spawn_text(
                         body,
                         font.clone(),
-                        "Preview a hypothetical run",
-                        17.0,
+                        "Exact Engine plan preview",
+                        18.0,
                         theme.foreground,
                     );
                     spawn_wrapped_text(
                         body,
                         font.clone(),
-                        "Toggle nodes off to see how the default full run would change, without queuing anything yet. Target and route stay at their defaults.",
+                        "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.",
                         10.0,
                         theme.muted_foreground,
                     );
-                    for node_id in PLAN_PREVIEW_DISABLEABLE_NODES {
-                        let is_disabled = draft
-                            .disabled_nodes
-                            .contains(&app_core::AnalysisNodeId::new(*node_id));
-                        body.spawn((
-                            Button,
-                            UiAction::from(AnalysisCommand::TogglePlanPreviewDisabledNode((*node_id).to_string())),
-                            Node {
-                                width: percent(100),
-                                min_height: px(36),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::SpaceBetween,
-                                padding: UiRect::horizontal(px(11)),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(5)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.background.with_alpha(0.65)),
-                            BorderColor::all(theme.border.with_alpha(0.72)),
-                        ))
-                        .with_children(|row| {
-                            spawn_text(row, font.clone(), node_label(node_id), 10.0, theme.foreground);
-                            spawn_text(
-                                row,
+
+                    spawn_text(
+                        body,
+                        font.clone(),
+                        format!("OUTPUT TARGET · Source: {}", preview_target_source(draft)),
+                        8.0,
+                        theme.primary,
+                    );
+                    spawn_run_choice_row(
+                        body,
+                        font.clone(),
+                        theme,
+                        [
+                            (app_core::AnalysisDefaultTarget::FullCandidate, "Candidate"),
+                            (app_core::AnalysisDefaultTarget::Transcript, "Transcript"),
+                            (app_core::AnalysisDefaultTarget::Alignment, "Alignment"),
+                            (app_core::AnalysisDefaultTarget::PitchEvidence, "Pitch"),
+                            (app_core::AnalysisDefaultTarget::Instrumental, "Instrumental"),
+                        ],
+                        draft,
+                    );
+
+                    spawn_text(
+                        body,
+                        font.clone(),
+                        format!("QUALITY · Source: {}", preview_quality_source(draft)),
+                        8.0,
+                        theme.primary,
+                    );
+                    spawn_run_quality_row(body, font.clone(), theme, draft);
+
+                    match &draft.engine_preview {
+                        Ok(preview) => {
+                            spawn_preview_request_summary(
+                                body,
                                 font.clone(),
-                                if is_disabled { "Disabled" } else { "Enabled" },
-                                9.0,
-                                if is_disabled {
-                                    theme.editor_warning
-                                } else {
-                                    theme.muted_foreground
-                                },
+                                theme,
+                                draft,
+                                preview,
                             );
-                        });
-                        if *node_id == "stems.separate" {
-                            for (child_id, step_id) in [
-                                ("vocals.denoise", "denoise_vocals"),
-                                ("vocals.dereverb", "dereverb_vocals"),
-                                ("instrumental.denoise", "denoise_accompaniment"),
-                                ("instrumental.dereverb", "dereverb_accompaniment"),
-                            ] {
-                                let selected = plan
-                                    .as_ref()
-                                    .and_then(|plan| plan.audio_processing.as_ref())
-                                    .is_some_and(|audio| {
-                                        audio.steps.iter().any(|step| step.step_id == step_id)
-                                    });
-                                body.spawn((
-                                    Node {
-                                        width: percent(100),
-                                        min_height: px(31),
-                                        align_items: AlignItems::Center,
-                                        justify_content: JustifyContent::SpaceBetween,
-                                        padding: UiRect::new(px(28), px(11), px(0), px(0)),
-                                        border: UiRect::all(px(1)),
-                                        border_radius: BorderRadius::all(px(5)),
-                                        ..default()
-                                    },
-                                    BackgroundColor(theme.background.with_alpha(0.34)),
-                                    BorderColor::all(theme.border.with_alpha(0.45)),
-                                    Pickable::IGNORE,
-                                ))
-                                .with_children(|row| {
-                                    spawn_text(
-                                        row,
-                                        font.clone(),
-                                        format!("↳ {}", node_label(child_id)),
-                                        9.0,
-                                        theme.foreground,
-                                    );
-                                    spawn_text(
-                                        row,
-                                        font.clone(),
-                                        if selected { "In plan" } else { "Not selected" },
-                                        8.0,
-                                        if selected {
-                                            theme.primary
-                                        } else {
-                                            theme.muted_foreground
-                                        },
-                                    );
-                                });
-                            }
-                        }
-                    }
-                    body.spawn(Node {
-                        height: px(5),
-                        ..default()
-                    });
-                    match plan.as_ref() {
-                        Some(plan) => {
-                            if let Some(audio) = plan.audio_processing.as_ref() {
-                                spawn_text(body, font.clone(), "AUDIO MODEL PLAN", 9.0, theme.primary);
-                                for (index, step) in audio.steps.iter().enumerate() {
-                                    let backend = &audio.requested_runtime.routing_policy;
-                                    spawn_wrapped_text(
-                                        body,
-                                        font.clone(),
-                                        format!(
-                                            "{}. {} · {} · {} · {} parameter{}",
-                                            index + 1,
-                                            node_label(audio_step_node_id(&step.step_id).unwrap_or("stems.separate")),
-                                            step.model_id,
-                                            backend,
-                                            step.effective_parameters.len(),
-                                            if step.effective_parameters.len() == 1 { "" } else { "s" }
-                                        ),
-                                        9.0,
-                                        theme.foreground,
-                                    );
-                                }
+                            spawn_preview_lyrics_context(body, font.clone(), theme, preview);
+                            spawn_preview_execution_plan(body, font.clone(), theme, preview);
+                            spawn_preview_resources(body, font.clone(), theme, preview);
+                            spawn_preview_outputs(body, font.clone(), theme, preview);
+                            if preview.blockers.is_empty() {
                                 spawn_wrapped_text(
                                     body,
                                     font.clone(),
-                                    format!(
-                                        "Outputs · {} · precision {}",
-                                        audio.output_bindings.iter().map(|binding| binding.artifact_role.as_str()).collect::<Vec<_>>().join(", "),
-                                        audio.requested_runtime.precision_policy
-                                    ),
-                                    8.0,
-                                    theme.muted_foreground,
+                                    "All capabilities required by this exact request are ready under the local testing policy.",
+                                    9.0,
+                                    theme.primary,
                                 );
-                            }
-                            let groups = plan_preview_groups(plan);
-                            if groups.is_empty() {
-                                spawn_text(
-                                    body,
-                                    font.clone(),
-                                    "Nothing would run.",
-                                    10.0,
-                                    theme.muted_foreground,
-                                );
-                            }
-                            for (heading, nodes) in groups {
-                                spawn_text(body, font.clone(), heading, 9.0, theme.primary);
-                                for node_id in nodes {
-                                    spawn_text(
+                            } else {
+                                spawn_text(body, font.clone(), "REQUEST BLOCKERS", 8.0, theme.editor_warning);
+                                for blocker in &preview.blockers {
+                                    spawn_wrapped_text(
                                         body,
                                         font.clone(),
-                                        format!("- {}", node_label(&node_id)),
-                                        10.0,
-                                        theme.foreground,
+                                        format!("• {blocker}"),
+                                        9.0,
+                                        theme.editor_warning,
                                     );
                                 }
                             }
                         }
-                        None => {
-                            spawn_text(
+                        Err(error) => {
+                            spawn_text(body, font.clone(), "PREVIEW UNAVAILABLE", 8.0, theme.destructive);
+                            spawn_wrapped_text(
                                 body,
                                 font.clone(),
-                                "Could not compute a preview for this combination.",
+                                error,
                                 10.0,
                                 theme.destructive,
                             );
@@ -893,9 +831,12 @@ pub(crate) fn spawn_plan_preview_dialog(
                     if let Some(notice) = notice {
                         spawn_wrapped_text(body, font.clone(), notice, 9.0, theme.destructive);
                     }
+
                     body.spawn(Node {
                         width: percent(100),
+                        flex_wrap: FlexWrap::Wrap,
                         justify_content: JustifyContent::FlexEnd,
+                        row_gap: px(8),
                         column_gap: px(8),
                         margin: UiRect::top(px(6)),
                         ..default()
@@ -909,16 +850,548 @@ pub(crate) fn spawn_plan_preview_dialog(
                             10.0,
                             UiAction::from(AnalysisCommand::ClosePlanPreview),
                         );
-                        spawn_action_button(
+                        spawn_compact_action_button(
                             actions,
-                            font,
+                            font.clone(),
                             theme,
-                            "Run this plan",
-                            UiAction::from(AnalysisCommand::RunPlanPreviewDraft),
+                            "Manage models…",
+                            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                         );
+                        let request_ready = draft
+                            .engine_preview
+                            .as_ref()
+                            .is_ok_and(|preview| preview.ready);
+                        if request_ready {
+                            spawn_compact_action_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Analyze",
+                                UiAction::from(AnalysisCommand::QueueExactPreview),
+                            );
+                        } else {
+                            actions
+                                .spawn((
+                                    Node {
+                                        min_width: px(142),
+                                        height: px(36),
+                                        align_items: AlignItems::Center,
+                                        justify_content: JustifyContent::Center,
+                                        padding: UiRect::horizontal(px(13)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(6)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.background.with_alpha(0.48)),
+                                    BorderColor::all(theme.border.with_alpha(0.62)),
+                                    Pickable::IGNORE,
+                                ))
+                                .with_children(|disabled| {
+                                    let label = if draft.engine_preview.is_ok() {
+                                        "Blocked"
+                                    } else {
+                                        "Preview unavailable"
+                                    };
+                                    spawn_text(
+                                        disabled,
+                                        font.clone(),
+                                        label,
+                                        10.0,
+                                        theme.muted_foreground,
+                                    );
+                                });
+                        }
                     });
                 });
         });
+}
+
+pub(crate) fn preview_target_source(draft: &PlanPreviewDraft) -> &'static str {
+    if draft.target_overridden {
+        return "RUN";
+    }
+    match draft
+        .effective_settings
+        .as_ref()
+        .map(|effective| effective.default_target.source)
+    {
+        Some(app_core::AnalysisSettingSource::Song) => "SONG",
+        Some(app_core::AnalysisSettingSource::Run) => "RUN",
+        Some(app_core::AnalysisSettingSource::Global) => "GLOBAL",
+        None => "UNAVAILABLE",
+    }
+}
+
+fn spawn_run_segment(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+    active: bool,
+    action: UiAction,
+) {
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                min_height: px(34),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::axes(px(11), px(7)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(if active {
+                theme.primary.with_alpha(0.14)
+            } else {
+                theme.background.with_alpha(0.38)
+            }),
+            BorderColor::all(if active {
+                theme.primary.with_alpha(0.58)
+            } else {
+                theme.border.with_alpha(0.48)
+            }),
+            TabIndex(0),
+        ))
+        .with_children(|button| {
+            spawn_text(
+                button,
+                font,
+                label,
+                9.0,
+                if active {
+                    theme.primary
+                } else {
+                    theme.foreground
+                },
+            );
+        });
+}
+
+fn spawn_run_choice_row<const N: usize>(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    choices: [(app_core::AnalysisDefaultTarget, &'static str); N],
+    draft: &PlanPreviewDraft,
+) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_wrap: FlexWrap::Wrap,
+            row_gap: px(6),
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|row| {
+            spawn_run_segment(
+                row,
+                font.clone(),
+                theme,
+                "Use profile",
+                !draft.target_overridden,
+                UiAction::from(AnalysisCommand::ResetPlanPreviewTarget),
+            );
+            for (target, label) in choices {
+                spawn_run_segment(
+                    row,
+                    font.clone(),
+                    theme,
+                    label,
+                    draft.target_overridden && target == draft.target,
+                    UiAction::from(AnalysisCommand::SetPlanPreviewTarget(target)),
+                );
+            }
+        });
+}
+
+pub(crate) fn preview_quality_source(draft: &PlanPreviewDraft) -> &'static str {
+    if draft.run_override.quality_profile.is_some() {
+        return "RUN";
+    }
+    match draft
+        .effective_settings
+        .as_ref()
+        .map(|effective| effective.quality_profile.source)
+    {
+        Some(app_core::AnalysisSettingSource::Song) => "SONG",
+        Some(app_core::AnalysisSettingSource::Run) => "RUN",
+        Some(app_core::AnalysisSettingSource::Global) => "GLOBAL",
+        None => "UNAVAILABLE",
+    }
+}
+
+fn spawn_run_quality_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    draft: &PlanPreviewDraft,
+) {
+    let selected = draft
+        .run_override
+        .quality_profile
+        .or_else(|| {
+            draft
+                .effective_settings
+                .as_ref()
+                .map(|effective| effective.quality_profile.value)
+        })
+        .unwrap_or(app_core::AnalysisQualityProfile::Balanced);
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_wrap: FlexWrap::Wrap,
+            row_gap: px(6),
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|row| {
+            spawn_run_segment(
+                row,
+                font.clone(),
+                theme,
+                "Use profile",
+                draft.run_override.quality_profile.is_none(),
+                UiAction::from(AnalysisCommand::ResetPlanPreviewQuality),
+            );
+            for (quality, label) in [
+                (app_core::AnalysisQualityProfile::Fast, "Fast"),
+                (app_core::AnalysisQualityProfile::Balanced, "Balanced"),
+                (app_core::AnalysisQualityProfile::Maximum, "Maximum"),
+            ] {
+                spawn_run_segment(
+                    row,
+                    font.clone(),
+                    theme,
+                    label,
+                    draft.run_override.quality_profile.is_some() && selected == quality,
+                    UiAction::from(AnalysisCommand::SetPlanPreviewQuality(quality)),
+                );
+            }
+        });
+}
+
+fn spawn_preview_request_summary(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    draft: &PlanPreviewDraft,
+    preview: &app_core::EngineRunPreview,
+) {
+    spawn_text(parent, font.clone(), "EXACT REQUEST", 8.0, theme.primary);
+    let quality = draft
+        .effective_settings
+        .as_ref()
+        .map(|effective| format!("{:?}", effective.quality_profile.value))
+        .unwrap_or_else(|| "Unavailable".to_string());
+    for line in [
+        format!(
+            "Quality · {quality} · Source: {}",
+            preview_quality_source(draft)
+        ),
+        format!(
+            "TrueSource · {:?} · testing policy",
+            preview.engine_plan.source_route.input_role
+        ),
+        format!(
+            "Requested outputs · {}",
+            preview
+                .engine_plan
+                .requested_outputs
+                .iter()
+                .map(|output| artifact_product_label(output))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ] {
+        spawn_wrapped_text(parent, font.clone(), line, 9.0, theme.foreground);
+    }
+}
+
+fn spawn_preview_lyrics_context(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    preview: &app_core::EngineRunPreview,
+) {
+    let context = &preview.lyrics_context;
+    let context_label = match context.mode {
+        app_core::StudioLyricsMode::None if context.transcript_requested => {
+            "Generated transcript context"
+        }
+        app_core::StudioLyricsMode::None => "No supplied lyrics context",
+        app_core::StudioLyricsMode::Reference => "Reference lyrics context",
+        app_core::StudioLyricsMode::Canonical => "Known canonical lyrics context",
+    };
+    let language = context.language_hint.as_deref().unwrap_or("Automatic");
+    spawn_text(parent, font.clone(), "LYRICS CONTEXT", 8.0, theme.primary);
+    for line in [
+        format!("Mode · {:?} · {context_label}", context.mode),
+        format!(
+            "Supplied text · {} · Tokens · {}",
+            if context.text_supplied { "Yes" } else { "No" },
+            if context.tokens_supplied { "Yes" } else { "No" }
+        ),
+        format!("Language hint · {language}"),
+        format!(
+            "Transcript requested · {} · Alignment requested · {}",
+            if context.transcript_requested {
+                "Yes"
+            } else {
+                "No"
+            },
+            if context.alignment_requested {
+                "Yes"
+            } else {
+                "No"
+            }
+        ),
+    ] {
+        spawn_wrapped_text(parent, font.clone(), line, 9.0, theme.foreground);
+    }
+}
+
+fn spawn_preview_execution_plan(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    preview: &app_core::EngineRunPreview,
+) {
+    spawn_text(
+        parent,
+        font.clone(),
+        "ENGINE EXECUTION PLAN",
+        8.0,
+        theme.primary,
+    );
+    for node in &preview.engine_plan.execution_nodes {
+        let state = if node.required {
+            "Required"
+        } else {
+            "Optional"
+        };
+        parent
+            .spawn((
+                Node {
+                    width: percent(100),
+                    min_height: px(54),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::axes(px(11), px(8)),
+                    column_gap: px(12),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(theme.background.with_alpha(0.3)),
+                BorderColor::all(theme.border.with_alpha(0.48)),
+            ))
+            .with_children(|row| {
+                row.spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_text(
+                        copy,
+                        font.clone(),
+                        capability_product_label(node.capability.as_str()),
+                        10.0,
+                        theme.foreground,
+                    );
+                    spawn_wrapped_text(
+                        copy,
+                        font.clone(),
+                        format!("Capability · {}", node.capability),
+                        8.0,
+                        theme.muted_foreground,
+                    );
+                    if !node.depends_on.is_empty() {
+                        spawn_wrapped_text(
+                            copy,
+                            font.clone(),
+                            format!("Depends on · {}", node.depends_on.join(", ")),
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                    }
+                });
+                spawn_settings_badge(
+                    row,
+                    font.clone(),
+                    state,
+                    if node.required {
+                        theme.primary
+                    } else {
+                        theme.muted_foreground
+                    },
+                );
+            });
+    }
+}
+
+fn spawn_preview_resources(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    preview: &app_core::EngineRunPreview,
+) {
+    spawn_text(
+        parent,
+        font.clone(),
+        "RESOLVED RUNTIME RESOURCES",
+        8.0,
+        theme.primary,
+    );
+    if preview.engine_plan.resolved_resources.is_empty() {
+        spawn_wrapped_text(
+            parent,
+            font,
+            "This request declares no runtime-managed resources.",
+            9.0,
+            theme.muted_foreground,
+        );
+        return;
+    }
+    for resource in &preview.engine_plan.resolved_resources {
+        let requirement_role = if resource.requirement.required {
+            "Required"
+        } else {
+            "Optional"
+        };
+        let (status_label, color, details) = if let Some(error) = &resource.resolution_error {
+            (
+                "Blocked",
+                theme.editor_warning,
+                format!(
+                    "{} · {requirement_role} · {error}",
+                    resource.requirement.reason
+                ),
+            )
+        } else if let Some(status) = &resource.status {
+            (
+                if status.usable {
+                    "Usable"
+                } else {
+                    "Unavailable"
+                },
+                if status.usable {
+                    theme.primary
+                } else {
+                    theme.editor_warning
+                },
+                format!(
+                    "{} · {} · Backend: {:?} · Validation: {:?}",
+                    resource.requirement.reason,
+                    requirement_role,
+                    status.selected_backend,
+                    status.validation_state
+                ),
+            )
+        } else {
+            (
+                "No status",
+                theme.editor_warning,
+                format!(
+                    "{} · {requirement_role} · No Runtime Manager status was returned.",
+                    resource.requirement.reason
+                ),
+            )
+        };
+        parent
+            .spawn((
+                Node {
+                    width: percent(100),
+                    min_height: px(50),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::axes(px(11), px(8)),
+                    column_gap: px(12),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(theme.background.with_alpha(0.3)),
+                BorderColor::all(theme.border.with_alpha(0.48)),
+            ))
+            .with_children(|row| {
+                row.spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_wrapped_text(
+                        copy,
+                        font.clone(),
+                        &resource.requirement.resource,
+                        9.0,
+                        theme.foreground,
+                    );
+                    spawn_wrapped_text(copy, font.clone(), details, 8.0, theme.muted_foreground);
+                });
+                spawn_settings_badge(row, font.clone(), status_label, color);
+            });
+    }
+}
+
+fn spawn_preview_outputs(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    preview: &app_core::EngineRunPreview,
+) {
+    spawn_text(parent, font.clone(), "DECLARED OUTPUTS", 8.0, theme.primary);
+    for artifact in &preview.engine_plan.artifact_declarations {
+        spawn_wrapped_text(
+            parent,
+            font.clone(),
+            format!(
+                "• {} · {}",
+                artifact_product_label(&artifact.semantic_type),
+                if artifact.required {
+                    "Required"
+                } else {
+                    "Optional"
+                }
+            ),
+            9.0,
+            theme.foreground,
+        );
+    }
+}
+
+pub(crate) fn artifact_product_label(artifact: &str) -> &str {
+    match artifact {
+        "candidate_vocal_chart" => "Candidate VocalChart",
+        "pitch_evidence" => "PitchEvidence",
+        "singing_analysis" => "Singing analysis",
+        "transcript" => "Transcript",
+        "alignment" => "Alignment",
+        "stem:vocals" => "Vocal stem",
+        "stem:instrumental" => "Instrumental stem",
+        _ => artifact,
+    }
+}
+
+pub(crate) fn capability_product_label(capability: &str) -> &'static str {
+    match capability {
+        "audio.decode" => "Decode & source validation",
+        "audio.extract_vocals" => "Vocal extraction",
+        "audio.extract_instrumental" => "Instrumental extraction",
+        "audio.lead_isolate" => "Lead isolation",
+        "speech.transcribe" => "Transcription",
+        "speech.align" => "Alignment",
+        "pitch.track" => "Continuous pitch",
+        "notes.game" => "Note & boundary evidence",
+        "fusion.singing" => "Singing fusion",
+        "fusion.candidate_graph" => "Candidate graph",
+        "finalize.vocal_chart" => "Candidate VocalChart",
+        _ => "Analysis capability",
+    }
 }
 
 fn analysis_node_execution_actions(

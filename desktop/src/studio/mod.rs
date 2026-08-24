@@ -87,8 +87,9 @@ pub(crate) use settings::*;
 pub(crate) use song_detail::*;
 pub(crate) use song_settings::*;
 pub(crate) use state::{
-    AnalysisUiState, AsyncJobs, DialogState, EditorUiState, LibraryState, PlaybackState,
-    ShellState, StudioSessionView, StudioStateBundle, StudioStateMut, StudioStateRead,
+    AnalysisUiState, AsyncJobs, DialogState, EditorUiState, LibraryState, ModelSettingsJob,
+    ModelSettingsSnapshot, PlaybackState, ShellState, StudioSessionView, StudioStateBundle,
+    StudioStateMut, StudioStateRead,
 };
 pub(crate) use widgets::*;
 pub(crate) use window_ops::*;

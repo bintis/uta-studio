@@ -4,9 +4,23 @@
 //! current status (`queued`, `analyzing` with a percentage, or `failed` with a
 //! message).
 
-use rusqlite::params;
+use std::path::PathBuf;
+
+use rusqlite::{OptionalExtension, params};
 
 use super::connection::{with_conn, with_conn_mut};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineQueueIntent {
+    pub file_hash: String,
+    pub request_id: String,
+    pub request_json: String,
+    pub request_digest: String,
+    pub plan_json: String,
+    pub source_path: PathBuf,
+    pub source_sha256: String,
+    pub queued_at_ms: i64,
+}
 
 type AnalysisQueueRow = (String, String, Option<i64>, Option<String>);
 
@@ -40,6 +54,67 @@ pub fn analysis_queue_upsert_row(
         upsert_queue_in_tx(&tx, file_hash, status, analyzing_pct, failed_message)?;
         tx.commit()?;
         Ok(())
+    })
+}
+
+pub fn analysis_queue_set_engine_intent(intent: &EngineQueueIntent) -> rusqlite::Result<bool> {
+    with_conn_mut(|connection| {
+        let changed = connection.execute(
+            "INSERT INTO analysis_queue (
+                file_hash, status, analyzing_pct, failed_message, request_id,
+                engine_request_json, request_digest, engine_plan_json,
+                source_path, source_sha256, queued_at_ms
+             ) VALUES (?1, 'queued', NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(file_hash) DO UPDATE SET
+                status = 'queued', analyzing_pct = NULL, failed_message = NULL,
+                request_id = excluded.request_id,
+                engine_request_json = excluded.engine_request_json,
+                request_digest = excluded.request_digest,
+                engine_plan_json = excluded.engine_plan_json,
+                source_path = excluded.source_path,
+                source_sha256 = excluded.source_sha256,
+                queued_at_ms = excluded.queued_at_ms
+             WHERE analysis_queue.status = 'failed'",
+            params![
+                intent.file_hash,
+                intent.request_id,
+                intent.request_json,
+                intent.request_digest,
+                intent.plan_json,
+                intent.source_path.to_string_lossy(),
+                intent.source_sha256,
+                intent.queued_at_ms,
+            ],
+        )?;
+        Ok(changed == 1)
+    })
+}
+
+pub fn analysis_queue_engine_intent(
+    file_hash: &str,
+) -> rusqlite::Result<Option<EngineQueueIntent>> {
+    with_conn(|connection| {
+        connection
+            .query_row(
+                "SELECT file_hash, request_id, engine_request_json, request_digest,
+                    engine_plan_json, source_path, source_sha256, queued_at_ms
+             FROM analysis_queue
+             WHERE file_hash = ?1 AND engine_request_json IS NOT NULL",
+                [file_hash],
+                |row| {
+                    Ok(EngineQueueIntent {
+                        file_hash: row.get(0)?,
+                        request_id: row.get(1)?,
+                        request_json: row.get(2)?,
+                        request_digest: row.get(3)?,
+                        plan_json: row.get(4)?,
+                        source_path: PathBuf::from(row.get::<_, String>(5)?),
+                        source_sha256: row.get(6)?,
+                        queued_at_ms: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
     })
 }
 

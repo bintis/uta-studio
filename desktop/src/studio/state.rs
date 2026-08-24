@@ -152,10 +152,26 @@ pub(crate) struct DialogState {
     pub(crate) about_open: bool,
 }
 
+pub(crate) struct ModelSettingsSnapshot {
+    pub(crate) runtime_status: app_core::AnalysisRuntimeStatus,
+    pub(crate) audio_catalog: app_core::AudioModelCatalogSummary,
+    pub(crate) audio_catalog_error: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct ModelSettingsJob {
+    pub(crate) receiver:
+        Option<std::sync::Mutex<std::sync::mpsc::Receiver<Result<ModelSettingsSnapshot, String>>>>,
+    pub(crate) current: Option<ModelSettingsSnapshot>,
+    pub(crate) error: Option<String>,
+}
+
 #[derive(Resource, Default)]
 pub(crate) struct AsyncJobs {
     pub(crate) authoring_busy: bool,
     pub(crate) request_cache_stats_refresh: bool,
+    pub(crate) request_model_settings_refresh: bool,
+    pub(crate) model_settings_job: ModelSettingsJob,
     pub(crate) export_job: NativeExportJob,
     pub(crate) editor_load_job: NativeEditorLoadJob,
     pub(crate) lyrics_search_job: NativeLyricsSearchJob,
@@ -448,6 +464,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) open_settings_select: Option<SettingsSelectKind>,
     pub(crate) open_analysis_advanced: Option<AnalysisAdvancedSection>,
     pub(crate) settings_scroll_offsets: [f32; 4],
+    pub(crate) model_settings_job: &'a ModelSettingsJob,
     pub(crate) library_scroll_offset: f32,
     pub(crate) analysis_graph_scroll_offset: f32,
     pub(crate) analysis_graph_vertical_scroll_offset: f32,
@@ -536,6 +553,7 @@ impl<'a> StudioSessionView<'a> {
             open_settings_select: dialogs.open_settings_select,
             open_analysis_advanced: dialogs.open_analysis_advanced,
             settings_scroll_offsets: shell.settings_scroll_offsets,
+            model_settings_job: &jobs.model_settings_job,
             library_scroll_offset: library.library_scroll_offset,
             analysis_graph_scroll_offset: analysis.analysis_graph_scroll_offset,
             analysis_graph_vertical_scroll_offset: analysis.analysis_graph_vertical_scroll_offset,

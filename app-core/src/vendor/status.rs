@@ -1,17 +1,18 @@
 use std::path::PathBuf;
 use std::process::Command;
-
-use sha2::{Digest, Sha256};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::*;
+use crate::backend_cli::{
+    AnalysisCliClient, NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1,
+    RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1, ValidationStateWireV1,
+};
 use crate::cache::{
-    CachePaths, models_dir, normalized_target_path, relocate_directory_contents, songs_cache_dir,
+    CachePaths, normalized_target_path, relocate_directory_contents, songs_cache_dir,
     uta_studio_dir, vendor_dir,
 };
-use crate::native_runtime::{
-    RMVPE_IR_MANIFEST_SHA256, RMVPE_IR_RELATIVE_DIR, RUNTIME_LOCK_SHA256, component_executable,
-    native_analyzer_path, native_runtime_lock,
-};
+use crate::native_runtime::{RUNTIME_LOCK_SHA256, native_runtime_lock};
 
 pub fn resolve_data_path_input(input: &str) -> Result<PathBuf, String> {
     normalized_target_path(PathBuf::from(input))
@@ -61,242 +62,282 @@ pub(crate) fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
-fn model_file(relative: &str) -> bool {
-    models_dir().join(relative).is_file()
+pub(crate) fn runtime_client() -> Result<RuntimeCliClient, String> {
+    RuntimeCliClient::discover()
+        .map(|client| {
+            client
+                .with_legacy_models(crate::cache::models_dir())
+                .with_policy(RuntimePolicyWireV1::Experimental)
+        })
+        .map_err(|error| error.to_string())
 }
 
-fn rmvpe_model_file() -> bool {
-    let directory = models_dir().join(RMVPE_IR_RELATIVE_DIR);
-    let manifest = match std::fs::read(directory.join("manifest.json")) {
-        Ok(manifest) => manifest,
-        Err(_) => return false,
-    };
-    if format!("{:x}", Sha256::digest(&manifest)) != RMVPE_IR_MANIFEST_SHA256
-        || !directory.join("rmvpe.bin").is_file()
-    {
-        return false;
+pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<RuntimeResourceRefWireV1> {
+    match target {
+        ModelDownloadTarget::SharedRuntime => RuntimeResourceRefWireV1::runtime("native_analyzer"),
+        ModelDownloadTarget::RoFormer => RuntimeResourceRefWireV1::bundle("roformer"),
+        ModelDownloadTarget::FireRed => RuntimeResourceRefWireV1::model("firered_asr2_aed"),
+        ModelDownloadTarget::QwenAsr => RuntimeResourceRefWireV1::model("qwen3_asr_1_7b"),
+        ModelDownloadTarget::QwenAlign => {
+            RuntimeResourceRefWireV1::model("qwen3_forced_aligner_0_6b")
+        }
+        ModelDownloadTarget::Pitch => RuntimeResourceRefWireV1::model("rmvpe"),
+        ModelDownloadTarget::Fcpe => RuntimeResourceRefWireV1::model("fcpe"),
+        ModelDownloadTarget::Game => RuntimeResourceRefWireV1::model("game"),
+        ModelDownloadTarget::Stars => RuntimeResourceRefWireV1::model("stars"),
+        ModelDownloadTarget::BasicPitch => RuntimeResourceRefWireV1::model("basic_pitch"),
     }
-    (32..=1024)
-        .step_by(32)
-        .all(|frames| directory.join(format!("rmvpe-{frames:04}.xml")).is_file())
+    .ok()
 }
 
-fn model_manifest(relative: &str) -> bool {
-    models_dir()
-        .join(relative)
-        .join("install-manifest.json")
-        .is_file()
+fn status_copy(target: ModelDownloadTarget) -> (&'static str, &'static str) {
+    match target {
+        ModelDownloadTarget::SharedRuntime => (
+            "Native analysis runtime",
+            "Shared local worker and runtime components used by analysis models.",
+        ),
+        ModelDownloadTarget::RoFormer => (
+            "RoFormer audio processing",
+            "Vocal, instrumental, harmony, denoise and dereverb resources.",
+        ),
+        ModelDownloadTarget::FireRed => (
+            "FireRed ASR2 AED",
+            "Optional transcription challenger for comparison and diagnostics.",
+        ),
+        ModelDownloadTarget::QwenAsr => ("Qwen3-ASR-1.7B", "Primary local transcription resource."),
+        ModelDownloadTarget::QwenAlign => (
+            "Qwen3 Forced Aligner 0.6B",
+            "Word-level alignment against canonical or transcribed lyrics.",
+        ),
+        ModelDownloadTarget::Pitch => ("RMVPE", "Primary continuous-pitch evidence."),
+        ModelDownloadTarget::Fcpe => ("FCPE", "Optional secondary pitch evidence."),
+        ModelDownloadTarget::Game => ("GAME", "Primary note and boundary evidence."),
+        ModelDownloadTarget::Stars => ("STARS", "Optional advanced note challenger."),
+        ModelDownloadTarget::BasicPitch => (
+            "Basic Pitch",
+            "Optional note/onset challenger for disagreement review.",
+        ),
+    }
 }
 
-fn openvino_ir_manifest(relative: &str) -> bool {
-    models_dir().join(relative).join("manifest.json").is_file()
+fn status_for(
+    statuses: &[RuntimeResourceStatusWireV1],
+    target: ModelDownloadTarget,
+) -> Option<ModelInstallStatus> {
+    let resource = resource_for_target(target)?;
+    let status = find_status(statuses, &resource.0)?;
+    let (label, description) = status_copy(target);
+    Some(ModelInstallStatus {
+        target,
+        label: label.to_string(),
+        description: description.to_string(),
+        available: status.usable,
+        backend: status
+            .selected_backend
+            .map(backend_label)
+            .unwrap_or("unresolved")
+            .to_string(),
+        validation: validation_label(status.validation_state).to_string(),
+    })
+}
+
+fn backend_label(backend: NativeBackendWireV1) -> &'static str {
+    match backend {
+        NativeBackendWireV1::OpenVino => "openvino",
+        NativeBackendWireV1::Vulkan => "vulkan",
+        NativeBackendWireV1::NativeDsp => "native",
+        NativeBackendWireV1::CpuReference => "diagnostic_cpu",
+    }
+}
+
+fn validation_label(validation: ValidationStateWireV1) -> &'static str {
+    match validation {
+        ValidationStateWireV1::ProductionPinned => "production_pinned",
+        ValidationStateWireV1::BenchmarkCandidate => "benchmark_candidate",
+        ValidationStateWireV1::Experimental => "experimental",
+        ValidationStateWireV1::Unsupported => "unsupported",
+    }
+}
+
+const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 10] = [
+    ModelDownloadTarget::SharedRuntime,
+    ModelDownloadTarget::RoFormer,
+    ModelDownloadTarget::FireRed,
+    ModelDownloadTarget::QwenAsr,
+    ModelDownloadTarget::QwenAlign,
+    ModelDownloadTarget::Pitch,
+    ModelDownloadTarget::Fcpe,
+    ModelDownloadTarget::Game,
+    ModelDownloadTarget::Stars,
+    ModelDownloadTarget::BasicPitch,
+];
+
+fn model_install_statuses_from_statuses(
+    statuses: &[RuntimeResourceStatusWireV1],
+) -> Vec<ModelInstallStatus> {
+    MODEL_STATUS_TARGETS
+        .into_iter()
+        .filter_map(|target| status_for(statuses, target))
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) fn model_install_statuses_with_client(
+    client: &RuntimeCliClient,
+) -> Vec<ModelInstallStatus> {
+    client
+        .list()
+        .map(|statuses| model_install_statuses_from_statuses(&statuses))
+        .unwrap_or_default()
 }
 
 pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
-    vec![
-        ModelInstallStatus {
-            target: ModelDownloadTarget::SharedRuntime,
-            label: "Native analysis components".to_string(),
-            description: "Packaged local workers; no network service is used.".to_string(),
-            available: native_analyzer_path().is_some(),
-            backend: "native".to_string(),
-            validation: "packaged".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::RoFormer,
-            label: "RoFormer separation".to_string(),
-            description: "Vocal, BGM, harmony, denoise, and dereverb native model family."
-                .to_string(),
-            available: component_executable("roformer_runtime").is_some()
-                && crate::audio_model::REQUIRED_AUDIO_MODEL_IDS
-                    .iter()
-                    .all(|model| model_manifest(&format!("audio-processing/{model}"))),
-            backend: "vulkan".to_string(),
-            validation: "benchmark_candidate_short_smoke_only".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::FireRed,
-            label: "FireRedASR2-AED".to_string(),
-            description: "Primary Chinese and Chinese-singing transcript expert.".to_string(),
-            available: component_executable("openvino_runtime").is_some()
-                && openvino_ir_manifest("firered-asr2-aed/openvino-ir-2026.3.0-smoke"),
-            backend: "openvino".to_string(),
-            validation: "candidate".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::QwenAsr,
-            label: "Qwen3-ASR-1.7B".to_string(),
-            description: "Pinned multilingual transcript expert.".to_string(),
-            available: component_executable("qwen_asr_runtime").is_some()
-                && model_file("qwen-asr/Qwen3-ASR-1.7B-Q4_K_M.gguf"),
-            backend: "vulkan".to_string(),
-            validation: "benchmark_candidate_pinned_recipe".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::QwenAlign,
-            label: "Qwen3 Forced Aligner".to_string(),
-            description: "Pinned word and character alignment expert.".to_string(),
-            available: component_executable("qwen_align_runtime").is_some()
-                && model_manifest("qwen-align"),
-            backend: "vulkan".to_string(),
-            validation: "benchmark_candidate_pinned_recipe".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::Pitch,
-            label: "RMVPE".to_string(),
-            description: "Primary continuous singing F0 expert.".to_string(),
-            available: component_executable("openvino_runtime").is_some() && rmvpe_model_file(),
-            backend: "openvino".to_string(),
-            validation: "production_pinned".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::Fcpe,
-            label: "FCPE".to_string(),
-            description: "Independent F0 disagreement expert.".to_string(),
-            available: component_executable("openvino_runtime").is_some()
-                && openvino_ir_manifest("pitch/fcpe/openvino-ir-2026.3.0-smoke"),
-            backend: "openvino".to_string(),
-            validation: "candidate".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::Game,
-            label: "GAME".to_string(),
-            description: "Primary singing note-boundary expert.".to_string(),
-            available: model_manifest("boundary/game"),
-            backend: "openvino".to_string(),
-            validation: "candidate".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::Stars,
-            label: "STARS".to_string(),
-            description: "Maximum-quality boundary and technique expert.".to_string(),
-            available: model_manifest("technique/stars"),
-            backend: "unresolved".to_string(),
-            validation: "experimental".to_string(),
-        },
-        ModelInstallStatus {
-            target: ModelDownloadTarget::BasicPitch,
-            label: "Basic Pitch".to_string(),
-            description: "Auxiliary onset and activation evidence.".to_string(),
-            available: component_executable("openvino_runtime").is_some()
-                && openvino_ir_manifest("boundary/basic-pitch/openvino-ir-2026.3.0-smoke"),
-            backend: "openvino".to_string(),
-            validation: "candidate".to_string(),
-        },
-    ]
+    analysis_runtime_status().models
 }
 
 pub struct ModelAvailabilityParams<'a> {
     pub _profile: &'a crate::analysis_profile::AnalysisProfileSnapshot,
 }
-
 pub fn model_availability_params_for_profile(
     profile: &crate::analysis_profile::AnalysisProfileSnapshot,
 ) -> ModelAvailabilityParams<'_> {
     ModelAvailabilityParams { _profile: profile }
 }
 
+/// Legacy graph presentation only. The exact Analysis Engine plan is the sole
+/// readiness authority, so this bridge must remain allocation-only and must not
+/// launch Runtime Manager processes while the UI is rendering.
 pub fn node_model_availability_for(
     _params: &ModelAvailabilityParams<'_>,
 ) -> std::collections::BTreeMap<crate::analysis_graph::AnalysisNodeId, bool> {
     use crate::analysis_graph::AnalysisNodeId;
-    let statuses = model_install_statuses();
-    let available = |target| {
-        statuses
-            .iter()
-            .find(|status| status.target == target)
-            .is_some_and(|status| status.available)
-    };
     [
-        ("stems.separate", available(ModelDownloadTarget::RoFormer)),
-        ("stems.vocals", available(ModelDownloadTarget::RoFormer)),
-        (
-            "stems.instrumental",
-            available(ModelDownloadTarget::RoFormer),
-        ),
-        ("pitch.extract", available(ModelDownloadTarget::Pitch)),
-        ("lyrics.transcribe", available(ModelDownloadTarget::FireRed)),
-        ("lyrics.align", available(ModelDownloadTarget::QwenAlign)),
+        "stems.separate",
+        "stems.vocals",
+        "stems.instrumental",
+        "pitch.extract",
+        "lyrics.transcribe",
+        "lyrics.align",
     ]
     .into_iter()
-    .map(|(node, ready)| (AnalysisNodeId::new(node), ready))
+    .map(|node| (AnalysisNodeId::new(node), true))
     .collect()
 }
 
-pub fn analysis_runtime_status() -> AnalysisRuntimeStatus {
-    let ffmpeg = ffmpeg_path();
-    let models = model_install_statuses();
-    let selected_models = models
-        .iter()
-        .map(|model| model.label.clone())
-        .collect::<Vec<_>>();
-    let selected_models_available = models
-        .iter()
-        .filter(|model| {
-            matches!(
-                model.target,
-                ModelDownloadTarget::SharedRuntime
-                    | ModelDownloadTarget::RoFormer
-                    | ModelDownloadTarget::FireRed
-                    | ModelDownloadTarget::QwenAsr
-                    | ModelDownloadTarget::QwenAlign
-                    | ModelDownloadTarget::Pitch
-                    | ModelDownloadTarget::Game
-            )
-        })
-        .all(|model| model.available);
+fn find_status<'a>(
+    statuses: &'a [RuntimeResourceStatusWireV1],
+    resource: &str,
+) -> Option<&'a RuntimeResourceStatusWireV1> {
+    statuses.iter().find(|status| status.resource.0 == resource)
+}
+
+pub(super) fn analysis_runtime_status_with_clients(
+    analysis_ready: bool,
+    runtime_client: Option<&RuntimeCliClient>,
+    ffmpeg: PathBuf,
+) -> AnalysisRuntimeStatus {
+    let statuses = runtime_client
+        .and_then(|client| client.list().ok())
+        .unwrap_or_default();
+    let models = model_install_statuses_from_statuses(&statuses);
     let runtime_lock_valid = native_runtime_lock().is_ok();
-    let native_analyzer_available = native_analyzer_path().is_some();
-    let roformer_runtime_available = models
+    let ffmpeg_available =
+        find_status(&statuses, "tool:ffmpeg").is_some_and(|status| status.usable);
+    let runtime_executable_ready = |id: &str| {
+        find_status(&statuses, &format!("runtime:{id}"))
+            .is_some_and(|status| status.executable_ready)
+    };
+    let selected_models = statuses
         .iter()
-        .find(|model| model.target == ModelDownloadTarget::RoFormer)
-        .is_some_and(|model| model.available);
-    let openvino_runtime_available = component_executable("openvino_runtime").is_some();
-    let qwen_asr_runtime_available = component_executable("qwen_asr_runtime").is_some();
-    let qwen_align_runtime_available = component_executable("qwen_align_runtime").is_some();
-    let pitch_model_available = rmvpe_model_file();
+        .filter_map(|status| status.resource.0.strip_prefix("model:").map(str::to_string))
+        .collect::<Vec<_>>();
+    let selected_models_available = statuses
+        .iter()
+        .filter(|status| status.resource.0.starts_with("model:"))
+        .all(|status| status.usable);
     let mut missing = Vec::new();
-    if !ffmpeg.is_file() {
-        missing.push("ffmpeg".to_string());
+    if !analysis_ready {
+        missing.push("Analysis Engine CLI".to_string());
     }
-    if !native_analyzer_available {
-        missing.push("native analyzer".to_string());
+    if runtime_client.is_none() {
+        missing.push("Runtime Manager CLI".to_string());
+    }
+    if !ffmpeg_available {
+        missing.push("ffmpeg".to_string());
     }
     if !runtime_lock_valid {
         missing.push("runtime lock".to_string());
     }
-    missing.extend(
-        models
-            .iter()
-            .filter(|model| !model.available)
-            .map(|model| model.label.clone()),
-    );
-    missing.sort();
-    missing.dedup();
     AnalysisRuntimeStatus {
-        ready: ffmpeg.is_file()
-            && native_analyzer_available
-            && runtime_lock_valid
-            && selected_models_available,
-        runtime_contract_current: runtime_lock_valid,
-        ffmpeg_available: ffmpeg.is_file(),
-        native_analyzer_available,
-        roformer_runtime_available,
-        openvino_runtime_available,
-        qwen_asr_runtime_available,
-        qwen_align_runtime_available,
+        ready: analysis_ready && runtime_client.is_some() && ffmpeg_available && runtime_lock_valid,
+        runtime_contract_current: analysis_ready && runtime_client.is_some(),
+        ffmpeg_available,
+        native_analyzer_available: runtime_executable_ready("native_analyzer"),
+        roformer_runtime_available: runtime_executable_ready("roformer_runtime"),
+        openvino_runtime_available: runtime_executable_ready("openvino_2026_3"),
+        qwen_asr_runtime_available: runtime_executable_ready("qwen_asr_runtime"),
+        qwen_align_runtime_available: runtime_executable_ready("qwen_align_runtime"),
         runtime_lock_valid,
-        pitch_model_available,
+        pitch_model_available: find_status(&statuses, "model:rmvpe")
+            .is_some_and(|status| status.usable),
         selected_models_available,
         selected_models,
         models,
-        compute_backend: "pinned OpenVINO IR; pinned Qwen Vulkan exceptions".to_string(),
+        compute_backend: "Runtime Manager testing policy (experimental)".to_string(),
         ffmpeg_path: ffmpeg
             .is_file()
             .then(|| ffmpeg.to_string_lossy().into_owned()),
         runtime_lock_sha256: RUNTIME_LOCK_SHA256.to_string(),
         missing,
     }
+}
+
+const RUNTIME_STATUS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct RuntimeStatusCache {
+    value: Option<AnalysisRuntimeStatus>,
+    refreshed_at: Option<Instant>,
+}
+
+static RUNTIME_STATUS_CACHE: OnceLock<Mutex<RuntimeStatusCache>> = OnceLock::new();
+
+fn runtime_status_cache() -> &'static Mutex<RuntimeStatusCache> {
+    RUNTIME_STATUS_CACHE.get_or_init(|| Mutex::new(RuntimeStatusCache::default()))
+}
+
+#[allow(dead_code)]
+pub fn invalidate_analysis_runtime_status_cache() {
+    if let Ok(mut cache) = runtime_status_cache().lock() {
+        cache.value = None;
+        cache.refreshed_at = None;
+    }
+    crate::audio_processing::invalidate_audio_model_catalog_cache();
+    crate::native_runtime::invalidate_native_runtime_registry_cache();
+}
+
+fn compute_analysis_runtime_status() -> AnalysisRuntimeStatus {
+    let analysis_ready = AnalysisCliClient::is_available();
+    let runtime = runtime_client().ok();
+    analysis_runtime_status_with_clients(analysis_ready, runtime.as_ref(), ffmpeg_path())
+}
+
+pub fn analysis_runtime_status() -> AnalysisRuntimeStatus {
+    if let Ok(cache) = runtime_status_cache().lock()
+        && cache
+            .refreshed_at
+            .is_some_and(|refreshed| refreshed.elapsed() < RUNTIME_STATUS_CACHE_TTL)
+        && let Some(status) = cache.value.as_ref()
+    {
+        return status.clone();
+    }
+
+    let status = compute_analysis_runtime_status();
+    if let Ok(mut cache) = runtime_status_cache().lock() {
+        cache.value = Some(status.clone());
+        cache.refreshed_at = Some(Instant::now());
+    }
+    status
 }
 
 pub fn is_ready() -> bool {
@@ -306,7 +347,6 @@ pub fn is_ready() -> bool {
 pub(crate) fn normalize_optional_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
     path.map(normalized_target_path).transpose()
 }
-
 pub(crate) fn normalize_cache_paths(paths: CachePaths) -> Result<CachePaths, String> {
     Ok(CachePaths {
         songs: normalize_optional_path(paths.songs)?,
@@ -314,7 +354,6 @@ pub(crate) fn normalize_cache_paths(paths: CachePaths) -> Result<CachePaths, Str
         vendor: normalize_optional_path(paths.vendor)?,
     })
 }
-
 pub(crate) fn default_cache_paths_for_data_root() -> CachePaths {
     let root = uta_studio_dir();
     CachePaths {
@@ -323,13 +362,12 @@ pub(crate) fn default_cache_paths_for_data_root() -> CachePaths {
         vendor: Some(root.join("vendor")),
     }
 }
-
 pub(crate) fn relocate_cache_data_to_targets(targets: &CachePaths) -> Result<(), String> {
     if let Some(target) = targets.songs.as_ref() {
         relocate_directory_contents(&songs_cache_dir(), target)?;
     }
     if let Some(target) = targets.models.as_ref() {
-        relocate_directory_contents(&models_dir(), target)?;
+        relocate_directory_contents(&crate::cache::models_dir(), target)?;
     }
     Ok(())
 }

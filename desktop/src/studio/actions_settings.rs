@@ -22,22 +22,44 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
     } = context;
     match &action.0 {
         UiCommand::App(AppCommand::Settings) => {
+            let route_changed = studio.shell.route != StudioRoute::Settings;
             studio.shell.route = StudioRoute::Settings;
             studio.shell.notice = None;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.plan_preview_draft = None;
             if studio.shell.settings_tab == SettingsTab::Storage {
                 studio.jobs.request_cache_stats_refresh = true;
             }
-            invalidated.invalidate(UiDirtyRegion::Settings);
+            if studio.shell.settings_tab == SettingsTab::Models
+                && studio.jobs.model_settings_job.current.is_none()
+            {
+                studio.jobs.request_model_settings_refresh = true;
+            }
+            invalidated.invalidate(if route_changed {
+                UiDirtyRegion::Chrome
+            } else {
+                UiDirtyRegion::Settings
+            });
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Settings(SettingsCommand::SettingsTab(tab)) => {
+            let route_changed = studio.shell.route != StudioRoute::Settings;
             studio.shell.route = StudioRoute::Settings;
             studio.shell.settings_tab = *tab;
             studio.shell.notice = None;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.plan_preview_draft = None;
             studio.jobs.request_cache_stats_refresh =
                 matches!(studio.shell.settings_tab, SettingsTab::Storage);
-            invalidated.invalidate(UiDirtyRegion::Settings);
+            studio.jobs.request_model_settings_refresh =
+                matches!(studio.shell.settings_tab, SettingsTab::Models)
+                    && studio.jobs.model_settings_job.current.is_none();
+            invalidated.invalidate(if route_changed {
+                UiDirtyRegion::Chrome
+            } else {
+                UiDirtyRegion::Settings
+            });
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::App(AppCommand::ToggleFullscreen) => {
             if let Some(error) = toggle_fullscreen(window, &mut studio.shell.config) {
@@ -87,7 +109,9 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RefreshRuntimeStatus) => {
-            studio.shell.notice = Some("Runtime status refreshed from local files.".to_string());
+            app_core::invalidate_analysis_runtime_status_cache();
+            studio.jobs.request_model_settings_refresh = true;
+            studio.shell.notice = Some("Refreshing local model and runtime status…".to_string());
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::OpenSettingsSelect(kind)) => {
@@ -130,6 +154,15 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 }
                 SettingsSelectKind::PitchModel => {
                     studio.shell.config.pitch_model = Some(value.clone());
+                }
+                SettingsSelectKind::AnalysisTarget => {
+                    studio.shell.config.analysis_experience.default_target = match value.as_str() {
+                        "transcript" => app_core::AnalysisDefaultTarget::Transcript,
+                        "alignment" => app_core::AnalysisDefaultTarget::Alignment,
+                        "pitch_evidence" => app_core::AnalysisDefaultTarget::PitchEvidence,
+                        "instrumental" => app_core::AnalysisDefaultTarget::Instrumental,
+                        _ => app_core::AnalysisDefaultTarget::FullCandidate,
+                    };
                 }
                 SettingsSelectKind::AudioVocalModel => {
                     let settings = audio_settings_mut(&mut studio.shell.config);
@@ -231,6 +264,20 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             });
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
+        UiCommand::Settings(SettingsCommand::SetAnalysisQuality(quality)) => {
+            studio.shell.config.analysis_experience.quality_profile = *quality;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::TogglePreserveContinuousPitch) => {
+            studio
+                .shell
+                .config
+                .analysis_experience
+                .preserve_continuous_pitch = !studio.shell.config.preserve_continuous_pitch();
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
         UiCommand::Settings(SettingsCommand::ToggleAnalysisAdvanced(section)) => {
             studio.dialogs.open_analysis_advanced =
                 if studio.dialogs.open_analysis_advanced == Some(*section) {
@@ -277,11 +324,13 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RemoveAudioModel(model_id)) => {
+            app_core::invalidate_analysis_runtime_status_cache();
             studio.shell.notice = Some(match app_core::remove_audio_model(model_id) {
                 Ok(()) => "Audio model removed. Existing song cache and charts were not deleted."
                     .to_string(),
                 Err(error) => error,
             });
+            studio.jobs.request_model_settings_refresh = true;
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RequestSetup(target)) => {
@@ -439,26 +488,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiCommand::Settings(SettingsCommand::AdjustBeamSize(delta)) => {
-            studio.shell.config.beam_size = Some(
-                (i64::from(studio.shell.config.beam_size()) + i64::from(*delta)).clamp(1, 16)
-                    as u32,
-            );
-            if let Some(error) = save_config_error(&studio.shell.config) {
-                studio.shell.notice = Some(error);
-            }
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustBatchSize(delta)) => {
-            studio.shell.config.batch_size = Some(
-                (i64::from(studio.shell.config.batch_size()) + i64::from(*delta)).clamp(1, 16)
-                    as u32,
-            );
-            if let Some(error) = save_config_error(&studio.shell.config) {
-                studio.shell.notice = Some(error);
-            }
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
         UiCommand::Settings(SettingsCommand::AdjustSeparatorSegmentSize(delta)) => {
             studio.shell.config.separator_segment_size = Some(
                 (i64::from(studio.shell.config.separator_segment_size()) + i64::from(*delta))
@@ -487,6 +516,22 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.config.separator_normalization_pct = Some(
                 (i64::from(studio.shell.config.separator_normalization_pct()) + i64::from(*delta))
                     .clamp(1, 100) as u32,
+            );
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::AdjustAsrBeamSize(delta)) => {
+            studio.shell.config.beam_size = Some(
+                (i64::from(studio.shell.config.beam_size()) + i64::from(*delta)).clamp(1, 64)
+                    as u32,
+            );
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::AdjustAsrBatchSize(delta)) => {
+            studio.shell.config.batch_size = Some(
+                (i64::from(studio.shell.config.batch_size()) + i64::from(*delta)).clamp(1, 32)
+                    as u32,
             );
             studio.shell.notice = save_config_error(&studio.shell.config);
             invalidated.invalidate(UiDirtyRegion::Settings);
@@ -527,19 +572,8 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::RestoreAnalysisDefaults) => {
-            studio.shell.config.separator = Some("native_workflow".to_string());
-            studio.shell.config.separator_segment_size = None;
-            studio.shell.config.separator_overlap = None;
-            studio.shell.config.separator_batch_size = None;
-            studio.shell.config.separator_normalization_pct = None;
-            studio.shell.config.asr_engine = Some("transcript_fusion".to_string());
-            studio.shell.config.align_backend = Some("qwen3_forced_aligner".to_string());
-            studio.shell.config.pitch_model = Some("rmvpe".to_string());
-            studio.shell.config.vocal_detection_threshold_pct = Some(0.15);
-            studio.shell.config.whisper_model = None;
-            studio.shell.config.beam_size = Some(8);
-            studio.shell.config.batch_size = Some(8);
-            studio.shell.config.compute_backend = Some("auto".to_string());
+            studio.shell.config.analysis_experience =
+                app_core::AnalysisExperienceSettings::default();
             studio.shell.config.auto_analyze = Some(false);
             studio.shell.notice = save_config_error(&studio.shell.config)
                 .or_else(|| Some("Analysis defaults restored.".to_string()));

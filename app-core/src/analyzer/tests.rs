@@ -107,6 +107,7 @@ mod live_progress_tests {
             node_event: None,
             artifact_reused_reason: None,
             analysis_log_path: None,
+            engine: None,
         }
     }
 
@@ -506,6 +507,7 @@ mod preview_full_analysis_plan_tests {
             asr_engine: "transcript_fusion".to_string(),
             requested_device: "cuda".to_string(),
             language_override: Some("ja".to_string()),
+            analysis_experience: crate::analysis_experience::AnalysisExperienceOverride::default(),
         };
         set_song_analysis_profile(hash, &saved).expect("save profile");
 
@@ -777,6 +779,7 @@ mod compare_analysis_runs_tests {
                 node_event: None,
                 artifact_reused_reason: None,
                 analysis_log_path: None,
+                engine: None,
             },
         }
     }
@@ -1795,6 +1798,7 @@ mod node_attempt_tests {
             node_event: None,
             artifact_reused_reason: None,
             analysis_log_path: None,
+            engine: None,
         };
         record_node_attempts(run_id, "songE", &snapshot);
 

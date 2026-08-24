@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="850" viewBox="0 0 1400 850">
+  <rect width="1400" height="850" fill="#15171b"/>
+  <g font-family="sans-serif">
+    <text x="70" y="70" fill="#f3f5f7" font-size="30" font-weight="600">Global → Song → Run inheritance</text>
+    <text x="70" y="104" fill="#929ba8" font-size="15">Only user/product preferences inherit. Runtime validation is not an inheritance tier.</text>
+
+    <rect x="90" y="180" width="330" height="180" rx="18" fill="#22262d" stroke="#3d4550"/>
+    <text x="120" y="218" fill="#7f8a98" font-size="12" letter-spacing="1.4">GLOBAL DEFAULTS</text>
+    <text x="120" y="258" fill="#eef1f4" font-size="20">Balanced</text>
+    <text x="120" y="291" fill="#d7dbe1" font-size="14">Pitch: Automatic</text>
+    <text x="120" y="320" fill="#d7dbe1" font-size="14">Cleanup: Auto by quality</text>
+    <text x="120" y="347" fill="#8f98a5" font-size="12">Applies when no narrower override exists</text>
+
+    <rect x="535" y="180" width="330" height="180" rx="18" fill="#22262d" stroke="#3d4550"/>
+    <text x="565" y="218" fill="#7f8a98" font-size="12" letter-spacing="1.4">SONG PROFILE</text>
+    <text x="565" y="258" fill="#eef1f4" font-size="20">Inherit quality</text>
+    <text x="565" y="291" fill="#d7dbe1" font-size="14">Pitch: RMVPE</text>
+    <text x="565" y="320" fill="#d7dbe1" font-size="14">Cleanup: Inherit</text>
+    <text x="565" y="347" fill="#8fb6e8" font-size="12">Existing analysis changes only after re-analysis</text>
+
+    <rect x="980" y="180" width="330" height="180" rx="18" fill="#22262d" stroke="#3d4550"/>
+    <text x="1010" y="218" fill="#7f8a98" font-size="12" letter-spacing="1.4">THIS RUN</text>
+    <text x="1010" y="258" fill="#eef1f4" font-size="20">Maximum</text>
+    <text x="1010" y="291" fill="#d7dbe1" font-size="14">Pitch: Inherit</text>
+    <text x="1010" y="320" fill="#d7dbe1" font-size="14">Cleanup: Dereverb Off</text>
+    <text x="1010" y="347" fill="#8f98a5" font-size="12">Serialized into exact queued request metadata</text>
+
+    <path d="M420 270 L535 270" stroke="#8fb6e8" stroke-width="3"/>
+    <polygon points="529,264 542,270 529,276" fill="#8fb6e8"/>
+    <path d="M865 270 L980 270" stroke="#8fb6e8" stroke-width="3"/>
+    <polygon points="974,264 987,270 974,276" fill="#8fb6e8"/>
+
+    <rect x="330" y="470" width="740" height="160" rx="18" fill="#252a31" stroke="#3d4550"/>
+    <text x="365" y="510" fill="#7f8a98" font-size="12" letter-spacing="1.4">EFFECTIVE FOR THIS RUN</text>
+    <text x="365" y="552" fill="#ffffff" font-size="21" font-weight="600">Maximum · Pitch RMVPE · Dereverb Off</text>
+    <text x="365" y="585" fill="#a0a9b5" font-size="14">Each field resolves independently: Run &gt; Song &gt; Global.</text>
+    <text x="365" y="611" fill="#8fb6e8" font-size="13">Source indicators: This run / Song override / Global default</text>
+
+    <rect x="330" y="675" width="740" height="95" rx="16" fill="#211f1d" stroke="#604a37"/>
+    <text x="365" y="711" fill="#e6ad72" font-size="14" font-weight="600">Separate concern: Runtime Manager policy</text>
+    <text x="365" y="741" fill="#d7dbe1" font-size="14">It may block RMVPE or another provider, but it never becomes a fourth preference tier.</text>
+  </g>
+</svg>

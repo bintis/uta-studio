@@ -1,4 +1,6 @@
 mod audio;
+#[cfg(test)]
+mod converter_contract;
 mod engine;
 mod protocol;
 mod runtime;

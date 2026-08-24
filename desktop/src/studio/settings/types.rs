@@ -5,6 +5,8 @@ use std::time::Instant;
 use crate::studio::*;
 
 pub(crate) const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
+pub(crate) const SETTINGS_CONTENT_HORIZONTAL_PADDING: f32 = 40.0;
+pub(crate) const SETTINGS_CONTENT_VERTICAL_PADDING: f32 = 34.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
@@ -38,6 +40,7 @@ pub(crate) enum SettingsSelectKind {
     WhisperModel,
     AlignBackend,
     PitchModel,
+    AnalysisTarget,
     AudioVocalModel,
     #[allow(dead_code)]
     AudioMultistemModel,
@@ -56,8 +59,8 @@ pub(crate) enum SettingsSelectKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnalysisAdvancedSection {
     Separation,
-    Transcription,
     Pitch,
+    Asr,
 }
 
 #[derive(Clone, Copy)]
@@ -103,13 +106,16 @@ pub(crate) struct CacheStatsJob {
 #[derive(Component)]
 pub(crate) struct SettingsContent;
 
+#[derive(Component)]
+pub(crate) struct SettingsPageContent;
+
 #[derive(Component, Clone, Copy)]
 pub(crate) enum NumericSetting {
     SeparatorSegmentSize,
     SeparatorOverlap,
     SeparatorBatchSize,
     SeparatorNormalization,
-    BeamSize,
-    BatchSize,
+    AsrBeamSize,
+    AsrBatchSize,
     VocalThreshold,
 }

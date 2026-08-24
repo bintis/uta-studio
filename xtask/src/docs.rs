@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DOCUMENT_REVISION: &str = "2026-08-21";
+const DOCUMENT_REVISION: &str = "2026-08-24";
 const LOCALES: [(&str, &str); 3] = [("en", "English"), ("zh-CN", "简体中文"), ("ja", "日本語")];
 const PAGE_IDS: [&str; 15] = [
     "guide:about",
@@ -434,7 +434,7 @@ fn build_bundle(documents: &[LocaleDocument], app_version: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"schema_version\":1,\"app_version_range\":\">=0.5.0,<0.6.0\",\"built_for_version\":\"{}\",\"document_revision\":\"{}\",\"semantic_links\":{{{}}},\"locales\":{{{}}}}}\n",
+        "{{\"schema_version\":1,\"app_version_range\":\">=0.6.0,<0.7.0\",\"built_for_version\":\"{}\",\"document_revision\":\"{}\",\"semantic_links\":{{{}}},\"locales\":{{{}}}}}\n",
         json_escape(app_version),
         DOCUMENT_REVISION,
         semantic_links,

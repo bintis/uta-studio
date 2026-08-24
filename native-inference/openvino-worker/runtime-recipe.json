@@ -10,7 +10,7 @@
       "shared": true,
       "threading": "SEQ",
       "python": false,
-      "intel_cpu": false,
+      "intel_cpu": true,
       "intel_gpu": true,
       "intel_npu": false,
       "onednn_for_gpu": false,
@@ -30,6 +30,7 @@
     "production_format": "openvino_ir_v11",
     "source_graph_loading_during_inference": false,
     "cpu_fallback": false,
+    "explicit_cpu_gpu_topology": "allowed_only_when_pinned_by_the_model_manifest",
     "model_specific_identity": "installed-model-manifest"
   }
 }

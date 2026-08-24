@@ -120,7 +120,7 @@ The user guide is also available inside the application. Open **Settings → Gen
 6. Review the resulting lyrics and chart.
 7. Select **Edit chart** and correct timing, syllables, and note pitches.
 8. Save the chart.
-9. Export `.utz` for the `uta!` game or `.txt` for an UltraStar-compatible workflow.
+9. Export `.utz` for compatible karaoke runtimes or `.txt` for an UltraStar-compatible workflow.
 
 ### 5. Library and folders
 
@@ -137,7 +137,7 @@ Browse contains all music and analysis progress. My Library contains charts, vid
 
 #### Playback queue
 
-Library playback includes previous/next, pause/play, repeat modes, shuffle, mute, and volume. Playback is for review and authoring; scoring belongs to the separate `uta!` player.
+Library playback includes previous/next, pause/play, repeat modes, shuffle, mute, and volume. Playback is for review and authoring; scoring belongs to a separate compatible player.
 
 ### 6. Analysis pipeline
 
@@ -226,7 +226,7 @@ Save after meaningful edit groups. Named undo entries help verify what will be r
 
 #### Uta package (`.utz`)
 
-Use this format for the independent `uta!` game and for a self-contained, versioned package. The package can include chart data and the media/artifacts required by that workflow.
+Use this format for compatible karaoke runtimes and for a self-contained, versioned package. The package can include chart data and the media/artifacts required by that workflow.
 
 #### UltraStar (`.txt`)
 

@@ -52,6 +52,10 @@ pub struct AppConfig {
     /// stay on disk for one release so older clients keep loading.
     #[serde(default)]
     pub audio_processing: Option<crate::audio_processing::AudioProcessingSettings>,
+    /// Product-level analysis intent. Concrete legacy model/parameter fields
+    /// remain readable while their semantics migrate incrementally.
+    #[serde(default)]
+    pub analysis_experience: crate::analysis_experience::AnalysisExperienceSettings,
     pub asr_engine: Option<String>,
     pub align_backend: Option<String>,
     /// Pitch/frequency-analysis model. Kept explicit even while RMVPE is the
@@ -93,6 +97,7 @@ impl Default for AppConfig {
             separator_batch_size: None,
             separator_normalization_pct: None,
             audio_processing: None,
+            analysis_experience: crate::analysis_experience::AnalysisExperienceSettings::default(),
             asr_engine: None,
             align_backend: None,
             pitch_model: None,
@@ -136,6 +141,7 @@ impl AppConfig {
         self.asr_engine = Some("transcript_fusion".to_string());
         self.align_backend = Some("qwen3_forced_aligner".to_string());
         self.whisper_model = None;
+        self.analysis_experience.normalize();
         if self.audio_processing.is_none() {
             self.audio_processing = Some(
                 crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
@@ -276,6 +282,22 @@ impl AppConfig {
             .clamp(0.0, 1.0)
     }
 
+    pub fn analysis_quality(&self) -> crate::analysis_experience::AnalysisQualityProfile {
+        self.analysis_experience.quality_profile
+    }
+
+    pub fn analysis_default_target(&self) -> crate::analysis_experience::AnalysisDefaultTarget {
+        self.analysis_experience.default_target
+    }
+
+    pub fn preserve_continuous_pitch(&self) -> bool {
+        self.analysis_experience.preserve_continuous_pitch
+    }
+
+    pub fn enable_quantization(&self) -> bool {
+        self.analysis_experience.enable_quantization
+    }
+
     pub fn auto_analyze(&self) -> bool {
         self.auto_analyze.unwrap_or(false)
     }
@@ -389,6 +411,45 @@ mod tests {
         .with_defaults();
         assert_eq!(repaired.ui_language(), "system");
         assert!(repaired.ui_language.is_none());
+    }
+
+    #[test]
+    fn old_config_without_analysis_experience_preserves_legacy_fields() {
+        let json = serde_json::json!({
+            "separator": "native_workflow",
+            "beam_size": 11,
+            "batch_size": 3,
+            "auto_analyze": true
+        });
+        let config: AppConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            config.analysis_quality(),
+            crate::analysis_experience::AnalysisQualityProfile::Balanced
+        );
+        assert_eq!(config.beam_size, Some(11));
+        assert_eq!(config.batch_size, Some(3));
+        assert_eq!(config.auto_analyze, Some(true));
+    }
+
+    #[test]
+    fn invalid_analysis_experience_values_do_not_discard_legacy_config() {
+        let json = serde_json::json!({
+            "beam_size": 12,
+            "analysis_experience": {
+                "quality_profile": "unknown",
+                "default_target": "unknown"
+            }
+        });
+        let config: AppConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            config.analysis_quality(),
+            crate::analysis_experience::AnalysisQualityProfile::Balanced
+        );
+        assert_eq!(
+            config.analysis_default_target(),
+            crate::analysis_experience::AnalysisDefaultTarget::FullCandidate
+        );
+        assert_eq!(config.beam_size, Some(12));
     }
 
     #[test]

@@ -105,19 +105,22 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.open_settings_select",
     "ui.settings.select_settings_value",
     "ui.settings.toggle_analysis_advanced",
+    "ui.settings.set_analysis_quality",
     "ui.settings.request_setup",
     "ui.settings.install_audio_model",
     "ui.settings.remove_audio_model",
     "ui.settings.cancel_setup",
     "ui.settings.confirm_setup",
     "ui.settings.toggle_theme",
-    "ui.settings.adjust_beam_size",
-    "ui.settings.adjust_batch_size",
     "ui.settings.adjust_separator_segment_size",
     "ui.settings.adjust_separator_overlap",
     "ui.settings.adjust_separator_batch_size",
     "ui.settings.adjust_separator_normalization",
+    "ui.settings.adjust_asr_beam_size",
+    "ui.settings.adjust_asr_batch_size",
     "ui.settings.adjust_ui_font_scale",
+    "ui.settings.toggle_preserve_continuous_pitch",
+    "ui.settings.toggle_analysis_quantization",
     "ui.settings.toggle_auto_analyze",
     "ui.settings.adjust_vocal_threshold",
     "ui.settings.restore_analysis_defaults",
@@ -150,6 +153,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.reveal_last_export",
     "ui.analysis.select_analysis_history",
     "ui.analysis.open_song_analysis",
+    "ui.analysis.open_song_model_selection",
     "ui.analysis.open_processing_studio",
     "ui.analysis.select_workflow_node",
     "ui.analysis.move_workflow_node",
@@ -191,8 +195,13 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.run_node_config_dialog",
     "ui.analysis.open_plan_preview",
     "ui.analysis.close_plan_preview",
-    "ui.analysis.toggle_plan_preview_disabled_node",
-    "ui.analysis.run_plan_preview_draft",
+    "ui.analysis.queue_exact_preview",
+    "ui.analysis.set_plan_preview_target",
+    "ui.analysis.reset_plan_preview_target",
+    "ui.analysis.set_plan_preview_quality",
+    "ui.analysis.reset_plan_preview_quality",
+    "ui.analysis.set_song_analysis_quality",
+    "ui.analysis.set_song_analysis_target",
     "ui.analysis.open_analysis_log_viewer",
     "ui.analysis.close_analysis_log_viewer",
     "ui.analysis.open_analysis_log_file",
@@ -330,7 +339,9 @@ fn snake_variant(debug: &str) -> String {
 }
 
 fn classified_access(command: &str) -> &'static str {
-    if command.contains("confirm_delete")
+    if command.ends_with(".queue_exact_preview") {
+        "mutation"
+    } else if command.contains("confirm_delete")
         || command.contains("confirm_clear")
         || command.contains("confirm_remove")
         || command.contains("remove_audio_model")
@@ -347,7 +358,8 @@ fn classified_access(command: &str) -> &'static str {
         || command.contains("install_audio_model")
     {
         "external"
-    } else if command.contains("preview")
+    } else if command.ends_with(".start_analysis")
+        || command.contains("preview")
         || command.contains("audition")
         || command.contains("play_")
     {
@@ -671,5 +683,26 @@ mod tests {
             );
         }
         assert_ne!(classified_access("ui.pointer.song.primary"), "destructive");
+    }
+
+    #[test]
+    fn opening_run_analysis_is_temporary_and_exact_queueing_is_a_mutation() {
+        assert_eq!(classified_access("ui.analysis.start_analysis"), "temporary");
+        assert_eq!(
+            classified_access("ui.analysis.open_plan_preview"),
+            "temporary"
+        );
+        assert_eq!(
+            classified_access("ui.analysis.queue_exact_preview"),
+            "mutation"
+        );
+        assert_eq!(
+            classified_access("ui.analysis.set_song_analysis_quality"),
+            "mutation"
+        );
+        assert_eq!(
+            classified_access("ui.analysis.set_song_analysis_target"),
+            "mutation"
+        );
     }
 }

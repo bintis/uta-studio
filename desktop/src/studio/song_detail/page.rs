@@ -5,6 +5,197 @@ pub(crate) fn view_song_analysis_action(file_hash: &str) -> UiAction {
     UiAction::from(AnalysisCommand::OpenSongAnalysis(file_hash.to_string()))
 }
 
+fn analysis_profile_summary(
+    global_quality: app_core::AnalysisQualityProfile,
+    global_target: app_core::AnalysisDefaultTarget,
+    song: Option<&app_core::AnalysisExperienceOverride>,
+) -> String {
+    let (quality, quality_source) = match song.and_then(|profile| profile.quality_profile) {
+        Some(quality) => (quality, "SONG"),
+        None => (global_quality, "GLOBAL"),
+    };
+    let quality = match quality {
+        app_core::AnalysisQualityProfile::Fast => "Fast",
+        app_core::AnalysisQualityProfile::Balanced => "Balanced",
+        app_core::AnalysisQualityProfile::Maximum => "Maximum",
+    };
+    let (target, target_source) = match song.and_then(|profile| profile.default_target) {
+        Some(target) => (target, "SONG"),
+        None => (global_target, "GLOBAL"),
+    };
+    let target = match target {
+        app_core::AnalysisDefaultTarget::FullCandidate => "Candidate chart",
+        app_core::AnalysisDefaultTarget::Transcript => "Transcript",
+        app_core::AnalysisDefaultTarget::Alignment => "Alignment",
+        app_core::AnalysisDefaultTarget::PitchEvidence => "PitchEvidence",
+        app_core::AnalysisDefaultTarget::Instrumental => "Instrumental",
+    };
+    format!(
+        "Quality: {quality} · Source: {quality_source}. Target: {target} · Source: {target_source}. This changes future analysis for this song; existing chart data changes only after re-analysis."
+    )
+}
+
+fn spawn_song_quality_choices(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    file_hash: &str,
+    selected: Option<app_core::AnalysisQualityProfile>,
+) {
+    spawn_wrapped_text(
+        parent,
+        font.clone(),
+        "This changes future analysis for this song. Existing chart data changes only after re-analysis.",
+        8.0,
+        theme.muted_foreground,
+    );
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_wrap: FlexWrap::Wrap,
+            row_gap: px(6),
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|row| {
+            for (quality, label) in [
+                (None, "Inherit global"),
+                (Some(app_core::AnalysisQualityProfile::Fast), "Fast"),
+                (Some(app_core::AnalysisQualityProfile::Balanced), "Balanced"),
+                (Some(app_core::AnalysisQualityProfile::Maximum), "Maximum"),
+            ] {
+                let active = quality == selected;
+                row.spawn((
+                    Button,
+                    UiAction::from(AnalysisCommand::SetSongAnalysisQuality {
+                        file_hash: file_hash.to_string(),
+                        quality,
+                    }),
+                    Node {
+                        min_height: px(32),
+                        padding: UiRect::axes(px(10), px(6)),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(6)),
+                        ..default()
+                    },
+                    BackgroundColor(if active {
+                        theme.primary.with_alpha(0.14)
+                    } else {
+                        theme.background.with_alpha(0.32)
+                    }),
+                    BorderColor::all(if active {
+                        theme.primary.with_alpha(0.58)
+                    } else {
+                        theme.border.with_alpha(0.48)
+                    }),
+                    TabIndex(0),
+                ))
+                .with_children(|button| {
+                    spawn_text(
+                        button,
+                        font.clone(),
+                        label,
+                        8.0,
+                        if active {
+                            theme.primary
+                        } else {
+                            theme.foreground
+                        },
+                    );
+                });
+            }
+        });
+}
+
+fn spawn_song_target_choices(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    file_hash: &str,
+    selected: Option<app_core::AnalysisDefaultTarget>,
+) {
+    spawn_wrapped_text(
+        parent,
+        font.clone(),
+        "Requested result for future analysis of this song. The exact run preview remains authoritative.",
+        8.0,
+        theme.muted_foreground,
+    );
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_wrap: FlexWrap::Wrap,
+            row_gap: px(6),
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|row| {
+            for (target, label) in [
+                (None, "Inherit global target"),
+                (
+                    Some(app_core::AnalysisDefaultTarget::FullCandidate),
+                    "Candidate",
+                ),
+                (
+                    Some(app_core::AnalysisDefaultTarget::Transcript),
+                    "Transcript",
+                ),
+                (
+                    Some(app_core::AnalysisDefaultTarget::Alignment),
+                    "Alignment",
+                ),
+                (
+                    Some(app_core::AnalysisDefaultTarget::PitchEvidence),
+                    "Pitch",
+                ),
+                (
+                    Some(app_core::AnalysisDefaultTarget::Instrumental),
+                    "Instrumental",
+                ),
+            ] {
+                let active = target == selected;
+                row.spawn((
+                    Button,
+                    UiAction::from(AnalysisCommand::SetSongAnalysisTarget {
+                        file_hash: file_hash.to_string(),
+                        target,
+                    }),
+                    Node {
+                        min_height: px(32),
+                        padding: UiRect::axes(px(10), px(6)),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(6)),
+                        ..default()
+                    },
+                    BackgroundColor(if active {
+                        theme.primary.with_alpha(0.14)
+                    } else {
+                        theme.background.with_alpha(0.32)
+                    }),
+                    BorderColor::all(if active {
+                        theme.primary.with_alpha(0.58)
+                    } else {
+                        theme.border.with_alpha(0.48)
+                    }),
+                    TabIndex(0),
+                ))
+                .with_children(|button| {
+                    spawn_text(
+                        button,
+                        font.clone(),
+                        label,
+                        8.0,
+                        if active {
+                            theme.primary
+                        } else {
+                            theme.foreground
+                        },
+                    );
+                });
+            }
+        });
+}
+
 pub(crate) fn spawn_song_detail(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -279,13 +470,44 @@ pub(crate) fn spawn_song_detail(
                                 "ANALYSIS",
                                 "Analysis",
                             );
+                            let song_profile =
+                                app_core::get_song_analysis_profile(&song.file_hash);
                             spawn_setting_row(
                                 analysis,
                                 font.clone(),
                                 theme,
-                                "Analysis defaults",
-                                "Tune separator, transcription, alignment, pitch, batching, and sensitivity. These settings only affect the next analysis; existing chart data will not change immediately.",
-                                Some(("Open analysis settings", UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Analysis)))),
+                                "Analysis profile",
+                                analysis_profile_summary(
+                                    session.config.analysis_quality(),
+                                    session.config.analysis_default_target(),
+                                    song_profile
+                                        .as_ref()
+                                        .map(|profile| &profile.analysis_experience),
+                                ),
+                                Some((
+                                    "Open analysis defaults",
+                                    UiAction::from(SettingsCommand::SettingsTab(
+                                        SettingsTab::Analysis,
+                                    )),
+                                )),
+                            );
+                            spawn_song_quality_choices(
+                                analysis,
+                                font.clone(),
+                                theme,
+                                &song.file_hash,
+                                song_profile.as_ref().and_then(|profile| {
+                                    profile.analysis_experience.quality_profile
+                                }),
+                            );
+                            spawn_song_target_choices(
+                                analysis,
+                                font.clone(),
+                                theme,
+                                &song.file_hash,
+                                song_profile.as_ref().and_then(|profile| {
+                                    profile.analysis_experience.default_target
+                                }),
                             );
                             if analyzed_and_native {
                                 spawn_setting_row(
@@ -1165,4 +1387,36 @@ pub(crate) fn spawn_lyrics_editor(
                         });
                 });
         });
+}
+
+#[cfg(test)]
+mod analysis_profile_summary_tests {
+    use super::analysis_profile_summary;
+
+    #[test]
+    fn song_detail_labels_global_and_song_sources_explicitly() {
+        let global = analysis_profile_summary(
+            app_core::AnalysisQualityProfile::Balanced,
+            app_core::AnalysisDefaultTarget::FullCandidate,
+            None,
+        );
+        assert!(global.contains("Balanced"));
+        assert!(global.contains("Candidate chart"));
+        assert_eq!(global.matches("Source: GLOBAL").count(), 2);
+        assert!(global.contains("only after re-analysis"));
+
+        let override_settings = app_core::AnalysisExperienceOverride {
+            quality_profile: Some(app_core::AnalysisQualityProfile::Maximum),
+            default_target: Some(app_core::AnalysisDefaultTarget::PitchEvidence),
+            ..app_core::AnalysisExperienceOverride::default()
+        };
+        let song = analysis_profile_summary(
+            app_core::AnalysisQualityProfile::Balanced,
+            app_core::AnalysisDefaultTarget::FullCandidate,
+            Some(&override_settings),
+        );
+        assert!(song.contains("Maximum"));
+        assert!(song.contains("PitchEvidence"));
+        assert_eq!(song.matches("Source: SONG").count(), 2);
+    }
 }

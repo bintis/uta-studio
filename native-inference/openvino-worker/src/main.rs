@@ -1,12 +1,23 @@
+mod advanced_notes;
 mod audio;
 mod basic_pitch;
+mod bs_roformer;
 mod fcpe;
 mod firered;
+mod game;
 mod kaldi_fbank;
 mod mel;
+mod melband_roformer_denoise;
+mod melband_roformer_harmony;
+mod melband_roformer_harmony_split;
+mod melband_roformer_inst_v2;
 mod protocol;
 mod rmvpe;
+mod rosvot_host;
 mod runtime;
+mod singing_frontend;
+mod stars_g2p;
+mod stars_viterbi;
 
 use std::io::BufRead;
 use std::path::Path;
@@ -31,12 +42,73 @@ fn run_task(
         fraction: 0.01,
         message: "Decoding source audio to the model sample rate",
     })?;
-    let sample_rate = if model_id == "basic_pitch" {
-        22_050
+    if matches!(model_id, "stars" | "rosvot") {
+        let audio_24k = audio::decode_mono(source, output_dir, 24_000)?;
+        let audio_16k = audio::decode_mono(source, output_dir, 16_000)?;
+        let output = advanced_notes::infer(
+            model_id,
+            &audio_24k,
+            &audio_16k,
+            output_dir,
+            config,
+            |fraction, message| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                });
+            },
+        )?;
+        emit(WorkerFrame::Output {
+            task_id,
+            artifact: "advanced_note_evidence",
+            path: &output,
+            media_type: "application/vnd.uta.advanced-note-evidence+json;version=1",
+        })?;
+        return emit(WorkerFrame::Done {
+            task_id,
+            status: "ok",
+        });
+    }
+    let audio = if matches!(
+        model_id,
+        "bs_roformer_vocals_ep317"
+            | "melband_roformer_denoise_aufr33"
+            | "melband_roformer_dereverb_anvuew"
+            | "melband_roformer_harmony"
+            | "melband_roformer_inst_v2"
+    ) {
+        audio::decode_stereo(source, output_dir)?
     } else {
-        16_000
+        let sample_rate = match model_id {
+            "basic_pitch" => 22_050,
+            "game" => 44_100,
+            _ => 16_000,
+        };
+        audio::decode_mono(source, output_dir, sample_rate)?
     };
-    let audio = audio::decode_mono(source, output_dir, sample_rate)?;
+    if model_id == "melband_roformer_harmony" {
+        let (lead, residual) =
+            melband_roformer_harmony::infer(&audio, output_dir, config, |fraction, message| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                });
+            })?;
+        for (artifact, path) in [("lead_vocal", lead), ("vocal_residual", residual)] {
+            emit(WorkerFrame::Output {
+                task_id,
+                artifact,
+                path: &path,
+                media_type: "audio/flac",
+            })?;
+        }
+        return emit(WorkerFrame::Done {
+            task_id,
+            status: "ok",
+        });
+    }
     let output = match model_id {
         "rmvpe" => rmvpe::infer(&audio, output_dir, config, |fraction, message| {
             let _ = emit(WorkerFrame::Progress {
@@ -45,9 +117,61 @@ fn run_task(
                 message,
             });
         })?,
-        "fcpe" => fcpe::infer(&audio, output_dir)?,
-        "basic_pitch" => basic_pitch::infer(&audio, output_dir)?,
-        "firered_asr2_aed" => firered::infer(&audio, output_dir)?,
+        "fcpe" => fcpe::infer(&audio, output_dir, config, |fraction, message| {
+            let _ = emit(WorkerFrame::Progress {
+                task_id,
+                fraction: 0.02 + fraction * 0.97,
+                message,
+            });
+        })?,
+        "basic_pitch" => basic_pitch::infer(&audio, output_dir, config, |fraction, message| {
+            let _ = emit(WorkerFrame::Progress {
+                task_id,
+                fraction: 0.02 + fraction * 0.97,
+                message,
+            });
+        })?,
+        "firered_asr2_aed" => firered::infer(&audio, output_dir, config)?,
+        "bs_roformer_vocals_ep317" => {
+            bs_roformer::infer(&audio, output_dir, config, |fraction, message| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                });
+            })?
+        }
+        "game" => game::infer(&audio, output_dir, config, |fraction, message| {
+            let _ = emit(WorkerFrame::Progress {
+                task_id,
+                fraction: 0.02 + fraction * 0.97,
+                message,
+            });
+        })?,
+        "melband_roformer_denoise_aufr33" | "melband_roformer_dereverb_anvuew" => {
+            melband_roformer_denoise::infer(
+                model_id,
+                &audio,
+                output_dir,
+                config,
+                |fraction, message| {
+                    let _ = emit(WorkerFrame::Progress {
+                        task_id,
+                        fraction: 0.02 + fraction * 0.97,
+                        message,
+                    });
+                },
+            )?
+        }
+        "melband_roformer_inst_v2" => {
+            melband_roformer_inst_v2::infer(&audio, output_dir, config, |fraction, message| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                });
+            })?
+        }
         _ => {
             return Err(format!(
                 "model {model_id} is not implemented by this OpenVINO worker"
@@ -57,12 +181,28 @@ fn run_task(
     emit(WorkerFrame::Output {
         task_id,
         artifact: match model_id {
-            "basic_pitch" => "onset_activation_evidence",
+            "basic_pitch" => "basic_pitch_evidence",
             "firered_asr2_aed" => "transcript_evidence",
+            "game" => "note_candidate_evidence",
+            "bs_roformer_vocals_ep317" => "guide_vocals",
+            "melband_roformer_denoise_aufr33" => "clean_lead_vocal",
+            "melband_roformer_dereverb_anvuew" => "dereverbed_vocal",
+            "melband_roformer_inst_v2" => "instrumental",
             _ => "pitch_evidence",
         },
         path: &output,
-        media_type: "application/json",
+        media_type: if matches!(
+            model_id,
+            "bs_roformer_vocals_ep317"
+                | "melband_roformer_denoise_aufr33"
+                | "melband_roformer_dereverb_anvuew"
+                | "melband_roformer_harmony"
+                | "melband_roformer_inst_v2"
+        ) {
+            "audio/flac"
+        } else {
+            "application/json"
+        },
     })?;
     emit(WorkerFrame::Done {
         task_id,

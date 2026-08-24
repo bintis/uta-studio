@@ -29,11 +29,8 @@ pub(crate) fn spawn_select_setting_row(
                 position_type: PositionType::Relative,
                 width: percent(100),
                 min_height: px(76),
-                align_items: if open {
-                    AlignItems::FlexStart
-                } else {
-                    AlignItems::Center
-                },
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -47,6 +44,7 @@ pub(crate) fn spawn_select_setting_row(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -63,6 +61,7 @@ pub(crate) fn spawn_select_setting_row(
                 position_type: PositionType::Relative,
                 width: px(SETTINGS_CONTROL_WIDTH),
                 height: if open { Val::Auto } else { px(36) },
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -200,7 +199,8 @@ pub(crate) fn spawn_setting_row(
             Node {
                 width: percent(100),
                 min_height: px(76),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -213,6 +213,7 @@ pub(crate) fn spawn_setting_row(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -228,6 +229,7 @@ pub(crate) fn spawn_setting_row(
             if let Some((label, action)) = action {
                 row.spawn(Node {
                     width: px(SETTINGS_CONTROL_WIDTH),
+                    margin: UiRect::top(px(2)),
                     flex_shrink: 0.0,
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
@@ -254,6 +256,7 @@ pub(crate) fn spawn_setting_row_with_actions(
             Node {
                 width: percent(100),
                 min_height: px(92),
+                flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
@@ -267,6 +270,7 @@ pub(crate) fn spawn_setting_row_with_actions(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -292,6 +296,7 @@ pub(crate) fn spawn_setting_actions(
     parent
         .spawn(Node {
             width: px(SETTINGS_CONTROL_WIDTH),
+            margin: UiRect::top(px(2)),
             flex_shrink: 0.0,
             justify_content: JustifyContent::FlexEnd,
             flex_wrap: FlexWrap::Wrap,
@@ -317,7 +322,8 @@ pub(crate) fn spawn_source_file_row(
             Node {
                 width: percent(100),
                 min_height: px(82),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -345,6 +351,7 @@ pub(crate) fn spawn_source_file_row(
             });
             row.spawn(Node {
                 width: px(112),
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
@@ -384,20 +391,19 @@ pub(crate) fn sync_numeric_settings(
             continue;
         };
         let (minimum, maximum) = match setting {
-            NumericSetting::BeamSize | NumericSetting::BatchSize => (1, 16),
             NumericSetting::VocalThreshold => (0, 60),
             NumericSetting::SeparatorSegmentSize => (64, 1024),
             NumericSetting::SeparatorOverlap => (2, 32),
             NumericSetting::SeparatorBatchSize => (1, 8),
             NumericSetting::SeparatorNormalization => (1, 100),
+            NumericSetting::AsrBeamSize => (1, 64),
+            NumericSetting::AsrBatchSize => (1, 32),
         };
         let clamped = parsed.clamp(minimum, maximum);
         if clamped != parsed {
             input.editor_mut().set_text(&clamped.to_string());
         }
         let current = match setting {
-            NumericSetting::BeamSize => shell.config.beam_size(),
-            NumericSetting::BatchSize => shell.config.batch_size(),
             NumericSetting::VocalThreshold => {
                 (shell.config.vocal_detection_threshold_pct() * 100.0).round() as u32
             }
@@ -405,13 +411,13 @@ pub(crate) fn sync_numeric_settings(
             NumericSetting::SeparatorOverlap => shell.config.separator_overlap(),
             NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size(),
             NumericSetting::SeparatorNormalization => shell.config.separator_normalization_pct(),
+            NumericSetting::AsrBeamSize => shell.config.beam_size(),
+            NumericSetting::AsrBatchSize => shell.config.batch_size(),
         };
         if clamped == current {
             continue;
         }
         match setting {
-            NumericSetting::BeamSize => shell.config.beam_size = Some(clamped),
-            NumericSetting::BatchSize => shell.config.batch_size = Some(clamped),
             NumericSetting::VocalThreshold => {
                 shell.config.vocal_detection_threshold_pct = Some(f64::from(clamped) / 100.0)
             }
@@ -423,6 +429,8 @@ pub(crate) fn sync_numeric_settings(
             NumericSetting::SeparatorNormalization => {
                 shell.config.separator_normalization_pct = Some(clamped)
             }
+            NumericSetting::AsrBeamSize => shell.config.beam_size = Some(clamped),
+            NumericSetting::AsrBatchSize => shell.config.batch_size = Some(clamped),
         }
         if let Some(error) = save_config_error(&shell.config) {
             shell.notice = Some(error);

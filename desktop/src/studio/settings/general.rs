@@ -45,6 +45,14 @@ pub(crate) fn spawn_settings(
                         10.0,
                         theme.muted_foreground,
                     );
+                    spawn_text_button(
+                        nav,
+                        font.clone(),
+                        theme,
+                        "← Back to library",
+                        10.0,
+                        UiAction::from(AppCommand::Home),
+                    );
                     nav.spawn(Node {
                         height: px(18),
                         ..default()
@@ -101,7 +109,10 @@ pub(crate) fn spawn_settings(
                         min_height: px(0),
                         flex_grow: 1.0,
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::axes(px(40), px(34)),
+                        padding: UiRect::axes(
+                            px(SETTINGS_CONTENT_HORIZONTAL_PADDING),
+                            px(SETTINGS_CONTENT_VERTICAL_PADDING),
+                        ),
                         overflow: Overflow::scroll_y(),
                         ..default()
                     },
@@ -113,12 +124,17 @@ pub(crate) fn spawn_settings(
                     // Keep one intrinsic-height page so setting rows retain their
                     // intended height and the content scrolls instead of stacking.
                     content
-                        .spawn(Node {
-                            width: percent(100),
-                            flex_shrink: 0.0,
-                            flex_direction: FlexDirection::Column,
-                            ..default()
-                        })
+                        .spawn((
+                            SettingsPageContent,
+                            Node {
+                                width: percent(100),
+                                max_width: px(1120),
+                                align_self: AlignSelf::Center,
+                                flex_shrink: 0.0,
+                                flex_direction: FlexDirection::Column,
+                                ..default()
+                            },
+                        ))
                         .with_children(|page| {
                             match session.settings_tab {
                                 SettingsTab::General => spawn_general_settings(
@@ -242,6 +258,7 @@ pub(crate) fn spawn_settings_header(
             Node {
                 width: percent(100),
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 padding: UiRect::bottom(px(20)),
                 margin: UiRect::bottom(px(6)),
                 border: UiRect::bottom(px(1)),

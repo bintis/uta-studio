@@ -1310,8 +1310,7 @@ pub(crate) fn preview_analysis_request_for(
         crate::audio_processing::AudioProcessingPlanSnapshot::from_settings(&audio_settings);
     let mut all_audio_models_ready = true;
     for step in &audio_processing.steps {
-        let ready = crate::audio_processing::get_audio_model_status(&step.model_id)
-            .is_ok_and(|status| status.state == "installed");
+        let ready = crate::audio_processing::audio_model_is_usable(&step.model_id).unwrap_or(false);
         all_audio_models_ready &= ready;
         model_availability.insert(
             crate::analysis_graph::analysis_node_for_audio_step(&step.step_id),
@@ -1468,6 +1467,37 @@ pub(crate) fn is_usdx_song(file_hash: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn enqueue_engine_intent(
+    intent: &crate::library_db::EngineQueueIntent,
+) -> Result<(), String> {
+    let mut state = ANALYZER.lock().unwrap();
+    if state.active_hash.as_deref() == Some(&intent.file_hash)
+        || state.queue.iter().any(|hash| hash == &intent.file_hash)
+    {
+        return Err("this song already has a queued or running analysis".to_string());
+    }
+    let persisted = crate::library_db::analysis_queue_set_engine_intent(intent)
+        .map_err(|error| error.to_string())?;
+    if !persisted {
+        return Err("this song already has a queued or running analysis".to_string());
+    }
+    state.queue.push_back(intent.file_hash.clone());
+    ensure_worker_running(&mut state);
+    Ok(())
+}
+
+pub(crate) fn resume_engine_intent(file_hash: &str) {
+    let mut state = ANALYZER.lock().unwrap();
+    if state.active_hash.as_deref() == Some(file_hash)
+        || state.queue.iter().any(|hash| hash == file_hash)
+    {
+        return;
+    }
+    state.queue.push_back(file_hash.to_string());
+    update_queue_status(file_hash, QueuedStatus::Queued);
+    ensure_worker_running(&mut state);
+}
+
 pub fn enqueue_one(file_hash: &str) {
     if is_usdx_song(file_hash) {
         return;
@@ -1543,6 +1573,9 @@ pub fn stop_analysis_run(file_hash: &str) -> Result<(), String> {
         } else {
             Err(format!("{file_hash} is not currently queued or running"))
         };
+    }
+    if let Some(result) = super::engine_run::cancel_active_engine(file_hash) {
+        return result;
     }
     STOP_REQUESTED.lock().unwrap().insert(file_hash.to_string());
     let result = ACTIVE_SERVER_CHILD

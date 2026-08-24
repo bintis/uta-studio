@@ -541,29 +541,26 @@ pub(crate) fn spawn_library(
                                 theme,
                                 session,
                             );
-                            if app_core::analysis_runtime_status().ready {
-                                spawn_toolbar_button(
-                                    tools,
-                                    font.clone(),
-                                    icons.clone(),
-                                    theme,
-                                    UiIcon::Sparkles,
-                                    "Analyze all",
-                                    UiAction::from(LibraryCommand::AnalyzeAll),
-                                    false,
-                                );
-                            } else {
-                                spawn_toolbar_button(
-                                    tools,
-                                    font.clone(),
-                                    icons.clone(),
-                                    theme,
-                                    UiIcon::Repair,
-                                    "Set up analysis",
-                                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-                                    false,
-                                );
-                            }
+                            spawn_toolbar_button(
+                                tools,
+                                font.clone(),
+                                icons.clone(),
+                                theme,
+                                UiIcon::Sparkles,
+                                "Analyze all",
+                                UiAction::from(LibraryCommand::AnalyzeAll),
+                                false,
+                            );
+                            spawn_toolbar_button(
+                                tools,
+                                font.clone(),
+                                icons.clone(),
+                                theme,
+                                UiIcon::Repair,
+                                "Models",
+                                UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
+                                false,
+                            );
                             spawn_toolbar_button(
                                 tools,
                                 font.clone(),

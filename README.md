@@ -11,7 +11,7 @@ editable song charts from local audio and video files.
 - Transcribe and align word-level lyrics.
 - Analyse pitch, then manually correct lyric timing and MIDI note bars in the
   built-in timeline editor.
-- Export a self-contained `.utz` package for the independent `uta!` game or a
+- Export a self-contained `.utz` package for compatible karaoke runtimes or a
   UTF-8 UltraStar 1.1 `.txt` bundle with sibling media.
 
 Uta Studio does not connect to Plex, Jellyfin, Navidrome, or another media
@@ -52,11 +52,27 @@ an automatic runtime or model download.
 ## Build
 
 ```sh
-nix develop path:.
+bash dev.sh
 cargo xtask docs check
 cargo test --workspace
 cargo check --workspace
 ```
+
+`dev.sh` uses the tiny standalone `nix/dev-shell` flake with its own pinned
+lock file and never uses the repository root as the development flake source.
+Git commit/dirty state and the large `target/` directory therefore do not create
+a new full working-tree copy in the Nix store on every shell entry. Missing
+pinned native packages may be fetched once from the normal Nix binary cache;
+after realization the same store paths are reused across source changes.
+
+Strict offline mode is optional after the shell is already realized:
+
+```sh
+UTA_STUDIO_NIX_OFFLINE=1 bash dev.sh
+```
+
+Do not make `--offline` the normal bootstrap path: Nix disables substituters in
+that mode and may try to build missing dependencies from source instead.
 
 Run the desktop app with:
 
@@ -77,6 +93,24 @@ source Markdown files are not required.
 
 The Linux desktop uses Wayland directly. Uta Studio does not enable an X11
 backend and does not fall back to XWayland.
+
+## Runtime Manager CLI
+
+`uta-runtime` is the scriptable frontend to the same Runtime Manager library
+used by Studio and the Analysis Engine. Read commands are offline and do not
+create or modify the runtime store:
+
+```sh
+uta-runtime list --output json
+uta-runtime status --check
+uta-runtime plan model:qwen3_asr_1_7b --policy benchmark
+uta-runtime verify --output json
+```
+
+Mutations require an explicit confirmation (`--yes` for non-interactive use).
+Artifacts are hash-verified and published as immutable generations before the
+current pointer changes. The CLI never searches for an arbitrary upstream
+“latest” model.
 
 ## Editing and export
 

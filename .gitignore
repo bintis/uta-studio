@@ -42,3 +42,8 @@ RELEASING.md
 /.uta-studio-artifact-workbench-backup/
 /.uta-studio-import-backup/
 /uta-studio-v0.4.0-i18n-user-guide-20260817/
+
+# Local model archives and machine-specific integration notes
+/checkpoints.zip
+/uta-studio-*-fixes-*.zip
+/CLI_TESTING_GUIDE.md

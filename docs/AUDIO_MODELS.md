@@ -27,12 +27,14 @@ and every consumed graph/weights hash, then emits 10 ms pitch evidence without
 rounding frames directly to MIDI notes.
 
 The generic OpenVINO Worker/runtime recipe identity is
-`bd349389e6d0d0b742ae103892c1e5774599dd8733460aec80cb74bcf20ddab6`.
+`bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093`.
 RMVPE's independently pinned bucket-conversion recipe remains
 `ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876`.
 It pins source-built OpenVINO 2026.3.0 commit
-`8a17657b995fd3b4a52f8484acfcf2bb61214623`; CPU, NPU, Python bindings,
-and unused frontends are disabled. OpenVINO 2026.3 requires static IR shapes
+`8a17657b995fd3b4a52f8484acfcf2bb61214623`; CPU and GPU plugins are enabled,
+while NPU, Python bindings, automatic device plugins, and unused frontends are
+disabled. CPU execution is allowed only for model-manifest-pinned islands and is
+never an automatic fallback. OpenVINO 2026.3 requires static IR shapes
 plus `GPU_ENABLE_LOOP_UNROLLING=NO` for RMVPE's GRU graph. The installer creates
 32–1024-frame IR buckets sharing one immutable weights file; inference uses
 128-frame overlap so song tails do not receive long artificial padding.

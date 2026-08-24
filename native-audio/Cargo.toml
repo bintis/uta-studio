@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-audio"
-version = "0.5.1"
+version = "0.6.0"
 description = "Native editor audition runtime for Uta Studio."
 authors = ["bintis"]
 license = "GPL-3.0"

@@ -116,6 +116,7 @@ pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig
         SettingsSelectKind::WhisperModel => config.whisper_model(),
         SettingsSelectKind::AlignBackend => config.align_backend(),
         SettingsSelectKind::PitchModel => config.pitch_model(),
+        SettingsSelectKind::AnalysisTarget => config.analysis_default_target().as_str(),
         SettingsSelectKind::AudioVocalModel => config
             .audio_processing
             .as_ref()
@@ -176,6 +177,13 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
         SettingsSelectKind::WhisperModel => "Qwen3-ASR-1.7B",
         SettingsSelectKind::AlignBackend => align_backend_label(value),
         SettingsSelectKind::PitchModel => pitch_model_label(value),
+        SettingsSelectKind::AnalysisTarget => match value {
+            "transcript" => "Transcript",
+            "alignment" => "Alignment",
+            "pitch_evidence" => "Pitch evidence",
+            "instrumental" => "Instrumental",
+            _ => "Full candidate chart",
+        },
         SettingsSelectKind::AudioVocalModel => match value {
             "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317",
             _ => "BS-RoFormer Vocals EP317",
@@ -245,6 +253,13 @@ pub(crate) fn settings_select_options(
         SettingsSelectKind::WhisperModel => &[("qwen3_asr_1_7b", "Qwen3-ASR-1.7B")],
         SettingsSelectKind::AlignBackend => &[("qwen3_forced_aligner", "Qwen3 Forced Aligner")],
         SettingsSelectKind::PitchModel => &[("rmvpe", "RMVPE")],
+        SettingsSelectKind::AnalysisTarget => &[
+            ("full_candidate", "Full candidate chart"),
+            ("transcript", "Transcript"),
+            ("alignment", "Alignment"),
+            ("pitch_evidence", "Pitch evidence"),
+            ("instrumental", "Instrumental"),
+        ],
         SettingsSelectKind::AudioVocalModel => {
             &[("bs_roformer_vocals_ep317", "BS-RoFormer Vocals EP317")]
         }
@@ -320,7 +335,9 @@ pub(crate) fn apply_separator_preset(config: &mut AppConfig, preset: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEREVERB_MODEL_ID, rewrite_cleanup_slot};
+    use super::{
+        DEREVERB_MODEL_ID, SettingsSelectKind, rewrite_cleanup_slot, settings_select_options,
+    };
 
     #[test]
     fn cleanup_slots_preserve_an_off_first_slot() {
@@ -330,5 +347,18 @@ mod tests {
             rewrite_cleanup_slot(&chain, 1, "none"),
             vec!["none", "none"]
         );
+    }
+
+    #[test]
+    fn production_single_provider_kinds_remain_identifiable_as_fixed_rows() {
+        for kind in [
+            SettingsSelectKind::AudioVocalModel,
+            SettingsSelectKind::AudioAccompanimentModel,
+            SettingsSelectKind::WhisperModel,
+            SettingsSelectKind::AlignBackend,
+            SettingsSelectKind::PitchModel,
+        ] {
+            assert_eq!(settings_select_options(kind, false).len(), 1);
+        }
     }
 }

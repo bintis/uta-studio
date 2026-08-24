@@ -85,18 +85,20 @@ pub(crate) enum SettingsCommand {
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
     ToggleAnalysisAdvanced(AnalysisAdvancedSection),
+    SetAnalysisQuality(app_core::AnalysisQualityProfile),
+    TogglePreserveContinuousPitch,
     RequestSetup(Option<app_core::ModelDownloadTarget>),
     InstallAudioModel(String),
     RemoveAudioModel(String),
     CancelSetup,
     ConfirmSetup,
     ToggleTheme,
-    AdjustBeamSize(i8),
-    AdjustBatchSize(i8),
     AdjustSeparatorSegmentSize(i32),
     AdjustSeparatorOverlap(i32),
     AdjustSeparatorBatchSize(i32),
     AdjustSeparatorNormalization(i32),
+    AdjustAsrBeamSize(i8),
+    AdjustAsrBatchSize(i8),
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     AdjustVocalThreshold(i8),
@@ -145,6 +147,7 @@ pub(crate) enum AnalysisCommand {
     RevealLastExport(String, app_core::ExportPackageKind),
     SelectAnalysisHistory(Option<i64>),
     OpenSongAnalysis(String),
+    OpenSongModelSelection(String),
     OpenProcessingStudio(String),
     SelectWorkflowNode(String),
     MoveWorkflowNode(String, bool),
@@ -187,8 +190,19 @@ pub(crate) enum AnalysisCommand {
     RunNodeConfigDialog,
     OpenPlanPreview(String),
     ClosePlanPreview,
-    TogglePlanPreviewDisabledNode(String),
-    RunPlanPreviewDraft,
+    QueueExactPreview,
+    SetPlanPreviewTarget(app_core::AnalysisDefaultTarget),
+    ResetPlanPreviewTarget,
+    SetPlanPreviewQuality(app_core::AnalysisQualityProfile),
+    ResetPlanPreviewQuality,
+    SetSongAnalysisQuality {
+        file_hash: String,
+        quality: Option<app_core::AnalysisQualityProfile>,
+    },
+    SetSongAnalysisTarget {
+        file_hash: String,
+        target: Option<app_core::AnalysisDefaultTarget>,
+    },
     OpenAnalysisLogViewer(String, String),
     CloseAnalysisLogViewer,
     OpenAnalysisLogFile,
@@ -305,10 +319,19 @@ impl UiCommand {
             // from submitting that mixed-generation tree to Wayland.
             Self::Analysis(
                 AnalysisCommand::OpenAnalysisInspect(_, _)
-                | AnalysisCommand::OpenProcessingStudio(_),
+                | AnalysisCommand::OpenProcessingStudio(_)
+                | AnalysisCommand::OpenSongModelSelection(_),
             ) => UiDirtyRegion::Chrome,
             Self::Analysis(
-                AnalysisCommand::DismissAnalysisNodeContext
+                AnalysisCommand::StartAnalysis(_)
+                | AnalysisCommand::OpenPlanPreview(_)
+                | AnalysisCommand::ClosePlanPreview
+                | AnalysisCommand::QueueExactPreview
+                | AnalysisCommand::SetPlanPreviewTarget(_)
+                | AnalysisCommand::ResetPlanPreviewTarget
+                | AnalysisCommand::SetPlanPreviewQuality(_)
+                | AnalysisCommand::ResetPlanPreviewQuality
+                | AnalysisCommand::DismissAnalysisNodeContext
                 | AnalysisCommand::ShowArtifactLineage(_)
                 | AnalysisCommand::SetArtifactLineageScope(_)
                 | AnalysisCommand::SelectArtifactLineageRevision(_)
@@ -440,6 +463,21 @@ mod tests {
             UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext).dirty_region(),
             UiDirtyRegion::Dialog
         );
+        for command in [
+            AnalysisCommand::StartAnalysis("song".to_string()),
+            AnalysisCommand::OpenPlanPreview("song".to_string()),
+            AnalysisCommand::ClosePlanPreview,
+            AnalysisCommand::QueueExactPreview,
+            AnalysisCommand::SetPlanPreviewTarget(app_core::AnalysisDefaultTarget::Transcript),
+            AnalysisCommand::ResetPlanPreviewTarget,
+            AnalysisCommand::SetPlanPreviewQuality(app_core::AnalysisQualityProfile::Maximum),
+            AnalysisCommand::ResetPlanPreviewQuality,
+        ] {
+            assert_eq!(
+                UiCommand::Analysis(command).dirty_region(),
+                UiDirtyRegion::Dialog
+            );
+        }
         assert_eq!(
             UiCommand::Editor(EditorCommand::CloseSongSettings).dirty_region(),
             UiDirtyRegion::Dialog

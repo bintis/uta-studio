@@ -1,6 +1,13 @@
 use super::*;
 use crate::studio::*;
 
+#[cfg(test)]
+pub(crate) const ANALYSIS_SETTINGS_SECTION_ORDER: [&str; 3] = [
+    "QUALITY & OUTPUT BEHAVIOR",
+    "MODEL RUNTIME PARAMETERS",
+    "AUTOMATION",
+];
+
 pub(crate) fn spawn_analysis_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -12,224 +19,87 @@ pub(crate) fn spawn_analysis_settings(
         parent,
         font.clone(),
         theme,
-        "GENERATION",
-        "Analysis",
-        "Configure result-shaping defaults for the next Workflow run. Existing chart data changes only after explicit re-analysis.",
+        "ANALYSIS",
+        "Analysis defaults",
+        "Set output intent and run behavior here. Provider choice belongs to the Analysis workspace model selector; model-owned tuning belongs to Models & runtime.",
     );
-    let status = app_core::analysis_runtime_status();
-    spawn_analysis_pipeline(parent, font.clone(), theme, session, &status);
 
     spawn_settings_stage_header(
         parent,
         font.clone(),
         theme,
-        "01 · SEPARATION & RESTORATION",
-        "Vocal, BGM, lead, and harmony",
-        "Processing Studio controls topology. These defaults select models and processing strength for new workflows.",
-        vocal_separation_label(session.config),
-        Some(analysis_stage_status(
-            &status,
-            Some(app_core::ModelDownloadTarget::RoFormer),
-        )),
-        Some((
-            "Manage models…".to_string(),
-            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-        )),
+        "01 · QUALITY & OUTPUT BEHAVIOR",
+        "What a normal analysis run should produce",
+        "The Engine resolves the selected workflow under the permissive local testing policy. Missing resources are reported for the exact request instead of disabling the whole interface.",
+        format!(
+            "{} · testing",
+            quality_label(session.config.analysis_quality())
+        ),
+        None,
+        None,
+    );
+    spawn_quality_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        session.config.analysis_quality(),
+    );
+    spawn_switch_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Preserve continuous pitch",
+        "Keep continuous F0 as independent PitchEvidence instead of replacing it with the final target-note track.",
+        session.config.preserve_continuous_pitch(),
+        UiAction::from(SettingsCommand::TogglePreserveContinuousPitch),
     );
     spawn_select_setting_row(
         parent,
         font.clone(),
-        icons.clone(),
+        icons,
         theme,
-        "Primary vocal separator",
-        "Select a validated catalog model. Dragging transformations in Processing Studio determines their actual order.",
-        SettingsSelectKind::AudioVocalModel,
+        "Default analysis target",
+        "Choose the normal Analyze action's product output. This changes requested artifacts, not model selection.",
+        SettingsSelectKind::AnalysisTarget,
         session,
     );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        "BGM separator",
-        "The BGM lane is independent from the vocal lane.",
-        SettingsSelectKind::AudioAccompanimentModel,
-        session,
-    );
-    for (label, description, kind) in [
-        (
-            "Vocal processing 1",
-            "First default restoration node; choose Off, Denoise, or Dereverb.",
-            SettingsSelectKind::AudioVocalPostprocess1,
-        ),
-        (
-            "Vocal processing 2",
-            "Second default restoration node. Duplicate capabilities remain valid workflow instances.",
-            SettingsSelectKind::AudioVocalPostprocess2,
-        ),
-        (
-            "BGM processing 1",
-            "First independent BGM restoration node.",
-            SettingsSelectKind::AudioBgmPostprocess1,
-        ),
-        (
-            "BGM processing 2",
-            "Second independent BGM restoration node.",
-            SettingsSelectKind::AudioBgmPostprocess2,
-        ),
-    ] {
-        spawn_select_setting_row(
-            parent,
-            font.clone(),
-            icons.clone(),
-            theme,
-            label,
-            description,
-            kind,
-            session,
-        );
-    }
-    let separation_advanced =
-        session.open_analysis_advanced == Some(AnalysisAdvancedSection::Separation);
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Advanced separation tuning",
-        "Quality, memory, and overlap values belong to Analysis; runtime installation and backend validation do not.",
-        Some((
-            if separation_advanced {
-                "Hide advanced"
-            } else {
-                "Show advanced"
-            },
-            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
-                AnalysisAdvancedSection::Separation,
-            )),
-        )),
-    );
-    if separation_advanced {
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Segment size",
-            "Model-specific processing window. Range: 64–1024.",
-            session.config.separator_segment_size(),
-            NumericSetting::SeparatorSegmentSize,
-            UiAction::from(SettingsCommand::AdjustSeparatorSegmentSize(-32)),
-            UiAction::from(SettingsCommand::AdjustSeparatorSegmentSize(32)),
-        );
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Overlap",
-            "More overlap can reduce seams while increasing processing cost. Range: 2–32.",
-            session.config.separator_overlap(),
-            NumericSetting::SeparatorOverlap,
-            UiAction::from(SettingsCommand::AdjustSeparatorOverlap(-1)),
-            UiAction::from(SettingsCommand::AdjustSeparatorOverlap(1)),
-        );
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Batch size",
-            "Conservative value is recommended on Intel Arc. Range: 1–8.",
-            session.config.separator_batch_size(),
-            NumericSetting::SeparatorBatchSize,
-            UiAction::from(SettingsCommand::AdjustSeparatorBatchSize(-1)),
-            UiAction::from(SettingsCommand::AdjustSeparatorBatchSize(1)),
-        );
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Output normalization",
-            "Peak normalization before lossless cache commit. Range: 1–100%.",
-            session.config.separator_normalization_pct(),
-            NumericSetting::SeparatorNormalization,
-            UiAction::from(SettingsCommand::AdjustSeparatorNormalization(-1)),
-            UiAction::from(SettingsCommand::AdjustSeparatorNormalization(1)),
-        );
-    }
 
     spawn_settings_stage_header(
         parent,
         font.clone(),
         theme,
-        "02 · TRANSCRIPT FUSION",
-        "Canonical lyrics",
-        "FireRed and Qwen remain independent evidence. Canonical lyrics are produced by token-level fusion, not winner-takes-all selection.",
-        transcription_summary(session.config),
-        Some(analysis_stage_status(
-            &status,
-            Some(app_core::ModelDownloadTarget::FireRed),
-        )),
+        "02 · MODEL RUNTIME PARAMETERS",
+        "Selection and tuning are intentionally separated",
+        "Choose providers from a song's Analysis workspace with Quick model selection. Configure only model-owned runtime parameters in Models & runtime.",
+        "No provider overrides on this page",
+        None,
         Some((
-            "Manage models…".to_string(),
+            "Open model tuning…".to_string(),
             UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
-    let transcription_advanced =
-        session.open_analysis_advanced == Some(AnalysisAdvancedSection::Transcription);
+    let model_selection_action = session.selected_song.as_ref().map(|file_hash| {
+        (
+            "Open quick model selection".to_string(),
+            UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
+        )
+    });
     spawn_setting_row(
         parent,
         font.clone(),
         theme,
-        "Advanced transcript tuning",
-        "Search and batching values are applied to the owning expert only.",
-        Some((
-            if transcription_advanced {
-                "Hide advanced"
-            } else {
-                "Show advanced"
-            },
-            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
-                AnalysisAdvancedSection::Transcription,
-            )),
-        )),
+        "Where to choose models",
+        "Open a song, enter Analysis, then use Quick model selection. That view owns provider choice for transcription, alignment, pitch, separation, and cleanup nodes.",
+        model_selection_action,
     );
-    if transcription_advanced {
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Search breadth",
-            "Bounded transcript search breadth. Range: 1–16.",
-            session.config.beam_size(),
-            NumericSetting::BeamSize,
-            UiAction::from(SettingsCommand::AdjustBeamSize(-1)),
-            UiAction::from(SettingsCommand::AdjustBeamSize(1)),
-        );
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Transcript batch size",
-            "Lower this under memory pressure. It does not alter dependency order.",
-            session.config.batch_size(),
-            NumericSetting::BatchSize,
-            UiAction::from(SettingsCommand::AdjustBatchSize(-1)),
-            UiAction::from(SettingsCommand::AdjustBatchSize(1)),
-        );
-    }
-
-    spawn_settings_stage_header(
+    spawn_setting_row(
         parent,
         font.clone(),
         theme,
-        "03 · FORCED ALIGNMENT",
-        "Canonical word boundaries",
-        "The pinned native aligner consumes frozen Canonical Lyrics and lead-vocal audio. Transcript timestamps remain secondary evidence.",
-        "Qwen3 Forced Aligner · Vulkan",
-        Some(analysis_stage_status(
-            &status,
-            Some(app_core::ModelDownloadTarget::QwenAlign),
-        )),
+        "Where to tune models",
+        "Models & runtime contains installation state plus the real parameters consumed by RoFormer, Qwen ASR, and RMVPE. Models without exposed runtime controls are shown as such.",
         Some((
-            "Manage models…".to_string(),
+            "Models & runtime",
             UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         )),
     );
@@ -238,58 +108,16 @@ pub(crate) fn spawn_analysis_settings(
         parent,
         font.clone(),
         theme,
-        "04 · PITCH, BOUNDARY & FUSION",
-        "Canonical singing track",
-        "RMVPE continuous F0, GAME boundaries, optional experts, acoustic evidence, and global sequence optimization remain distinct.",
-        "RMVPE + GAME + conditional experts",
-        Some(analysis_stage_status(
-            &status,
-            Some(app_core::ModelDownloadTarget::Pitch),
-        )),
-        Some((
-            "Manage models…".to_string(),
-            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-        )),
-    );
-    let pitch_advanced = session.open_analysis_advanced == Some(AnalysisAdvancedSection::Pitch);
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Advanced pitch tuning",
-        "Adjust voiced sensitivity. Continuous F0 is never rounded directly into final notes.",
-        Some((
-            if pitch_advanced {
-                "Hide advanced"
-            } else {
-                "Show advanced"
-            },
-            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
-                AnalysisAdvancedSection::Pitch,
-            )),
-        )),
-    );
-    if pitch_advanced {
-        let threshold = (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32;
-        spawn_number_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Voiced sensitivity",
-            "Lower for soft singing; raise to suppress silence. Range: 0–60%.",
-            threshold,
-            NumericSetting::VocalThreshold,
-            UiAction::from(SettingsCommand::AdjustVocalThreshold(-1)),
-            UiAction::from(SettingsCommand::AdjustVocalThreshold(1)),
-        );
-    }
-
-    spawn_settings_section(
-        parent,
-        font.clone(),
-        theme,
-        "AUTOMATION",
-        "Starting analysis never installs or downloads runtime components.",
+        "03 · AUTOMATION",
+        "Explicit execution behavior",
+        "Automation may queue eligible work after a scan. It never installs resources or silently changes the selected workflow.",
+        if session.config.auto_analyze() {
+            "On"
+        } else {
+            "Off"
+        },
+        None,
+        None,
     );
     spawn_switch_setting_row(
         parent,
@@ -297,7 +125,7 @@ pub(crate) fn spawn_analysis_settings(
         theme,
         "Auto-analyze",
         if session.config.auto_analyze() {
-            "On · Ready songs are queued after a scan; unavailable runtime keeps them blocked."
+            "On · Eligible songs are queued; any missing component is reported by that request."
         } else {
             "Off · New songs wait for an explicit analysis action."
         },
@@ -309,12 +137,246 @@ pub(crate) fn spawn_analysis_settings(
         font,
         theme,
         "Analysis defaults",
-        "Restore recommended result-shaping values without changing installed models or existing chart data.",
+        "Restore recommended product behavior without changing installed models, per-model runtime tuning, source media, song profiles, or existing chart data.",
         Some((
             "Restore defaults",
             UiAction::from(SettingsCommand::RestoreAnalysisDefaults),
         )),
     );
+}
+
+fn quality_label(quality: app_core::AnalysisQualityProfile) -> &'static str {
+    match quality {
+        app_core::AnalysisQualityProfile::Fast => "Fast",
+        app_core::AnalysisQualityProfile::Balanced => "Balanced · recommended",
+        app_core::AnalysisQualityProfile::Maximum => "Maximum",
+    }
+}
+
+fn spawn_quality_setting_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    selected: app_core::AnalysisQualityProfile,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(92),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::axes(px(20), px(16)),
+                column_gap: px(32),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(4),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(copy, font.clone(), "Analysis quality", 12.0, theme.foreground);
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    "Fast prioritizes predictable cost. Balanced adds eligible quality checks. Maximum permits expensive optional processing under the local testing policy.",
+                    10.0,
+                    theme.muted_foreground,
+                );
+            });
+            row.spawn(Node {
+                width: px(SETTINGS_CONTROL_WIDTH),
+                height: px(36),
+                margin: UiRect::top(px(2)),
+                flex_shrink: 0.0,
+                ..default()
+            })
+            .with_children(|choices| {
+                for (quality, label) in [
+                    (app_core::AnalysisQualityProfile::Fast, "Fast"),
+                    (app_core::AnalysisQualityProfile::Balanced, "Balanced"),
+                    (app_core::AnalysisQualityProfile::Maximum, "Maximum"),
+                ] {
+                    let active = quality == selected;
+                    choices
+                        .spawn((
+                            Button,
+                            UiAction::from(SettingsCommand::SetAnalysisQuality(quality)),
+                            Node {
+                                flex_grow: 1.0,
+                                height: percent(100),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border: UiRect::all(px(1)),
+                                ..default()
+                            },
+                            BackgroundColor(if active {
+                                theme.primary.with_alpha(0.13)
+                            } else {
+                                theme.background.with_alpha(0.36)
+                            }),
+                            BorderColor::all(if active {
+                                theme.primary.with_alpha(0.58)
+                            } else {
+                                theme.border.with_alpha(0.45)
+                            }),
+                        ))
+                        .with_children(|button| {
+                            spawn_text(
+                                button,
+                                font.clone(),
+                                label,
+                                9.0,
+                                if active { theme.primary } else { theme.foreground },
+                            );
+                        });
+                }
+            });
+        });
+}
+
+pub(crate) fn spawn_advanced_controls(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSessionView<'_>,
+) {
+    let separation_open =
+        session.open_analysis_advanced == Some(AnalysisAdvancedSection::Separation);
+    spawn_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "RoFormer runtime parameters",
+        "These values are consumed by compatible RoFormer separation and cleanup workers. Provider selection remains in the Analysis workspace.",
+        Some((
+            if separation_open { "Hide" } else { "Show" },
+            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                AnalysisAdvancedSection::Separation,
+            )),
+        )),
+    );
+    if separation_open {
+        for (label, description, value, setting, down, up) in [
+            (
+                "Segment size",
+                "RoFormer processing window. Range: 64–1024.",
+                session.config.separator_segment_size(),
+                NumericSetting::SeparatorSegmentSize,
+                SettingsCommand::AdjustSeparatorSegmentSize(-32),
+                SettingsCommand::AdjustSeparatorSegmentSize(32),
+            ),
+            (
+                "Overlap",
+                "Overlap for the owning separator. Range: 2–32.",
+                session.config.separator_overlap(),
+                NumericSetting::SeparatorOverlap,
+                SettingsCommand::AdjustSeparatorOverlap(-1),
+                SettingsCommand::AdjustSeparatorOverlap(1),
+            ),
+            (
+                "Batch size",
+                "Owning separator batch size. Range: 1–8.",
+                session.config.separator_batch_size(),
+                NumericSetting::SeparatorBatchSize,
+                SettingsCommand::AdjustSeparatorBatchSize(-1),
+                SettingsCommand::AdjustSeparatorBatchSize(1),
+            ),
+            (
+                "Output normalization",
+                "Compatibility workflow normalization. Range: 1–100%.",
+                session.config.separator_normalization_pct(),
+                NumericSetting::SeparatorNormalization,
+                SettingsCommand::AdjustSeparatorNormalization(-1),
+                SettingsCommand::AdjustSeparatorNormalization(1),
+            ),
+        ] {
+            spawn_number_setting_row(
+                parent,
+                font.clone(),
+                theme,
+                label,
+                description,
+                value,
+                setting,
+                UiAction::from(down),
+                UiAction::from(up),
+            );
+        }
+    }
+
+    let asr_open = session.open_analysis_advanced == Some(AnalysisAdvancedSection::Asr);
+    spawn_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Qwen ASR runtime parameters",
+        "Beam and batch sizes are consumed by the local transcription route. They tune the selected Qwen ASR provider without selecting it.",
+        Some((
+            if asr_open { "Hide" } else { "Show" },
+            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                AnalysisAdvancedSection::Asr,
+            )),
+        )),
+    );
+    if asr_open {
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Beam size",
+            "Search beam used by the compatible Qwen ASR route. Range: 1–64.",
+            session.config.beam_size(),
+            NumericSetting::AsrBeamSize,
+            UiAction::from(SettingsCommand::AdjustAsrBeamSize(-1)),
+            UiAction::from(SettingsCommand::AdjustAsrBeamSize(1)),
+        );
+        spawn_number_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Batch size",
+            "Inference batch size used by the compatible Qwen ASR route. Range: 1–32.",
+            session.config.batch_size(),
+            NumericSetting::AsrBatchSize,
+            UiAction::from(SettingsCommand::AdjustAsrBatchSize(-1)),
+            UiAction::from(SettingsCommand::AdjustAsrBatchSize(1)),
+        );
+    }
+    let pitch_open = session.open_analysis_advanced == Some(AnalysisAdvancedSection::Pitch);
+    spawn_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "RMVPE runtime parameters",
+        "Voiced sensitivity belongs to the RMVPE-compatible route and remains separate from provider selection and note-boundary thresholds.",
+        Some((
+            if pitch_open { "Hide" } else { "Show" },
+            UiAction::from(SettingsCommand::ToggleAnalysisAdvanced(
+                AnalysisAdvancedSection::Pitch,
+            )),
+        )),
+    );
+    if pitch_open {
+        spawn_number_setting_row(
+            parent,
+            font,
+            theme,
+            "Voiced sensitivity",
+            "Lower for soft singing; raise to suppress silence. Range: 0–60%.",
+            (session.config.vocal_detection_threshold_pct() * 100.0).round() as u32,
+            NumericSetting::VocalThreshold,
+            UiAction::from(SettingsCommand::AdjustVocalThreshold(-1)),
+            UiAction::from(SettingsCommand::AdjustVocalThreshold(1)),
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -336,7 +398,8 @@ pub(crate) fn spawn_number_setting_row(
             Node {
                 width: percent(100),
                 min_height: px(76),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -349,6 +412,7 @@ pub(crate) fn spawn_number_setting_row(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -363,6 +427,7 @@ pub(crate) fn spawn_number_setting_row(
             });
             row.spawn(Node {
                 width: px(SETTINGS_CONTROL_WIDTH),
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
@@ -385,7 +450,7 @@ pub(crate) fn spawn_number_setting_row(
                         spawn_text_button(control, font.clone(), theme, "−", 15.0, decrement);
                         control.spawn((
                             EditableText {
-                                max_characters: Some(2),
+                                max_characters: Some(4),
                                 ..EditableText::new(value.to_string())
                             },
                             setting,
@@ -429,7 +494,8 @@ pub(crate) fn spawn_switch_setting_row(
             Node {
                 width: percent(100),
                 min_height: px(76),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(16)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -442,6 +508,7 @@ pub(crate) fn spawn_switch_setting_row(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -456,6 +523,7 @@ pub(crate) fn spawn_switch_setting_row(
             });
             row.spawn(Node {
                 width: px(SETTINGS_CONTROL_WIDTH),
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
@@ -528,7 +596,8 @@ pub(crate) fn spawn_shift_setting_row(
             Node {
                 width: percent(100),
                 min_height: px(68),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(13)),
                 column_gap: px(22),
                 border: UiRect::bottom(px(1)),
@@ -541,6 +610,7 @@ pub(crate) fn spawn_shift_setting_row(
                 min_width: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
+                row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
@@ -549,6 +619,7 @@ pub(crate) fn spawn_shift_setting_row(
             });
             row.spawn(Node {
                 width: px(SETTINGS_CONTROL_WIDTH),
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()

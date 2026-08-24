@@ -73,6 +73,23 @@ pub struct AnalysisProgressSnapshot {
     /// contain this field and remain readable.
     #[serde(default)]
     pub analysis_log_path: Option<PathBuf>,
+    /// Exact Engine process-boundary provenance. Legacy runs omit this field.
+    #[serde(default)]
+    pub engine: Option<EngineRunHistoryProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EngineRunHistoryProjection {
+    pub request_id: String,
+    pub request_json: String,
+    pub request_digest: String,
+    pub plan_json: String,
+    #[serde(default)]
+    pub result_json: Option<String>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    pub source_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

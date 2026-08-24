@@ -55,6 +55,7 @@ pub enum AudioRole {
     Vocal,
     LeadVocal,
     BackVocal,
+    VocalResidual,
     Instrumental,
     Drums,
     Bass,
@@ -98,7 +99,9 @@ impl WorkflowPortType {
                 (self, produced),
                 (
                     Self::Audio(AudioRole::Vocal),
-                    Self::Audio(AudioRole::LeadVocal | AudioRole::BackVocal)
+                    Self::Audio(
+                        AudioRole::LeadVocal | AudioRole::BackVocal | AudioRole::VocalResidual
+                    )
                 )
             )
     }

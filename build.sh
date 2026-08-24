@@ -7,7 +7,10 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # not provide cargo/rustc in this shell, so the installed rustup toolchain is
 # retained across this exec.
 if [[ "${UTA_STUDIO_LOCAL_BUILD_SHELL:-}" != "1" ]]; then
-    exec nix develop "path:$repo_root" -c env \
+    # Use the tiny standalone dev-shell flake rather than the repository root.
+    # The root working tree contains a very large target/ directory; using it
+    # as a path flake can copy changing build output into the Nix store.
+    exec bash "$repo_root/dev.sh" -c env \
         UTA_STUDIO_LOCAL_BUILD_SHELL=1 \
         "$repo_root/build.sh" "$@"
 fi

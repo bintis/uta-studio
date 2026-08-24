@@ -6,7 +6,7 @@ set -euo pipefail
 readonly OPENVINO_TAG="2026.3.0"
 readonly OPENVINO_COMMIT="8a17657b995fd3b4a52f8484acfcf2bb61214623"
 readonly OPENVINO_URL="https://github.com/openvinotoolkit/openvino.git"
-readonly RECIPE_SHA256="bd349389e6d0d0b742ae103892c1e5774599dd8733460aec80cb74bcf20ddab6"
+readonly RECIPE_SHA256="bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 source_dir="${UTA_OPENVINO_SOURCE_DIR:-/tmp/openvino-${OPENVINO_TAG}}"
@@ -36,8 +36,10 @@ if [[ "${actual_commit}" != "${OPENVINO_COMMIT}" ]]; then
 fi
 
 # Initialize only dependencies needed by the native runtime, ONNX frontend,
-# and Intel GPU plugin. CPU/NPU plugins and all script bindings stay disabled.
+# and manifest-pinned Intel CPU/GPU topology. NPU and script bindings stay disabled.
 git -C "${source_dir}" submodule update --init --depth 1 -- \
+    src/plugins/intel_cpu/thirdparty/mlas \
+    src/plugins/intel_cpu/thirdparty/onednn \
     thirdparty/ittapi/ittapi \
     thirdparty/json/nlohmann_json \
     thirdparty/ocl/cl_headers \
@@ -65,7 +67,7 @@ mkdir -p "${build_dir}" "${install_dir}"
     -DENABLE_PYTHON=OFF \
     -DENABLE_JS=OFF \
     -DENABLE_DOCS=OFF \
-    -DENABLE_INTEL_CPU=OFF \
+    -DENABLE_INTEL_CPU=ON \
     -DENABLE_INTEL_GPU=ON \
     -DENABLE_INTEL_NPU=OFF \
     -DENABLE_AUTO=OFF \
@@ -112,6 +114,8 @@ mkdir -p "${install_dir}/bin"
     -o "${install_dir}/bin/uta-openvino-convert"
 
 install -Dm644 "${source_dir}/LICENSE" "${install_dir}/share/licenses/openvino/LICENSE"
+install -Dm644 "${source_dir}/src/plugins/intel_cpu/thirdparty/onednn/LICENSE" \
+    "${install_dir}/share/licenses/openvino/oneDNN-LICENSE"
 install -Dm644 "${source_dir}/thirdparty/ocl/icd_loader/LICENSE" \
     "${install_dir}/share/licenses/openvino/OpenCL-ICD-Loader-LICENSE"
 
@@ -135,6 +139,7 @@ cat >"${manifest_tmp}" <<EOF
     "runtime/lib/intel64/libopenvino.so.2026.3.0": "$(sha256sum "${runtime_lib}/libopenvino.so.2026.3.0" | cut -d' ' -f1)",
     "runtime/lib/intel64/libopenvino_c.so.2026.3.0": "$(sha256sum "${runtime_lib}/libopenvino_c.so.2026.3.0" | cut -d' ' -f1)",
     "runtime/lib/intel64/libopenvino_onnx_frontend.so.2026.3.0": "$(sha256sum "${runtime_lib}/libopenvino_onnx_frontend.so.2026.3.0" | cut -d' ' -f1)",
+    "runtime/lib/intel64/libopenvino_intel_cpu_plugin.so": "$(sha256sum "${runtime_lib}/libopenvino_intel_cpu_plugin.so" | cut -d' ' -f1)",
     "runtime/lib/intel64/libopenvino_intel_gpu_plugin.so": "$(sha256sum "${runtime_lib}/libopenvino_intel_gpu_plugin.so" | cut -d' ' -f1)",
     "runtime/lib/intel64/libOpenCL.so.1.0.0": "$(sha256sum "${runtime_lib}/libOpenCL.so.1.0.0" | cut -d' ' -f1)"
   }

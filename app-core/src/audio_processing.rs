@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -10,6 +12,10 @@ use crate::audio_model::{
     AUDIO_CATALOG_SCHEMA_VERSION, AUDIO_CATALOG_VERSION, AudioModelCatalogSummary,
     AudioModelStatus, AudioParameterMap, AudioParameterValue, DEFAULT_BGM_MODEL_ID,
     DEFAULT_VOCAL_MODEL_ID,
+};
+use crate::backend_cli::{
+    InstallStateWireV1, NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1,
+    RuntimeResourceDetailsWireV1, RuntimeResourceRefWireV1, ValidationStateWireV1,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -362,126 +368,247 @@ pub fn validate_audio_processing_profile(
             return Err("audio settings must store catalog model IDs, not paths".to_string());
         }
     }
-    if settings.runtime_policy != "validated_auto" {
-        return Err("production audio processing uses validated automatic routing".to_string());
+    if !matches!(
+        settings.runtime_policy.as_str(),
+        "validated_auto" | "testing_auto" | "experimental" | "auto"
+    ) {
+        return Err("audio processing requires automatic local runtime routing".to_string());
     }
     Ok(AudioProcessingPlanSnapshot::from_settings(settings))
 }
 
-const CATALOG_MODELS: &[(&str, &str, &str, &str)] = &[
-    (
-        "bs_roformer_vocals_ep317",
-        "BS-RoFormer Vocals EP317",
-        "Vocal extraction",
-        "separate_vocals",
-    ),
-    (
-        "melband_roformer_inst_v2",
-        "MelBand-RoFormer Inst V2",
-        "BGM extraction",
-        "separate_instrumental",
-    ),
-    (
-        "melband_roformer_harmony",
-        "MelBand-RoFormer Lead / Back",
-        "Lead and harmony separation",
-        "separate_harmony",
-    ),
-    (
-        "melband_roformer_denoise_aufr33",
-        "MelBand-RoFormer Denoise",
-        "Vocal or BGM denoise",
-        "denoise",
-    ),
-    (
-        "melband_roformer_dereverb_anvuew",
-        "MelBand-RoFormer Dereverb",
-        "Vocal or BGM dereverb",
-        "dereverb",
-    ),
-];
-
-pub fn list_audio_models() -> Result<AudioModelCatalogSummary, String> {
-    list_audio_models_from_dir(crate::cache::models_dir())
+fn studio_audio_operation(model_id: &str) -> Option<&'static str> {
+    match model_id {
+        "bs_roformer_vocals_ep317" => Some("separate_vocals"),
+        "melband_roformer_inst_v2" => Some("separate_instrumental"),
+        "melband_roformer_harmony" => Some("separate_harmony"),
+        "melband_roformer_denoise_aufr33" => Some("denoise"),
+        "melband_roformer_dereverb_anvuew" => Some("dereverb"),
+        _ => None,
+    }
 }
 
-pub fn list_audio_models_from_dir(
+const AUDIO_MODEL_CATALOG_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct AudioModelCatalogCache {
+    value: Option<AudioModelCatalogSummary>,
+    refreshed_at: Option<Instant>,
+}
+
+static AUDIO_MODEL_CATALOG_CACHE: OnceLock<Mutex<AudioModelCatalogCache>> = OnceLock::new();
+
+fn audio_model_catalog_cache() -> &'static Mutex<AudioModelCatalogCache> {
+    AUDIO_MODEL_CATALOG_CACHE.get_or_init(|| Mutex::new(AudioModelCatalogCache::default()))
+}
+
+pub(crate) fn invalidate_audio_model_catalog_cache() {
+    if let Ok(mut cache) = audio_model_catalog_cache().lock() {
+        cache.value = None;
+        cache.refreshed_at = None;
+    }
+}
+
+pub fn list_audio_models() -> Result<AudioModelCatalogSummary, String> {
+    if let Ok(cache) = audio_model_catalog_cache().lock()
+        && cache
+            .refreshed_at
+            .is_some_and(|refreshed| refreshed.elapsed() < AUDIO_MODEL_CATALOG_CACHE_TTL)
+        && let Some(value) = cache.value.as_ref()
+    {
+        return Ok(value.clone());
+    }
+
+    let value =
+        list_audio_models_with_client(&audio_runtime_client(crate::cache::models_dir(), true)?)?;
+    if let Ok(mut cache) = audio_model_catalog_cache().lock() {
+        cache.value = Some(value.clone());
+        cache.refreshed_at = Some(Instant::now());
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+fn list_audio_models_from_dir(
     models_dir: impl AsRef<Path>,
 ) -> Result<AudioModelCatalogSummary, String> {
+    list_audio_models_with_client(&audio_runtime_client(models_dir.as_ref(), false)?)
+}
+
+fn list_audio_models_with_client(
+    client: &RuntimeCliClient,
+) -> Result<AudioModelCatalogSummary, String> {
+    let models = client
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter_map(|status| {
+            let model_id = status.resource.0.strip_prefix("model:")?.to_string();
+            let operation = studio_audio_operation(&model_id)?;
+            Some((status.resource, model_id, operation))
+        })
+        .map(|(resource, model_id, operation)| {
+            let details = client.show(&resource).map_err(|error| error.to_string())?;
+            audio_model_status_from_details(details, &model_id, operation)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(AudioModelCatalogSummary {
         schema_version: AUDIO_CATALOG_SCHEMA_VERSION,
         catalog_version: AUDIO_CATALOG_VERSION.to_string(),
-        models: CATALOG_MODELS
-            .iter()
-            .map(|entry| audio_model_status_from_disk(models_dir.as_ref(), entry))
-            .collect(),
+        models,
     })
 }
 
 pub fn get_audio_model_status(model_id: &str) -> Result<AudioModelStatus, String> {
-    get_audio_model_status_from_dir(crate::cache::models_dir(), model_id)
+    get_audio_model_status_with_client(
+        &audio_runtime_client(crate::cache::models_dir(), true)?,
+        model_id,
+    )
 }
 
-pub fn get_audio_model_status_from_dir(
+#[cfg(test)]
+fn get_audio_model_status_from_dir(
     models_dir: impl AsRef<Path>,
     model_id: &str,
 ) -> Result<AudioModelStatus, String> {
-    CATALOG_MODELS
-        .iter()
-        .find(|entry| entry.0 == model_id)
-        .map(|entry| audio_model_status_from_disk(models_dir.as_ref(), entry))
-        .ok_or_else(|| format!("unknown audio model id: {model_id}"))
+    get_audio_model_status_with_client(&audio_runtime_client(models_dir.as_ref(), false)?, model_id)
 }
 
-fn audio_model_status_from_disk(
-    models_dir: &Path,
-    entry: &(&str, &str, &str, &str),
-) -> AudioModelStatus {
-    let (model_id, display_name, purpose, operation) = *entry;
-    let manifest =
-        crate::audio_model::audio_model_dir(models_dir, model_id).join("install-manifest.json");
-    AudioModelStatus {
+pub(crate) fn audio_model_is_usable(model_id: &str) -> Result<bool, String> {
+    studio_audio_operation(model_id)
+        .ok_or_else(|| format!("unknown audio model id: {model_id}"))?;
+    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let statuses = audio_runtime_client(crate::cache::models_dir(), true)?
+        .status(&[resource])
+        .map_err(|error| error.to_string())?;
+    Ok(statuses.first().is_some_and(|status| status.usable))
+}
+
+fn get_audio_model_status_with_client(
+    client: &RuntimeCliClient,
+    model_id: &str,
+) -> Result<AudioModelStatus, String> {
+    let operation = studio_audio_operation(model_id)
+        .ok_or_else(|| format!("unknown audio model id: {model_id}"))?;
+    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let details = client.show(&resource).map_err(|error| error.to_string())?;
+    audio_model_status_from_details(details, model_id, operation)
+}
+
+fn audio_runtime_client(
+    models_dir: impl AsRef<Path>,
+    include_environment: bool,
+) -> Result<RuntimeCliClient, String> {
+    let client = RuntimeCliClient::discover()
+        .map_err(|error| error.to_string())?
+        .with_legacy_models(models_dir.as_ref());
+    Ok(if include_environment {
+        client.with_policy(RuntimePolicyWireV1::Experimental)
+    } else {
+        client.with_store(models_dir.as_ref().join("runtime-store"))
+    })
+}
+
+fn audio_model_status_from_details(
+    details: RuntimeResourceDetailsWireV1,
+    model_id: &str,
+    operation: &str,
+) -> Result<AudioModelStatus, String> {
+    Ok(AudioModelStatus {
         model_id: model_id.to_string(),
-        display_name: display_name.to_string(),
-        purpose: purpose.to_string(),
+        display_name: details.metadata.display_name,
+        purpose: details.metadata.purpose,
         architecture: "roformer".to_string(),
         operation: operation.to_string(),
         runner: "native_roformer".to_string(),
-        supported_backends: vec!["vulkan".to_string()],
-        license: crate::audio_model::AudioModelLicense {
-            status: "review_required".to_string(),
-            source_attribution: "Pinned model manifest".to_string(),
-            source_page: None,
-        },
-        estimated_bytes: None,
-        state: if manifest.is_file() {
-            "installed"
-        } else {
-            "missing"
-        }
-        .to_string(),
+        supported_backends: details
+            .metadata
+            .backends
+            .iter()
+            .filter(|backend| backend.validation != ValidationStateWireV1::Unsupported)
+            .map(|backend| native_backend_label(backend.backend).to_string())
+            .collect(),
+        license: details
+            .metadata
+            .license
+            .map(|license| crate::audio_model::AudioModelLicense {
+                status: license.status,
+                source_attribution: license.source_attribution,
+                source_page: license.source_page,
+            })
+            .unwrap_or_else(|| crate::audio_model::AudioModelLicense {
+                status: "review_required".to_string(),
+                source_attribution: "Pinned model/runtime catalog".to_string(),
+                source_page: None,
+            }),
+        estimated_bytes: details.metadata.estimated_installed_bytes,
+        state: install_state_label(details.status.install_state).to_string(),
         files: Vec::new(),
         catalog_version: AUDIO_CATALOG_VERSION.to_string(),
+    })
+}
+
+fn native_backend_label(backend: NativeBackendWireV1) -> &'static str {
+    match backend {
+        NativeBackendWireV1::OpenVino => "openvino",
+        NativeBackendWireV1::Vulkan => "vulkan",
+        NativeBackendWireV1::NativeDsp => "native_dsp",
+        NativeBackendWireV1::CpuReference => "cpu_reference",
+    }
+}
+
+fn install_state_label(state: InstallStateWireV1) -> &'static str {
+    match state {
+        InstallStateWireV1::Absent => "missing",
+        InstallStateWireV1::Installed | InstallStateWireV1::Legacy => "installed",
+        InstallStateWireV1::Incomplete => "incomplete",
+        InstallStateWireV1::Corrupt => "integrity_failed",
     }
 }
 
 pub fn install_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
-    let _ = get_audio_model_status(model_id)?;
-    crate::vendor::step_download_model(crate::vendor::ModelDownloadTarget::RoFormer, |_| {})?;
-    get_audio_model_status(model_id)
+    let client = audio_runtime_client(crate::cache::models_dir(), true)?;
+    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    client.show(&resource).map_err(|error| error.to_string())?;
+    client
+        .install(&[resource], &[])
+        .map_err(|error| error.to_string())?;
+    let status = get_audio_model_status_with_client(&client, model_id)?;
+    crate::invalidate_analysis_runtime_status_cache();
+    Ok(status)
 }
 
 pub fn reinstall_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
-    install_audio_model(model_id)
+    let client = audio_runtime_client(crate::cache::models_dir(), true)?;
+    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    client.show(&resource).map_err(|error| error.to_string())?;
+    client
+        .reinstall(&[resource], &[])
+        .map_err(|error| error.to_string())?;
+    let status = get_audio_model_status_with_client(&client, model_id)?;
+    crate::invalidate_analysis_runtime_status_cache();
+    Ok(status)
 }
 
 pub fn remove_audio_model(model_id: &str) -> Result<(), String> {
-    let _ = get_audio_model_status(model_id)?;
-    let directory = crate::audio_model::audio_model_dir(crate::cache::models_dir(), model_id);
-    if directory.exists() {
-        std::fs::remove_dir_all(&directory)
-            .map_err(|error| format!("could not remove {}: {error}", directory.display()))?;
+    let client = audio_runtime_client(crate::cache::models_dir(), true)?;
+    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    client.show(&resource).map_err(|error| error.to_string())?;
+    let result = client
+        .remove(std::slice::from_ref(&resource))
+        .map_err(|error| error.to_string())?;
+    if result.changed.is_empty() {
+        let status = client
+            .status(&[resource])
+            .map_err(|error| error.to_string())?;
+        if status
+            .first()
+            .is_some_and(|status| status.install_state == InstallStateWireV1::Legacy)
+        {
+            return Err("legacy model data is not manager-owned; import or adopt it explicitly before removal".to_string());
+        }
     }
+    crate::invalidate_analysis_runtime_status_cache();
     Ok(())
 }
 
@@ -515,5 +642,33 @@ mod tests {
         let mut settings = AudioProcessingSettings::from_legacy_separator("old");
         settings.runtime_policy = "cpu".to_string();
         assert!(validate_audio_processing_profile(&settings).is_err());
+    }
+
+    #[test]
+    fn studio_audio_catalog_is_adapted_from_runtime_manager() {
+        let models = list_audio_models_from_dir(std::env::temp_dir().join(format!(
+            "uta-studio-audio-catalog-{}-absent",
+            std::process::id()
+        )))
+        .unwrap()
+        .models;
+        assert_eq!(models.len(), 5);
+        let vocals = models
+            .iter()
+            .find(|model| model.model_id == "bs_roformer_vocals_ep317")
+            .unwrap();
+        assert_eq!(vocals.display_name, "BS-RoFormer Vocals EP317");
+        assert_eq!(vocals.operation, "separate_vocals");
+        assert_eq!(vocals.supported_backends, vec!["openvino", "vulkan"]);
+        assert_eq!(vocals.state, "missing");
+        let fetched = get_audio_model_status_from_dir(
+            std::env::temp_dir().join(format!(
+                "uta-studio-audio-catalog-{}-absent",
+                std::process::id()
+            )),
+            "bs_roformer_vocals_ep317",
+        )
+        .unwrap();
+        assert_eq!(&fetched, vocals);
     }
 }

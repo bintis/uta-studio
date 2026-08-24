@@ -67,13 +67,16 @@
 
             buildPhase = ''
               runHook preBuild
-              cargo build --release --locked -p uta-studio-desktop -p uta-native-analyzer -p uta-openvino-worker -p uta-qwen-worker
+              cargo build --release --locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-native-analyzer -p uta-openvino-worker -p uta-qwen-worker
               runHook postBuild
             '';
 
             installPhase = ''
               runHook preInstall
               install -Dm755 target/release/uta-studio $out/bin/.uta-studio-unwrapped
+              install -Dm755 target/release/uta-runtime $out/bin/.uta-runtime-unwrapped
+              install -Dm755 target/release/uta-analysis-engine $out/bin/.uta-analysis-engine-unwrapped
+              install -Dm755 target/release/uta-analyze $out/bin/.uta-analyze-unwrapped
               install -Dm755 target/release/uta-native-analyzer $out/bin/uta-native-analyzer
               install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
               install -Dm755 target/release/uta-qwen-asr-worker $out/bin/uta-qwen-asr-worker
@@ -109,9 +112,23 @@
                 $out/share/uta-studio/desktop/assets/icons/music-placeholder.png
               install -Dm644 icon.png $out/share/icons/hicolor/512x512/apps/uta-studio.png
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
+              runtimeWrapperArgs=(
+                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg
+                --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer
+                --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker
+                --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker
+                --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}"
+                --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
+              )
+              makeWrapper $out/bin/.uta-runtime-unwrapped $out/bin/uta-runtime "''${runtimeWrapperArgs[@]}"
+              makeWrapper $out/bin/.uta-analysis-engine-unwrapped $out/bin/uta-analysis-engine "''${runtimeWrapperArgs[@]}"
+              makeWrapper $out/bin/.uta-analyze-unwrapped $out/bin/uta-analyze "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-studio-unwrapped $out/bin/uta-studio \
                 --set UTA_STUDIO_ASSET_PATH $out/share/uta-studio \
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg \
+                --set UTA_STUDIO_ANALYSIS_CLI_PATH $out/bin/uta-analyze \
+                --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
                 --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer \
                 --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker \
                 --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker \
@@ -174,6 +191,8 @@
                 export PATH="$HOME/.cargo/bin:$PATH"
               fi
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
+              export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
+              export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
               export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
               export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
               export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"

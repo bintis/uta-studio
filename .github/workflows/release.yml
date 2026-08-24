@@ -57,6 +57,17 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
       - name: Build packaged application
         run: nix build path:.#uta-studio --print-build-logs
 
@@ -129,8 +140,13 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build native Linux executable
-        run: cargo build --release --locked -p uta-studio-desktop
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-deb
+
+      - name: Build native Linux executables
+        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
 
       - name: Verify native executable linkage
         shell: bash
@@ -169,6 +185,10 @@ jobs:
 
           install -Dm755 target/release/uta-studio \
             "$root/usr/lib/uta-studio/uta-studio"
+          install -Dm755 target/release/uta-analyze \
+            "$root/usr/bin/uta-analyze"
+          install -Dm755 target/release/uta-runtime \
+            "$root/usr/bin/uta-runtime"
 
           install -Dm644 icon.png \
             "$root/usr/share/uta-studio/icon.png"
@@ -189,6 +209,8 @@ jobs:
           cat > "$root/usr/bin/uta-studio" <<'SH'
           #!/bin/sh
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
+          export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
+          export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
           export WINIT_UNIX_BACKEND=wayland
           exec /usr/lib/uta-studio/uta-studio "$@"
           SH
@@ -303,8 +325,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build native Linux executable
-        run: cargo build --release --locked -p uta-studio-desktop
+      - name: Build native Linux executables
+        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
 
       - name: Verify native executable linkage
         shell: bash
@@ -346,6 +368,10 @@ jobs:
 
           install -Dm755 target/release/uta-studio \
             "$payload/usr/libexec/uta-studio/uta-studio"
+          install -Dm755 target/release/uta-analyze \
+            "$payload/usr/bin/uta-analyze"
+          install -Dm755 target/release/uta-runtime \
+            "$payload/usr/bin/uta-runtime"
           install -Dm644 icon.png \
             "$payload/usr/share/uta-studio/icon.png"
           install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
@@ -365,6 +391,8 @@ jobs:
           cat > "$payload/usr/bin/uta-studio" <<'SH'
           #!/bin/sh
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
+          export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
+          export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
           export WINIT_UNIX_BACKEND=wayland
           exec /usr/libexec/uta-studio/uta-studio "$@"
           SH
@@ -465,8 +493,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build Windows executable
-        run: cargo build --release --locked -p uta-studio-desktop
+      - name: Build Windows executables
+        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
 
       - name: Assemble portable ZIP
         shell: pwsh
@@ -477,6 +505,8 @@ jobs:
           New-Item -ItemType Directory -Force "$root/share/uta-studio/desktop/assets/fonts" | Out-Null
           New-Item -ItemType Directory -Force "$root/share/uta-studio/desktop/assets/icons" | Out-Null
           Copy-Item target/release/uta-studio.exe "$root/bin/uta-studio.exe"
+          Copy-Item target/release/uta-analyze.exe "$root/bin/uta-analyze.exe"
+          Copy-Item target/release/uta-runtime.exe "$root/bin/uta-runtime.exe"
           Copy-Item icon.png "$root/share/uta-studio/icon.png"
           Copy-Item desktop/assets/fonts/NotoSansCJKsc-Regular.otf "$root/share/uta-studio/desktop/assets/fonts/"
           Copy-Item desktop/assets/icons/ui-icons.svg "$root/share/uta-studio/desktop/assets/icons/"

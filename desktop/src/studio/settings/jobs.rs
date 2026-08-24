@@ -59,6 +59,78 @@ pub(crate) fn poll_cache_stats(
     invalidated.invalidate(UiDirtyRegion::Settings);
 }
 
+pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
+    if job.receiver.is_some() {
+        return;
+    }
+    job.error = None;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime_status = app_core::analysis_runtime_status();
+        let (audio_catalog, audio_catalog_error) = match app_core::list_audio_models() {
+            Ok(catalog) => (catalog, None),
+            Err(error) => (
+                app_core::AudioModelCatalogSummary {
+                    schema_version: 1,
+                    catalog_version: "unavailable".to_string(),
+                    models: Vec::new(),
+                },
+                Some(error),
+            ),
+        };
+        let _ = sender.send(Ok(ModelSettingsSnapshot {
+            runtime_status,
+            audio_catalog,
+            audio_catalog_error,
+        }));
+    });
+    job.receiver = Some(Mutex::new(receiver));
+}
+
+pub(crate) fn handle_model_settings_request(
+    mut jobs: ResMut<AsyncJobs>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    if !jobs.request_model_settings_refresh {
+        return;
+    }
+    jobs.request_model_settings_refresh = false;
+    start_model_settings_job(&mut jobs.model_settings_job);
+    invalidated.invalidate(UiDirtyRegion::Settings);
+}
+
+pub(crate) fn poll_model_settings_job(
+    mut jobs: ResMut<AsyncJobs>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    let result = jobs
+        .model_settings_job
+        .receiver
+        .as_ref()
+        .and_then(|receiver| match receiver.lock() {
+            Ok(receiver) => match receiver.try_recv() {
+                Ok(snapshot) => Some(snapshot),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Model status worker exited unexpectedly.".to_string()))
+                }
+            },
+            Err(_) => Some(Err("Model status channel was poisoned.".to_string())),
+        });
+    let Some(result) = result else {
+        return;
+    };
+    jobs.model_settings_job.receiver = None;
+    match result {
+        Ok(snapshot) => {
+            jobs.model_settings_job.current = Some(snapshot);
+            jobs.model_settings_job.error = None;
+        }
+        Err(error) => jobs.model_settings_job.error = Some(error),
+    }
+    invalidated.invalidate(UiDirtyRegion::Settings);
+}
+
 pub(crate) fn start_native_setup(
     config: &AppConfig,
     request: SetupRequest,
@@ -112,6 +184,7 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
 pub(crate) fn poll_native_setup(
     mut setup: ResMut<NativeSetup>,
     mut shell: ResMut<ShellState>,
+    mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     let mut events = Vec::new();
@@ -166,6 +239,8 @@ pub(crate) fn poll_native_setup(
                 setup.progress = None;
                 setup.last_ui_refresh = None;
                 shell.config = AppConfig::load();
+                app_core::invalidate_analysis_runtime_status_cache();
+                jobs.request_model_settings_refresh = true;
                 shell.notice = Some(match result {
                     Ok(()) => "Analysis runtime setup completed.".to_string(),
                     Err(error) => format!("Analysis runtime setup failed: {error}"),
@@ -229,38 +304,85 @@ pub(crate) fn poll_native_diagnostics(
     invalidated.invalidate(UiDirtyRegion::Settings);
 }
 
+fn settings_scroll_max(
+    viewport_height: f32,
+    reported_content_height: f32,
+    page_height: f32,
+) -> f32 {
+    let measured_page_height = page_height + SETTINGS_CONTENT_VERTICAL_PADDING * 2.0;
+    (reported_content_height.max(measured_page_height) - viewport_height).max(0.0)
+}
+
 pub(crate) fn handle_settings_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     mut shell: ResMut<ShellState>,
     mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SettingsContent>>,
+    pages: Query<&ComputedNode, With<SettingsPageContent>>,
 ) {
     if shell.route != StudioRoute::Settings {
         return;
     }
-    let Ok((computed, mut position)) = contents.single_mut() else {
-        return;
-    };
     let delta = wheel
         .read()
         .map(|event| {
             let scale = match event.unit {
-                bevy::input::mouse::MouseScrollUnit::Line => 22.0,
+                bevy::input::mouse::MouseScrollUnit::Line => 34.0,
                 bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
             };
             -event.y * scale
         })
         .sum::<f32>();
-    // Settings content is rebuilt while runtime/model jobs report progress.
-    // The replacement node has not been laid out yet in this system's frame,
-    // so clamping it without real scroll input sees a zero-sized viewport and
-    // overwrites the persisted offset with zero. Leave the seeded
-    // ScrollPosition untouched until the user actually scrolls.
     if delta == 0.0 {
         return;
     }
-    let size = computed.size() * computed.inverse_scale_factor();
-    let content = computed.content_size() * computed.inverse_scale_factor();
-    position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+
+    let page_height = pages
+        .iter()
+        .map(|page| page.size().y * page.inverse_scale_factor())
+        .fold(0.0_f32, f32::max);
+    let mut found_content = false;
+    let mut max_scroll = 0.0_f32;
+    for (computed, _) in contents.iter_mut() {
+        found_content = true;
+        let viewport_height = computed.size().y * computed.inverse_scale_factor();
+        let reported_content_height = computed.content_size().y * computed.inverse_scale_factor();
+        max_scroll = max_scroll.max(settings_scroll_max(
+            viewport_height,
+            reported_content_height,
+            page_height,
+        ));
+    }
+    if !found_content || (max_scroll == 0.0 && page_height == 0.0) {
+        return;
+    }
+
+    // During a deferred rebuild, both the outgoing and replacement settings
+    // scroll nodes can exist for one frame. Derive the new offset from the
+    // persisted tab value and apply it to every live node, so the gesture cannot
+    // land only on an entity that is about to be despawned.
     let tab_index = shell.settings_tab.index();
-    shell.settings_scroll_offsets[tab_index] = position.y;
+    let next = (shell.settings_scroll_offsets[tab_index] + delta).clamp(0.0, max_scroll);
+    for (computed, mut position) in contents.iter_mut() {
+        let viewport_height = computed.size().y * computed.inverse_scale_factor();
+        let reported_content_height = computed.content_size().y * computed.inverse_scale_factor();
+        let local_max = settings_scroll_max(viewport_height, reported_content_height, page_height);
+        position.y = next.clamp(0.0, local_max);
+    }
+    shell.settings_scroll_offsets[tab_index] = next;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::settings_scroll_max;
+
+    #[test]
+    fn scroll_extent_uses_measured_page_when_reported_content_is_stale() {
+        assert_eq!(settings_scroll_max(800.0, 0.0, 1_200.0), 468.0);
+    }
+
+    #[test]
+    fn scroll_extent_prefers_larger_reported_content_and_clamps_short_pages() {
+        assert_eq!(settings_scroll_max(800.0, 1_000.0, 600.0), 200.0);
+        assert_eq!(settings_scroll_max(800.0, 700.0, 600.0), 0.0);
+    }
 }

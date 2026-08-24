@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
+  "analysis-engine",
   "app-core",
   "desktop",
   "native-audio",
+  "runtime-manager",
   "native-inference/native-analyzer",
   "native-inference/openvino-worker",
   "native-inference/qwen-worker",

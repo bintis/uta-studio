@@ -226,10 +226,6 @@ pub(crate) fn calculate_key_shift(original_key: &str, offset: i32) -> (String, f
 }
 
 pub(crate) fn run_analysis_action(file_hash: &str, action: impl FnOnce()) -> String {
-    if !app_core::analysis_runtime_status().ready {
-        return "Analysis is disabled until setup is completed in Settings > Models & runtime."
-            .to_string();
-    }
     let Some(song) = app_core::load_song_by_hash(file_hash).ok().flatten() else {
         return format!("Song not found: {file_hash}");
     };
@@ -252,10 +248,6 @@ pub(crate) fn run_analysis_action_checked(
     file_hash: &str,
     action: impl FnOnce() -> Result<(), String>,
 ) -> String {
-    if !app_core::analysis_runtime_status().ready {
-        return "Analysis is disabled until setup is completed in Settings > Models & runtime."
-            .to_string();
-    }
     let Some(song) = app_core::load_song_by_hash(file_hash).ok().flatten() else {
         return format!("Song not found: {file_hash}");
     };

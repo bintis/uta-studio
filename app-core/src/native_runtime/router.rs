@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::{
-    NativeBackend, NativeModelRuntime, ValidationState, component_executable,
-    native_runtime_registry,
-};
+use super::NativeBackend;
+use crate::backend_cli::{BackendCliError, RuntimeCliClient, RuntimePolicyWireV1};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedNativeRuntime {
@@ -42,44 +40,38 @@ impl std::fmt::Display for RuntimeRouteError {
     }
 }
 
-fn production_backend(model: &NativeModelRuntime) -> Option<NativeBackend> {
-    if let Some(pinned) = model.pinned_backend {
-        return model
-            .backends
-            .iter()
-            .any(|capability| {
-                capability.backend == pinned
-                    && capability.validation == ValidationState::ProductionPinned
-            })
-            .then_some(pinned);
-    }
-    [NativeBackend::OpenVino, NativeBackend::Vulkan]
-        .into_iter()
-        .find(|backend| {
-            model.backends.iter().any(|capability| {
-                capability.backend == *backend
-                    && capability.validation == ValidationState::ProductionPinned
-            })
-        })
-}
-
+/// Compatibility execution adapter over the Runtime Manager CLI resolver.
 pub fn resolve_native_runtime(model_id: &str) -> Result<ResolvedNativeRuntime, RuntimeRouteError> {
-    let model = native_runtime_registry()
-        .into_iter()
-        .find(|model| model.model_id == model_id)
-        .ok_or_else(|| RuntimeRouteError::UnknownModel(model_id.to_string()))?;
-    let backend = production_backend(&model)
-        .ok_or_else(|| RuntimeRouteError::NoValidatedBackend(model_id.to_string()))?;
-    if backend == NativeBackend::CpuReference {
+    let client = RuntimeCliClient::discover()
+        .map(|client| client.with_policy(RuntimePolicyWireV1::Experimental))
+        .map_err(|_| RuntimeRouteError::NoValidatedBackend(model_id.to_string()))?;
+    let resolved = client
+        .resolve(model_id)
+        .map_err(|error| map_error(error, model_id))?;
+    let backend = super::registry::map_backend(resolved.backend);
+    if backend == NativeBackend::CpuReference && resolved.policy == RuntimePolicyWireV1::Production
+    {
         return Err(RuntimeRouteError::CpuProductionForbidden);
     }
-    let executable = component_executable(&model.component_id)
-        .ok_or_else(|| RuntimeRouteError::ComponentUnavailable(model.component_id.clone()))?;
     Ok(ResolvedNativeRuntime {
-        model_id: model.model_id,
-        component_id: model.component_id,
+        model_id: resolved.resource.id().to_string(),
+        component_id: resolved.runtime,
         backend,
-        executable,
-        runtime_recipe_digest: model.runtime_recipe_digest,
+        executable: resolved.runtime_executable,
+        runtime_recipe_digest: resolved.runtime_recipe_digest,
     })
+}
+
+fn map_error(error: BackendCliError, model_id: &str) -> RuntimeRouteError {
+    match error {
+        BackendCliError::Domain { code, .. }
+            if matches!(code.as_str(), "unknown_resource" | "invalid_resource") =>
+        {
+            RuntimeRouteError::UnknownModel(model_id.to_string())
+        }
+        BackendCliError::Domain { code, message, .. } if code == "runtime_missing" => {
+            RuntimeRouteError::ComponentUnavailable(message)
+        }
+        _ => RuntimeRouteError::NoValidatedBackend(model_id.to_string()),
+    }
 }

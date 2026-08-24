@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 12;
+pub(crate) const SCHEMA_VERSION: i32 = 13;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -58,7 +58,14 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             file_hash TEXT PRIMARY KEY,
             status TEXT NOT NULL CHECK (status IN ('queued', 'analyzing', 'failed')),
             analyzing_pct INTEGER,
-            failed_message TEXT
+            failed_message TEXT,
+            request_id TEXT,
+            engine_request_json TEXT,
+            request_digest TEXT,
+            engine_plan_json TEXT,
+            source_path TEXT,
+            source_sha256 TEXT,
+            queued_at_ms INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS analysis_history (
@@ -240,6 +247,24 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "ALTER TABLE analysis_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0;",
         )?;
+    }
+    // SCHEMA_VERSION 12 -> 13: exact Engine preview snapshots are durable
+    // queue intent. Nullable columns preserve every legacy queue row.
+    for (column, declaration) in [
+        ("request_id", "TEXT"),
+        ("engine_request_json", "TEXT"),
+        ("request_digest", "TEXT"),
+        ("engine_plan_json", "TEXT"),
+        ("source_path", "TEXT"),
+        ("source_sha256", "TEXT"),
+        ("queued_at_ms", "INTEGER"),
+    ] {
+        if !column_exists(conn, "analysis_queue", column)? {
+            conn.execute(
+                &format!("ALTER TABLE analysis_queue ADD COLUMN {column} {declaration}"),
+                [],
+            )?;
+        }
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
     Ok(())

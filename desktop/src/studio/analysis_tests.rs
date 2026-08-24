@@ -464,6 +464,7 @@ mod graph_view_polish_tests {
             asr_engine: "transcript_fusion".to_string(),
             requested_device: "auto".to_string(),
             language_override: None,
+            analysis_experience: app_core::AnalysisExperienceOverride::default(),
         };
         assert_eq!(
             selected_stage_parameter("lyrics.transcribe", &profile),
@@ -658,9 +659,12 @@ mod node_config_field_tests {
 
 #[cfg(test)]
 mod plan_preview_tests {
-    //! Phase 7/8 Plan Preview panel: `plan_preview_groups` bucketing and
-    //! `PlanPreviewDraft` toggle wiring, fixture-based, no DB/IO.
-    use super::{PLAN_PREVIEW_DISABLEABLE_NODES, PlanPreviewDraft, plan_preview_groups};
+    //! Legacy plan bucketing remains fixture-tested while the dialog renders
+    //! the exact Engine preview supplied by app-core.
+    use super::{
+        PlanPreviewDraft, artifact_product_label, capability_product_label, plan_preview_groups,
+        preview_quality_source, preview_target_source,
+    };
     use app_core::{AnalysisNodeId, AnalysisPlan, AnalysisProfileSnapshot, NodeState, PlannedNode};
     use std::collections::BTreeSet;
 
@@ -741,60 +745,78 @@ mod plan_preview_tests {
     }
 
     #[test]
-    fn toggling_a_node_twice_returns_to_not_disabled() {
-        let mut draft = PlanPreviewDraft {
-            file_hash: "songA".to_string(),
-            disabled_nodes: BTreeSet::new(),
-        };
-        let id = AnalysisNodeId::new("pitch.extract");
-        if !draft.disabled_nodes.remove(&id) {
-            draft.disabled_nodes.insert(id.clone());
-        }
-        assert!(draft.disabled_nodes.contains(&id));
-        if !draft.disabled_nodes.remove(&id) {
-            draft.disabled_nodes.insert(id.clone());
-        }
-        assert!(!draft.disabled_nodes.contains(&id));
-    }
-
-    #[test]
-    fn toggling_two_different_nodes_does_not_clobber_each_other() {
-        let mut draft = PlanPreviewDraft {
-            file_hash: "songA".to_string(),
-            disabled_nodes: BTreeSet::new(),
-        };
-        for node_id in ["stems.separate", "pitch.extract"] {
-            let id = AnalysisNodeId::new(node_id);
-            if !draft.disabled_nodes.remove(&id) {
-                draft.disabled_nodes.insert(id);
-            }
-        }
-        assert!(
-            draft
-                .disabled_nodes
-                .contains(&AnalysisNodeId::new("stems.separate"))
-        );
-        assert!(
-            draft
-                .disabled_nodes
-                .contains(&AnalysisNodeId::new("pitch.extract"))
+    fn engine_plan_uses_capabilities_as_primary_labels() {
+        assert_eq!(capability_product_label("pitch.track"), "Continuous pitch");
+        assert_eq!(
+            capability_product_label("notes.game"),
+            "Note & boundary evidence"
         );
     }
 
     #[test]
-    fn every_disableable_node_maps_to_a_real_graph_node() {
-        let graph = app_core::baseline_graph_spec();
-        for node_id in PLAN_PREVIEW_DISABLEABLE_NODES {
-            assert!(
-                graph.node(&AnalysisNodeId::new(*node_id)).is_some(),
-                "{node_id} should be a real node in the baseline graph"
-            );
-        }
+    fn exact_outputs_use_product_labels_without_hiding_unknown_protocol_values() {
+        assert_eq!(
+            artifact_product_label("candidate_vocal_chart"),
+            "Candidate VocalChart"
+        );
+        assert_eq!(
+            artifact_product_label("stem:instrumental"),
+            "Instrumental stem"
+        );
+        assert_eq!(artifact_product_label("future_artifact"), "future_artifact");
     }
 
     #[test]
-    fn preprocessing_is_not_exposed_as_a_plan_preview_choice() {
-        assert!(!PLAN_PREVIEW_DISABLEABLE_NODES.contains(&"lyrics.preprocess"));
+    fn run_dialog_marks_only_explicit_temporary_choices_as_run_sources() {
+        let mut draft = PlanPreviewDraft {
+            file_hash: "songA".to_string(),
+            target: app_core::AnalysisDefaultTarget::FullCandidate,
+            target_overridden: false,
+            run_override: app_core::AnalysisExperienceOverride::default(),
+            effective_settings: None,
+            engine_preview: Err("fixture".to_string()),
+        };
+        assert_eq!(preview_target_source(&draft), "UNAVAILABLE");
+        assert_eq!(preview_quality_source(&draft), "UNAVAILABLE");
+
+        draft.target_overridden = true;
+        draft.run_override.quality_profile = Some(app_core::AnalysisQualityProfile::Maximum);
+        assert_eq!(preview_target_source(&draft), "RUN");
+        assert_eq!(preview_quality_source(&draft), "RUN");
+    }
+
+    #[test]
+    fn temporary_quality_override_does_not_mutate_global_defaults() {
+        let config = app_core::AppConfig::default();
+        let run = app_core::AnalysisExperienceOverride {
+            quality_profile: Some(app_core::AnalysisQualityProfile::Maximum),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.analysis_quality(),
+            app_core::AnalysisQualityProfile::Balanced
+        );
+        assert_eq!(
+            run.quality_profile,
+            Some(app_core::AnalysisQualityProfile::Maximum)
+        );
+    }
+}
+
+#[cfg(test)]
+mod analysis_settings_information_architecture_tests {
+    use super::ANALYSIS_SETTINGS_SECTION_ORDER;
+
+    #[test]
+    fn analysis_sections_follow_the_frozen_order() {
+        assert_eq!(
+            ANALYSIS_SETTINGS_SECTION_ORDER,
+            [
+                "QUALITY & OUTPUT BEHAVIOR",
+                "MODEL RUNTIME PARAMETERS",
+                "AUTOMATION",
+            ]
+        );
     }
 }
 

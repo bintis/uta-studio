@@ -39,25 +39,18 @@ pub(crate) fn apply_content_action(
         }
         UiCommand::Library(LibraryCommand::AnalyzeSong(file_hash)) => {
             studio.dialogs.song_context = None;
-            if app_core::analysis_runtime_status().ready {
-                app_core::enqueue_one(file_hash);
-                studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
-                studio.library.library_view = LibraryView::Queue;
-                studio.library.library_facet = None;
-                studio.shell.route = StudioRoute::Library;
-                studio.analysis.analysis_graph_needs_fit = true;
-                studio.analysis.analysis_graph_fit_active = true;
-                studio.library.refresh();
-                studio.shell.notice = Some("Song queued for analysis.".to_string());
-            } else {
-                studio.shell.route = StudioRoute::Settings;
-                studio.shell.settings_tab = SettingsTab::Models;
-                studio.shell.notice = Some(
-                    "Analysis is disabled until the runtime and selected models are installed."
-                        .to_string(),
-                );
-            }
-            invalidated.invalidate(action.0.dirty_region());
+            let mut draft = PlanPreviewDraft {
+                file_hash: file_hash.clone(),
+                target: studio.shell.config.analysis_default_target(),
+                target_overridden: false,
+                run_override: app_core::AnalysisExperienceOverride::default(),
+                effective_settings: None,
+                engine_preview: Err("Preview has not been compiled yet.".to_string()),
+            };
+            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
+            studio.dialogs.plan_preview_draft = Some(draft);
+            studio.shell.notice = None;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Library(LibraryCommand::OpenEditor(file_hash)) => {
             studio.dialogs.song_context = None;
@@ -338,22 +331,9 @@ pub(crate) fn apply_content_action(
                         )
                     });
                     match result {
-                        Ok(commit) => {
+                        Ok(_commit) => {
                             let queued = if run_downstream {
-                                commit.downstream_impact.as_ref().map_or(Ok(()), |impact| {
-                                        let request = app_core::analysis_request_from_impact(
-                                            &commit.revision.file_hash,
-                                            impact,
-                                        );
-                                        if !app_core::queued_request_matches_preview(impact, &request)
-                                        {
-                                            return Err(
-                                                "impact preview no longer matches the current analysis request"
-                                                    .to_string(),
-                                            );
-                                        }
-                                        app_core::run_analysis_request(request)
-                                    })
+                                Err("The exact Engine request contract cannot yet consume a precomputed edited artifact. The revision was saved, but nothing was queued; open Run Analysis to build a new exact preview.".to_string())
                             } else {
                                 Ok(())
                             };
@@ -389,9 +369,7 @@ pub(crate) fn apply_content_action(
                     || (editor.mode == LyricsInputMode::TimedLrc
                         && editor.separate_stems
                         && song.as_ref().is_some_and(|song| !song.is_analyzed));
-                let result = if requires_runtime && !app_core::analysis_runtime_status().ready {
-                    Err("Analysis runtime is unavailable. Choose authoring on the original mix for timed LRC, or finish setup in Settings > Models & runtime.".to_string())
-                } else if editor.mode == LyricsInputMode::TimedLrc {
+                let result = if editor.mode == LyricsInputMode::TimedLrc {
                     if song.as_ref().is_some_and(|song| song.is_analyzed) {
                         app_core::apply_timed_lyrics(&editor.file_hash, &value)
                     } else {
@@ -465,51 +443,44 @@ pub(crate) fn apply_content_action(
         UiCommand::Editor(EditorCommand::SaveLanguageEditor) => {
             if let Some(editor) = studio.dialogs.language_editor.as_mut() {
                 let language = editor.initial_language.clone();
-                if !app_core::analysis_runtime_status().ready {
-                    studio.shell.notice = Some(
-                            "Analysis is disabled until setup is completed in Settings > Models & runtime."
-                                .to_string(),
-                        );
-                } else {
-                    if language == "auto" {
-                        let mut config = AppConfig::load();
-                        config.clear_language_override(&editor.file_hash);
-                        if let Err(error) = config.save() {
-                            studio.shell.notice =
-                                Some(format!("Could not save the language setting: {error}"));
-                            invalidated.invalidate(action.0.dirty_region());
-                            return;
-                        }
-                        if editor.force_transcribe {
-                            app_core::reanalyze_force_transcribe(&editor.file_hash);
-                        } else {
-                            app_core::realign(&editor.file_hash, None);
-                        }
-                    } else if editor.force_transcribe {
-                        let mut config = AppConfig::load();
-                        config.set_language_override(editor.file_hash.clone(), language.clone());
-                        if let Err(error) = config.save() {
-                            studio.shell.notice =
-                                Some(format!("Could not save the language setting: {error}"));
-                            invalidated.invalidate(action.0.dirty_region());
-                            return;
-                        }
+                if language == "auto" {
+                    let mut config = AppConfig::load();
+                    config.clear_language_override(&editor.file_hash);
+                    if let Err(error) = config.save() {
+                        studio.shell.notice =
+                            Some(format!("Could not save the language setting: {error}"));
+                        invalidated.invalidate(action.0.dirty_region());
+                        return;
+                    }
+                    if editor.force_transcribe {
                         app_core::reanalyze_force_transcribe(&editor.file_hash);
                     } else {
-                        app_core::realign(&editor.file_hash, Some(language.clone()));
+                        app_core::realign(&editor.file_hash, None);
                     }
-                    studio.dialogs.language_editor = None;
-                    studio.shell.config = AppConfig::load();
-                    studio.shell.notice = Some(if language == "auto" {
-                        "Automatic language detection enabled; reprocessing queued.".into()
-                    } else {
-                        localized_message(
-                            &studio.shell.config,
-                            UiMessage::LanguageReprocessQueued,
-                            &[("{language}", &language)],
-                        )
-                    });
+                } else if editor.force_transcribe {
+                    let mut config = AppConfig::load();
+                    config.set_language_override(editor.file_hash.clone(), language.clone());
+                    if let Err(error) = config.save() {
+                        studio.shell.notice =
+                            Some(format!("Could not save the language setting: {error}"));
+                        invalidated.invalidate(action.0.dirty_region());
+                        return;
+                    }
+                    app_core::reanalyze_force_transcribe(&editor.file_hash);
+                } else {
+                    app_core::realign(&editor.file_hash, Some(language.clone()));
                 }
+                studio.dialogs.language_editor = None;
+                studio.shell.config = AppConfig::load();
+                studio.shell.notice = Some(if language == "auto" {
+                    "Automatic language detection enabled; reprocessing queued.".into()
+                } else {
+                    localized_message(
+                        &studio.shell.config,
+                        UiMessage::LanguageReprocessQueued,
+                        &[("{language}", &language)],
+                    )
+                });
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
@@ -593,10 +564,16 @@ pub(crate) fn apply_content_action(
             }
         }
         UiCommand::Analysis(AnalysisCommand::OpenPlanPreview(file_hash)) => {
-            studio.dialogs.plan_preview_draft = Some(PlanPreviewDraft {
+            let mut draft = PlanPreviewDraft {
                 file_hash: file_hash.clone(),
-                disabled_nodes: std::collections::BTreeSet::new(),
-            });
+                target: studio.shell.config.analysis_default_target(),
+                target_overridden: false,
+                run_override: app_core::AnalysisExperienceOverride::default(),
+                effective_settings: None,
+                engine_preview: Err("Preview has not been compiled yet.".to_string()),
+            };
+            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
+            studio.dialogs.plan_preview_draft = Some(draft);
             studio.shell.notice = None;
             invalidated.invalidate(action.0.dirty_region());
         }
@@ -604,35 +581,118 @@ pub(crate) fn apply_content_action(
             studio.dialogs.plan_preview_draft = None;
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::TogglePlanPreviewDisabledNode(node_id)) => {
-            if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
-                let id = app_core::AnalysisNodeId::new(node_id.clone());
-                if !draft.disabled_nodes.remove(&id) {
-                    draft.disabled_nodes.insert(id);
+        UiCommand::Analysis(AnalysisCommand::QueueExactPreview) => {
+            let queued = studio
+                .dialogs
+                .plan_preview_draft
+                .as_ref()
+                .ok_or_else(|| "No exact analysis preview is open.".to_string())
+                .and_then(|draft| {
+                    draft
+                        .engine_preview
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(app_core::queue_exact_preview)
+                });
+            match queued {
+                Ok(queued) => {
+                    studio.dialogs.plan_preview_draft = None;
+                    studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+                    studio.library.refresh();
+                    studio.shell.notice = Some(format!(
+                        "Analysis accepted as {} · request {} · source {} · digest {}. Completion is reported separately.",
+                        queued.status, queued.request_id, queued.file_hash, queued.request_digest
+                    ));
                 }
+                Err(error) => {
+                    studio.shell.notice = Some(format!(
+                        "Nothing was queued. Rebuild the exact preview and try again: {error}"
+                    ));
+                }
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::SetPlanPreviewTarget(target)) => {
+            if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
+                draft.target = *target;
+                draft.target_overridden = true;
+                rebuild_engine_plan_preview(draft, &studio.shell.config);
+                studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::RunPlanPreviewDraft) => {
-            if let Some(draft) = studio.dialogs.plan_preview_draft.take() {
-                studio.shell.notice = Some(run_analysis_action_checked(&draft.file_hash, || {
-                    app_core::run_analysis_plan(
-                        &draft.file_hash,
-                        std::collections::BTreeSet::new(),
-                        draft.disabled_nodes.clone(),
-                    )
-                }));
+        UiCommand::Analysis(AnalysisCommand::ResetPlanPreviewTarget) => {
+            if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
+                draft.target_overridden = false;
+                rebuild_engine_plan_preview(draft, &studio.shell.config);
+                studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             }
+        }
+        UiCommand::Analysis(AnalysisCommand::SetPlanPreviewQuality(quality)) => {
+            if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
+                draft.run_override.quality_profile = Some(*quality);
+                rebuild_engine_plan_preview(draft, &studio.shell.config);
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Analysis(AnalysisCommand::ResetPlanPreviewQuality) => {
+            if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
+                draft.run_override.quality_profile = None;
+                rebuild_engine_plan_preview(draft, &studio.shell.config);
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Analysis(AnalysisCommand::SetSongAnalysisQuality { file_hash, quality }) => {
+            let existing = app_core::get_song_analysis_profile(file_hash);
+            if existing.is_none() && quality.is_none() {
+                studio.shell.notice = None;
+            } else {
+                let mut profile = existing.unwrap_or_else(|| {
+                    app_core::AnalysisProfileSnapshot::from_app_config(
+                        &studio.shell.config,
+                        file_hash,
+                    )
+                });
+                profile.analysis_experience.quality_profile = *quality;
+                studio.shell.notice = app_core::set_song_analysis_profile(file_hash, &profile)
+                    .err()
+                    .map(|error| format!("Could not save the Song Profile: {error}"));
+            }
+            invalidated.invalidate(UiDirtyRegion::All);
+        }
+        UiCommand::Analysis(AnalysisCommand::SetSongAnalysisTarget { file_hash, target }) => {
+            let existing = app_core::get_song_analysis_profile(file_hash);
+            if existing.is_none() && target.is_none() {
+                studio.shell.notice = None;
+            } else {
+                let mut profile = existing.unwrap_or_else(|| {
+                    app_core::AnalysisProfileSnapshot::from_app_config(
+                        &studio.shell.config,
+                        file_hash,
+                    )
+                });
+                profile.analysis_experience.default_target = *target;
+                studio.shell.notice = app_core::set_song_analysis_profile(file_hash, &profile)
+                    .err()
+                    .map(|error| format!("Could not save the Song Profile: {error}"));
+            }
+            invalidated.invalidate(UiDirtyRegion::All);
         }
         UiCommand::Analysis(AnalysisCommand::StartAnalysis(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::run_analysis_plan(
-                    file_hash,
-                    std::collections::BTreeSet::new(),
-                    std::collections::BTreeSet::new(),
-                )
-            }));
+            let mut draft = PlanPreviewDraft {
+                file_hash: file_hash.clone(),
+                target: studio.shell.config.analysis_default_target(),
+                target_overridden: false,
+                run_override: app_core::AnalysisExperienceOverride::default(),
+                effective_settings: None,
+                engine_preview: Err("Preview has not been compiled yet.".to_string()),
+            };
+            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
+            studio.dialogs.plan_preview_draft = Some(draft);
+            studio.shell.notice = None;
             studio.analysis.selected_analysis_history = None;
             invalidated.invalidate(action.0.dirty_region());
         }

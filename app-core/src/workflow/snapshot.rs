@@ -15,6 +15,7 @@ pub enum ResolvedRuntimeKind {
     OpenVino,
     Vulkan,
     NativeDsp,
+    CpuReference,
     PinnedQwenAsrVulkan,
     PinnedQwenAlignVulkan,
     #[default]

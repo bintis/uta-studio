@@ -8,10 +8,11 @@ use crate::protocol::COMPONENT_RECIPE;
 
 const OPENVINO_VERSION: &str = "2026.3.0";
 const OPENVINO_COMMIT: &str = "8a17657b995fd3b4a52f8484acfcf2bb61214623";
-const REQUIRED_LIBRARIES: [&str; 5] = [
+const REQUIRED_LIBRARIES: [&str; 6] = [
     "runtime/lib/intel64/libOpenCL.so.1.0.0",
     "runtime/lib/intel64/libopenvino.so.2026.3.0",
     "runtime/lib/intel64/libopenvino_c.so.2026.3.0",
+    "runtime/lib/intel64/libopenvino_intel_cpu_plugin.so",
     "runtime/lib/intel64/libopenvino_intel_gpu_plugin.so",
     "runtime/lib/intel64/libopenvino_onnx_frontend.so.2026.3.0",
 ];

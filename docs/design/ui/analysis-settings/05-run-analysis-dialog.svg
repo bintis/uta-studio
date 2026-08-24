@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000">
+  <rect width="1200" height="1000" fill="#14161a"/>
+  <g font-family="sans-serif">
+    <rect x="210" y="70" width="780" height="850" rx="22" fill="#1f2329" stroke="#3b424c"/>
+    <text x="255" y="125" fill="#f4f6f8" font-size="28" font-weight="600">Analyze “Example Song”</text>
+    <text x="255" y="155" fill="#8f98a5" font-size="14">Preview the exact request before it enters the queue.</text>
+
+    <text x="255" y="205" fill="#7f8a98" font-size="12" letter-spacing="1.4">OUTPUTS</text>
+    <g fill="#252a31" stroke="#3c434e">
+      <rect x="255" y="225" width="320" height="50" rx="9"/>
+      <rect x="595" y="225" width="320" height="50" rx="9"/>
+      <rect x="255" y="290" width="320" height="50" rx="9"/>
+      <rect x="595" y="290" width="320" height="50" rx="9"/>
+    </g>
+    <text x="278" y="257" fill="#eef1f4" font-size="15">✓ Candidate chart</text>
+    <text x="618" y="257" fill="#eef1f4" font-size="15">✓ Pitch evidence</text>
+    <text x="278" y="322" fill="#eef1f4" font-size="15">✓ Transcript + alignment</text>
+    <text x="618" y="322" fill="#a7afb9" font-size="15">□ Instrumental</text>
+
+    <text x="255" y="390" fill="#7f8a98" font-size="12" letter-spacing="1.4">QUALITY</text>
+    <text x="255" y="425" fill="#eef1f4" font-size="17">Balanced</text>
+    <rect x="720" y="398" width="195" height="42" rx="9" fill="#252a31" stroke="#3c434e"/>
+    <text x="749" y="424" fill="#aeb6c1" font-size="13">This run only ▾</text>
+
+    <text x="255" y="485" fill="#7f8a98" font-size="12" letter-spacing="1.4">LYRICS</text>
+    <text x="255" y="520" fill="#eef1f4" font-size="17">Generate lyrics</text>
+    <text x="720" y="520" fill="#9ba4af" font-size="13">Language: Auto</text>
+
+    <text x="255" y="580" fill="#7f8a98" font-size="12" letter-spacing="1.4">EFFECTIVE PROFILE</text>
+    <text x="255" y="614" fill="#dfe3e8" font-size="15">Global Balanced · Song pitch override: RMVPE · No run provider override</text>
+
+    <text x="255" y="675" fill="#7f8a98" font-size="12" letter-spacing="1.4">READINESS</text>
+    <text x="270" y="712" fill="#eef1f4" font-size="15">Candidate chart</text>
+    <text x="695" y="712" fill="#e6ad72" font-size="14">Blocked · GAME candidate only</text>
+    <text x="270" y="748" fill="#eef1f4" font-size="15">Pitch evidence</text>
+    <text x="790" y="748" fill="#84c9a2" font-size="14">Ready</text>
+    <text x="270" y="784" fill="#eef1f4" font-size="15">Transcript</text>
+    <text x="790" y="784" fill="#84c9a2" font-size="14">Ready</text>
+
+    <text x="255" y="832" fill="#8fb6e8" font-size="14">View execution plan</text>
+    <text x="440" y="832" fill="#8fb6e8" font-size="14">Manage models…</text>
+
+    <rect x="255" y="855" width="140" height="42" rx="9" fill="#252a31" stroke="#3c434e"/>
+    <text x="300" y="881" fill="#d9dde3" font-size="14">Cancel</text>
+    <rect x="760" y="855" width="155" height="42" rx="9" fill="#343941" stroke="#4a505a"/>
+    <text x="809" y="881" fill="#8e96a1" font-size="14">Analyze</text>
+    <text x="625" y="912" fill="#e6ad72" font-size="11">Disabled until requested blockers are resolved</text>
+  </g>
+</svg>

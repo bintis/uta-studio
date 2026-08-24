@@ -38,7 +38,7 @@ pub use analysis_artifacts::{
     analysis_artifact_delete, analysis_artifact_is_pinned, analysis_artifact_path_is_pinned,
     analysis_artifact_pinned_paths, analysis_artifact_set_active,
     analysis_artifact_set_invalidated, analysis_artifact_set_pinned, analysis_artifact_upsert,
-    analysis_artifacts_for_kind, analysis_artifacts_for_song,
+    analysis_artifacts_for_kind, analysis_artifacts_for_song, analysis_artifacts_publish_batch,
 };
 pub use analysis_capture_requests::{
     AnalysisCaptureRequestRow, analysis_capture_request_delete, analysis_capture_request_get,
@@ -57,8 +57,9 @@ pub use analysis_node_attempts::{
     NewAnalysisNodeAttempt, analysis_node_attempts_insert_batch, analysis_node_attempts_load,
 };
 pub use analysis_queue::{
-    analysis_queue_clear, analysis_queue_delete, analysis_queue_load_rows,
-    analysis_queue_save_rows, analysis_queue_upsert_row,
+    EngineQueueIntent, analysis_queue_clear, analysis_queue_delete, analysis_queue_engine_intent,
+    analysis_queue_load_rows, analysis_queue_save_rows, analysis_queue_set_engine_intent,
+    analysis_queue_upsert_row,
 };
 pub use playlists::{PlaylistDefinition, replace_all_playlists};
 pub use queries::{

@@ -30,36 +30,28 @@ fn action_button(
         });
 }
 
-fn node_status(model_id: Option<&str>) -> (&'static str, Color) {
-    let Some(model_id) = model_id else {
-        return ("NATIVE", Color::srgb(0.48, 0.68, 0.95));
-    };
-    let runtime = app_core::native_runtime_registry()
-        .into_iter()
-        .find(|runtime| runtime.model_id == model_id);
-    let Some(runtime) = runtime else {
-        return ("UNRESOLVED", Color::srgb(0.95, 0.48, 0.36));
-    };
-    if runtime
-        .backends
-        .iter()
-        .any(|backend| backend.validation == app_core::ValidationState::ProductionPinned)
-    {
-        ("PRODUCTION", Color::srgb(0.35, 0.78, 0.58))
-    } else if runtime
-        .backends
-        .iter()
-        .any(|backend| backend.validation == app_core::ValidationState::BenchmarkCandidate)
-    {
-        ("CANDIDATE", Color::srgb(0.82, 0.67, 0.34))
-    } else if runtime
-        .backends
-        .iter()
-        .any(|backend| backend.validation == app_core::ValidationState::Experimental)
-    {
-        ("EXPERIMENTAL", Color::srgb(0.68, 0.62, 0.88))
-    } else {
-        ("UNSUPPORTED", Color::srgb(0.95, 0.48, 0.36))
+/// Processing Studio owns execution conditions, not Runtime Manager truth.
+/// Resource/backend usability is intentionally deferred to exact Plan Preview
+/// instead of being inferred from model IDs or desktop-side registries.
+fn node_execution_badge(policy: &app_core::ExecutionPolicy) -> (&'static str, Color) {
+    match policy {
+        app_core::ExecutionPolicy::Always => ("ENABLED", Color::srgb(0.48, 0.68, 0.95)),
+        app_core::ExecutionPolicy::Conditional { .. } => {
+            ("CONDITIONAL", Color::srgb(0.82, 0.67, 0.34))
+        }
+        app_core::ExecutionPolicy::Disabled => ("DISABLED", Color::srgb(0.58, 0.60, 0.64)),
+    }
+}
+
+fn provider_metadata(model_id: Option<&str>) -> String {
+    match model_id {
+        Some(model_id) => format!(
+            "Configured implementation metadata: {model_id}. Actual resource/backend is resolved in Plan Preview."
+        ),
+        None => {
+            "Studio capability logic. Runtime-backed dependencies are resolved in Plan Preview."
+                .to_string()
+        }
     }
 }
 
@@ -93,7 +85,7 @@ fn node_card(
     capability: &app_core::NodeCapability,
     context: NodeCardContext<'_>,
 ) {
-    let (status, status_color) = node_status(node.model_id.as_deref());
+    let (status, status_color) = node_execution_badge(&node.execution_policy);
     parent
         .spawn((
             Button,
@@ -140,9 +132,7 @@ fn node_card(
             spawn_wrapped_text(
                 card,
                 font.clone(),
-                node.model_id
-                    .as_deref()
-                    .unwrap_or("Uta Studio native logic"),
+                provider_metadata(node.model_id.as_deref()),
                 9.0,
                 theme.muted_foreground,
             );
@@ -370,7 +360,7 @@ pub(crate) fn spawn_processing_studio(
                         spawn_wrapped_text(
                             copy,
                             font.clone(),
-                            "Audio transformations change semantic dataflow. Analyzer ordering changes priority only; hard dependencies stay protected.",
+                            "Edit capability topology, role-preserving transform order, typed conditions, and artifact routing. Models & runtime owns installation; exact provider/backend readiness appears in Plan Preview.",
                             9.0,
                             theme.muted_foreground,
                         );
@@ -477,4 +467,33 @@ pub(crate) fn spawn_processing_studio(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{node_execution_badge, provider_metadata};
+
+    #[test]
+    fn processing_cards_report_typed_condition_not_resource_readiness() {
+        let (always, _) = node_execution_badge(&app_core::ExecutionPolicy::Always);
+        let (conditional, _) = node_execution_badge(&app_core::ExecutionPolicy::Conditional {
+            condition: app_core::ConditionalExecution::DisagreementWindows,
+        });
+        let (disabled, _) = node_execution_badge(&app_core::ExecutionPolicy::Disabled);
+        assert_eq!(always, "ENABLED");
+        assert_eq!(conditional, "CONDITIONAL");
+        assert_eq!(disabled, "DISABLED");
+    }
+
+    #[test]
+    fn provider_is_secondary_metadata_and_plan_preview_remains_authoritative() {
+        let metadata = provider_metadata(Some("rmvpe"));
+        assert!(metadata.starts_with("Configured implementation metadata:"));
+        assert!(metadata.contains("resolved in Plan Preview"));
+        assert!(!metadata.starts_with("RMVPE"));
+
+        let native = provider_metadata(None);
+        assert!(native.contains("Studio capability logic"));
+        assert!(native.contains("Plan Preview"));
+    }
 }

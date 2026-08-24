@@ -36,20 +36,6 @@ pub(crate) fn current_analysis_model_panel_context(
     let live = history
         .map(|history| &history.snapshot)
         .or_else(|| active_task.and_then(|task| task.live.as_ref()));
-    let file_hash = history
-        .map(|history| history.file_hash.as_str())
-        .or_else(|| active_task.map(|task| task.file_hash.as_str()));
-    let overall_progress = history.map_or_else(
-        || {
-            active_task
-                .and_then(|task| match task.status {
-                    app_core::QueuedStatus::Analyzing(progress) => Some(progress.clamp(0, 100)),
-                    _ => None,
-                })
-                .unwrap_or(0)
-        },
-        |history| usize::from(history.status == "completed") * 100,
-    );
     let stage = live.map(|live| live.stage.as_str()).unwrap_or("preparing");
     let selected_stage = session.selected_analysis_stage.as_deref().unwrap_or(stage);
     let selected_stage_index = analysis_stage_index(selected_stage);
@@ -59,20 +45,23 @@ pub(crate) fn current_analysis_model_panel_context(
         .as_deref()
         .filter(|node_id| analysis_node_stage_index(node_id) == Some(selected_stage_index))
         .unwrap_or(fallback_node_id);
-    let plan = file_hash.and_then(|file_hash| {
-        analysis_graph_plan_preview(file_hash, history.map(|history| history.id))
-    });
-    let view = analysis_graph_view_for_run(
-        plan.as_ref(),
-        live,
-        overall_progress,
-        session.expanded_compound_nodes,
-        session.analysis_mini_view,
-    );
-    let state = view
-        .node(&app_core::AnalysisNodeId::new(selected_node_id))
-        .map(|node| node.state);
-    let status = graph_node_panel_status(state, "WAITING");
+    let status = if let Some(history) = history {
+        if history.status == "completed" {
+            "DONE"
+        } else if history.status == "failed" {
+            "FAILED"
+        } else {
+            "HISTORY"
+        }
+    } else if let Some(task) = active_task {
+        match task.status {
+            app_core::QueuedStatus::Analyzing(_) => "RUNNING",
+            app_core::QueuedStatus::Queued => "QUEUED",
+            app_core::QueuedStatus::Failed(_) => "FAILED",
+        }
+    } else {
+        "READY"
+    };
     (selected_node_id.to_string(), status.to_string())
 }
 
@@ -443,10 +432,17 @@ pub(crate) fn spawn_analysis_model_panel(
 
             spawn_wrapped_text(
                 panel,
-                font,
+                font.clone(),
                 "这些选择会保存为分析默认值；已有谱面只会在重新分析后改变。模型安装仍由“设置 > 模型与运行环境”管理。",
                 8.0,
                 theme.muted_foreground,
+            );
+            spawn_compact_action_button(
+                panel,
+                font,
+                theme,
+                "调节运行参数…",
+                UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
             );
         });
 }

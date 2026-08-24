@@ -5,6 +5,7 @@ mod migration;
 mod snapshot;
 mod types;
 mod validation;
+mod wire;
 
 pub use capability::*;
 pub use compiler::*;
@@ -13,6 +14,7 @@ pub use migration::*;
 pub use snapshot::*;
 pub use types::*;
 pub use validation::*;
+pub use wire::*;
 
 #[cfg(test)]
 mod tests {
@@ -150,7 +152,7 @@ mod tests {
             .iter()
             .find(|binding| binding.workflow_node.as_str() == "asr_qwen")
             .unwrap();
-        assert_eq!(qwen.runtime, ResolvedRuntimeKind::Unresolved);
+        assert_eq!(qwen.runtime, ResolvedRuntimeKind::PinnedQwenAsrVulkan);
         assert!(qwen.runtime_recipe_digest.is_some());
     }
 
@@ -194,7 +196,7 @@ mod tests {
         let mut workflow = default_workflow("song-a");
         set_workflow_execution_policy(
             &mut workflow,
-            &WorkflowNodeId::new("technique_stars"),
+            &WorkflowNodeId::new("boundary_stars"),
             ExecutionPolicy::Disabled,
         )
         .unwrap();
@@ -202,7 +204,7 @@ mod tests {
         let stars = snapshot
             .node_bindings
             .iter()
-            .find(|binding| binding.workflow_node.as_str() == "technique_stars")
+            .find(|binding| binding.workflow_node.as_str() == "boundary_stars")
             .unwrap();
         assert!(
             snapshot

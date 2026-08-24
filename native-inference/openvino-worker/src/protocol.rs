@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const COMPONENT_RECIPE: &str =
-    "bd349389e6d0d0b742ae103892c1e5774599dd8733460aec80cb74bcf20ddab6";
+    "bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

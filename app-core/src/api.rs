@@ -445,6 +445,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
+        "preview_engine_run",
+        "read",
+        true,
+        "Compile Global, Song, and temporary Run analysis intent into one exact Engine request and request-specific readiness preview"
+    ),
+    capability!(
+        "analysis",
+        "queue_exact_preview",
+        "mutation",
+        false,
+        "Persist and queue the exact validated Engine request snapshot confirmed by Plan Preview"
+    ),
+    capability!(
+        "analysis",
         "load_analysis_artifacts",
         "read",
         true,

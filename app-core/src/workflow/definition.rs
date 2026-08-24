@@ -157,8 +157,8 @@ pub fn reorder_audio_transformation(
 }
 
 /// Inserts a second instance of a role-preserving transformation directly
-/// after the selected instance. Existing analyzer bindings remain attached to
-/// their exact artifact; only semantic audio-flow edges move downstream.
+/// after the selected instance. Downstream semantic audio edges and terminal
+/// analyzer attachments move to the duplicate so the new instance is real.
 pub fn duplicate_audio_transformation(
     definition: &mut WorkflowDefinition,
     node_id: &super::WorkflowNodeId,
@@ -197,6 +197,12 @@ pub fn duplicate_audio_transformation(
     for edge in &mut definition.edges {
         if edge.from.node == *node_id && edge.from.port == "audio" {
             edge.from.node = instance_id.clone();
+            redirected = true;
+        }
+    }
+    for binding in &mut definition.analyzer_bindings {
+        if binding.source.node == *node_id && binding.source.port == "audio" {
+            binding.source.node = instance_id.clone();
             redirected = true;
         }
     }

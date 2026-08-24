@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="850" viewBox="0 0 1400 850">
+  <rect width="1400" height="850" fill="#15171b"/>
+  <g font-family="sans-serif">
+    <text x="70" y="70" fill="#f3f5f7" font-size="30" font-weight="600">Model preference resolution</text>
+    <text x="70" y="104" fill="#929ba8" font-size="15">Preference inheritance chooses intent; Runtime Manager Production policy can veto, but never silently rewrite it.</text>
+
+    <g fill="#242830" stroke="#3c434e" stroke-width="1.5">
+      <rect x="80" y="160" width="270" height="105" rx="14"/>
+      <rect x="80" y="300" width="270" height="105" rx="14"/>
+      <rect x="80" y="440" width="270" height="105" rx="14"/>
+      <rect x="465" y="280" width="300" height="145" rx="14"/>
+      <rect x="880" y="280" width="350" height="145" rx="14"/>
+    </g>
+
+    <text x="105" y="192" fill="#7f8a98" font-size="12" letter-spacing="1.4">GLOBAL DEFAULT</text>
+    <text x="105" y="226" fill="#eef1f4" font-size="19">Pitch = Automatic</text>
+    <text x="105" y="248" fill="#9099a6" font-size="13">Persistent application default</text>
+
+    <text x="105" y="332" fill="#7f8a98" font-size="12" letter-spacing="1.4">SONG PROFILE</text>
+    <text x="105" y="366" fill="#eef1f4" font-size="19">Pitch = RMVPE</text>
+    <text x="105" y="388" fill="#9099a6" font-size="13">Overrides global for this song</text>
+
+    <text x="105" y="472" fill="#7f8a98" font-size="12" letter-spacing="1.4">THIS RUN</text>
+    <text x="105" y="506" fill="#eef1f4" font-size="19">No override</text>
+    <text x="105" y="528" fill="#9099a6" font-size="13">Highest preference tier if present</text>
+
+    <path d="M350 212 C410 212 405 330 465 330" fill="none" stroke="#6f849e" stroke-width="2"/>
+    <path d="M350 352 L465 352" fill="none" stroke="#8fb6e8" stroke-width="3"/>
+    <path d="M350 492 C410 492 405 375 465 375" fill="none" stroke="#6f849e" stroke-width="2"/>
+    <polygon points="459,346 472,352 459,358" fill="#8fb6e8"/>
+
+    <text x="495" y="314" fill="#7f8a98" font-size="12" letter-spacing="1.4">EFFECTIVE USER INTENT</text>
+    <text x="495" y="352" fill="#ffffff" font-size="22" font-weight="600">Explicit RMVPE</text>
+    <text x="495" y="381" fill="#a0a9b5" font-size="14">Sticky preference · no silent substitution</text>
+    <text x="495" y="405" fill="#8fb6e8" font-size="13">Source: Song profile</text>
+
+    <path d="M765 352 L880 352" fill="none" stroke="#8fb6e8" stroke-width="3"/>
+    <polygon points="874,346 887,352 874,358" fill="#8fb6e8"/>
+
+    <text x="910" y="314" fill="#7f8a98" font-size="12" letter-spacing="1.4">RUNTIME MANAGER / PRODUCTION</text>
+    <text x="910" y="350" fill="#eef1f4" font-size="19">model:rmvpe</text>
+    <text x="910" y="377" fill="#84c9a2" font-size="14">ProductionPinned · OpenVINO · Ready</text>
+    <text x="910" y="403" fill="#a0a9b5" font-size="13">Result: run may proceed</text>
+
+    <rect x="465" y="560" width="765" height="170" rx="14" fill="#211f1d" stroke="#604a37"/>
+    <text x="495" y="595" fill="#e6ad72" font-size="16" font-weight="600">Blocked example</text>
+    <text x="495" y="631" fill="#eef1f4" font-size="18">Explicit GAME preference → installed but BenchmarkCandidate</text>
+    <text x="495" y="662" fill="#d6d9de" font-size="14">Production policy vetoes execution. Preference remains GAME.</text>
+    <text x="495" y="692" fill="#e6ad72" font-size="14">Do not replace it with Basic Pitch. Offer “Manage models…” or “Change preference”.</text>
+  </g>
+</svg>

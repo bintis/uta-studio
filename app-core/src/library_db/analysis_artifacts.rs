@@ -148,6 +148,61 @@ pub fn analysis_active_artifact(
     })
 }
 
+/// Atomically records a complete Engine result and switches only the
+/// selected Candidate/evidence kinds after every output was validated and
+/// captured. Authored revisions are never included by the caller.
+pub fn analysis_artifacts_publish_batch(
+    rows: &[AnalysisArtifactRow],
+    activations: &[(String, String, String)],
+) -> rusqlite::Result<()> {
+    with_conn_mut(|connection| {
+        let transaction = connection.transaction()?;
+        for row in rows {
+            transaction.execute(
+                "INSERT INTO analysis_artifacts (
+                    id, file_hash, kind, path, content_hash, producer_node,
+                    input_revisions, config_hash, algorithm_version, created_at_ms,
+                    byte_size, active, legacy, invalidated
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0, 0)
+                 ON CONFLICT(id) DO UPDATE SET
+                    path = excluded.path, content_hash = excluded.content_hash,
+                    producer_node = excluded.producer_node,
+                    input_revisions = excluded.input_revisions,
+                    config_hash = excluded.config_hash,
+                    algorithm_version = excluded.algorithm_version,
+                    byte_size = excluded.byte_size",
+                params![
+                    row.id,
+                    row.file_hash,
+                    row.kind,
+                    row.path,
+                    row.content_hash,
+                    row.producer_node,
+                    row.input_revisions,
+                    row.config_hash,
+                    row.algorithm_version,
+                    row.created_at_ms,
+                    row.byte_size,
+                ],
+            )?;
+        }
+        for (file_hash, kind, revision_id) in activations {
+            transaction.execute(
+                "UPDATE analysis_artifacts SET active = 0 WHERE file_hash = ?1 AND kind = ?2",
+                params![file_hash, kind],
+            )?;
+            let changed = transaction.execute(
+                "UPDATE analysis_artifacts SET active = 1 WHERE id = ?1 AND file_hash = ?2 AND kind = ?3 AND invalidated = 0",
+                params![revision_id, file_hash, kind],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+        transaction.commit()
+    })
+}
+
 pub fn analysis_artifact_set_active(
     file_hash: &str,
     kind: &str,

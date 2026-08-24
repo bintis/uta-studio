@@ -19,6 +19,10 @@ pub struct AnalysisProfileSnapshot {
     pub requested_device: String,
     #[serde(default)]
     pub language_override: Option<String>,
+    /// Sparse product-level Song Profile values. Old profile JSON omits this
+    /// field and therefore continues inheriting global Analysis defaults.
+    #[serde(default)]
+    pub analysis_experience: crate::analysis_experience::AnalysisExperienceOverride,
 }
 
 impl Default for AnalysisProfileSnapshot {
@@ -29,6 +33,7 @@ impl Default for AnalysisProfileSnapshot {
             asr_engine: "transcript_fusion".to_string(),
             requested_device: "auto".to_string(),
             language_override: None,
+            analysis_experience: crate::analysis_experience::AnalysisExperienceOverride::default(),
         }
     }
 }
@@ -46,6 +51,7 @@ impl AnalysisProfileSnapshot {
             asr_engine: config.asr_engine().to_string(),
             requested_device: "auto".to_string(),
             language_override: config.language_override(file_hash).map(str::to_string),
+            analysis_experience: crate::analysis_experience::AnalysisExperienceOverride::default(),
         }
     }
 
@@ -153,6 +159,7 @@ mod tests {
             asr_engine: "qwen3_asr_1_7b".to_string(),
             requested_device: "auto".to_string(),
             language_override: Some("ja".to_string()),
+            analysis_experience: crate::analysis_experience::AnalysisExperienceOverride::default(),
         };
         let json = serde_json::to_string(&snapshot).expect("serialize");
         let restored: AnalysisProfileSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -174,6 +181,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         crate::library_db::reconnect_for_test(&dir)
+    }
+
+    #[test]
+    fn legacy_song_profile_without_experience_settings_remains_readable() {
+        let legacy = serde_json::json!({
+            "separator": "native_workflow",
+            "alignment_backend": "qwen3_forced_aligner",
+            "asr_engine": "transcript_fusion",
+            "requested_device": "auto"
+        });
+        let profile: AnalysisProfileSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            profile.analysis_experience,
+            crate::analysis_experience::AnalysisExperienceOverride::default()
+        );
     }
 
     #[test]

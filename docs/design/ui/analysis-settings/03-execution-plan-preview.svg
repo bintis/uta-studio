@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050">
+  <rect width="1600" height="1050" fill="#14161a"/>
+  <g font-family="sans-serif">
+    <text x="70" y="70" fill="#f3f5f7" font-size="30" font-weight="600">Plan Preview — exact request before queue</text>
+    <text x="70" y="104" fill="#929ba8" font-size="15">Balanced · Original Mix · Candidate + Pitch + Transcript · Production policy</text>
+
+    <rect x="70" y="135" width="1460" height="830" rx="20" fill="#1d2026" stroke="#343943"/>
+
+    <g fill="#252a31" stroke="#3d4550" stroke-width="1.5">
+      <rect x="110" y="190" width="220" height="80" rx="12"/>
+      <rect x="400" y="190" width="220" height="80" rx="12"/>
+      <rect x="690" y="190" width="220" height="80" rx="12"/>
+      <rect x="1030" y="150" width="250" height="80" rx="12"/>
+      <rect x="1030" y="270" width="250" height="80" rx="12"/>
+      <rect x="1030" y="390" width="250" height="80" rx="12"/>
+      <rect x="1030" y="510" width="250" height="80" rx="12"/>
+      <rect x="1320" y="390" width="170" height="80" rx="12"/>
+      <rect x="1320" y="510" width="170" height="80" rx="12"/>
+      <rect x="1320" y="630" width="170" height="80" rx="12"/>
+      <rect x="690" y="690" width="220" height="80" rx="12"/>
+    </g>
+
+    <text x="135" y="221" fill="#7f8a98" font-size="11" letter-spacing="1.2">SOURCE</text>
+    <text x="135" y="248" fill="#eef1f4" font-size="17">TrueSource</text>
+    <text x="135" y="264" fill="#9aa3af" font-size="11">Original Mix · local file</text>
+
+    <text x="425" y="221" fill="#7f8a98" font-size="11" letter-spacing="1.2">ENGINE</text>
+    <text x="425" y="248" fill="#eef1f4" font-size="17">Decode</text>
+    <text x="425" y="264" fill="#84c9a2" font-size="11">FFmpeg · Ready</text>
+
+    <text x="715" y="221" fill="#7f8a98" font-size="11" letter-spacing="1.2">AUDIO.EXTRACT_VOCALS</text>
+    <text x="715" y="246" fill="#eef1f4" font-size="16">Vocal extraction</text>
+    <text x="715" y="265" fill="#8fb6e8" font-size="11">BS-RoFormer · resolved</text>
+
+    <text x="1055" y="180" fill="#7f8a98" font-size="11">SPEECH.TRANSCRIBE</text>
+    <text x="1055" y="206" fill="#eef1f4" font-size="16">Qwen3 ASR</text>
+    <text x="1055" y="223" fill="#84c9a2" font-size="11">Ready</text>
+
+    <text x="1055" y="300" fill="#7f8a98" font-size="11">SPEECH.ALIGN</text>
+    <text x="1055" y="326" fill="#eef1f4" font-size="16">Forced alignment</text>
+    <text x="1055" y="343" fill="#84c9a2" font-size="11">Ready</text>
+
+    <text x="1055" y="420" fill="#7f8a98" font-size="11">PITCH.TRACK</text>
+    <text x="1055" y="446" fill="#eef1f4" font-size="16">RMVPE</text>
+    <text x="1055" y="463" fill="#84c9a2" font-size="11">Ready · OpenVINO</text>
+
+    <text x="1055" y="540" fill="#7f8a98" font-size="11">NOTES.GAME</text>
+    <text x="1055" y="566" fill="#eef1f4" font-size="16">GAME</text>
+    <text x="1055" y="583" fill="#e6ad72" font-size="11">BLOCKED · Candidate only</text>
+
+    <text x="1340" y="420" fill="#7f8a98" font-size="11">FUSION</text>
+    <text x="1340" y="447" fill="#eef1f4" font-size="16">Singing fusion</text>
+    <text x="1340" y="464" fill="#e6ad72" font-size="11">Blocked upstream</text>
+
+    <text x="1340" y="540" fill="#7f8a98" font-size="11">CANDIDATE</text>
+    <text x="1340" y="567" fill="#eef1f4" font-size="16">Candidate graph</text>
+    <text x="1340" y="584" fill="#e6ad72" font-size="11">Blocked upstream</text>
+
+    <text x="1340" y="660" fill="#7f8a98" font-size="11">OUTPUT</text>
+    <text x="1340" y="687" fill="#eef1f4" font-size="15">VocalChart</text>
+    <text x="1340" y="704" fill="#e6ad72" font-size="11">Not runnable</text>
+
+    <text x="715" y="721" fill="#7f8a98" font-size="11">PARALLEL OUTPUT BRANCH</text>
+    <text x="715" y="748" fill="#eef1f4" font-size="16">Instrumental extraction</text>
+    <text x="715" y="765" fill="#84c9a2" font-size="11">Independent · Ready if requested</text>
+
+    <g stroke="#6f849e" stroke-width="2" fill="none">
+      <path d="M330 230 L400 230"/>
+      <path d="M620 230 L690 230"/>
+      <path d="M910 230 C970 230 970 190 1030 190"/>
+      <path d="M910 230 C970 230 970 310 1030 310"/>
+      <path d="M910 230 C970 230 970 430 1030 430"/>
+      <path d="M910 230 C970 230 970 550 1030 550"/>
+      <path d="M1280 430 L1320 430"/>
+      <path d="M1280 550 C1300 550 1300 430 1320 430"/>
+      <path d="M1405 470 L1405 510"/>
+      <path d="M1405 590 L1405 630"/>
+      <path d="M510 270 C510 730 620 730 690 730"/>
+    </g>
+
+    <rect x="110" y="820" width="1380" height="105" rx="12" fill="#211f1d" stroke="#604a37"/>
+    <text x="140" y="854" fill="#e6ad72" font-size="15" font-weight="600">Request blocker</text>
+    <text x="140" y="883" fill="#eef1f4" font-size="15">Candidate VocalChart requires notes.game, but GAME is not production-usable.</text>
+    <text x="140" y="908" fill="#a6adb7" font-size="13">Pitch-only and transcript-only actions remain independently runnable. Do not disable all analysis.</text>
+  </g>
+</svg>

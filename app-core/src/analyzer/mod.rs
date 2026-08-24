@@ -1,6 +1,7 @@
 mod prelude;
 
 mod control;
+mod engine_run;
 mod queue;
 mod reanalyze;
 mod run;

@@ -1,7 +1,7 @@
 # Uta Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta Studio 0.5.1
-**Document revision:** 2026-08-21
+**Applies to:** Uta Studio 0.6.0
+**Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
 [English](#english) · [简体中文](#简体中文) · [日本語](#日本語)
@@ -27,11 +27,11 @@ Uta Studio does not move or delete source media. Generated stems, models, previe
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.5.1 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release 0.6.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
 
 #### Windows
 
-1. Download `uta-studio-0.5.1-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-0.6.0-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
 3. Start `uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,20 +41,20 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.1-1_amd64.deb
+sudo apt install ./uta-studio_0.6.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.5.1-x86_64-linux.bin
-./uta-studio-0.5.1-x86_64-linux.bin
+chmod +x uta-studio-0.6.0-x86_64-linux.bin
+./uta-studio-0.6.0-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -64,7 +64,7 @@ The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayla
 Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
 
 ```sh
-sha256sum -c uta-studio-0.5.1-linux-deb.sha256
+sha256sum -c uta-studio-0.6.0-linux-deb.sha256
 ```
 
 Use the checksum file matching the package type you downloaded.
@@ -132,7 +132,7 @@ The user guide is also available inside the application. Open **Settings → Gen
 6. Review the resulting lyrics and chart.
 7. Select **Edit chart** and correct timing, syllables, and note pitches.
 8. Save the chart.
-9. Export `.utz` for the `uta!` game or `.txt` for an UltraStar-compatible workflow.
+9. Export `.utz` for compatible karaoke runtimes or `.txt` for an UltraStar-compatible workflow.
 
 ### 5. Library and folders
 
@@ -149,7 +149,7 @@ Browse contains all music and analysis progress. My Library contains charts, vid
 
 #### Playback queue
 
-Library playback includes previous/next, pause/play, repeat modes, shuffle, mute, and volume. Playback is for review and authoring; scoring belongs to the separate `uta!` player.
+Library playback includes previous/next, pause/play, repeat modes, shuffle, mute, and volume. Playback is for review and authoring; scoring belongs to a separate compatible player.
 
 ### 6. Analysis pipeline
 
@@ -238,7 +238,7 @@ Save after meaningful edit groups. Named undo entries help verify what will be r
 
 #### Uta package (`.utz`)
 
-Use this format for the independent `uta!` game and for a self-contained, versioned package. The package can include chart data and the media/artifacts required by that workflow.
+Use this format for compatible karaoke runtimes and for a self-contained, versioned package. The package can include chart data and the media/artifacts required by that workflow.
 
 #### UltraStar (`.txt`)
 
@@ -462,11 +462,11 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.5.1 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.6.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
 
 #### Windows
 
-1. 下载 `uta-studio-0.5.1-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-0.6.0-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -476,20 +476,20 @@ Uta Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.1-1_amd64.deb
+sudo apt install ./uta-studio_0.6.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.5.1-x86_64-linux.bin
-./uta-studio-0.5.1-x86_64-linux.bin
+chmod +x uta-studio-0.6.0-x86_64-linux.bin
+./uta-studio-0.6.0-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -499,7 +499,7 @@ Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWa
 从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
 
 ```sh
-sha256sum -c uta-studio-0.5.1-linux-deb.sha256
+sha256sum -c uta-studio-0.6.0-linux-deb.sha256
 ```
 
 校验文件必须与下载的包类型一致。
@@ -567,7 +567,7 @@ Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，�
 6. 检查生成的歌词与谱面。
 7. 选择**编辑谱面**，修正时间、音节和音符音高。
 8. 保存谱面。
-9. 为 `uta!` 游戏导出 `.utz`，或为 UltraStar 兼容工作流导出 `.txt`。
+9. 为兼容的卡拉 OK 运行时导出 `.utz`，或为 UltraStar 兼容工作流导出 `.txt`。
 
 ### 5. 曲库与文件夹
 
@@ -584,7 +584,7 @@ Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，�
 
 #### 播放队列
 
-曲库播放支持上一首/下一首、播放/暂停、循环模式、随机播放、静音和音量。这里的播放用于检查与制作；评分属于独立的 `uta!` 播放器。
+曲库播放支持上一首/下一首、播放/暂停、循环模式、随机播放、静音和音量。这里的播放用于检查与制作；评分属于独立的兼容播放器。
 
 ### 6. 分析流水线
 
@@ -673,7 +673,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 #### Uta 包（`.utz`）
 
-用于独立的 `uta!` 游戏，也适合保存自包含、带版本信息的包。该包可包含目标工作流所需的谱面数据和媒体/产物。
+用于兼容的卡拉 OK 运行时，也适合保存自包含、带版本信息的包。该包可包含目标工作流所需的谱面数据和媒体/产物。
 
 #### UltraStar（`.txt`）
 
@@ -897,11 +897,11 @@ Uta Studio が元メディアを移動・削除することはありません。
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.5.1 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.6.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
 
 #### Windows
 
-1. `uta-studio-0.5.1-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-0.6.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -911,20 +911,20 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.5.1-1_amd64.deb
+sudo apt install ./uta-studio_0.6.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.5.1-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.5.1-x86_64-linux.bin
-./uta-studio-0.5.1-x86_64-linux.bin
+chmod +x uta-studio-0.6.0-x86_64-linux.bin
+./uta-studio-0.6.0-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -934,7 +934,7 @@ Linux デスクトップ版は Wayland ネイティブです。X11 バックエ�
 ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
 
 ```sh
-sha256sum -c uta-studio-0.5.1-linux-deb.sha256
+sha256sum -c uta-studio-0.6.0-linux-deb.sha256
 ```
 
 ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
@@ -1002,7 +1002,7 @@ Uta Studio は同梱ネイティブ Worker、互換性のあるローカルま�
 6. 生成された歌詞と譜面を確認します。
 7. **譜面を編集**を開き、タイミング、音節、音程を修正します。
 8. 譜面を保存します。
-9. `uta!` 用には `.utz`、UltraStar 互換ワークフローには `.txt` を書き出します。
+9. 互換カラオケランタイム用には `.utz`、UltraStar 互換ワークフローには `.txt` を書き出します。
 
 ### 5. ライブラリとフォルダー
 
@@ -1019,7 +1019,7 @@ Uta Studio は同梱ネイティブ Worker、互換性のあるローカルま�
 
 #### 再生キュー
 
-前へ/次へ、再生/一時停止、リピート、シャッフル、ミュート、音量を利用できます。ここでの再生は確認・制作のためのもので、採点は別の `uta!` プレイヤーが担当します。
+前へ/次へ、再生/一時停止、リピート、シャッフル、ミュート、音量を利用できます。ここでの再生は確認・制作のためのもので、採点は別の互換プレイヤーが担当します。
 
 ### 6. 解析パイプライン
 
@@ -1108,7 +1108,7 @@ NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認�
 
 #### Uta パッケージ（`.utz`）
 
-独立した `uta!` ゲーム向けで、自己完結型かつバージョン管理されたパッケージとして保存できます。ワークフローに必要な譜面データやメディア/成果物を含められます。
+互換カラオケランタイム向けで、自己完結型かつバージョン管理されたパッケージとして保存できます。ワークフローに必要な譜面データやメディア/成果物を含められます。
 
 #### UltraStar（`.txt`）
 

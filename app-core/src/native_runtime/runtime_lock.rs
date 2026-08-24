@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../../native-inference/runtime-lock.json");
 pub const RUNTIME_LOCK_SHA256: &str =
-    "c6f2228718c832323e053cf62815d7ba7ff01309c899bcafe8adc68db4fc200d";
+    "5265a3a4f234717853ee54047b93ff1febaeb45e15ea1269d0aa3f98eb91faa7";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeRuntimeLock {

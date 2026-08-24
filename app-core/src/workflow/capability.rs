@@ -89,13 +89,13 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
             ],
         ),
         capability(
-            "audio.harmony_split",
-            "Lead / back vocal separation",
+            "audio.lead_isolate",
+            "Lead vocal isolation",
             AudioTransformation,
             vec![port("audio", Audio(Vocal), true)],
             vec![
                 port("lead", Audio(LeadVocal), false),
-                port("back", Audio(BackVocal), false),
+                port("residual", Audio(VocalResidual), false),
             ],
         ),
     ];

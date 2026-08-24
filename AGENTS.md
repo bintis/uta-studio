@@ -2,6 +2,22 @@
 
 These rules are mandatory for AI coding agents and apply to the whole repository.
 
+For the current analysis/runtime/Studio work, `docs/agent-tasks/CURRENT_AGENT_TASKS.md` is the task index. Exactly one coding task is active:
+
+```text
+docs/agent-tasks/TASK_ALL_MODEL_REPAIRS.md  # one agent completes every remaining model repair in one continuous task
+```
+
+All model work follows `docs/agent-tasks/MODEL_GPU_WORK_POLICY.md`. `docs/agent-tasks/TASK_ALL_MODEL_REPAIRS.md` is the active single-agent implementation task: the same agent repairs every unresolved model and updates `tasks/remaining-models/STATE.md` plus `docs/KEY_CONCLUSIONS.md` as durable state. Long-form completion/validation logs under `docs/` are intentionally not retained. Cards 15–21 and 20A must obey both `tasks/final-features/PROCESS_BOUNDARY_RULES.md` and `tasks/final-features/STUDIO_BACKEND_UI_PARITY.md`: Studio remains decoupled from backend implementation crates and communicates only through packaged CLI machine protocols.
+
+Current durable conclusions are summarized in `docs/KEY_CONCLUSIONS.md`. In particular, RMVPE is ProductionPinned, GAME has an accepted technical Production path, and license restrictions are recorded but do not block technical Production when the exact model/checkpoint is available under an explicit open-source/open-model license. Optional experts remain non-substituting, and current source already contains Qwen schema-2 transcript/alignment consumers. Qwen3-ASR-1.7B and Qwen3 Forced Aligner remain pinned GGML/C++ exceptions and are not OpenVINO migration targets. The non-GAME research pack remains under `docs/research/non-game-model-readiness/**`.
+
+Studio/backend final integration foundations are already present. Do not reopen broad historical passes merely because their logs were removed; create focused work only for a current source/test blocker. Post-model work must not solve Workflow/feature gaps by importing `uta_analysis_engine::` or `uta_runtime_manager::` into `app-core/**` or `desktop/**`.
+
+Architecture/design authority starts at `docs/design/README.md`. The separated architecture and current Audio Analysis Framework named there supersede earlier monolithic/refactor-phase design assumptions; supporting integration/Editor/UI documents may refine their own domains but must not override those boundaries.
+
+`docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md` is reserved for a later explicit final integration/release pass. It must evaluate current source/tests, current task state and durable conclusions rather than require deleted historical log files.
+
 ## Product identity
 
 - The project is named **Uta Studio**. Keep this identity consistent in code, copy, paths, environment variables, CSS, docs, package metadata, and protocols.
@@ -11,7 +27,7 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 ## Runtime and downloads
 
 - Prefer packaged native workers and host or packaged `ffmpeg` through `UTA_STUDIO_NATIVE_ANALYZER_PATH`, component-specific native worker variables, and `UTA_STUDIO_FFMPEG_PATH`, with normal executable discovery only where explicitly supported.
-- Production inference is native-only. Generic experts use validated OpenVINO first, then a separately validated Vulkan implementation, otherwise fail closed. Qwen3-ASR-1.7B and Qwen3 Forced Aligner use the recipes pinned in `native-inference/runtime-lock.json`.
+- Production inference is native-only. Non-Qwen calls that directly or indirectly create a Vulkan or Level Zero context require explicit user permission before execution. Qwen-family runtimes are exempt from that permission requirement. CUDA, HIP, Metal, OpenCL and other backends are not restricted by this repository GPU policy; OpenVINO is unrestricted unless the selected device path invokes Level Zero. Historical GPU incidents and archived stop decisions are evidence, not current execution gates.
 - CPU is an explicit reference/diagnostic lane, never an automatic production fallback. Do not introduce a script-runtime or network-service fallback.
 - Never download tools, packages, or AI models merely because the application launched, a page rendered, or a diagnostic ran.
 - Model/runtime installation requires an explicit user action and confirmation in **Settings > Models & runtime**. When unavailable, analysis controls must be disabled and explain where setup lives.
@@ -59,8 +75,8 @@ These rules are mandatory for AI coding agents and apply to the whole repository
 
 - Never expose an unauthenticated HTTP control server. Feature APIs stay inside the local process unless the user explicitly requests and approves a different security design.
 - Keep user source media read-only. Opening, revealing, scanning, editing cached chart data, and exporting must never move or delete source songs.
-- Use the repository's Nix dev shell for Rust/Node tools when they are not on `PATH`. Do not treat Nix environment realization as a request to download models.
-- Before final handoff, run Rust formatting/checks/tests/clippy, native worker builds/tests, native UI tests/build, docs checks, the API registry contract test, zero-script-runtime and source-size gates, real audio decode, real UTZ and UltraStar smoke exports, project-name scan, and a Nix package build.
+- Use the repository's lightweight dev shell through `bash dev.sh` for Rust/Node/native-library work when needed. It uses the independently locked `nix/dev-shell` flake; do not use `nix develop path:.` for routine development because the mutable repository root (especially `target/`) must not be copied into the Nix store on every change. The pinned shell closure is stable across Git commit/dirty changes and reuses realized store paths. `UTA_STUDIO_NIX_OFFLINE=1 bash dev.sh` is only for an already-realized shell because Nix offline mode disables substituters and can otherwise force source builds. Nix environment realization is never a request to download models.
+- Task handoff and repository-wide release handoff are different. The active repair agent must follow `docs/agent-tasks/TASK_ALL_MODEL_REPAIRS.md`, `docs/agent-tasks/MODEL_GPU_WORK_POLICY.md`, and `tasks/remaining-models/STATE.md`, persist results while continuing through the complete repair queue, and distinguish `integration_ready` from `production_ready`. Non-Qwen Vulkan/Level Zero execution requires explicit user permission; Qwen is exempt. Feature work must preserve Studio -> `uta-analyze` / `uta-runtime` process boundaries and must not reintroduce backend Cargo dependencies into Studio. Whole-workspace checks and Nix packaging remain reserved for `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`.
 - Editor audio is not verified merely because a PipeWire stream exists. Audition a real chart continuously, confirm the stream is running/unmuted, inspect PipeWire quantum errors/xruns, and keep waveform/timeline rendering from blocking playback. Do not judge playback while a high-parallelism build is saturating the machine.
 - The final packaged artifact must be produced by `nix build path:.#uta-studio` and smoke-launched from its wrapped executable.
 

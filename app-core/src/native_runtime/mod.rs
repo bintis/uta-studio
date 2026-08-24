@@ -51,7 +51,7 @@ mod tests {
             lock.components.openvino_2026_3.build_recipe_sha256,
             OPENVINO_WORKER_RECIPE_SHA256
         );
-        assert!(!lock.components.openvino_2026_3.cpu_plugin);
+        assert!(lock.components.openvino_2026_3.cpu_plugin);
         assert!(!lock.components.openvino_2026_3.script_bindings);
     }
 

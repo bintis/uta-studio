@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900">
+  <rect width="1500" height="900" fill="#15171b"/>
+  <g font-family="sans-serif">
+    <text x="70" y="70" fill="#f3f5f7" font-size="30" font-weight="600">Where each decision belongs</text>
+    <text x="70" y="105" fill="#929ba8" font-size="15">Keep settings, workflow topology, resource lifecycle and per-run execution truth separate.</text>
+
+    <g stroke="#3d4550" stroke-width="1.5">
+      <rect x="70" y="160" width="320" height="560" rx="18" fill="#20242b"/>
+      <rect x="425" y="160" width="320" height="560" rx="18" fill="#20242b"/>
+      <rect x="780" y="160" width="320" height="560" rx="18" fill="#20242b"/>
+      <rect x="1135" y="160" width="295" height="560" rx="18" fill="#20242b"/>
+    </g>
+
+    <text x="100" y="205" fill="#8fb6e8" font-size="14" letter-spacing="1.4">SETTINGS &gt; ANALYSIS</text>
+    <text x="100" y="242" fill="#ffffff" font-size="22" font-weight="600">How to analyze</text>
+    <text x="100" y="285" fill="#d7dbe1" font-size="15">• Fast / Balanced / Maximum</text>
+    <text x="100" y="318" fill="#d7dbe1" font-size="15">• Provider preferences</text>
+    <text x="100" y="351" fill="#d7dbe1" font-size="15">• Cleanup policy</text>
+    <text x="100" y="384" fill="#d7dbe1" font-size="15">• Transcription strategy</text>
+    <text x="100" y="417" fill="#d7dbe1" font-size="15">• Pitch / note strategy</text>
+    <text x="100" y="450" fill="#d7dbe1" font-size="15">• Advanced parameters</text>
+    <text x="100" y="483" fill="#d7dbe1" font-size="15">• Auto-analyze</text>
+    <text x="100" y="555" fill="#8f98a5" font-size="13">Does not install resources.</text>
+    <text x="100" y="580" fill="#8f98a5" font-size="13">Does not define raw worker order.</text>
+
+    <text x="455" y="205" fill="#8fb6e8" font-size="14" letter-spacing="1.4">PROCESSING STUDIO</text>
+    <text x="455" y="242" fill="#ffffff" font-size="22" font-weight="600">Product topology</text>
+    <text x="455" y="285" fill="#d7dbe1" font-size="15">• Audio transformation order</text>
+    <text x="455" y="318" fill="#d7dbe1" font-size="15">• Vocal / BGM branches</text>
+    <text x="455" y="351" fill="#d7dbe1" font-size="15">• Conditional nodes</text>
+    <text x="455" y="384" fill="#d7dbe1" font-size="15">• Semantic artifact routing</text>
+    <text x="455" y="417" fill="#d7dbe1" font-size="15">• Capability-first cards</text>
+    <text x="455" y="555" fill="#8f98a5" font-size="13">May reorder safe transformations.</text>
+    <text x="455" y="580" fill="#8f98a5" font-size="13">Cannot violate Engine dependencies.</text>
+
+    <text x="810" y="205" fill="#8fb6e8" font-size="14" letter-spacing="1.4">MODELS &amp; RUNTIME</text>
+    <text x="810" y="242" fill="#ffffff" font-size="22" font-weight="600">Resource lifecycle</text>
+    <text x="810" y="285" fill="#d7dbe1" font-size="15">• Install / import</text>
+    <text x="810" y="318" fill="#d7dbe1" font-size="15">• Verify / repair / remove</text>
+    <text x="810" y="351" fill="#d7dbe1" font-size="15">• Integrity</text>
+    <text x="810" y="384" fill="#d7dbe1" font-size="15">• Validation state</text>
+    <text x="810" y="417" fill="#d7dbe1" font-size="15">• Backend / runtime readiness</text>
+    <text x="810" y="450" fill="#d7dbe1" font-size="15">• License / source</text>
+    <text x="810" y="555" fill="#8f98a5" font-size="13">Runtime Manager is authoritative.</text>
+    <text x="810" y="580" fill="#8f98a5" font-size="13">No analysis preference mutation.</text>
+
+    <text x="1165" y="205" fill="#8fb6e8" font-size="14" letter-spacing="1.4">PLAN PREVIEW</text>
+    <text x="1165" y="242" fill="#ffffff" font-size="22" font-weight="600">What runs now</text>
+    <text x="1165" y="285" fill="#d7dbe1" font-size="15">• Exact request</text>
+    <text x="1165" y="318" fill="#d7dbe1" font-size="15">• Effective overrides</text>
+    <text x="1165" y="351" fill="#d7dbe1" font-size="15">• Engine execution DAG</text>
+    <text x="1165" y="384" fill="#d7dbe1" font-size="15">• Resolved providers</text>
+    <text x="1165" y="417" fill="#d7dbe1" font-size="15">• Actual backend</text>
+    <text x="1165" y="450" fill="#d7dbe1" font-size="15">• Blockers / outputs</text>
+    <text x="1165" y="555" fill="#8f98a5" font-size="13">Read-only until Confirm.</text>
+    <text x="1165" y="580" fill="#8f98a5" font-size="13">Queues exact serialized request.</text>
+
+    <path d="M390 440 L425 440" stroke="#6f849e" stroke-width="2"/>
+    <path d="M745 440 L780 440" stroke="#6f849e" stroke-width="2"/>
+    <path d="M1100 440 L1135 440" stroke="#6f849e" stroke-width="2"/>
+
+    <rect x="310" y="770" width="880" height="70" rx="12" fill="#252a31" stroke="#3d4550"/>
+    <text x="350" y="812" fill="#eef1f4" font-size="17">User intent → capability topology → resource truth → exact resolved run</text>
+  </g>
+</svg>

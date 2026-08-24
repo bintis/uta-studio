@@ -15,94 +15,174 @@ pub(crate) fn spawn_model_settings(
         theme,
         "LOCAL INTELLIGENCE",
         "Models & runtime",
-        "Checks are read-only; downloads start only after an explicit setup confirmation.",
+        "Install, verify, and tune local resources. Provider choice remains in the Analysis workspace model selector.",
     );
     if native_setup.receiver.is_some() || native_setup.progress.is_some() {
         spawn_setup_progress_panel(parent, font.clone(), icons.clone(), native_setup, theme);
     }
-    let status = app_core::analysis_runtime_status();
-    spawn_model_runtime_status_row(parent, font.clone(), theme, session.config, &status);
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Validated runtime routing",
-        "OpenVINO is preferred for generic experts, Vulkan is used only for validated fallbacks, and the two Qwen workers use their pinned Vulkan recipes.",
-        Some((
-            if status.native_analyzer_available {
-                "Verify…"
-            } else {
-                "Repair package…"
-            },
-            UiAction::from(SettingsCommand::RequestSetup(Some(
-                app_core::ModelDownloadTarget::SharedRuntime,
-            ))),
-        )),
-    );
+
+    if let Some(snapshot) = session.model_settings_job.current.as_ref() {
+        let status = &snapshot.runtime_status;
+        spawn_model_runtime_status_row(parent, font.clone(), theme, session.config, status);
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Testing runtime routing",
+            "The local testing policy prefers OpenVINO, then available Vulkan/native routes, and may use CPU reference execution when no faster local route is available.",
+            Some((
+                if status.native_analyzer_available {
+                    "Verify…"
+                } else {
+                    "Repair package…"
+                },
+                UiAction::from(SettingsCommand::RequestSetup(Some(
+                    app_core::ModelDownloadTarget::SharedRuntime,
+                ))),
+            )),
+        );
+        spawn_settings_section(
+            parent,
+            font.clone(),
+            theme,
+            "RESOURCES BY CAPABILITY",
+            "Manage installation state here. Exact request readiness is evaluated by Plan Preview, while provider choice is owned by Quick model selection in the Analysis workspace.",
+        );
+        let model_selection_action = session.selected_song.as_ref().map(|file_hash| {
+            (
+                "Open quick model selection".to_string(),
+                UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
+            )
+        });
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Provider selection",
+            "This page does not choose analysis providers. Open a song's Analysis workspace and use Quick model selection to assign models to workflow nodes.",
+            model_selection_action,
+        );
+        spawn_model_stage(
+            parent,
+            font.clone(),
+            theme,
+            session,
+            &status.models,
+            "01 · STEM SEPARATION",
+            "Vocal & BGM separation",
+            "Installs the model files used by the independent vocal and BGM branches.",
+            "Local separation resources",
+            &[app_core::ModelDownloadTarget::RoFormer],
+        );
+        spawn_audio_catalog_models(
+            parent,
+            font.clone(),
+            theme,
+            &snapshot.audio_catalog,
+            snapshot.audio_catalog_error.as_deref(),
+        );
+        spawn_model_stage(
+            parent,
+            font.clone(),
+            theme,
+            session,
+            &status.models,
+            "02 · LYRICS TRANSCRIPTION",
+            "Lyrics transcription",
+            "Qwen is the baseline transcription resource. FireRed remains an optional challenger and never becomes mandatory from this page.",
+            "Transcription resources",
+            &[
+                app_core::ModelDownloadTarget::FireRed,
+                app_core::ModelDownloadTarget::QwenAsr,
+            ],
+        );
+        spawn_model_stage(
+            parent,
+            font.clone(),
+            theme,
+            session,
+            &status.models,
+            "03 · WORD TIMING",
+            "Word timing & alignment",
+            "Refines recognized or supplied lyrics into editable word timings.",
+            "Alignment resources",
+            &[app_core::ModelDownloadTarget::QwenAlign],
+        );
+        spawn_model_stage(
+            parent,
+            font.clone(),
+            theme,
+            session,
+            &status.models,
+            "04 · MELODY",
+            "Melody & pitch",
+            "Keeps RMVPE continuous F0, GAME note/boundary evidence, and optional challengers distinct. Experimental routes are enabled for local testing.",
+            "Pitch and note resources",
+            &[
+                app_core::ModelDownloadTarget::Pitch,
+                app_core::ModelDownloadTarget::Fcpe,
+                app_core::ModelDownloadTarget::Game,
+                app_core::ModelDownloadTarget::Stars,
+                app_core::ModelDownloadTarget::BasicPitch,
+            ],
+        );
+    } else {
+        spawn_settings_section(
+            parent,
+            font.clone(),
+            theme,
+            "LOCAL RESOURCE STATUS",
+            "Model and runtime inspection runs outside the UI thread so this page stays responsive.",
+        );
+        let (title, description) = if session.model_settings_job.receiver.is_some() {
+            (
+                "Checking local models…",
+                "The current page remains interactive while Runtime Manager inspects installed files and available backends.".to_string(),
+            )
+        } else if let Some(error) = session.model_settings_job.error.as_deref() {
+            (
+                "Could not read local model status",
+                format!("{error} You can retry without leaving this page."),
+            )
+        } else {
+            (
+                "Local model status has not been loaded",
+                "Run a local status check to populate installation and backend details."
+                    .to_string(),
+            )
+        };
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            title,
+            description,
+            Some((
+                if session.model_settings_job.receiver.is_some() {
+                    "Checking…"
+                } else {
+                    "Check now"
+                },
+                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+            )),
+        );
+    }
+
     spawn_settings_section(
         parent,
         font.clone(),
         theme,
-        "MODEL FILES BY ANALYSIS STAGE",
-        "This page only manages local files. Choose which engine is active in Analysis; every download still requires confirmation.",
+        "MODEL RUNTIME PARAMETERS",
+        "Only parameters consumed by a concrete local model route appear below. Changing these values does not select a provider.",
     );
-    spawn_model_stage(
-        parent,
-        font.clone(),
-        theme,
-        session,
-        &status.models,
-        "01 · STEM SEPARATION",
-        "Vocal & BGM separation",
-        "Installs the model files used by the independent vocal and BGM branches.",
-        vocal_separation_label(session.config),
-        &[app_core::ModelDownloadTarget::RoFormer],
-    );
-    spawn_audio_catalog_models(parent, font.clone(), theme, session);
-    spawn_model_stage(
-        parent,
-        font.clone(),
-        theme,
-        session,
-        &status.models,
-        "02 · LYRICS TRANSCRIPTION",
-        "Lyrics transcription",
-        "Combines the routed FireRed and pinned Qwen transcript experts without treating either output as final lyrics.",
-        transcription_summary(session.config),
-        &[
-            app_core::ModelDownloadTarget::FireRed,
-            app_core::ModelDownloadTarget::QwenAsr,
-        ],
-    );
-    spawn_model_stage(
-        parent,
-        font.clone(),
-        theme,
-        session,
-        &status.models,
-        "03 · WORD TIMING",
-        "Word timing & alignment",
-        "Refines recognized or supplied lyrics into editable word timings.",
-        "Qwen3 Forced Aligner · pinned Vulkan",
-        &[app_core::ModelDownloadTarget::QwenAlign],
-    );
-    spawn_model_stage(
+    spawn_advanced_controls(parent, font.clone(), theme, session);
+    spawn_setting_row(
         parent,
         font,
         theme,
-        session,
-        &status.models,
-        "04 · MELODY",
-        "Melody & pitch",
-        "Keeps continuous F0, note-boundary, and auxiliary evidence separate until fusion.",
-        pitch_model_label(session.config.pitch_model()),
-        &[
-            app_core::ModelDownloadTarget::Pitch,
-            app_core::ModelDownloadTarget::Fcpe,
-            app_core::ModelDownloadTarget::Game,
-            app_core::ModelDownloadTarget::Stars,
-            app_core::ModelDownloadTarget::BasicPitch,
-        ],
+        "Models without exposed controls",
+        "FireRed, Qwen Aligner, GAME, FCPE, STARS, and Basic Pitch currently use their packaged runtime contracts without user-adjustable parameters.",
+        None::<(String, UiAction)>,
     );
 }
 
@@ -110,7 +190,8 @@ pub(crate) fn spawn_audio_catalog_models(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    _session: &StudioSessionView<'_>,
+    catalog: &app_core::AudioModelCatalogSummary,
+    error: Option<&str>,
 ) {
     spawn_settings_section(
         parent,
@@ -119,11 +200,15 @@ pub(crate) fn spawn_audio_catalog_models(
         "AUDIO PROCESSING CATALOG",
         "Install only after confirming the model name, source, size, and license. Analysis stays offline.",
     );
-    let catalog = app_core::list_audio_models().unwrap_or(app_core::AudioModelCatalogSummary {
-        schema_version: 1,
-        catalog_version: "native-final-v1".to_string(),
-        models: Vec::new(),
-    });
+    if let Some(error) = error {
+        spawn_wrapped_text(
+            parent,
+            font.clone(),
+            format!("Audio model catalog unavailable: {error}"),
+            9.0,
+            theme.destructive,
+        );
+    }
     spawn_wrapped_text(
         parent,
         font.clone(),
@@ -131,7 +216,7 @@ pub(crate) fn spawn_audio_catalog_models(
         9.0,
         theme.muted_foreground,
     );
-    for model in catalog.models {
+    for model in &catalog.models {
         let state = match model.state.as_str() {
             "installed" => "Installed",
             "integrity_failed" => "Checksum failed",
@@ -198,10 +283,7 @@ pub(crate) fn spawn_model_stage(
         description,
         current,
         None,
-        Some((
-            "Configure in Analysis…".to_string(),
-            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Analysis)),
-        )),
+        None,
     );
     for model in models
         .iter()
@@ -212,16 +294,17 @@ pub(crate) fn spawn_model_stage(
 }
 
 pub(crate) fn model_install_role(
-    config: &AppConfig,
+    _config: &AppConfig,
     target: app_core::ModelDownloadTarget,
 ) -> &'static str {
-    let _ = config;
     use app_core::ModelDownloadTarget;
     match target {
-        ModelDownloadTarget::Fcpe
+        ModelDownloadTarget::FireRed
+        | ModelDownloadTarget::Fcpe
         | ModelDownloadTarget::Stars
-        | ModelDownloadTarget::BasicPitch => "Conditional",
-        _ => "Selected",
+        | ModelDownloadTarget::BasicPitch => "Optional challenger",
+        ModelDownloadTarget::Game => "Candidate requirement",
+        _ => "Baseline resource",
     }
 }
 
@@ -239,7 +322,8 @@ pub(crate) fn spawn_model_install_row(
             Node {
                 width: percent(100),
                 min_height: px(86),
-                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
                 padding: UiRect::axes(px(20), px(15)),
                 column_gap: px(32),
                 border: UiRect::bottom(px(1)),
@@ -275,7 +359,7 @@ pub(crate) fn spawn_model_install_row(
                         title,
                         font.clone(),
                         role,
-                        if role == "Optional" {
+                        if role.starts_with("Optional") {
                             theme.muted_foreground
                         } else {
                             theme.primary
@@ -285,27 +369,31 @@ pub(crate) fn spawn_model_install_row(
                         title,
                         font.clone(),
                         if model.available {
-                            "Installed"
+                            "Usable for testing"
                         } else {
-                            "Missing"
+                            "Unavailable"
                         },
                         if model.available {
                             theme.primary
                         } else {
-                            theme.destructive
+                            theme.editor_warning
                         },
                     );
                 });
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
-                    format!("{} Used by Analysis > {stage}.", model.description),
+                    format!(
+                        "{} Capability group: {stage}. Validation label: {} · selected backend: {}.",
+                        model.description, model.validation, model.backend
+                    ),
                     9.0,
                     theme.muted_foreground,
                 );
             });
             row.spawn(Node {
                 width: px(SETTINGS_CONTROL_WIDTH),
+                margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
@@ -315,11 +403,7 @@ pub(crate) fn spawn_model_install_row(
                     actions,
                     font,
                     theme,
-                    if model.available {
-                        "Reinstall…"
-                    } else {
-                        "Download…"
-                    },
+                    "Manage…",
                     UiAction::from(SettingsCommand::RequestSetup(Some(model.target))),
                 );
             });
@@ -337,24 +421,24 @@ pub(crate) fn spawn_model_runtime_status_row(
         && status.runtime_contract_current
     {
         (
-            "Ready to analyze",
-            "OK",
+            "Baseline component set available",
+            "BASELINE READY",
             theme.primary,
-            "The selected runtime and every required model are available locally.",
+            "Global component health is available. Each action still derives readiness from its exact requested artifacts in Plan Preview.",
         )
     } else if status.ready {
         (
-            "Ready to analyze",
-            "REBUILD OPTIONAL",
+            "Baseline component set available",
+            "CONTRACT REVIEW",
             theme.editor_warning,
-            "This installation still works. A newer runtime contract is available; use Reconfigure only if you want it. Analysis is not blocked.",
+            "The baseline set is present but its runtime contract needs review. Request-specific Plan Preview remains authoritative.",
         )
     } else {
         (
-            "Setup required",
-            "MISSING",
-            theme.destructive,
-            "Some required components are missing. Open setup to install or repair.",
+            "Baseline component set incomplete",
+            "PARTIAL",
+            theme.editor_warning,
+            "One or more baseline resources are unavailable. This does not imply every partial analysis action is blocked; inspect the exact request plan.",
         )
     };
     parent
@@ -649,14 +733,26 @@ pub(crate) fn spawn_runtime_component_row(
         });
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for legacy history/settings compatibility"
+)]
 pub(crate) fn transcription_summary(_config: &AppConfig) -> String {
     "FireRedASR2-AED + Qwen3-ASR fusion".to_string()
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for legacy history/settings compatibility"
+)]
 pub(crate) fn transcription_model_target(_config: &AppConfig) -> app_core::ModelDownloadTarget {
     app_core::ModelDownloadTarget::FireRed
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for legacy history/settings compatibility"
+)]
 pub(crate) fn alignment_model_target(_config: &AppConfig) -> Option<app_core::ModelDownloadTarget> {
     Some(app_core::ModelDownloadTarget::QwenAlign)
 }
@@ -665,14 +761,38 @@ pub(crate) fn analysis_stage_status(
     status: &app_core::AnalysisRuntimeStatus,
     target: Option<app_core::ModelDownloadTarget>,
 ) -> (String, bool) {
-    match target.and_then(|target| model_available(status, target)) {
-        Some(true) => ("Installed".to_string(), true),
-        Some(false) => ("Model missing".to_string(), false),
-        None if status.native_analyzer_available => ("Runtime managed".to_string(), true),
-        None => ("Runtime missing".to_string(), false),
+    let Some(target) = target else {
+        return if status.native_analyzer_available {
+            ("Runtime ready".to_string(), true)
+        } else {
+            ("Runtime unavailable".to_string(), false)
+        };
+    };
+    let Some(model) = status.models.iter().find(|model| model.target == target) else {
+        return ("Runtime status unavailable".to_string(), false);
+    };
+    if model.available {
+        let backend = match model.backend.as_str() {
+            "openvino" => "OpenVINO",
+            "vulkan" => "Vulkan",
+            "native" => "Native",
+            _ => "resolved backend",
+        };
+        return (format!("Ready · {backend}"), true);
     }
+    let label = match model.validation.as_str() {
+        "benchmark_candidate" => "Unavailable · Candidate label",
+        "experimental" => "Unavailable · Experimental label",
+        "unsupported" => "Unavailable · Unsupported label",
+        _ => "Unavailable for current testing route",
+    };
+    (label.to_string(), false)
 }
 
+#[allow(
+    dead_code,
+    reason = "replaced by capability rows; retained during staged migration"
+)]
 pub(crate) fn spawn_analysis_pipeline(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -760,6 +880,10 @@ pub(crate) fn spawn_analysis_pipeline(
         });
 }
 
+#[allow(
+    dead_code,
+    reason = "replaced by capability rows; retained during staged migration"
+)]
 pub(crate) fn spawn_analysis_pipeline_stage(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -799,4 +923,30 @@ pub(crate) fn spawn_analysis_pipeline_stage(
                 },
             );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_install_role;
+
+    #[test]
+    fn lifecycle_roles_do_not_claim_optional_challengers_are_selected() {
+        let config = app_core::AppConfig::default();
+        assert_eq!(
+            model_install_role(&config, app_core::ModelDownloadTarget::FireRed),
+            "Optional challenger"
+        );
+        assert_eq!(
+            model_install_role(&config, app_core::ModelDownloadTarget::Fcpe),
+            "Optional challenger"
+        );
+        assert_eq!(
+            model_install_role(&config, app_core::ModelDownloadTarget::Game),
+            "Candidate requirement"
+        );
+        assert_eq!(
+            model_install_role(&config, app_core::ModelDownloadTarget::Pitch),
+            "Baseline resource"
+        );
+    }
 }

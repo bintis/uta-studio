@@ -84,6 +84,28 @@ pub(crate) fn apply_chrome_action(
                 .then(|| "No saved analysis session is available for this song.".to_string());
             invalidated.invalidate(action.0.dirty_region());
         }
+        UiCommand::Analysis(AnalysisCommand::OpenSongModelSelection(file_hash)) => {
+            studio.library.selected_song = Some(file_hash.clone());
+            studio.analysis.analysis_history = app_core::load_analysis_history(500);
+            studio.analysis.selected_analysis_history =
+                completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
+            studio.analysis.selected_analysis_stage = None;
+            studio.analysis.selected_analysis_node = None;
+            studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
+            studio.analysis.analysis_model_panel_open = true;
+            studio.library.library_view = LibraryView::Queue;
+            studio.library.library_facet = None;
+            studio.shell.route = StudioRoute::Library;
+            studio.dialogs.open_settings_select = None;
+            studio.dialogs.activity_open = false;
+            studio.shell.notice = None;
+            invalidated.invalidate(action.0.dirty_region());
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
         UiCommand::Analysis(AnalysisCommand::OpenProcessingStudio(file_hash)) => {
             studio.library.selected_song = Some(file_hash.clone());
             match app_core::load_song_workflow(file_hash) {
@@ -272,51 +294,13 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::RunWorkflow) => {
-            if !app_core::analysis_runtime_status().ready {
-                studio.shell.route = StudioRoute::Settings;
-                studio.shell.settings_tab = SettingsTab::Models;
+            if let Some(workflow) = studio.analysis.workflow.as_ref() {
                 studio.shell.notice = Some(
-                    "Analysis is disabled until all selected native components are available."
-                        .to_string(),
+                    match app_core::preview_workflow_compile(&workflow.definition) {
+                        Ok(_) => "This custom workflow topology is not representable by the exact Engine v1 request contract. Nothing was queued; use Run Analysis for a supported product target.".to_string(),
+                        Err(error) => error.to_string(),
+                    },
                 );
-            } else if let (Some(file_hash), Some(workflow)) = (
-                studio.library.selected_song.as_ref(),
-                studio.analysis.workflow.as_ref(),
-            ) {
-                match app_core::preview_workflow_compile(&workflow.definition) {
-                    Ok(execution) => {
-                        let targets = execution
-                            .node_bindings
-                            .iter()
-                            .filter(|binding| {
-                                binding.capability_id.as_str() == "finalize.canonical_singing_track"
-                            })
-                            .map(|binding| binding.analysis_node.clone())
-                            .collect();
-                        let request = app_core::AnalysisRequest {
-                            file_hash: file_hash.clone(),
-                            targets,
-                            disabled_nodes: Default::default(),
-                            frozen_artifacts: Default::default(),
-                            bypassed_nodes: Default::default(),
-                            lyrics_route: app_core::LyricsRoute::GeneratedLyrics,
-                            model_availability: Default::default(),
-                            profile_snapshot: app_core::AnalysisProfileSnapshot::from_app_config(
-                                &studio.shell.config,
-                                file_hash,
-                            ),
-                            active_stem_nodes: Default::default(),
-                            audio_processing: None,
-                            workflow_execution: Some(execution),
-                        };
-                        studio.shell.notice = Some(match app_core::run_analysis_request(request) {
-                            Ok(()) => "Compiled workflow queued through the analysis request API."
-                                .to_string(),
-                            Err(error) => error,
-                        });
-                    }
-                    Err(error) => studio.shell.notice = Some(error.to_string()),
-                }
             }
             invalidated.invalidate(UiDirtyRegion::Chrome);
         }
@@ -636,26 +620,20 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Library(LibraryCommand::AnalyzeAll) => {
-            if app_core::analysis_runtime_status().ready {
-                app_core::enqueue_all(&studio.library.filters());
-                studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
-                studio.library.library_view = LibraryView::Queue;
-                studio.library.library_facet = None;
-                studio.shell.route = StudioRoute::Library;
-                studio.analysis.analysis_graph_scroll_offset = 0.0;
-                studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
-                studio.analysis.analysis_graph_needs_fit = true;
-                studio.analysis.analysis_graph_fit_active = true;
-                studio.library.refresh();
-                studio.shell.notice = Some("Matching unanalyzed songs were queued.".to_string());
-            } else {
-                studio.shell.route = StudioRoute::Settings;
-                studio.shell.settings_tab = SettingsTab::Models;
-                studio.shell.notice = Some(
-                    "Analysis is disabled until setup is completed in Settings > Models & runtime."
-                        .to_string(),
-                );
-            }
+            app_core::enqueue_all(&studio.library.filters());
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.library.library_view = LibraryView::Queue;
+            studio.library.library_facet = None;
+            studio.shell.route = StudioRoute::Library;
+            studio.analysis.analysis_graph_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+            studio.analysis.analysis_graph_needs_fit = true;
+            studio.analysis.analysis_graph_fit_active = true;
+            studio.library.refresh();
+            studio.shell.notice = Some(
+                "Matching unanalyzed songs were queued. Missing resources will be reported per request instead of blocking the whole UI."
+                    .to_string(),
+            );
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::App(AppCommand::Folders) => {
@@ -844,15 +822,11 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ConfirmArtifactImpact) => {
-            if let Some(impact) = studio.dialogs.artifact_impact.take() {
-                let request = app_core::analysis_request_from_impact(&impact.file_hash, &impact);
-                studio.shell.notice = Some(match app_core::run_analysis_request(request) {
-                    Ok(()) => {
-                        studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
-                        "Confirmed impact plan was queued.".to_string()
-                    }
-                    Err(error) => error,
-                });
+            if studio.dialogs.artifact_impact.is_some() {
+                studio.shell.notice = Some(
+                    "The exact Engine v1 request contract cannot consume this precomputed artifact impact yet. Nothing was queued; keep the preview for reference or open Run Analysis."
+                        .to_string(),
+                );
             }
             invalidated.invalidate(action.0.dirty_region());
         }

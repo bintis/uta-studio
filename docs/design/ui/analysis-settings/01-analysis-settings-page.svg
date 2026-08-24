@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1100" viewBox="0 0 1440 1100">
+  <rect width="1440" height="1100" fill="#15171b"/>
+  <rect x="70" y="50" width="1300" height="1000" rx="24" fill="#1d2026" stroke="#343943"/>
+  <text x="115" y="105" fill="#a8b0bc" font-family="sans-serif" font-size="16" letter-spacing="2">SETTINGS / ANALYSIS</text>
+  <text x="115" y="145" fill="#f1f3f5" font-family="sans-serif" font-size="30" font-weight="600">Analysis defaults</text>
+  <text x="115" y="177" fill="#8e97a4" font-family="sans-serif" font-size="15">Configure future runs. Existing chart data changes only after explicit re-analysis.</text>
+
+  <g font-family="sans-serif">
+    <rect x="110" y="215" width="1220" height="125" rx="14" fill="#23272e" stroke="#373d47"/>
+    <text x="135" y="247" fill="#7f8a98" font-size="13" letter-spacing="1.5">01 · QUALITY &amp; OUTPUT BEHAVIOR</text>
+    <text x="135" y="282" fill="#eef1f4" font-size="19">Analysis quality</text>
+    <text x="135" y="307" fill="#8f98a5" font-size="14">Engine profile; does not install or select benchmark-only resources.</text>
+    <rect x="950" y="261" width="330" height="48" rx="10" fill="#191c21" stroke="#404752"/>
+    <rect x="1060" y="265" width="108" height="40" rx="8" fill="#344050"/>
+    <text x="978" y="291" fill="#aeb6c1" font-size="14">Fast</text>
+    <text x="1081" y="291" fill="#ffffff" font-size="14" font-weight="600">Balanced</text>
+    <text x="1191" y="291" fill="#aeb6c1" font-size="14">Maximum</text>
+
+    <rect x="110" y="360" width="1220" height="190" rx="14" fill="#23272e" stroke="#373d47"/>
+    <text x="135" y="392" fill="#7f8a98" font-size="13" letter-spacing="1.5">02 · AUDIO PREPARATION</text>
+    <text x="135" y="428" fill="#eef1f4" font-size="17">Vocal extraction</text>
+    <text x="135" y="452" fill="#8f98a5" font-size="13">Intent: Automatic. Resolved provider shown separately.</text>
+    <text x="975" y="437" fill="#e7eaf0" font-size="14">Automatic</text>
+    <text x="975" y="460" fill="#8fb6e8" font-size="12">Resolved: BS-RoFormer Vocals EP317</text>
+    <line x1="135" y1="478" x2="1285" y2="478" stroke="#363b44"/>
+    <text x="135" y="512" fill="#eef1f4" font-size="17">Instrumental extraction</text>
+    <text x="975" y="512" fill="#e7eaf0" font-size="14">Automatic</text>
+    <text x="975" y="535" fill="#8f98a5" font-size="12">Independent from the vocal branch</text>
+
+    <rect x="110" y="570" width="1220" height="150" rx="14" fill="#23272e" stroke="#373d47"/>
+    <text x="135" y="602" fill="#7f8a98" font-size="13" letter-spacing="1.5">03 · LYRICS &amp; ALIGNMENT</text>
+    <text x="135" y="640" fill="#eef1f4" font-size="17">Transcription strategy</text>
+    <text x="975" y="640" fill="#e7eaf0" font-size="14">Automatic · Qwen3-ASR-1.7B</text>
+    <text x="135" y="681" fill="#eef1f4" font-size="17">Alignment strategy</text>
+    <text x="975" y="681" fill="#e7eaf0" font-size="14">Automatic · Qwen3 Forced Aligner</text>
+
+    <rect x="110" y="740" width="1220" height="205" rx="14" fill="#23272e" stroke="#373d47"/>
+    <text x="135" y="772" fill="#7f8a98" font-size="13" letter-spacing="1.5">04 · PITCH, NOTES &amp; FUSION</text>
+    <text x="135" y="811" fill="#eef1f4" font-size="17">Continuous pitch primary</text>
+    <text x="975" y="811" fill="#e7eaf0" font-size="14">Automatic · RMVPE</text>
+    <text x="975" y="833" fill="#84c9a2" font-size="12">Ready · Production</text>
+    <line x1="135" y1="852" x2="1285" y2="852" stroke="#363b44"/>
+    <text x="135" y="888" fill="#eef1f4" font-size="17">Note &amp; boundary expert</text>
+    <text x="975" y="888" fill="#e7eaf0" font-size="14">GAME</text>
+    <text x="975" y="911" fill="#e6ad72" font-size="12">Production blocked · Candidate only</text>
+
+    <text x="115" y="995" fill="#8e97a4" font-size="13">Rule: settings express intent; Runtime Manager status is shown but never rewritten into user preference.</text>
+  </g>
+</svg>

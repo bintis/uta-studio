@@ -79,7 +79,15 @@ pub fn workflow_from_audio_settings(
     }
     let mut edges = vec![edge("source", "mix", "vocal_bgm_split", "audio")];
 
-    let mut vocal_tail = ("vocal_bgm_split".to_string(), "vocal".to_string());
+    nodes.push(node(
+        "lead_isolate",
+        "audio.lead_isolate",
+        Some("melband_roformer_harmony"),
+        ExecutionPolicy::Always,
+        880,
+    ));
+    edges.push(edge("vocal_bgm_split", "vocal", "lead_isolate", "audio"));
+    let mut vocal_tail = ("lead_isolate".to_string(), "lead".to_string());
     for (index, model_id) in settings
         .vocal_cleanup_chain
         .iter()
@@ -102,15 +110,6 @@ pub fn workflow_from_audio_settings(
         edges.push(edge(&vocal_tail.0, &vocal_tail.1, &id, "audio"));
         vocal_tail = (id, "audio".to_string());
     }
-
-    nodes.push(node(
-        "harmony_split",
-        "audio.harmony_split",
-        None,
-        ExecutionPolicy::Always,
-        800,
-    ));
-    edges.push(edge(&vocal_tail.0, &vocal_tail.1, "harmony_split", "audio"));
 
     let mut bgm_tail = ("vocal_bgm_split".to_string(), "instrumental".to_string());
     for (index, model_id) in settings
@@ -138,16 +137,16 @@ pub fn workflow_from_audio_settings(
 
     nodes.extend([
         node(
-            "asr_firered",
+            "asr_qwen",
             "analysis.asr",
-            Some("firered_asr2_aed"),
+            Some("qwen3_asr_1_7b"),
             ExecutionPolicy::Always,
             700,
         ),
         node(
-            "asr_qwen",
+            "asr_firered",
             "analysis.asr",
-            Some("qwen3_asr_1_7b"),
+            Some("firered_asr2_aed"),
             ExecutionPolicy::Conditional {
                 condition: ConditionalExecution::OnDisagreement,
             },
@@ -179,7 +178,7 @@ pub fn workflow_from_audio_settings(
             "analysis.pitch_f0",
             Some("fcpe"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::OnDisagreement,
+                condition: ConditionalExecution::DisagreementWindows,
             },
             670,
         ),
@@ -191,8 +190,26 @@ pub fn workflow_from_audio_settings(
             660,
         ),
         node(
-            "technique_stars",
-            "analysis.technique",
+            "boundary_basic_pitch",
+            "analysis.note_boundary",
+            Some("basic_pitch"),
+            ExecutionPolicy::Conditional {
+                condition: ConditionalExecution::OnDisagreement,
+            },
+            655,
+        ),
+        node(
+            "boundary_rosvot",
+            "analysis.note_boundary",
+            Some("rosvot"),
+            ExecutionPolicy::Conditional {
+                condition: ConditionalExecution::MaximumOnly,
+            },
+            645,
+        ),
+        node(
+            "boundary_stars",
+            "analysis.note_boundary",
             Some("stars"),
             ExecutionPolicy::Conditional {
                 condition: ConditionalExecution::MaximumOnly,
@@ -230,8 +247,8 @@ pub fn workflow_from_audio_settings(
     ]);
 
     edges.extend([
-        edge("asr_firered", "transcript", "transcript_fusion", "evidence"),
         edge("asr_qwen", "transcript", "transcript_fusion", "evidence"),
+        edge("asr_firered", "transcript", "transcript_fusion", "evidence"),
         edge("transcript_fusion", "lyrics", "forced_alignment", "lyrics"),
         edge("f0_rmvpe", "pitch", "evidence_fusion", "pitch"),
         edge("f0_fcpe", "pitch", "evidence_fusion", "pitch"),
@@ -242,16 +259,28 @@ pub fn workflow_from_audio_settings(
             "boundaries",
         ),
         edge(
+            "boundary_basic_pitch",
+            "boundaries",
+            "evidence_fusion",
+            "boundaries",
+        ),
+        edge(
+            "boundary_rosvot",
+            "boundaries",
+            "evidence_fusion",
+            "boundaries",
+        ),
+        edge(
+            "boundary_stars",
+            "boundaries",
+            "evidence_fusion",
+            "boundaries",
+        ),
+        edge(
             "forced_alignment",
             "alignment",
             "evidence_fusion",
             "alignment",
-        ),
-        edge(
-            "technique_stars",
-            "techniques",
-            "evidence_fusion",
-            "techniques",
         ),
         edge("acoustic_dsp", "acoustic", "evidence_fusion", "acoustic"),
         edge("evidence_fusion", "evidence", "candidate_graph", "evidence"),
@@ -265,17 +294,19 @@ pub fn workflow_from_audio_settings(
     ]);
 
     let analyzer_bindings = [
-        "asr_firered",
         "asr_qwen",
+        "asr_firered",
         "forced_alignment",
         "f0_rmvpe",
         "f0_fcpe",
         "boundary_game",
-        "technique_stars",
+        "boundary_basic_pitch",
+        "boundary_rosvot",
+        "boundary_stars",
         "acoustic_dsp",
     ]
     .into_iter()
-    .map(|analyzer| binding(analyzer, "harmony_split", "lead"))
+    .map(|analyzer| binding(analyzer, &vocal_tail.0, &vocal_tail.1))
     .collect();
 
     WorkflowDefinition {

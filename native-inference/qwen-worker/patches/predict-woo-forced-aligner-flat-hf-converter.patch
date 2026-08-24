@@ -1,0 +1,146 @@
+diff --git a/scripts/convert_hf_to_gguf.py b/scripts/convert_hf_to_gguf.py
+index a8ad8a1..59fc80c 100644
+--- a/scripts/convert_hf_to_gguf.py
++++ b/scripts/convert_hf_to_gguf.py
+@@ -27,11 +27,8 @@ import torch
+ from safetensors import safe_open
+ from tqdm import tqdm
+ 
+-# Add gguf-py to path
+-GGUF_PY_PATH = Path("/root/llama.cpp/gguf-py")
+-if GGUF_PY_PATH.exists():
+-    sys.path.insert(0, str(GGUF_PY_PATH))
+-
++# Resolve gguf-py from the caller's environment instead of a developer-specific
++# /root path. This keeps conversion offline and reproducible.
+ import gguf
+ 
+ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+@@ -160,13 +157,17 @@ class Qwen3ASRConverter:
+             return json.load(f)
+ 
+     def _is_forced_aligner(self) -> bool:
+-        """Check if this is a ForcedAligner model."""
++        """Check both the original and current Transformers HF formats."""
+         thinker_config = self.config.get("thinker_config", {})
+-        return thinker_config.get("model_type") == "qwen3_forced_aligner"
++        architectures = self.config.get("architectures", [])
++        return (
++            thinker_config.get("model_type") == "qwen3_forced_aligner"
++            or "Qwen3ASRForTokenClassification" in architectures
++        )
+ 
+     def _extract_params(self) -> None:
+-        """Extract model parameters from config."""
+-        thinker_config = self.config.get("thinker_config", {})
++        """Extract parameters from original thinker or current flat HF config."""
++        thinker_config = self.config.get("thinker_config") or self.config
+         audio_config = thinker_config.get("audio_config", {})
+         text_config = thinker_config.get("text_config", {})
+ 
+@@ -184,7 +185,9 @@ class Qwen3ASRConverter:
+         self.text_attention_heads = text_config.get("num_attention_heads", 16)
+         self.text_kv_heads = text_config.get("num_key_value_heads", 8)
+         self.text_intermediate_size = text_config.get("intermediate_size", 3072)
+-        self.text_rope_theta = text_config.get("rope_theta", 1000000)
++        self.text_rope_theta = text_config.get(
++            "rope_theta", text_config.get("rope_parameters", {}).get("rope_theta", 1000000)
++        )
+         self.text_rms_norm_eps = text_config.get("rms_norm_eps", 1e-6)
+         self.text_head_dim = text_config.get("head_dim", 128)
+         self.vocab_size = text_config.get("vocab_size", 151936)
+@@ -196,7 +199,9 @@ class Qwen3ASRConverter:
+ 
+         # ForcedAligner specific
+         if self.is_forced_aligner:
+-            self.classify_num = thinker_config.get("classify_num", 5000)
++            self.classify_num = thinker_config.get(
++                "classify_num", len(self.config.get("id2label", {})) or 5000
++            )
+             self.timestamp_token_id = self.config.get("timestamp_token_id", 151705)
+         else:
+             self.classify_num = None
+@@ -220,17 +225,38 @@ class Qwen3ASRConverter:
+         with open(tokenizer_config_path, "r", encoding="utf-8") as f:
+             return json.load(f)
+ 
++    def _load_tokenizer_json(self) -> dict[str, Any]:
++        path = self.input_dir / "tokenizer.json"
++        if not path.exists():
++            return {}
++        with open(path, "r", encoding="utf-8") as f:
++            return json.load(f)
++
+     def _load_vocab_dict(self) -> dict[str, int]:
+-        """Load the base tokenizer vocab from vocab.json only."""
++        """Load the base tokenizer vocab from separate or fast-tokenizer files."""
+         vocab_path = self.input_dir / "vocab.json"
+-        if not vocab_path.exists():
+-            raise FileNotFoundError(f"Vocab file not found: {vocab_path}")
+-
+-        with open(vocab_path, "r", encoding="utf-8") as f:
+-            return json.load(f)
++        if vocab_path.exists():
++            with open(vocab_path, "r", encoding="utf-8") as f:
++                return json.load(f)
++        vocab = self._load_tokenizer_json().get("model", {}).get("vocab", {})
++        if not vocab:
++            raise FileNotFoundError(f"No vocab found in {self.input_dir}")
++        return vocab
+ 
+     def _map_tensor_name(self, hf_name: str) -> str | None:
+-        """Map HuggingFace tensor name to GGML convention."""
++        """Map original thinker and current Transformers HF tensor names."""
++        if hf_name == "score.weight":
++            # The current token-classification model's 5000-class timestamp head.
++            return "output.weight"
++        if hf_name.startswith("model.audio_tower."):
++            hf_name = "thinker.audio_tower." + hf_name[len("model.audio_tower."):]
++        elif hf_name.startswith("model.multi_modal_projector.linear_1."):
++            hf_name = "thinker.audio_tower.proj1." + hf_name[len("model.multi_modal_projector.linear_1."):]
++        elif hf_name.startswith("model.multi_modal_projector.linear_2."):
++            hf_name = "thinker.audio_tower.proj2." + hf_name[len("model.multi_modal_projector.linear_2."):]
++        elif hf_name.startswith("model.language_model."):
++            hf_name = "thinker.model." + hf_name[len("model.language_model."):]
++
+         # Check direct mapping first
+         if hf_name in self.TENSOR_MAP:
+             return self.TENSOR_MAP[hf_name]
+@@ -363,6 +389,7 @@ class Qwen3ASRConverter:
+         vocab_dict = self._load_vocab_dict()
+         tokenizer_config = self._load_tokenizer_config()
+         merges_path = self.input_dir / "merges.txt"
++        tokenizer_json = self._load_tokenizer_json()
+ 
+         added_tokens = tokenizer_config.get("added_tokens_decoder", {})
+         max_vocab_id = max(vocab_dict.values()) if vocab_dict else -1
+@@ -390,7 +417,7 @@ class Qwen3ASRConverter:
+             )
+             vocab_dict[token] = token_id
+ 
+-        # Load merges
++        # Load merges from separate or fast-tokenizer files.
+         merges = []
+         if merges_path.exists():
+             with open(merges_path, "r", encoding="utf-8") as f:
+@@ -398,6 +425,20 @@ class Qwen3ASRConverter:
+                     line = line.strip()
+                     if line and not line.startswith("#"):
+                         merges.append(line)
++        else:
++            for merge in tokenizer_json.get("model", {}).get("merges", []):
++                merges.append(" ".join(merge) if isinstance(merge, list) else merge)
++
++        # Current fast-tokenizer files also carry added tokens here.
++        for token_info in tokenizer_json.get("added_tokens", []):
++            token_id = token_info.get("id")
++            token = token_info.get("content")
++            if token_id is not None and token and 0 <= token_id < len(tokens):
++                tokens[token_id] = token
++                toktypes[token_id] = (
++                    gguf.TokenType.CONTROL if token_info.get("special", False)
++                    else gguf.TokenType.NORMAL
++                )
+ 
+         logger.info(
+             "Using tokenizer vocab built from vocab.json + tokenizer_config.json "

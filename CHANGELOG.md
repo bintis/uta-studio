@@ -2,6 +2,33 @@
 
 This changelog is generated from git history.
 
+## 0.6.0 — 2026-08-24
+
+### Native analysis platform
+
+- Integrated the standalone Analysis Engine and Runtime Manager workspaces, including typed process-boundary contracts, immutable runtime/model identity, explicit capability planning, and supervised native workers.
+- Added the compiled Processing Studio workflow path, conditional expert scheduling, evidence fusion, candidate-chart publication, and runtime-backed model resolution.
+- Made local integration runs use the explicit experimental testing policy so candidate, legacy, and CPU-reference routes can be exercised without pretending they are production-certified.
+- Kept real integrity, dependency, executable, and worker-capability failures visible instead of silently downloading or substituting resources.
+
+### Models and inference
+
+- Integrated OpenVINO, Vulkan, Qwen ASR/alignment, RoFormer separation and cleanup, RMVPE/FCPE, GAME, Basic Pitch, ROSVOT, and STARS execution resources and supporting conversion/validation tooling.
+- Corrected optional capability reporting for dereverb, FireRed transcription, FCPE, and Basic Pitch so missing local runtimes are reported as resource readiness issues rather than unimplemented features.
+- Added runtime/model installation, verification, repair, diagnostics, and immutable generation handling through the local Runtime Manager.
+
+### Desktop and workflow UX
+
+- Separated model provider selection from global Settings: provider choice now belongs to the song Analysis workspace, while Models & runtime exposes installation state and model-owned tuning parameters.
+- Moved model/runtime inspection off the UI thread, cached stable status projections, and reduced repeated process launches during workflow compilation.
+- Reworked Settings scrolling to survive deferred UI rebuilds, preserve per-tab offsets, and measure actual page content when Bevy layout data is temporarily stale.
+- Improved Settings typography, control alignment, route navigation, Quick model selection entry points, plan previews, analysis graph interactions, and evidence-review workflows.
+
+### Documentation and release integration
+
+- Added the design, implementation, repair, validation, and model-readiness documentation used for the integrated native analysis architecture.
+- Updated packaging, Nix development support, release automation, and embedded multilingual documentation for the 0.6 series.
+
 ## 0.5.1 — 2026-08-20
 
 - Refined library navigation by grouping charts and video under My Library and removing artist/album sidebar entries.

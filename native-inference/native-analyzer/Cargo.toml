@@ -1,9 +1,9 @@
 [package]
 name = "uta-native-analyzer"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+uta-analysis-engine = { path = "../../analysis-engine" }
+uta-runtime-manager = { path = "../../runtime-manager" }

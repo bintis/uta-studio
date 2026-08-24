@@ -41,23 +41,13 @@ pub(crate) fn spawn_song_primary_actions(
             );
         }
         app_core::SongAuthoringState::AnalyzeSong => {
-            if app_core::analysis_runtime_status().ready {
-                spawn_action_button(
-                    parent,
-                    font,
-                    theme,
-                    "Analyze song",
-                    UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
-                );
-            } else {
-                spawn_action_button(
-                    parent,
-                    font,
-                    theme,
-                    "Set up analysis",
-                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-                );
-            }
+            spawn_action_button(
+                parent,
+                font,
+                theme,
+                "Analyze song",
+                UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
+            );
         }
         app_core::SongAuthoringState::OpenEditor => {
             spawn_action_button(
