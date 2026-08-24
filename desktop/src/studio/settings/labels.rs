@@ -161,7 +161,7 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
             _ => "MelBand-RoFormer Inst V2",
         },
         SettingsSelectKind::AudioKaraokeModel => match value {
-            "melband_roformer_harmony" => "MelBand-RoFormer Lead / Back",
+            "melband_roformer_harmony" => "MelBand-RoFormer Lead Isolation",
             _ => "Off",
         },
         SettingsSelectKind::AudioVocalPostprocess1
@@ -213,7 +213,10 @@ pub(crate) fn settings_select_options(
         }
         SettingsSelectKind::AudioKaraokeModel => &[
             ("none", "Off"),
-            ("melband_roformer_harmony", "MelBand-RoFormer Lead / Back"),
+            (
+                "melband_roformer_harmony",
+                "MelBand-RoFormer Lead Isolation",
+            ),
         ],
         SettingsSelectKind::AudioVocalPostprocess1
         | SettingsSelectKind::AudioVocalPostprocess2

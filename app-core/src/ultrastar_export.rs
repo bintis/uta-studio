@@ -1,6 +1,6 @@
 //! UltraStar 1.1 text export.
 //!
-//! Uta Studio keeps a second-based authoring model. This adapter quantizes it
+//! Uta! Studio keeps a second-based authoring model. This adapter quantizes it
 //! to UltraStar note beats and writes the referenced assets beside the chart.
 
 use std::{
@@ -73,7 +73,7 @@ pub fn export_ultrastar(
         .and_then(|value| value.to_str())
         .map(safe_component)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "Uta Studio Export".into());
+        .unwrap_or_else(|| "Uta! Studio Export".into());
     let instrumental_name = format!(
         "{base} - Instrumental.{}",
         export_audio_extension(&instrumental)
@@ -197,7 +197,7 @@ fn build_ultrastar_text(
     duration_seconds: f64,
 ) -> String {
     let mut output = format!(
-        "#VERSION:1.1.0\n#TITLE:{title}\n#ARTIST:{artist}\n#CREATOR:Uta Studio\n#AUDIO:{audio_name}\n#MP3:{audio_name}\n#INSTRUMENTAL:{audio_name}\n#BPM:{EXPORT_BPM:.2}\n#GAP:0\n"
+        "#VERSION:1.1.0\n#TITLE:{title}\n#ARTIST:{artist}\n#CREATOR:Uta! Studio\n#AUDIO:{audio_name}\n#MP3:{audio_name}\n#INSTRUMENTAL:{audio_name}\n#BPM:{EXPORT_BPM:.2}\n#GAP:0\n"
     );
     if let Some(language) = chart
         .language
@@ -317,7 +317,7 @@ fn write_track_notes(output: &mut String, track: &VocalTrack, timebase: u64) {
 /// UTZ's `part` field is the direct source of UltraStar's P1/P2 player
 /// numbering, so a chart that assigns parts uses them, ordered by part
 /// number. A chart with no part assignments (solo charts, or ones authored
-/// outside Uta Studio) falls back to every non-empty lead track in track
+/// outside Uta! Studio) falls back to every non-empty lead track in track
 /// order, matching the single-player and unnumbered-duet cases.
 fn player_tracks(chart: &VocalChartV1) -> Vec<&VocalTrack> {
     let has_notes =

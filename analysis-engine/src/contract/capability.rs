@@ -64,14 +64,14 @@ pub fn capability_registry() -> Vec<CapabilityDescriptor> {
         ("notes.basic_pitch", false, true),
         ("notes.rosvot", false, true),
         ("notes.stars", false, true),
-        ("technique.analyze", true, false),
+        ("technique.analyze", false, true),
         ("analysis.acoustic_dsp", true, true),
         ("fusion.transcript", true, true),
         ("fusion.alignment", true, true),
         ("fusion.singing", true, true),
         ("fusion.candidate_graph", true, true),
         ("finalize.vocal_chart", true, true),
-        ("rhythm.quantize", true, true),
+        ("rhythm.quantize", false, true),
     ];
     definitions
         .into_iter()
@@ -91,7 +91,7 @@ fn capability_inputs(id: &str) -> Vec<String> {
         &["local_file"]
     } else if id.starts_with("audio.") {
         &["decoded_audio"]
-    } else if matches!(id, "notes.rosvot" | "notes.stars") {
+    } else if matches!(id, "notes.rosvot" | "notes.stars" | "technique.analyze") {
         &["analysis_ready_lead", "timed_transcript"]
     } else if id.starts_with("speech.")
         || id.starts_with("pitch.")
@@ -106,10 +106,8 @@ fn capability_inputs(id: &str) -> Vec<String> {
         &["singing_candidates"]
     } else if id.starts_with("fusion.") {
         &["canonical_evidence"]
-    } else if id == "finalize.vocal_chart" {
+    } else if matches!(id, "finalize.vocal_chart" | "rhythm.quantize") {
         &["canonical_singing_track"]
-    } else if id == "rhythm.quantize" {
-        &["candidate_vocal_chart"]
     } else {
         &[]
     };
@@ -137,7 +135,7 @@ fn capability_outputs(id: &str) -> Vec<String> {
         "fusion.singing" => &["singing_candidates"],
         "fusion.candidate_graph" => &["canonical_singing_track"],
         "finalize.vocal_chart" => &["candidate_vocal_chart"],
-        "rhythm.quantize" => &["quantized_candidate_vocal_chart"],
+        "rhythm.quantize" => &["quantized_canonical_singing_track"],
         _ => &[],
     };
     values.iter().map(|value| (*value).to_string()).collect()
@@ -148,7 +146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn advanced_note_experts_require_timed_transcript_without_enabling_technique() {
+    fn advanced_note_experts_and_technique_require_timed_transcript() {
         let capabilities = capability_registry();
         for id in ["notes.rosvot", "notes.stars"] {
             let capability = capabilities
@@ -164,12 +162,33 @@ mod tests {
                 ["note_candidate_evidence"]
             );
         }
-        assert!(
-            !capabilities
-                .iter()
-                .find(|capability| capability.id.as_str() == "technique.analyze")
-                .unwrap()
-                .implementation_exists
+        let technique = capabilities
+            .iter()
+            .find(|capability| capability.id.as_str() == "technique.analyze")
+            .unwrap();
+        assert!(technique.implementation_exists);
+        assert!(!technique.baseline_required);
+        assert_eq!(
+            technique.input_semantic_types,
+            ["analysis_ready_lead", "timed_transcript"]
+        );
+    }
+
+    #[test]
+    fn quantization_is_a_real_symbolic_prefinalization_stage() {
+        let quantization = capability_registry()
+            .into_iter()
+            .find(|capability| capability.id.as_str() == "rhythm.quantize")
+            .unwrap();
+        assert!(quantization.implementation_exists);
+        assert!(!quantization.baseline_required);
+        assert_eq!(
+            quantization.input_semantic_types,
+            ["canonical_singing_track"]
+        );
+        assert_eq!(
+            quantization.output_semantic_types,
+            ["quantized_canonical_singing_track"]
         );
     }
 

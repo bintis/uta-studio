@@ -105,7 +105,27 @@ impl AnalyzeRequestV1 {
         if let Some(context) = &self.musical_context {
             context.validate()?;
         }
+        if self.execution_policy.model_backend_overrides.len() > 128 {
+            return Err(invalid("model backend override count exceeds the v1 limit"));
+        }
+        for (model_id, backend) in &self.execution_policy.model_backend_overrides {
+            validate_identifier(model_id, "model backend override id")?;
+            if independently_pinned_vulkan_model(model_id)
+                && *backend != uta_runtime_manager::NativeBackend::Vulkan
+            {
+                return Err(invalid(format!(
+                    "{model_id} keeps its independently pinned Vulkan backend"
+                )));
+            }
+        }
         if self.analysis.enable_quantization {
+            if !self.requested_artifacts.vocal_chart {
+                return Err(EngineError::new(
+                    EngineErrorCode::MissingRequiredInput,
+                    "rhythm quantization requires a requested Candidate VocalChart output",
+                )
+                .with_capability("rhythm.quantize"));
+            }
             let context = self.musical_context.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
@@ -211,11 +231,6 @@ impl AudioSourceV1 {
         {
             return Err(invalid(
                 "audio source path is empty or contains path traversal",
-            ));
-        }
-        if !valid_sha256(&self.sha256) {
-            return Err(invalid(
-                "audio source sha256 must be 64 lowercase hexadecimal characters",
             ));
         }
         self.timeline.validate()
@@ -548,26 +563,57 @@ impl RequestedArtifactsV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicyV1 {
     #[serde(default)]
     pub runtime_policy: RuntimePolicy,
+    /// Explicit global model backend selection. `None` uses each model's
+    /// pinned route unless an entry below overrides that model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_backend: Option<uta_runtime_manager::NativeBackend>,
+    /// Per-model backend choices take precedence and remain fail-closed.
+    /// Qwen and every RoFormer keep their independently pinned Vulkan runtime.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_backend_overrides: BTreeMap<String, uta_runtime_manager::NativeBackend>,
 }
 
 impl Default for ExecutionPolicyV1 {
     fn default() -> Self {
         Self {
             runtime_policy: RuntimePolicy::Experimental,
+            requested_backend: None,
+            model_backend_overrides: BTreeMap::new(),
         }
     }
 }
 
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+impl ExecutionPolicyV1 {
+    pub fn requested_backend_for(
+        &self,
+        model_id: &str,
+    ) -> Option<uta_runtime_manager::NativeBackend> {
+        if independently_pinned_vulkan_model(model_id) {
+            return None;
+        }
+        self.model_backend_overrides
+            .get(model_id)
+            .copied()
+            .or(self.requested_backend)
+    }
+}
+
+fn independently_pinned_vulkan_model(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "qwen3_asr_1_7b"
+            | "qwen3_forced_aligner_0_6b"
+            | "bs_roformer_vocals_ep317"
+            | "melband_roformer_inst_v2"
+            | "melband_roformer_harmony"
+            | "melband_roformer_denoise_aufr33"
+            | "melband_roformer_dereverb_anvuew"
+    )
 }
 
 fn validate_identifier(value: &str, label: &str) -> EngineResult<()> {
@@ -639,6 +685,47 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn model_backend_override_precedes_global_and_pinned_vulkan_models_ignore_both() {
+        let mut policy = ExecutionPolicyV1 {
+            requested_backend: Some(uta_runtime_manager::NativeBackend::OpenVino),
+            ..ExecutionPolicyV1::default()
+        };
+        policy.model_backend_overrides.insert(
+            "fcpe".to_string(),
+            uta_runtime_manager::NativeBackend::CpuReference,
+        );
+        assert_eq!(
+            policy.requested_backend_for("fcpe"),
+            Some(uta_runtime_manager::NativeBackend::CpuReference)
+        );
+        assert_eq!(
+            policy.requested_backend_for("rmvpe"),
+            Some(uta_runtime_manager::NativeBackend::OpenVino)
+        );
+        for model_id in [
+            "qwen3_asr_1_7b",
+            "bs_roformer_vocals_ep317",
+            "melband_roformer_denoise_aufr33",
+            "melband_roformer_dereverb_anvuew",
+        ] {
+            assert_eq!(policy.requested_backend_for(model_id), None);
+        }
+    }
+
+    #[test]
+    fn roformer_openvino_override_is_rejected() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.execution_policy.model_backend_overrides.insert(
+            "melband_roformer_denoise_aufr33".to_string(),
+            uta_runtime_manager::NativeBackend::OpenVino,
+        );
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            EngineErrorCode::InvalidContract
+        );
+    }
+
+    #[test]
     fn quantization_requires_explicit_bpm_and_grid() {
         let mut request = valid_request(AudioRole::LeadVocal);
         request.analysis.enable_quantization = true;
@@ -654,6 +741,11 @@ pub(crate) mod tests {
             authority: ContextAuthority::Hint,
         });
         request.validate().unwrap();
+
+        request.requested_artifacts.vocal_chart = false;
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::MissingRequiredInput);
+        assert_eq!(error.capability.as_deref(), Some("rhythm.quantize"));
     }
 
     #[test]
@@ -684,18 +776,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rejects_instrumental_primary_invalid_hash_float_time_and_traversal() {
+    fn rejects_instrumental_primary_float_time_and_traversal() {
         let request = valid_request(AudioRole::Instrumental);
         assert_eq!(
             request.validate().unwrap_err().code,
             EngineErrorCode::InvalidAudioRole
-        );
-
-        let mut request = valid_request(AudioRole::LeadVocal);
-        request.audio_sources[0].sha256 = "ABC".to_string();
-        assert_eq!(
-            request.validate().unwrap_err().code,
-            EngineErrorCode::InvalidContract
         );
 
         let json = serde_json::to_value(valid_request(AudioRole::LeadVocal)).unwrap();

@@ -2,7 +2,8 @@ use std::path::{Component, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{EngineError, EngineErrorCode, EngineResult};
+use super::{AudioQualityReportV1, EngineError, EngineErrorCode, EngineResult};
+use crate::quantization::QuantizationReportV1;
 
 pub const ANALYSIS_RESULT_CONTRACT: &str = "uta.analysis-engine.result";
 pub const ANALYSIS_RESULT_VERSION: u32 = 1;
@@ -42,17 +43,10 @@ impl ArtifactRefV1 {
                 "artifact path must be a confined relative path",
             ));
         }
-        if self.bytes == 0
-            || self.media_type.trim().is_empty()
-            || self.sha256.len() != 64
-            || !self
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if self.bytes == 0 || self.media_type.trim().is_empty() {
             return Err(EngineError::new(
                 EngineErrorCode::OutputValidationFailed,
-                "artifact media type or SHA-256 is invalid",
+                "artifact media type or byte count is invalid",
             ));
         }
         Ok(())
@@ -65,6 +59,8 @@ pub struct AnalysisArtifactsV1 {
     pub candidate_vocal_chart: Option<ArtifactRefV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_evidence: Option<ArtifactRefV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technique_evidence: Option<ArtifactRefV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub singing_analysis: Option<ArtifactRefV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +96,10 @@ pub struct AnalysisDiagnosticsV1 {
     pub decoded_audio: Vec<DecodedAudioFactsV1>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<QuantizationReportV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_quality: Option<AudioQualityReportV1>,
     #[serde(default)]
     pub evidence: serde_json::Value,
 }
@@ -112,6 +112,7 @@ pub struct AnalysisProvenanceV1 {
     pub fusion_version: String,
     pub hsmm_version: String,
     pub quantization_version: String,
+    pub audio_quality_version: String,
     pub postprocess_version: String,
 }
 
@@ -158,6 +159,10 @@ impl AnalysisResultManifestV1 {
             (
                 self.artifacts.pitch_evidence.as_ref(),
                 "application/vnd.uta.pitch-evidence+json;version=0.3",
+            ),
+            (
+                self.artifacts.technique_evidence.as_ref(),
+                "application/vnd.uta.technique-evidence+json;version=1",
             ),
             (
                 self.artifacts.singing_analysis.as_ref(),
@@ -215,6 +220,31 @@ impl AnalysisResultManifestV1 {
                 ));
             }
         }
+        if let Some(report) = &self.diagnostics.quantization {
+            report.validate()?;
+            if self.artifacts.candidate_vocal_chart.is_none()
+                || self.provenance.quantization_version != report.algorithm
+            {
+                return Err(EngineError::new(
+                    EngineErrorCode::OutputValidationFailed,
+                    "quantization diagnostics require a matching Candidate VocalChart and provenance",
+                ));
+            }
+        }
+        if let Some(report) = &self.diagnostics.audio_quality {
+            report.validate()?;
+            if self.provenance.audio_quality_version != report.algorithm {
+                return Err(EngineError::new(
+                    EngineErrorCode::OutputValidationFailed,
+                    "audio quality diagnostics require matching algorithm provenance",
+                ));
+            }
+        } else if !self.provenance.audio_quality_version.is_empty() {
+            return Err(EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                "audio quality provenance requires a typed diagnostics report",
+            ));
+        }
         for facts in &self.diagnostics.decoded_audio {
             if facts.source_id.is_empty()
                 || facts.container.trim().is_empty()
@@ -233,13 +263,7 @@ impl AnalysisResultManifestV1 {
                 ));
             }
         }
-        if self.request_id.is_empty()
-            || self.fingerprint.len() != 64
-            || !self
-                .fingerprint
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if self.request_id.is_empty() || self.fingerprint.trim().is_empty() {
             return Err(EngineError::new(
                 EngineErrorCode::OutputValidationFailed,
                 "result request identity or fingerprint is invalid",

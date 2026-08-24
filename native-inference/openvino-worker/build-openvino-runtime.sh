@@ -1,17 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explicit developer/user action only. Uta Studio never invokes this script on
+# Explicit developer/user action only. Uta! Studio never invokes this script on
 # launch or during diagnostics.
 readonly OPENVINO_TAG="2026.3.0"
 readonly OPENVINO_COMMIT="8a17657b995fd3b4a52f8484acfcf2bb61214623"
 readonly OPENVINO_URL="https://github.com/openvinotoolkit/openvino.git"
-readonly RECIPE_SHA256="bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093"
+readonly OCL_RECIPE_SHA256="bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093"
+readonly ZE_RECIPE_SHA256="ac8820f0685370c6ab293484a6b1294510c4118920cbcb220b4ed00e7fa2bef2"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+gpu_rt_type="${UTA_OPENVINO_GPU_RT_TYPE:-OCL}"
+gpu_rt_type="${gpu_rt_type^^}"
+case "${gpu_rt_type}" in
+    OCL)
+        runtime_suffix=""
+        recipe_path="${SCRIPT_DIR}/runtime-recipe.json"
+        recipe_sha256="${OCL_RECIPE_SHA256}"
+        ;;
+    ZE)
+        runtime_suffix="-ze-experimental"
+        recipe_path="${SCRIPT_DIR}/runtime-recipe-ze-experimental.json"
+        recipe_sha256="${ZE_RECIPE_SHA256}"
+        ;;
+    *)
+        printf 'unsupported OpenVINO GPU runtime type: %s (expected OCL or ZE)\n' \
+            "${gpu_rt_type}" >&2
+        exit 2
+        ;;
+esac
+
 source_dir="${UTA_OPENVINO_SOURCE_DIR:-/tmp/openvino-${OPENVINO_TAG}}"
-build_dir="${UTA_OPENVINO_BUILD_DIR:-${HOME}/.cache/uta-studio/native-runtime/build/openvino-${OPENVINO_TAG}}"
-install_dir="${UTA_OPENVINO_INSTALL_DIR:-${HOME}/.local/share/uta-studio/runtime/openvino-${OPENVINO_TAG}}"
+build_dir="${UTA_OPENVINO_BUILD_DIR:-${HOME}/.cache/uta-studio/native-runtime/build/openvino-${OPENVINO_TAG}${runtime_suffix}}"
+install_dir="${UTA_OPENVINO_INSTALL_DIR:-${HOME}/.local/share/uta-studio/runtime/openvino-${OPENVINO_TAG}${runtime_suffix}}"
 cmake_bin="${CMAKE:-cmake}"
 ninja_bin="${NINJA:-ninja}"
 cxx_bin="${CXX:-g++}"
@@ -37,21 +58,26 @@ fi
 
 # Initialize only dependencies needed by the native runtime, ONNX frontend,
 # and manifest-pinned Intel CPU/GPU topology. NPU and script bindings stay disabled.
-git -C "${source_dir}" submodule update --init --depth 1 -- \
-    src/plugins/intel_cpu/thirdparty/mlas \
-    src/plugins/intel_cpu/thirdparty/onednn \
-    thirdparty/ittapi/ittapi \
-    thirdparty/json/nlohmann_json \
-    thirdparty/ocl/cl_headers \
-    thirdparty/ocl/clhpp_headers \
-    thirdparty/ocl/icd_loader \
-    thirdparty/onnx/onnx \
-    thirdparty/protobuf/protobuf \
-    thirdparty/pugixml \
-    thirdparty/snappy \
-    thirdparty/telemetry \
-    thirdparty/xbyak \
+submodules=(
+    src/plugins/intel_cpu/thirdparty/mlas
+    src/plugins/intel_cpu/thirdparty/onednn
+    thirdparty/ittapi/ittapi
+    thirdparty/json/nlohmann_json
+    thirdparty/ocl/cl_headers
+    thirdparty/ocl/clhpp_headers
+    thirdparty/ocl/icd_loader
+    thirdparty/onnx/onnx
+    thirdparty/protobuf/protobuf
+    thirdparty/pugixml
+    thirdparty/snappy
+    thirdparty/telemetry
+    thirdparty/xbyak
     thirdparty/zlib/zlib
+)
+if [[ "${gpu_rt_type}" == "ZE" ]]; then
+    submodules+=(thirdparty/level_zero/level-zero)
+fi
+git -C "${source_dir}" submodule update --init --depth 1 -- "${submodules[@]}"
 
 mkdir -p "${build_dir}" "${install_dir}"
 "${cmake_bin}" -S "${source_dir}" -B "${build_dir}" -G Ninja \
@@ -69,6 +95,7 @@ mkdir -p "${build_dir}" "${install_dir}"
     -DENABLE_DOCS=OFF \
     -DENABLE_INTEL_CPU=ON \
     -DENABLE_INTEL_GPU=ON \
+    -DGPU_RT_TYPE="${gpu_rt_type}" \
     -DENABLE_INTEL_NPU=OFF \
     -DENABLE_AUTO=OFF \
     -DENABLE_AUTO_BATCH=OFF \
@@ -119,14 +146,7 @@ install -Dm644 "${source_dir}/src/plugins/intel_cpu/thirdparty/onednn/LICENSE" \
 install -Dm644 "${source_dir}/thirdparty/ocl/icd_loader/LICENSE" \
     "${install_dir}/share/licenses/openvino/OpenCL-ICD-Loader-LICENSE"
 
-actual_recipe="$(sha256sum "${SCRIPT_DIR}/runtime-recipe.json" | cut -d' ' -f1)"
-if [[ "${actual_recipe}" != "${RECIPE_SHA256}" ]]; then
-    printf 'runtime recipe identity mismatch: expected %s, got %s\n' \
-        "${RECIPE_SHA256}" "${actual_recipe}" >&2
-    exit 4
-fi
-install -Dm644 "${SCRIPT_DIR}/runtime-recipe.json" \
-    "${install_dir}/runtime-recipe.json"
+install -Dm644 "${recipe_path}" "${install_dir}/runtime-recipe.json"
 
 manifest_tmp="${install_dir}/runtime-manifest.json.tmp.$$"
 cat >"${manifest_tmp}" <<EOF
@@ -134,7 +154,9 @@ cat >"${manifest_tmp}" <<EOF
   "schema_version": 1,
   "openvino_version": "${OPENVINO_TAG}",
   "source_commit": "${OPENVINO_COMMIT}",
-  "recipe_sha256": "${RECIPE_SHA256}",
+  "recipe_sha256": "${recipe_sha256}",
+  "gpu_runtime_type": "${gpu_rt_type}",
+  "experimental": $([[ "${gpu_rt_type}" == "ZE" ]] && printf true || printf false),
   "libraries": {
     "runtime/lib/intel64/libopenvino.so.2026.3.0": "$(sha256sum "${runtime_lib}/libopenvino.so.2026.3.0" | cut -d' ' -f1)",
     "runtime/lib/intel64/libopenvino_c.so.2026.3.0": "$(sha256sum "${runtime_lib}/libopenvino_c.so.2026.3.0" | cut -d' ' -f1)",
@@ -146,5 +168,5 @@ cat >"${manifest_tmp}" <<EOF
 }
 EOF
 mv -f "${manifest_tmp}" "${install_dir}/runtime-manifest.json"
-printf 'OpenVINO %s (%s) installed at %s\n' \
-    "${OPENVINO_TAG}" "${OPENVINO_COMMIT}" "${install_dir}"
+printf 'OpenVINO %s (%s, GPU_RT_TYPE=%s) installed at %s\n' \
+    "${OPENVINO_TAG}" "${OPENVINO_COMMIT}" "${gpu_rt_type}" "${install_dir}"

@@ -7,6 +7,7 @@ use super::{TranscriptArtifactV1, TranscriptAuthorityV1};
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 
 const MAX_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
+#[cfg(test)]
 const MANIFEST_SHA256: &str = "093335b6a113e5eead88bb011a7870d61f18319e8d0204523c3ce9d82e6c8c35";
 const REVISION: &str = "42ailab/FireRedASR2-AED-ONNX@13f950858934f7b6a0d3ce52bae65af0dc022258";
 
@@ -16,7 +17,8 @@ struct RawEvidence {
     schema_version: u32,
     model_id: String,
     selected_source_revision: String,
-    source_graph_sha256: BTreeMap<String, String>,
+    #[serde(rename = "source_graph_sha256")]
+    _source_graph_sha256: BTreeMap<String, String>,
     model_manifest_sha256: String,
     runtime_manifest_sha256: String,
     backend: String,
@@ -54,20 +56,6 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV
             .map_err(|error| invalid(format!("could not read FireRed evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("FireRed evidence JSON is invalid: {error}")))?;
-    let expected = [
-        (
-            "encoder",
-            "0fe4038f5e5cd340171535b7b5f2e184482e90e22aeb2ed0f7abe81af10783f9",
-        ),
-        (
-            "decoder",
-            "aeef22670d95aa90d78a1927242c2a6e4fbb8b44c1af8d3ae988c46fd67ae833",
-        ),
-        (
-            "ctc",
-            "8881d31c17bca30a7972299d5395daaa6424da6328a818ba496719c3118c32b4",
-        ),
-    ];
     let expected_window_count = raw.input_samples.div_ceil(37_199);
     let windows_valid = raw.windows.len() == expected_window_count
         && raw.windows.iter().enumerate().all(|(index, window)| {
@@ -94,13 +82,7 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV
     if raw.schema_version != 3
         || raw.model_id != "firered_asr2_aed"
         || raw.selected_source_revision != REVISION
-        || raw.source_graph_sha256.len() != expected.len()
-        || expected.iter().any(|(name, digest)| {
-            raw.source_graph_sha256.get(*name).map(String::as_str) != Some(*digest)
-        })
-        || raw.model_manifest_sha256 != MANIFEST_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
-        || raw.backend != "openvino_gpu"
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.contract_scope != "windowed_230_feature_frame_sequence"
         || raw.input_samples == 0
         || raw.window_samples != 37_199
@@ -135,13 +117,6 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV
     };
     artifact.validate()?;
     Ok(artifact)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

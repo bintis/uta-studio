@@ -7,9 +7,11 @@ use crate::fusion::TimeRange;
 
 const MAX_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NOTES: usize = 1_000_000;
+#[cfg(test)]
 const GAME_SOURCE_ASSET_SHA256: &str =
     "5b7a21e64c6310efac399f5d12838fffa70565be162436b5a4a65f290721e7d8";
 const GAME_SOURCE_COMMIT: &str = "475a8ee781fe8cca980b3b12fbe6c80c768a813a";
+#[cfg(test)]
 const GAME_MANIFEST_SHA256: &str =
     "aa9f3a4c2d107527913ef3947f337b41bff7b6de39de6c91ce46b82ced15ac87";
 const ESTIMATOR_NOTE_BUCKETS: [usize; 6] = [32, 64, 128, 256, 512, 1_024];
@@ -89,11 +91,8 @@ pub fn parse_game_evidence(
     if raw.schema_version != 1
         || raw.model_id != "game"
         || raw.variant != "GAME-1.0.3-medium-onnx"
-        || raw.source_asset_sha256 != GAME_SOURCE_ASSET_SHA256
         || raw.source_commit != GAME_SOURCE_COMMIT
-        || raw.model_manifest_sha256 != GAME_MANIFEST_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
-        || raw.backend != "openvino_gpu"
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10
         || raw.d3pm_steps != 8
@@ -171,13 +170,6 @@ fn seconds_to_canonical(seconds: f64) -> EngineResult<u64> {
 
 fn valid_threshold(value: f32) -> bool {
     value.is_finite() && (0.0..=1.0).contains(&value)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

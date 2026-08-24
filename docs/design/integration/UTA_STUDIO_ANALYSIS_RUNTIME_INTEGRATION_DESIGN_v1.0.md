@@ -1,8 +1,8 @@
-# Uta Studio — Analysis Engine / Runtime Manager Reintegration Design v1.0
+# Uta! Studio — Analysis Engine / Runtime Manager Reintegration Design v1.0
 
 **Status:** implementation design
 **Date:** 2026-08-22
-**Scope:** Uta Studio desktop + `app-core` integration with `uta-analysis-engine` and `uta-runtime-manager`
+**Scope:** Uta! Studio desktop + `app-core` integration with `uta-analysis-engine` and `uta-runtime-manager`
 **Primary source assumption:** `TrueSource` is an authorized **local filesystem file**.
 
 **Architecture authority:** `docs/design/architecture/UTA_SEPARATED_ARCHITECTURE_DESIGN_v1.0.md` controls system/component boundaries; `docs/design/audio-analysis/UTA_ANALYSIS_ENGINE_AUDIO_ANALYSIS_FRAMEWORK_v2.1_RC.md` controls audio-analysis semantics. This document is a supporting Studio integration specification and must not override either.
@@ -11,7 +11,7 @@
 
 # 1. Purpose
 
-This document defines how the Uta Studio application integrates the standalone Analysis Engine and authoritative Runtime Manager that now exist in this repository.
+This document defines how the Uta! Studio application integrates the standalone Analysis Engine and authoritative Runtime Manager that now exist in this repository.
 
 It is intentionally Studio-specific. It does not replace the Analysis Engine or Runtime Manager architecture guides. It specifies the seam between those components and the existing Studio product model:
 
@@ -45,13 +45,13 @@ This design must be implemented consistently with:
 
 ```text
 AGENTS.md
-docs/agent-tasks/CURRENT_AGENT_TASKS.md
-docs/agent-tasks/TASK_ALL_MODEL_REPAIRS.md
+tasks/remaining-models/STATE.md
+docs/KEY_CONCLUSIONS.md
 docs/design/architecture/UTA_STUDIO_CLI_PROCESS_BOUNDARY_v1.0.md
 docs/design/integration/UTA_STUDIO_ANALYSIS_SETTINGS_MODEL_SELECTION_EXECUTION_UX_DESIGN_v1.0.md
 ```
 
-Where this document is more specific about the Studio integration seam, this document controls that seam. `docs/design/architecture/UTA_STUDIO_CLI_PROCESS_BOUNDARY_v1.0.md` controls the final Studio/backend dependency direction. `docs/agent-tasks/CURRENT_AGENT_TASKS.md` and the active task named there control current write ownership and next work.
+Where this document is more specific about the Studio integration seam, this document controls that seam. `docs/design/architecture/UTA_STUDIO_CLI_PROCESS_BOUNDARY_v1.0.md` controls the final Studio/backend dependency direction. `AGENTS.md` controls current repository rules, and `tasks/remaining-models/STATE.md` records current closure state.
 
 It does not override:
 
@@ -137,7 +137,7 @@ TrueSource is:
 
 - local;
 - user-owned/source media;
-- read-only to Uta Studio analysis;
+- read-only to Uta! Studio analysis;
 - never moved, rewritten or deleted by analysis;
 - not an Engine-generated stem;
 - not a compatibility preview;
@@ -325,7 +325,7 @@ The target local architecture uses **two explicit process boundaries**:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ Uta Studio desktop                                          │
+│ Uta! Studio desktop                                          │
 │ UI / commands / editor / settings                          │
 └──────────────────────────────┬──────────────────────────────┘
                                │ local in-process app API

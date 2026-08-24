@@ -583,7 +583,7 @@ pub(crate) fn spawn_empty_library(
                         },
                         children![(
                             Text::new(
-                                "Pick a local folder. Uta Studio will scan it, generate stems and charts with AI, then let you correct every word and note before exporting.",
+                                "Pick a local folder. Uta! Studio will scan it, generate stems and charts with AI, then let you correct every word and note before exporting.",
                             ),
                             ui_text_font(font.clone(), 13.0),
                             TextColor(theme.muted_foreground),

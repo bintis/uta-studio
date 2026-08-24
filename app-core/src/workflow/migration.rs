@@ -217,6 +217,15 @@ pub fn workflow_from_audio_settings(
             640,
         ),
         node(
+            "technique_stars",
+            "analysis.technique",
+            Some("stars"),
+            ExecutionPolicy::Conditional {
+                condition: ConditionalExecution::MaximumOnly,
+            },
+            635,
+        ),
+        node(
             "acoustic_dsp",
             "analysis.acoustic_dsp",
             None,
@@ -282,6 +291,12 @@ pub fn workflow_from_audio_settings(
             "evidence_fusion",
             "alignment",
         ),
+        edge(
+            "technique_stars",
+            "techniques",
+            "evidence_fusion",
+            "techniques",
+        ),
         edge("acoustic_dsp", "acoustic", "evidence_fusion", "acoustic"),
         edge("evidence_fusion", "evidence", "candidate_graph", "evidence"),
         edge(
@@ -303,6 +318,7 @@ pub fn workflow_from_audio_settings(
         "boundary_basic_pitch",
         "boundary_rosvot",
         "boundary_stars",
+        "technique_stars",
         "acoustic_dsp",
     ]
     .into_iter()

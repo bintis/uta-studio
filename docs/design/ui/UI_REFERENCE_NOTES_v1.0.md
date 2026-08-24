@@ -1,4 +1,4 @@
-# Uta Studio UI Reference Notes — v1.0 FINAL
+# Uta! Studio UI Reference Notes — v1.0 FINAL
 
 本目录中的 PNG 是 Processing Studio 的**信息架构/视觉方向参考**，不是当前程序截图，也不是像素级实现规范。
 

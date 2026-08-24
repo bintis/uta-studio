@@ -65,7 +65,7 @@ impl SingingAnalysisV1 {
             || self.version != SINGING_ANALYSIS_VERSION
             || self.format_version != SINGING_ANALYSIS_FORMAT_VERSION
             || self.timebase != CANONICAL_TIMEBASE
-            || !is_sha256(&self.provenance.execution_fingerprint)
+            || self.provenance.execution_fingerprint.trim().is_empty()
             || self.provenance.fusion_algorithm != FUSION_VERSION
             || self.provenance.candidate_graph_algorithm != HSMM_VERSION
         {
@@ -97,13 +97,6 @@ impl SingingAnalysisV1 {
         }
         Ok(())
     }
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

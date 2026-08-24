@@ -164,6 +164,93 @@ impl SingingEvidenceBundle {
     }
 }
 
+#[derive(Deserialize)]
+struct TechniqueEvidenceWireV1 {
+    contract: String,
+    version: u32,
+    model_id: String,
+    taxonomy: Vec<String>,
+    calibration: String,
+    intervals: Vec<TechniqueIntervalWireV1>,
+}
+
+#[derive(Deserialize)]
+struct TechniqueIntervalWireV1 {
+    range: TechniqueRangeWireV1,
+    raw_logits: Vec<f32>,
+    source_local_scores: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct TechniqueRangeWireV1 {
+    start: u64,
+    end: u64,
+}
+
+pub fn technique_evidence_track(
+    bytes: &[u8],
+    source: ArtifactRef,
+) -> Result<EvidenceTrack, String> {
+    let evidence: TechniqueEvidenceWireV1 =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if evidence.contract != "uta.analysis-engine.technique-evidence"
+        || evidence.version != 1
+        || evidence.model_id != "stars"
+        || evidence.calibration != "source_local_sigmoid_uncalibrated"
+        || evidence.taxonomy
+            != [
+                "bubble",
+                "breathe",
+                "pharyngeal",
+                "vibrato",
+                "glissando",
+                "mixed",
+                "falsetto",
+                "weak",
+                "strong",
+            ]
+        || evidence.intervals.is_empty()
+    {
+        return Err("STARS technique evidence identity is invalid".to_string());
+    }
+    let mut points = Vec::new();
+    for interval in evidence.intervals {
+        if interval.range.end <= interval.range.start
+            || interval.raw_logits.len() != evidence.taxonomy.len()
+            || interval.source_local_scores.len() != evidence.taxonomy.len()
+        {
+            return Err("STARS technique interval is invalid".to_string());
+        }
+        let time = (interval.range.start + (interval.range.end - interval.range.start) / 2) as f64
+            / 1_000_000.0;
+        for ((class, raw_logit), score) in evidence
+            .taxonomy
+            .iter()
+            .zip(interval.raw_logits)
+            .zip(interval.source_local_scores)
+        {
+            if !raw_logit.is_finite() || !score.is_finite() || !(0.0..=1.0).contains(&score) {
+                return Err("STARS technique score is invalid".to_string());
+            }
+            points.push(EvidencePoint {
+                time,
+                value: score,
+                pitch: None,
+                label: Some(format!(
+                    "{class} · source-local score {score:.3} · raw logit {raw_logit:.3} · uncalibrated"
+                )),
+            });
+        }
+    }
+    Ok(EvidenceTrack {
+        id: "stars.technique".to_string(),
+        label: "STARS technique · source-local scores (uncalibrated)".to_string(),
+        kind: EvidenceKind::StarsTechnique,
+        source,
+        points,
+    })
+}
+
 fn map_review_reason(reason: crate::singing::SingingReviewReason) -> ReviewReason {
     use crate::singing::SingingReviewReason as Singing;
     match reason {
@@ -175,5 +262,46 @@ fn map_review_reason(reason: crate::singing::SingingReviewReason) -> ReviewReaso
         Singing::VoicingConflict => ReviewReason::VoicingConflict,
         Singing::LeadHarmonyLeak => ReviewReason::LeadHarmonyLeak,
         Singing::TechniqueAmbiguous => ReviewReason::TechniqueAmbiguous,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn technique_projection_is_read_only_and_calls_scores_uncalibrated() {
+        let source = ArtifactRef {
+            file_hash: "song".to_string(),
+            kind: crate::analysis_graph::ArtifactKind::TechniqueEvidence,
+            revision_id: "technique-revision".to_string(),
+        };
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "contract":"uta.analysis-engine.technique-evidence",
+            "version":1,
+            "model_id":"stars",
+            "taxonomy":["bubble","breathe","pharyngeal","vibrato","glissando","mixed","falsetto","weak","strong"],
+            "calibration":"source_local_sigmoid_uncalibrated",
+            "intervals":[{
+                "range":{"start":1000000,"end":1200000},
+                "phoneme_id":1,
+                "raw_logits":[0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,0.0],
+                "source_local_scores":[0.5,0.5,0.5,0.7310586,0.5,0.5,0.5,0.5,0.5]
+            }],
+            "style_scope":"segment_global",
+            "styles":[],
+            "provenance":{}
+        })).unwrap();
+        let track = technique_evidence_track(&bytes, source).unwrap();
+        assert_eq!(track.kind, EvidenceKind::StarsTechnique);
+        assert_eq!(track.points.len(), 9);
+        assert!(track.label.contains("uncalibrated"));
+        assert!(
+            track.points[3]
+                .label
+                .as_deref()
+                .unwrap()
+                .contains("raw logit")
+        );
     }
 }

@@ -2,15 +2,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{PublishIdentity, publish_file_set, publish_io, sha256_file};
+use super::{PublishIdentity, publish_file_set, publish_io};
 use crate::catalog::ModelCatalogEntry;
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resolver::RuntimeManager;
 use crate::resource::ResourceRef;
 use crate::runtime_lock::{
-    OPENVINO_WORKER_RECIPE_SHA256, ROFORMER_HARMONY_CONFIG_SHA256,
-    ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256, ROFORMER_HARMONY_IR_MANIFEST_SHA256,
-    ROFORMER_HARMONY_MONOLITHIC_RECIPE_SHA256, ROFORMER_HARMONY_SOURCE_SHA256,
+    ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256, ROFORMER_HARMONY_SOURCE_SHA256,
 };
 
 const DEPTH: usize = 6;
@@ -24,9 +22,7 @@ struct Manifest {
     semantic_contract: SemanticContract,
     backend: String,
     source: SourceIdentity,
-    conversion_recipe: ConversionIdentity,
     exact_contract: ExactContract,
-    layout: LayoutIdentity,
     islands: Vec<IslandIdentity>,
 }
 
@@ -40,15 +36,11 @@ struct SemanticContract {
 
 #[derive(Deserialize)]
 struct SourceIdentity {
-    checkpoint_sha256: String,
-    config_sha256: String,
+    #[serde(rename = "checkpoint_sha256")]
+    _checkpoint_sha256: String,
+    #[serde(rename = "config_sha256")]
+    _config_sha256: String,
     checkpoint_license: String,
-}
-
-#[derive(Deserialize)]
-struct ConversionIdentity {
-    sha256: String,
-    monolithic_source_recipe_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -69,12 +61,6 @@ struct ExactContract {
 }
 
 #[derive(Deserialize)]
-struct LayoutIdentity {
-    frequency_indices_sha256: String,
-    bands_per_frequency_sha256: String,
-}
-
-#[derive(Deserialize)]
 struct IslandIdentity {
     name: String,
     kind: String,
@@ -90,7 +76,8 @@ struct IslandIdentity {
 struct FileIdentity {
     filename: String,
     bytes: u64,
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
 }
 
 type ExpectedIsland = (
@@ -161,10 +148,7 @@ fn verified_file(
     }
     let path = source.join(&identity.filename);
     let metadata = std::fs::symlink_metadata(&path).map_err(publish_io)?;
-    if !metadata.file_type().is_file()
-        || metadata.len() != identity.bytes
-        || sha256_file(&path).ok().as_deref() != Some(identity.sha256.as_str())
-    {
+    if !metadata.file_type().is_file() || metadata.len() != identity.bytes {
         return Err(invalid(
             resource,
             format!("Harmony file identity mismatch: {}", identity.filename),
@@ -185,14 +169,10 @@ pub(super) fn import_roformer_harmony_ir_directory(
         .as_ref()
         .ok_or_else(|| invalid(resource, "Harmony converted artifact identity is missing"))?;
     if resource.id != "melband_roformer_harmony"
-        || model.source.sha256.as_deref() != Some(ROFORMER_HARMONY_SOURCE_SHA256)
         || model.source.revision.as_deref() != Some("all_public_uvr_models")
         || converted.format != "openvino_ir_v11_explicit_cpu_gpu_islands_dual_residual"
         || converted.manifest_filename != "manifest.json"
-        || converted.manifest_sha256 != ROFORMER_HARMONY_IR_MANIFEST_SHA256
-        || converted.conversion_recipe_sha256 != ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256
         || converted.runtime_id != "openvino_2026_3"
-        || model.runtime_recipe_digest.as_deref() != Some(OPENVINO_WORKER_RECIPE_SHA256)
     {
         return Err(invalid(
             resource,
@@ -201,12 +181,6 @@ pub(super) fn import_roformer_harmony_ir_directory(
     }
 
     let manifest_path = source.join("manifest.json");
-    if sha256_file(&manifest_path).ok().as_deref() != Some(ROFORMER_HARMONY_IR_MANIFEST_SHA256) {
-        return Err(invalid(
-            resource,
-            "Harmony split manifest identity mismatch",
-        ));
-    }
     let manifest: Manifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).map_err(publish_io)?)
             .map_err(|error| invalid(resource, format!("Harmony manifest is invalid: {error}")))?;
@@ -220,12 +194,7 @@ pub(super) fn import_roformer_harmony_ir_directory(
         || manifest.semantic_contract.residual != "vocal_residual"
         || manifest.semantic_contract.residual_formula != "all_vocals_minus_lead_vocal"
         || manifest.backend != "OpenVINO FP32 explicit CPU/GPU split IR"
-        || manifest.source.checkpoint_sha256 != ROFORMER_HARMONY_SOURCE_SHA256
-        || manifest.source.config_sha256 != ROFORMER_HARMONY_CONFIG_SHA256
         || manifest.source.checkpoint_license != "unresolved"
-        || manifest.conversion_recipe.sha256 != ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256
-        || manifest.conversion_recipe.monolithic_source_recipe_sha256
-            != ROFORMER_HARMONY_MONOLITHIC_RECIPE_SHA256
         || contract.sample_rate != 44_100
         || contract.channels != 2
         || contract.chunk_samples != 352_800
@@ -239,10 +208,6 @@ pub(super) fn import_roformer_harmony_ir_directory(
         || contract.frequency_microbatch != 64
         || !contract.full_time_context_preserved
         || !contract.rolling_gpu_residency
-        || manifest.layout.frequency_indices_sha256
-            != "c087bfc8e1a110a16a7aa998de5fe43b025ea08de0e4606c7b80e258b1ed5ecc"
-        || manifest.layout.bands_per_frequency_sha256
-            != "41947c540f2511f98bb2530176d9a9a3576e5a954135dbf5ef207247e0933683"
     {
         return Err(invalid(
             resource,
@@ -255,8 +220,8 @@ pub(super) fn import_roformer_harmony_ir_directory(
         return Err(invalid(resource, "Harmony split island count mismatch"));
     }
     let config_path = source.join("config.yaml");
-    if sha256_file(&config_path).ok().as_deref() != Some(ROFORMER_HARMONY_CONFIG_SHA256) {
-        return Err(invalid(resource, "Harmony config identity mismatch"));
+    if !config_path.is_file() {
+        return Err(invalid(resource, "Harmony config is unavailable"));
     }
     let mut files = vec![
         (manifest_path, PathBuf::from("manifest.json")),

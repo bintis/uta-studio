@@ -104,7 +104,7 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.refresh_runtime_status",
     "ui.settings.open_settings_select",
     "ui.settings.select_settings_value",
-    "ui.settings.toggle_analysis_advanced",
+    "ui.settings.set_model_backend",
     "ui.settings.set_analysis_quality",
     "ui.settings.request_setup",
     "ui.settings.install_audio_model",
@@ -112,17 +112,10 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.cancel_setup",
     "ui.settings.confirm_setup",
     "ui.settings.toggle_theme",
-    "ui.settings.adjust_separator_segment_size",
-    "ui.settings.adjust_separator_overlap",
-    "ui.settings.adjust_separator_batch_size",
-    "ui.settings.adjust_separator_normalization",
-    "ui.settings.adjust_asr_beam_size",
-    "ui.settings.adjust_asr_batch_size",
     "ui.settings.adjust_ui_font_scale",
     "ui.settings.toggle_preserve_continuous_pitch",
     "ui.settings.toggle_analysis_quantization",
     "ui.settings.toggle_auto_analyze",
-    "ui.settings.adjust_vocal_threshold",
     "ui.settings.restore_analysis_defaults",
     "ui.settings.request_clear_cache",
     "ui.settings.cancel_clear_cache",
@@ -158,7 +151,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.select_workflow_node",
     "ui.analysis.move_workflow_node",
     "ui.analysis.duplicate_workflow_node",
-    "ui.analysis.cycle_workflow_policy",
+    "ui.analysis.set_workflow_policy",
     "ui.analysis.adjust_workflow_priority",
     "ui.analysis.rebind_workflow_analyzer",
     "ui.analysis.save_workflow",
@@ -181,18 +174,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.force_transcribe",
     "ui.analysis.reanalyze_pitch",
     "ui.analysis.reanalyze_full",
-    "ui.analysis.run_analysis_node_only",
-    "ui.analysis.run_analysis_node_downstream",
-    "ui.analysis.disable_analysis_node_for_run",
-    "ui.analysis.freeze_analysis_node_outputs",
-    "ui.analysis.bypass_analysis_node_with_original_mix",
     "ui.analysis.compare_node_attempt_with_previous",
-    "ui.analysis.save_node_config_as_song_profile",
-    "ui.analysis.open_node_config_dialog",
-    "ui.analysis.close_node_config_dialog",
-    "ui.analysis.toggle_node_config_picker",
-    "ui.analysis.select_node_config_value",
-    "ui.analysis.run_node_config_dialog",
     "ui.analysis.open_plan_preview",
     "ui.analysis.close_plan_preview",
     "ui.analysis.queue_exact_preview",
@@ -217,11 +199,6 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.set_active_artifact_revision",
     "ui.analysis.cancel_set_active_artifact_revision",
     "ui.analysis.confirm_set_active_artifact_revision",
-    "ui.analysis.request_capture_intermediate",
-    "ui.analysis.cancel_capture_intermediate",
-    "ui.analysis.confirm_capture_intermediate_once",
-    "ui.analysis.confirm_capture_intermediate_persistent",
-    "ui.analysis.confirm_disable_intermediate_capture",
     "ui.analysis.open_artifact_revision",
     "ui.analysis.preview_artifact_revision",
     "ui.analysis.reveal_artifact_revision",
@@ -704,5 +681,48 @@ mod tests {
             classified_access("ui.analysis.set_song_analysis_target"),
             "mutation"
         );
+    }
+
+    #[test]
+    fn parity_closure_features_have_reachable_typed_ui_actions() {
+        for command in [
+            "ui.settings.toggle_analysis_quantization",
+            "ui.analysis.set_workflow_policy",
+            "ui.analysis.open_artifact_compatible_editor",
+            "ui.analysis.merge_candidate_chart",
+            "ui.analysis.merge_selected_candidate_phrase",
+            "ui.library.play_artifact_revision",
+            "ui.editor.select_waveform_source",
+            "ui.editor.select_editor_track",
+            "ui.editor.toggle_evidence",
+            "ui.editor.review_previous",
+            "ui.editor.review_next",
+            "ui.editor.accept_suggestion",
+            "ui.editor.action.undo",
+        ] {
+            assert!(
+                ui_interaction_is_registered(command),
+                "missing reachable parity action {command}"
+            );
+        }
+
+        let analysis_settings = include_str!("settings/analysis.rs");
+        assert!(analysis_settings.contains("Quantize candidate notes"));
+        assert!(analysis_settings.contains("never to continuous PitchEvidence"));
+
+        let plan_preview = include_str!("analysis_preview.rs");
+        for identity_field in [
+            "workflow_id",
+            "workflow_revision",
+            "workflow_schema_version",
+            "definition_digest",
+        ] {
+            assert!(plan_preview.contains(identity_field));
+        }
+
+        let technique_timeline = include_str!("editor/view/timeline.rs");
+        assert!(technique_timeline.contains("STARS technique"));
+        assert!(technique_timeline.contains("Pickable::IGNORE"));
+        assert!(technique_timeline.contains("uncal."));
     }
 }

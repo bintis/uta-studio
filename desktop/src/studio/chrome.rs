@@ -52,7 +52,7 @@ pub(crate) fn spawn_sidebar(
                             spawn_text(
                                 brand,
                                 font.clone(),
-                                "Uta Studio",
+                                "Uta! Studio",
                                 18.0,
                                 theme.sidebar_foreground,
                             );
@@ -788,7 +788,7 @@ pub(crate) fn spawn_about_dialog(
                             ..default()
                         })
                         .with_children(|copy| {
-                            spawn_text(copy, font.clone(), "Uta Studio", 24.0, theme.foreground);
+                            spawn_text(copy, font.clone(), "Uta! Studio", 24.0, theme.foreground);
                             spawn_wrapped_text(
                                 copy,
                                 font.clone(),

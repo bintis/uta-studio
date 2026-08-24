@@ -7,13 +7,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::WorkerKind;
 use crate::audio;
-use crate::runtime::{ValidatedRuntime, sha256};
+use crate::runtime::ValidatedRuntime;
 
 const ASR_MODEL_SHA256: &str = "b7afe3674f653fa84f712ed2440353c6e7cf7f93697fef76b05a26538b24844e";
 const ALIGN_MODEL_SHA256: &str = "c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b";
 const ASR_LANGUAGE_CONTRACT_VERSION: u32 = 1;
 const ASR_EXPLICIT_LANGUAGE_HINT_POLICY: &str = "reject";
 const ASR_LANGUAGE_EVIDENCE_SOURCE: &str = "runtime_detected";
+const ASR_LONG_INPUT_POLICY: &str = "qwen-asr-windowed-90s-v1";
+const ASR_WINDOW_MAX_SECONDS: f64 = 90.0;
 const ALIGN_TEXT_NORMALIZATION_PROFILE: &str = "qwen-align-text-preserve-v1";
 const ALIGN_LANGUAGE_NORMALIZATION_PROFILE: &str = "qwen-align-language-v1";
 const ALIGN_SEMANTICS_PROFILE: &str = "qwen-align-token-word-80ms-v1";
@@ -51,6 +53,24 @@ struct TranscriptEvidence<'a> {
     language_contract: LanguageContractEvidence<'a>,
     language: &'a str,
     text: &'a str,
+    long_input: AsrLongInputEvidence<'a>,
+}
+
+#[derive(Serialize)]
+struct AsrSegmentEvidence {
+    index: usize,
+    audio_start_seconds: f64,
+    audio_end_seconds: f64,
+    detected_language: String,
+    text_characters: usize,
+}
+
+#[derive(Serialize)]
+struct AsrLongInputEvidence<'a> {
+    policy: &'a str,
+    max_window_seconds: f64,
+    source_duration_seconds: f64,
+    segments: &'a [AsrSegmentEvidence],
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -229,13 +249,6 @@ fn model_path(kind: WorkerKind, config: &serde_json::Value) -> Result<PathBuf, S
             kind.model_id()
         ));
     }
-    let expected = match kind {
-        WorkerKind::Asr => ASR_MODEL_SHA256,
-        WorkerKind::Align => ALIGN_MODEL_SHA256,
-    };
-    if sha256(&path)? != expected {
-        return Err(format!("{} model hash mismatch", kind.model_id()));
-    }
     Ok(path)
 }
 
@@ -393,6 +406,49 @@ fn parse_asr_result(raw: &str, stdout: &[u8], stderr: &[u8]) -> Result<(String, 
     Ok((language, text.to_string()))
 }
 
+fn plan_asr_segments(source_duration_seconds: f64) -> Result<Vec<(f64, f64)>, String> {
+    if !source_duration_seconds.is_finite() || source_duration_seconds <= 0.0 {
+        return Err("Qwen ASR source duration is invalid".to_string());
+    }
+    let count = (source_duration_seconds / ASR_WINDOW_MAX_SECONDS)
+        .ceil()
+        .max(1.0) as usize;
+    Ok((0..count)
+        .map(|index| {
+            let start = index as f64 * ASR_WINDOW_MAX_SECONDS;
+            (
+                start,
+                (start + ASR_WINDOW_MAX_SECONDS).min(source_duration_seconds),
+            )
+        })
+        .collect())
+}
+
+fn execute_asr_window(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    raw: &Path,
+) -> Result<(String, String), String> {
+    let mut command = Command::new(&runtime.engine);
+    command
+        .args(["-m"])
+        .arg(model)
+        // Quiet mode is intentionally absent: the pinned runtime's
+        // detected-language line is required evidence, not cosmetic logging.
+        .args(ASR_RUNTIME_ARGS)
+        .arg(raw)
+        .arg(audio)
+        .env("GGML_VK_VISIBLE_DEVICES", "0");
+    let result = (|| {
+        let output = run_engine(&mut command)?;
+        let raw_text = std::fs::read_to_string(raw).map_err(|error| error.to_string())?;
+        parse_asr_result(&raw_text, &output.stdout, &output.stderr)
+    })();
+    let _ = std::fs::remove_file(raw);
+    result
+}
+
 fn run_asr(
     runtime: &ValidatedRuntime,
     model: &Path,
@@ -401,22 +457,41 @@ fn run_asr(
     config: &serde_json::Value,
 ) -> Result<PathBuf, String> {
     validate_asr_language_policy(config)?;
-    let raw = output_dir.join("qwen-asr-transcript.txt");
     let destination = output_dir.join("qwen-asr-transcript-evidence.json");
-    let mut command = Command::new(&runtime.engine);
-    command
-        .args(["-m"])
-        .arg(model)
-        // Quiet mode is intentionally absent: the pinned runtime's
-        // detected-language line is required evidence, not cosmetic logging.
-        .args(ASR_RUNTIME_ARGS)
-        .arg(&raw)
-        .arg(audio)
-        .env("GGML_VK_VISIBLE_DEVICES", "0");
-    let output = run_engine(&mut command)?;
-    let raw_text = std::fs::read_to_string(&raw).map_err(|error| error.to_string())?;
-    let _ = std::fs::remove_file(&raw);
-    let (language, text) = parse_asr_result(&raw_text, &output.stdout, &output.stderr)?;
+    let source_duration_seconds = audio::wav_duration_seconds(audio)?;
+    let plans = plan_asr_segments(source_duration_seconds)?;
+    let mut segments = Vec::with_capacity(plans.len());
+    let mut texts = Vec::with_capacity(plans.len());
+    let mut language_weights = std::collections::BTreeMap::<String, usize>::new();
+    for (index, (start, end)) in plans.iter().copied().enumerate() {
+        let window = if plans.len() == 1 {
+            audio.to_path_buf()
+        } else {
+            audio::slice_wav(audio, output_dir, index, start, end - start)?
+        };
+        let raw = output_dir.join(format!("qwen-asr-transcript-{index:03}.txt"));
+        let result = execute_asr_window(runtime, model, &window, &raw);
+        if plans.len() > 1 {
+            let _ = std::fs::remove_file(&window);
+        }
+        let (language, text) = result?;
+        let text_characters = compact_character_count(&text);
+        *language_weights.entry(language.clone()).or_default() += text_characters;
+        texts.push(text);
+        segments.push(AsrSegmentEvidence {
+            index,
+            audio_start_seconds: start,
+            audio_end_seconds: end,
+            detected_language: language,
+            text_characters,
+        });
+    }
+    let text = texts.join(" ");
+    let language = language_weights
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+        .map(|(language, _)| language)
+        .ok_or_else(|| "Qwen ASR produced no window language evidence".to_string())?;
     atomic_json(
         &destination,
         &TranscriptEvidence {
@@ -432,6 +507,12 @@ fn run_asr(
             },
             language: &language,
             text: &text,
+            long_input: AsrLongInputEvidence {
+                policy: ASR_LONG_INPUT_POLICY,
+                max_window_seconds: ASR_WINDOW_MAX_SECONDS,
+                source_duration_seconds,
+                segments: &segments,
+            },
         },
     )?;
     Ok(destination)
@@ -735,6 +816,19 @@ mod tests {
         assert!(parse_asr_result("歌詞です", b"", b"").is_err());
         assert!(parse_asr_result("<|ja|>歌詞です", b"detected-language: zh\n", b"").is_err());
         assert!(language_from_log(b"detected-language: en\ndetected language: ja\n").is_err());
+    }
+
+    #[test]
+    fn asr_window_plan_is_bounded_contiguous_and_complete() {
+        let plan = plan_asr_segments(305.813_333).unwrap();
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan[0], (0.0, 90.0));
+        assert_eq!(plan[3], (270.0, 305.813_333));
+        assert!(plan.windows(2).all(|pair| pair[0].1 == pair[1].0));
+        assert!(
+            plan.iter()
+                .all(|(start, end)| end - start <= ASR_WINDOW_MAX_SECONDS)
+        );
     }
 
     #[test]

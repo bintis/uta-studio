@@ -25,6 +25,7 @@ pub fn load_song_workflow(file_hash: &str) -> Result<StoredWorkflow, String> {
     {
         let mut stored: StoredWorkflow = serde_json::from_str(&json)
             .map_err(|error| format!("invalid saved workflow: {error}"))?;
+        migrate_stored_workflow(&mut stored)?;
         stored.updated_at_ms = updated_at_ms;
         return Ok(stored);
     }
@@ -43,6 +44,22 @@ pub fn load_song_workflow(file_hash: &str) -> Result<StoredWorkflow, String> {
         layout: WorkflowLayout::default(),
         updated_at_ms: 0,
     })
+}
+
+pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String> {
+    match stored.definition.schema_version {
+        1 => {
+            // Schema 1 serialized the ambiguous local role as `back_vocal`.
+            // AudioRole's serde alias reads it as the explicit BackingVocal role;
+            // schema 2 then writes `backing_vocal` and keeps HarmonyVocal distinct.
+            stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
+            Ok(())
+        }
+        version if version == super::WORKFLOW_SCHEMA_VERSION => Ok(()),
+        version => Err(format!(
+            "unsupported saved workflow schema version {version}"
+        )),
+    }
 }
 
 pub fn save_song_workflow(

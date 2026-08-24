@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn native_window_preserves_existing_desktop_geometry() {
         let window = studio_window(&AppConfig::default(), true);
-        assert_eq!(window.title, "Uta Studio");
+        assert_eq!(window.title, "Uta! Studio");
         assert_eq!(window.width(), 1280.0);
         assert_eq!(window.height(), 720.0);
         assert!(!window.decorations);
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn export_stem_cannot_escape_the_selected_directory() {
         assert_eq!(safe_file_stem("../A/B: C?.utz"), "_A_B_ C_.utz");
-        assert_eq!(safe_file_stem("..."), "Uta Studio Export");
+        assert_eq!(safe_file_stem("..."), "Uta! Studio Export");
     }
 
     #[test]

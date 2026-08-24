@@ -232,7 +232,8 @@ fn port_type_names(port_type: &WorkflowPortType) -> (&'static str, Option<&'stat
                 AudioRole::SourceMix => "source_mix",
                 AudioRole::Vocal => "vocal",
                 AudioRole::LeadVocal => "lead_vocal",
-                AudioRole::BackVocal => "back_vocal",
+                AudioRole::BackingVocal => "backing_vocal",
+                AudioRole::HarmonyVocal => "harmony_vocal",
                 AudioRole::VocalResidual => "vocal_residual",
                 AudioRole::Instrumental => "instrumental",
                 AudioRole::Drums => "drums",
@@ -279,13 +280,20 @@ mod tests {
             "analysis.note_boundary"
         );
         assert_eq!(node("boundary_stars").execution_policy, "maximum_only");
-        assert!(
-            wire.nodes
-                .iter()
-                .all(|node| node.capability_id != "analysis.technique")
-        );
+        assert_eq!(node("technique_stars").capability_id, "analysis.technique");
+        assert_eq!(node("technique_stars").execution_policy, "maximum_only");
         assert!(wire.bindings.iter().any(|binding| {
             binding.semantic_type == "audio" && binding.audio_role.as_deref() == Some("lead_vocal")
+        }));
+        assert!(wire.terminal_outputs.iter().any(|output| {
+            output.semantic_type == "audio"
+                && output.audio_role.as_deref() == Some("vocal_residual")
+        }));
+        assert!(!wire.terminal_outputs.iter().any(|output| {
+            matches!(
+                output.audio_role.as_deref(),
+                Some("backing_vocal" | "harmony_vocal")
+            )
         }));
         assert!(
             wire.terminal_outputs.iter().any(|output| {

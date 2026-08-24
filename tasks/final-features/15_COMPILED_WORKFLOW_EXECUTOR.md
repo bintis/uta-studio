@@ -1,5 +1,7 @@
 # 15 — Compiled Workflow Executor
 
+**State:** READY
+
 **Precondition:** model cards 01–13 are terminal and no machine-level safety stop is active. Production-only model blockers (for example separate Vulkan authorization) do not block this CPU/control-plane feature card.
 **Task class:** CPU/control-plane feature closure; no model inference required for implementation acceptance
 **Primary owner:** `uta-analyze` / Analysis Engine execution contract
@@ -8,7 +10,7 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+AGENTS.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/15_COMPILED_WORKFLOW_EXECUTOR.md

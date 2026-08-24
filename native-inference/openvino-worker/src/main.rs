@@ -31,6 +31,11 @@ fn run_task(
     output_dir: &Path,
     config: &serde_json::Value,
 ) -> Result<(), String> {
+    if roformer_is_ggml_only(model_id) {
+        return Err(format!(
+            "{model_id} is pinned to the GGML/Vulkan Worker and cannot run through OpenVINO"
+        ));
+    }
     if !output_dir.is_dir() {
         return Err("authorized task output directory is unavailable".to_string());
     }
@@ -63,7 +68,11 @@ fn run_task(
             task_id,
             artifact: "advanced_note_evidence",
             path: &output,
-            media_type: "application/vnd.uta.advanced-note-evidence+json;version=1",
+            media_type: if model_id == "stars" {
+                "application/vnd.uta.advanced-note-evidence+json;version=2"
+            } else {
+                "application/vnd.uta.advanced-note-evidence+json;version=1"
+            },
         })?;
         return emit(WorkerFrame::Done {
             task_id,
@@ -210,11 +219,26 @@ fn run_task(
     })
 }
 
+fn roformer_is_ggml_only(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "bs_roformer_vocals_ep317"
+            | "melband_roformer_inst_v2"
+            | "melband_roformer_harmony"
+            | "melband_roformer_denoise_aufr33"
+            | "melband_roformer_dereverb_anvuew"
+    )
+}
+
 fn main() {
     runtime::configure_process_environment();
     if !std::env::args().any(|argument| argument == "--stdio-json") {
         eprintln!("uta-openvino-worker requires --stdio-json");
         std::process::exit(2);
+    }
+    if let Err(error) = protocol::isolate_native_stdout() {
+        eprintln!("{error}");
+        std::process::exit(3);
     }
     if emit(WorkerFrame::Ready {
         protocol: PROTOCOL_VERSION,
@@ -289,5 +313,24 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_roformer_is_rejected_by_the_openvino_worker() {
+        for model_id in [
+            "bs_roformer_vocals_ep317",
+            "melband_roformer_inst_v2",
+            "melband_roformer_harmony",
+            "melband_roformer_denoise_aufr33",
+            "melband_roformer_dereverb_anvuew",
+        ] {
+            assert!(roformer_is_ggml_only(model_id));
+        }
+        assert!(!roformer_is_ggml_only("rmvpe"));
     }
 }

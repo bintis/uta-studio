@@ -147,12 +147,12 @@ pub(crate) fn spawn_setup_confirmation(
     let (title, description) = if request.target.is_some() {
         (
             "Install selected native component?",
-            "Uta Studio will install only the selected audited artifact after confirmation. Existing model directories and source songs are never removed or replaced by this check.",
+            "Uta! Studio will install only the selected audited artifact after confirmation. Existing model directories and source songs are never removed or replaced by this check.",
         )
     } else {
         (
             "Verify native runtime?",
-            "Uta Studio will verify packaged workers, the runtime lock, ffmpeg, and existing model files without downloading anything.",
+            "Uta! Studio will verify packaged workers, the runtime lock, ffmpeg, and existing model files without downloading anything.",
         )
     };
     parent.spawn((

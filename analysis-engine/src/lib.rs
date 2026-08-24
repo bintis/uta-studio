@@ -1,6 +1,6 @@
 //! Standalone, local Uta Analysis Engine contracts, planning, and execution boundary.
 //!
-//! This crate intentionally has no dependency on Uta Studio's application core.
+//! This crate intentionally has no dependency on Uta! Studio's application core.
 
 pub mod artifact;
 pub mod audio;
@@ -17,6 +17,7 @@ pub mod quantization;
 pub mod separation;
 pub mod worker;
 pub mod workflow;
+pub mod workflow_executor;
 
 pub use contract::*;
 pub use engine::AnalysisEngine;

@@ -185,7 +185,7 @@ pub(crate) fn spawn_editor(
                                 font.clone(),
                                 song.as_ref()
                                     .map(|song| song.artist.as_str())
-                                    .unwrap_or("Uta Studio"),
+                                    .unwrap_or("Uta! Studio"),
                                 9.0,
                                 theme.muted_foreground,
                             );

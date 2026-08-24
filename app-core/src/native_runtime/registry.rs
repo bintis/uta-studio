@@ -144,6 +144,7 @@ pub fn native_runtime_registry() -> Vec<NativeModelRuntime> {
 pub fn component_executable(component_id: &str) -> Option<PathBuf> {
     let variable = match component_id {
         "openvino_runtime" | "openvino_2026_3" => "UTA_STUDIO_OPENVINO_RUNTIME_PATH",
+        "ggml_vulkan_v1" => "UTA_STUDIO_GGML_RUNTIME_PATH",
         "qwen_asr_runtime" => "UTA_STUDIO_QWEN_ASR_RUNTIME_PATH",
         "qwen_align_runtime" => "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH",
         "native_analyzer" => "UTA_STUDIO_NATIVE_ANALYZER_PATH",

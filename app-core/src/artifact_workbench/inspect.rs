@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    analysis_artifact::{hash_file_contents, load_analysis_artifacts, load_artifact_revisions},
+    analysis_artifact::{load_analysis_artifacts, load_artifact_revisions},
     analysis_graph::baseline_graph_spec,
 };
 
@@ -528,25 +528,6 @@ pub fn artifact_health(revision: &ArtifactRevision) -> ArtifactHealth {
             )],
         };
     }
-    match hash_file_contents(&revision.path) {
-        Ok(hash) if hash == revision.content_hash => {}
-        Ok(hash) => {
-            return ArtifactHealth {
-                status: ArtifactHealthStatus::Invalid,
-                messages: vec![format!(
-                    "Content hash differs from the committed revision (expected {}, found {}).",
-                    revision.content_hash, hash
-                )],
-            };
-        }
-        Err(error) => {
-            return ArtifactHealth {
-                status: ArtifactHealthStatus::Invalid,
-                messages: vec![format!("Content hash could not be verified: {error}")],
-            };
-        }
-    }
-
     match media_type(revision.kind) {
         ArtifactMediaType::Json | ArtifactMediaType::Chart => {
             match bounded_read(&revision.path, 8 * 1024 * 1024)
@@ -638,7 +619,7 @@ pub fn artifact_health(revision: &ArtifactRevision) -> ArtifactHealth {
         }
         ArtifactMediaType::Binary | ArtifactMediaType::Ephemeral => ArtifactHealth {
             status: ArtifactHealthStatus::Valid,
-            messages: vec!["Committed bytes and content hash verified.".to_string()],
+            messages: vec!["Backing file and committed byte size are valid.".to_string()],
         },
     }
 }

@@ -1,4 +1,4 @@
-//! Editable chart boundary for Uta Studio.
+//! Editable chart boundary for Uta! Studio.
 //!
 //! Analyzer output is an import source. The editor loads and saves the
 //! authoritative UTZ 0.2 vocal chart; target formats such as UltraStar are
@@ -23,7 +23,7 @@ use crate::{
     analysis_graph::{AnalysisNodeId, ArtifactKind},
     artifact_workbench::ArtifactRef,
     audio_format::{browser_can_decode, export_extension, transcode_audio},
-    authoring::get_audio_paths,
+    authoring::{get_audio_paths, resolve_original_media},
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
     library_db,
@@ -237,6 +237,7 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
     };
 
     let audio = get_audio_paths(file_hash);
+    let original_audio = resolve_original_media(&song, &cache);
     if !Path::new(&audio.instrumental).is_file() {
         return Err(UtaStudioError::Other(
             "instrumental or source audio is not ready".into(),
@@ -254,7 +255,7 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
                 .as_deref()
                 .map(|path| playable_audio(&cache, file_hash, "vocals", path))
                 .transpose()?,
-            original: playable_audio(&cache, file_hash, "original", &song.path.to_string_lossy())?,
+            original: playable_audio(&cache, file_hash, "original", &original_audio)?,
         },
         repaired_issues,
     })
@@ -805,6 +806,7 @@ fn atomic_write_json(destination: &Path, value: &serde_json::Value) -> Result<()
 /// The native worker produces the exact timed transcript; Rust combines it with the
 /// pitch-note evidence into the same validated UTZ chart type used by the
 /// editor. This prevents transcript JSON from masquerading as a chart.
+#[cfg(test)]
 pub(crate) fn materialize_candidate_chart(
     cache: &CacheDir,
     file_hash: &str,
@@ -1303,9 +1305,49 @@ mod chart_problem_count_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_pitch_note_timings, normalize_transcript_timings, validate_pitch_notes,
-        validate_transcript,
+        normalize_pitch_note_timings, normalize_transcript_timings, playable_audio,
+        validate_pitch_notes, validate_transcript,
     };
+    use crate::cache::CacheDir;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn failed_non_audio_preview_is_cleaned_without_touching_the_source() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let cache = CacheDir {
+            path: std::env::temp_dir().join(format!(
+                "uta-studio-editor-audio-source-test-{}-{nonce}",
+                std::process::id()
+            )),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        let source = cache.path.join("chart-without-audio.txt");
+        std::fs::write(&source, b"not an audio stream").unwrap();
+
+        let error =
+            playable_audio(&cache, "isolated", "original", source.to_str().unwrap()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ffmpeg could not create MP3 audio")
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"not an audio stream");
+        assert!(
+            !cache
+                .editor_preview_path("isolated", "original", "mp3")
+                .exists()
+        );
+        assert!(
+            std::fs::read_dir(&cache.path)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp."))
+        );
+        cache.clear_all();
+    }
 
     #[test]
     fn validates_editor_documents() {

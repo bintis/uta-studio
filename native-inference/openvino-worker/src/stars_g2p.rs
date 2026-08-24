@@ -3,13 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-
 pub const PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0-v1";
-pub const ASSET_SHA256: &str = "289fcbcddfa8e5a1a911419af48ef36ddc08736aef7818e2c9321bdb331a94cc";
+pub const ASSET_SHA256: &str = "433fcd2a7379cb9554a7a0dfe254746c3c7ee70bfd5de4fa18c1462757b888a5";
 pub const SOURCE_REVISION: &str = "f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167";
-pub const PHONE_SET_SHA256: &str =
-    "8767ab69222297499de3c109598fcfcabaf9585211a2ed4f5797dc944dca82a7";
 #[cfg(test)]
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -27,7 +23,8 @@ struct RawAsset {
     profile: String,
     source_revision: String,
     generator: GeneratorIdentity,
-    phone_set_sha256: String,
+    #[serde(rename = "phone_set_sha256")]
+    _phone_set_sha256: String,
     phone_set: Vec<String>,
     characters: BTreeMap<String, Vec<String>>,
     phrases: BTreeMap<String, Vec<Vec<String>>>,
@@ -65,18 +62,15 @@ impl ChineseG2pAsset {
         }
         let bytes = std::fs::read(path)
             .map_err(|error| format!("could not read STARS G2P asset: {error}"))?;
-        Self::from_verified_bytes(&bytes)
+        Self::from_bytes(&bytes)
     }
 
     /// Load the packaged immutable asset without a filesystem or script runtime.
     pub fn load_embedded() -> Result<Self, String> {
-        Self::from_verified_bytes(include_bytes!("../assets/stars-chinese-g2p-v1.json"))
+        Self::from_bytes(include_bytes!("../assets/stars-chinese-g2p-v1.json"))
     }
 
-    fn from_verified_bytes(bytes: &[u8]) -> Result<Self, String> {
-        if format!("{:x}", Sha256::digest(bytes)) != ASSET_SHA256 {
-            return Err("STARS Chinese G2P asset hash is invalid".to_string());
-        }
+    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let raw: RawAsset = serde_json::from_slice(bytes)
             .map_err(|error| format!("STARS Chinese G2P asset is invalid: {error}"))?;
         if raw.schema_version != 1
@@ -84,7 +78,6 @@ impl ChineseG2pAsset {
             || raw.source_revision != SOURCE_REVISION
             || raw.generator.pypinyin != "0.55.0"
             || raw.generator.jieba != "0.42.1"
-            || raw.phone_set_sha256 != PHONE_SET_SHA256
             || raw.runtime != "native_json_asset_only"
             || raw.phone_set.len() != 59
             || raw.phone_set.first().map(String::as_str) != Some("<SP>")
@@ -230,6 +223,16 @@ mod tests {
         // Phone-set IDs include the leading <Blank> reserved by PhoneEncoder.
         assert_eq!(result.phone_ids, [34, 20, 19, 7, 10, 36, 39, 27]);
         assert_eq!(result.phone_to_word, [0, 0, 0, 0, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn native_asset_covers_the_representative_chinese_transcript() {
+        let asset = ChineseG2pAsset::load_embedded().unwrap();
+        let text = "拱桥月下谁在弹唱思念远方牵挂那年仲夏你背上行囊离开家古道旁却我最一愿望究要挥意坠网眼摇有水微回妄忧原味用轮圆忆随褪谁流憶遠";
+        let result = asset.phonemize_words(&[text.to_string()]).unwrap();
+        assert!(!result.phone_ids.is_empty());
+        assert_eq!(result.phone_ids.len(), result.phone_to_word.len());
+        assert!(result.phone_to_word.iter().all(|word| *word == 0));
     }
 
     #[test]

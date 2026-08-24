@@ -1,4 +1,4 @@
-//! Native, UI-framework-independent audition playback for Uta Studio.
+//! Native, UI-framework-independent audition playback for Uta! Studio.
 //!
 //! The editor deliberately uses platform-native output instead of a UI
 //! toolkit's media element: GStreamer/PipeWire on Linux and WASAPI on Windows.
@@ -157,7 +157,7 @@ mod linux {
         }
         (!missing.is_empty()).then(|| {
             format!(
-                "Native audio is missing required GStreamer plugins: {}. Reinstall or relaunch the packaged Uta Studio runtime.",
+                "Native audio is missing required GStreamer plugins: {}. Reinstall or relaunch the packaged Uta! Studio runtime.",
                 missing.join(", ")
             )
         })
@@ -193,7 +193,7 @@ mod linux {
                 .build()
                 .map_err(|error| format!("Could not create native audio player: {error}"))?;
 
-            // Uta Studio is Wayland-only, so use PipeWire directly when it is
+            // Uta! Studio is Wayland-only, so use PipeWire directly when it is
             // available. Pulse compatibility and GStreamer's automatic sink
             // remain safe fallbacks for packaged environments with a smaller
             // plugin set.

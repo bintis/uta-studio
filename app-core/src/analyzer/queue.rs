@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
@@ -277,6 +278,7 @@ pub fn load_analysis_node_attempts(run_id: i64) -> Vec<NodeAttempt> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg(test)]
 pub(crate) struct HistoricalNodeWeight {
     node_id: String,
     implementation: String,
@@ -284,6 +286,7 @@ pub(crate) struct HistoricalNodeWeight {
     duration_ms: u64,
 }
 
+#[cfg(test)]
 fn median_duration_ms(samples: &mut [u64]) -> u64 {
     samples.sort_unstable();
     let upper = samples.len() / 2;
@@ -295,6 +298,7 @@ fn median_duration_ms(samples: &mut [u64]) -> u64 {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn historical_progress_weights() -> Vec<HistoricalNodeWeight> {
     let mut durations = BTreeMap::<(String, String, String), Vec<u64>>::new();
     for run in load_analysis_history(100)
@@ -705,4 +709,5 @@ impl AnalysisQueue {
 }
 // ─── Server process ──────────────────────────────────────────────────
 
+#[cfg(test)]
 pub(crate) static SERVER_PID: AtomicU32 = AtomicU32::new(0);

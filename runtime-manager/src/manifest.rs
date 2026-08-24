@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -61,36 +60,30 @@ impl GenerationVerification {
     }
 }
 
-/// Verify a published immutable generation without creating or modifying any
-/// path. Generation IDs are the full SHA-256 of the exact canonical manifest
-/// bytes written by the publisher. This exhaustive form hashes every payload
-/// byte and is reserved for explicit verification and execution resolution.
+/// Validate a published immutable generation without creating or modifying any
+/// path. Hash fields remain content-address metadata and are not reverified.
 pub fn verify_generation(
     generation_dir: &Path,
     generation: &str,
     expected_resource: &ResourceRef,
 ) -> GenerationVerification {
-    verify_generation_impl(generation_dir, generation, expected_resource, true)
+    verify_generation_impl(generation_dir, generation, expected_resource)
 }
 
-/// Validate the immutable generation envelope without re-reading every model
-/// byte. Publication already performs exhaustive verification before switching
-/// `current.json`; read-only status/preview paths can therefore validate the
-/// signed-by-digest manifest, declared file set, file types, and sizes. Explicit
-/// `verify` and model resolution still call [`verify_generation`].
+/// Validate the immutable generation envelope using schema, ownership, file-set,
+/// regular-file and size checks only.
 pub(crate) fn verify_generation_metadata(
     generation_dir: &Path,
     generation: &str,
     expected_resource: &ResourceRef,
 ) -> GenerationVerification {
-    verify_generation_impl(generation_dir, generation, expected_resource, false)
+    verify_generation_impl(generation_dir, generation, expected_resource)
 }
 
 fn verify_generation_impl(
     generation_dir: &Path,
     generation: &str,
     expected_resource: &ResourceRef,
-    verify_content: bool,
 ) -> GenerationVerification {
     if !is_generation_id(generation) || !generation_dir.is_dir() {
         return GenerationVerification::incomplete();
@@ -103,9 +96,6 @@ fn verify_generation_impl(
         }
         Err(_) => return GenerationVerification::corrupt(),
     };
-    if sha256_bytes(&bytes) != generation {
-        return GenerationVerification::corrupt();
-    }
     let manifest: InstallManifest = match serde_json::from_slice(&bytes) {
         Ok(manifest) => manifest,
         Err(_) => return GenerationVerification::corrupt(),
@@ -116,18 +106,6 @@ fn verify_generation_impl(
         || manifest.catalog_version.trim().is_empty()
         || manifest.created_timestamp.trim().is_empty()
         || manifest.files.is_empty()
-        || manifest
-            .source_sha256
-            .as_ref()
-            .is_some_and(|digest| !is_sha256(digest))
-        || manifest.source.as_ref().is_some_and(|source| {
-            source.sha256.as_ref().is_some_and(|source_sha256| {
-                manifest.source_sha256.as_ref() != Some(source_sha256)
-                    && source.converted_artifact.as_ref().is_none_or(|converted| {
-                        manifest.source_sha256.as_ref() != Some(&converted.manifest_sha256)
-                    })
-            })
-        })
         || manifest
             .model_recipe_digest
             .as_ref()
@@ -148,10 +126,7 @@ fn verify_generation_impl(
 
     let mut declared = BTreeSet::new();
     for file in &manifest.files {
-        if !safe_relative_path(&file.path)
-            || !is_sha256(&file.sha256)
-            || !declared.insert(file.path.clone())
-        {
+        if !safe_relative_path(&file.path) || !declared.insert(file.path.clone()) {
             return GenerationVerification::corrupt();
         }
         let path = generation_dir.join(&file.path);
@@ -164,12 +139,6 @@ fn verify_generation_impl(
         };
         if !metadata.file_type().is_file() || metadata.len() != file.size {
             return GenerationVerification::corrupt();
-        }
-        if verify_content {
-            match sha256_file(&path) {
-                Ok(digest) if digest == file.sha256 => {}
-                _ => return GenerationVerification::corrupt(),
-            }
         }
     }
 
@@ -202,10 +171,6 @@ pub fn is_generation_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn is_sha256(value: &str) -> bool {
-    is_generation_id(value)
 }
 
 pub(crate) fn safe_relative_path(path: &Path) -> bool {
@@ -251,20 +216,6 @@ fn collect_owned_files(
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 #[cfg(test)]

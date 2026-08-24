@@ -42,7 +42,7 @@ pub(crate) enum UiLocale {
 
 fn parse_catalog(source: &str) -> HashMap<String, String> {
     serde_json::from_str(source)
-        .expect("embedded Uta Studio translation catalog must be valid JSON")
+        .expect("embedded Uta! Studio translation catalog must be valid JSON")
 }
 
 fn catalog(locale: UiLocale) -> &'static HashMap<String, String> {
@@ -276,7 +276,6 @@ pub(crate) enum UiMessage {
     LanguageReprocessQueued,
     ArtifactRevisionsRecorded,
     FolderStoppedWatching,
-    FlacEstimatedUpperBound,
     AnalysisEngineSelected,
     DiagnosticsSummary,
 }
@@ -303,7 +302,6 @@ impl UiMessage {
             Self::LanguageReprocessQueued => "message.language_reprocess_queued",
             Self::ArtifactRevisionsRecorded => "message.artifact_revisions_recorded",
             Self::FolderStoppedWatching => "message.folder_stopped_watching",
-            Self::FlacEstimatedUpperBound => "message.flac_estimated_upper_bound",
             Self::AnalysisEngineSelected => "message.analysis_engine_selected",
             Self::DiagnosticsSummary => "message.diagnostics_summary",
         }
@@ -331,9 +329,6 @@ impl UiMessage {
             Self::ArtifactRevisionsRecorded => "Recorded {count} artifact revision(s) from disk.",
             Self::FolderStoppedWatching => {
                 "Stopped watching {path}. No source media was moved or deleted."
-            }
-            Self::FlacEstimatedUpperBound => {
-                "Estimated upper bound before FLAC compression: {size} MiB."
             }
             Self::AnalysisEngineSelected => {
                 "{engine} selected. Existing charts change only after re-analysis."

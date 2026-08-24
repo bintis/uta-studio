@@ -24,7 +24,14 @@ pub(crate) fn spawn_worker() {
                 Ok(Some(intent)) => {
                     super::engine_run::process_engine_queue_intent(&file_hash, &cache, intent)
                 }
-                _ => process_song(&file_hash, &cache),
+                Ok(None) => reject_unversioned_queue_entry(
+                    &file_hash,
+                    "analysis queue entry has no exact Engine request snapshot",
+                ),
+                Err(error) => reject_unversioned_queue_entry(
+                    &file_hash,
+                    &format!("could not load exact Engine request snapshot: {error}"),
+                ),
             }
 
             let mut state = ANALYZER.lock().unwrap();
@@ -33,9 +40,20 @@ pub(crate) fn spawn_worker() {
     });
 }
 
+pub(crate) fn reject_unversioned_queue_entry(file_hash: &str, reason: &str) {
+    let message =
+        format!("legacy analyzer execution is retired; rebuild an exact Plan Preview: {reason}");
+    update_queue_status(file_hash, QueuedStatus::Failed(message.clone()));
+    finish_analysis_history(file_hash, "failed", Some(&message));
+    LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
+    PENDING_NODE_INTENTS.lock().unwrap().remove(file_hash);
+    FROZEN_CONFIGS.lock().unwrap().remove(file_hash);
+}
+
 /// Removes only crash/stop leftovers created by this song's atomic writers.
 /// Final cache paths and immutable artifact revisions never match this
 /// dot-prefixed temporary naming convention and are therefore preserved.
+#[cfg(test)]
 pub(crate) fn cleanup_unfinished_output_temps(cache: &CacheDir, file_hash: &str) {
     let prefix = format!(".{file_hash}_");
     let Ok(entries) = std::fs::read_dir(&cache.path) else {
@@ -52,6 +70,7 @@ pub(crate) fn cleanup_unfinished_output_temps(cache: &CacheDir, file_hash: &str)
     }
 }
 
+#[cfg(test)]
 pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     let started_at_ms = unix_time_ms();
     ANALYSIS_STARTED
@@ -75,7 +94,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
             stage_progress: 0,
             operation: "Validating source media".into(),
             detail: "Checking the source before the analysis runtime starts.".into(),
-            implementation: "Uta Studio native preflight".into(),
+            implementation: "Uta! Studio native preflight".into(),
             model: "Source validation".into(),
             device: "CPU".into(),
             requested_device: "CPU".into(),
@@ -91,7 +110,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
                 committed_outputs: Vec::new(),
                 input_revision_ids: Vec::new(),
                 operation: "Validating source media".into(),
-                implementation: "Uta Studio native preflight".into(),
+                implementation: "Uta! Studio native preflight".into(),
                 model: "Source validation".into(),
                 stage_progress: 0,
                 requested_device: "cpu".into(),
@@ -580,6 +599,7 @@ pub(crate) fn process_song(initial_hash: &str, cache: &CacheDir) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn finalize_song(file_hash: &str, cache: &CacheDir) {
     if cache.transcript_exists(file_hash) {
         let meta = read_transcript_meta(cache, file_hash);
@@ -634,14 +654,11 @@ pub(crate) fn finalize_song(file_hash: &str, cache: &CacheDir) {
 /// Prepare an LRC-provided song authored over its original mix, without
 /// routing it through the analysis status queue.
 ///
-/// The analyzer-free work runs synchronously so the song is immediately
-/// editable: resolve the local audio, ensure its content hash is current, and
-/// mark the song ready (source=Lrc, no_stems). None of this touches the
-/// analyzer server, so it never stalls behind a running analysis.
-///
-/// The musical key is then detected on a background thread (which contends on
-/// the analyzer server) and patched in once it lands, so the key/tempo controls
-/// unlock later without blocking authoring.
+/// This Studio-local work runs synchronously so the song is immediately
+/// editable: resolve the local audio and mark the song ready
+/// (`source=Lrc`, `no_stems`). Key detection is intentionally not launched
+/// through the retired compatibility analyzer; the user may provide musical
+/// context explicitly before a future exact Engine request.
 pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
     let cache = CacheDir::new();
     let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
@@ -650,7 +667,7 @@ pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
 
     // Resolve the local audio and rekey the row if its content hash changed so
     // all downstream cache files follow the usual layout.
-    let (mut song, local_path, real_hash) = prepare_audio_for_analysis(&song, &cache)?;
+    let (mut song, _local_path, real_hash) = prepare_audio_for_analysis(&song, &cache)?;
     let real_hash = real_hash.to_string();
 
     // A rekey moves the row — carry the transcript we wrote under the original
@@ -674,81 +691,7 @@ pub fn prepare_lrc_no_stems(file_hash: &str) -> Result<(), UtaStudioError> {
     song.no_stems = true;
     library_db::update_song_fields(&real_hash, &song)
         .map_err(|e| UtaStudioError::Other(e.to_string()))?;
-    // Detect the key (and tempo) off-queue in the background; patch them onto
-    // the row once they land so key/tempo export variants unlock without
-    // blocking authoring.
-    std::thread::spawn(move || {
-        let cache = CacheDir::new();
-        if let Err(e) = run_key_pass(&cache, &local_path, &real_hash) {
-            warn!("[analyzer] LRC key detection failed for {real_hash}: {e}");
-            return;
-        }
-        let meta = read_transcript_meta(&cache, &real_hash);
-        if let Some(mut updated) = library_db::load_song_by_hash(&real_hash).ok().flatten() {
-            updated.key = meta.key;
-            updated.bpm = meta.bpm;
-            let _ = library_db::update_song_fields(&real_hash, &updated);
-        }
-        info!("[analyzer] LRC key detection complete for {real_hash}");
-    });
     Ok(())
-}
-
-/// Run a key-only analysis pass (no transcription, no stem separation) against
-/// the running analyzer server, keeping it off the status queue. On success the
-/// detected key is patched into the existing transcript by the pipeline.
-pub(crate) fn run_key_pass(
-    cache: &CacheDir,
-    local_path: &Path,
-    file_hash: &str,
-) -> Result<(), UtaStudioError> {
-    let config = AppConfig::load();
-    let cmd_json = serde_json::json!({
-        "type": "analyze",
-        "protocol": crate::native_runtime::NATIVE_WORKER_PROTOCOL_VERSION,
-        "audio_path": local_path.to_string_lossy(),
-        "cache_path": cache.path.to_string_lossy(),
-        "hash": file_hash,
-        "model": config.whisper_model(),
-        "beam_size": config.beam_size(),
-        "batch_size": config.batch_size(),
-        "separator": config.separator(),
-        "separator_options": {
-            "segment_size": config.separator_segment_size,
-            "overlap": config.separator_overlap(),
-            "batch_size": config.separator_batch_size(),
-            "normalization_pct": config.separator_normalization_pct(),
-        },
-        "engine": config.asr_engine(),
-        "align_backend": config.align_backend(),
-        "vocal_detection_threshold_pct": config.vocal_detection_threshold_pct(),
-        // Key only: keep the provided LRC transcript and the original mix.
-        "skip_transcription": true,
-        "skip_separation": true,
-    });
-    let json_str = serde_json::to_string(&cmd_json).unwrap();
-
-    let mut retried = false;
-    loop {
-        let mut guard = ANALYZER_SERVER.lock().unwrap();
-        ensure_server(&mut guard)?;
-        let server = guard.as_mut().unwrap();
-        // `None` progress hash keeps this off the status pipe (no queue rows).
-        match send_and_monitor(server, &json_str, None) {
-            Ok(SongResult::Done) => return Ok(()),
-            Ok(SongResult::Oom) | Err(_) => {
-                *guard = None;
-                if !retried {
-                    retried = true;
-                    continue;
-                }
-                return Err(UtaStudioError::Other("key detection failed".into()));
-            }
-            Ok(SongResult::Error(msg)) => {
-                return Err(UtaStudioError::Other(msg));
-            }
-        }
-    }
 }
 
 // ─── Local audio preparation ─────────────────────────────────────────
@@ -780,6 +723,7 @@ pub(crate) fn prepare_audio_for_analysis(
 
 // ─── Server communication ────────────────────────────────────────────
 
+#[cfg(test)]
 pub(crate) enum SongResult {
     Done,
     Oom,
@@ -792,6 +736,7 @@ pub(crate) enum SongResult {
 // either change that contract or require a custom deserializer for no runtime
 // benefit: events are consumed one at a time from the child process.
 #[allow(clippy::large_enum_variant)]
+#[cfg(test)]
 pub(crate) enum ServerEvent {
     Progress {
         pct: u32,
@@ -976,6 +921,7 @@ mod node_event_tests {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn send_and_monitor(
     server: &mut ServerProcess,
     json_cmd: &str,

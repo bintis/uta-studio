@@ -1,6 +1,6 @@
 # Subtask 14 — Global Model/Runtime Bubble Smoke
 
-**State:** conditional final subtask
+**State:** READY
 **Purpose:** after every model/resource card has passed, run a small cross-model smoke suite that exercises the assembled Runtime Manager + native workers + Analysis Engine contracts without turning final validation into another full stress campaign.
 **Accelerator policy:** non-Qwen Vulkan/Level Zero calls require explicit user permission; Qwen is exempt; other accelerator calls are unrestricted.
 
@@ -73,7 +73,7 @@ source-vs-converted identity remains distinct
 Production policy agrees with each final completion record
 no model silently resolves to another model/resource
 Qwen resolves to its dedicated pinned C++/GGML runtime, not OpenVINO
-non-Qwen Production models resolve to their selected source-verified OpenVINO/native path
+non-Qwen models resolve to their selected source-verified native path; all five RoFormer resources resolve only to GGML/Vulkan and cannot resolve OpenVINO
 ```
 
 This bubble must include at least:
@@ -101,7 +101,7 @@ No inference is required for Bubble A.
 
 Goal: catch integration regressions that individual model conversion tests cannot see.
 
-Use one short project-owned/local real stereo mix:
+Use one short project-owned/local real stereo mix. Every RoFormer stage must use its exact GGML/Vulkan route with batch size 1, no async submission and a serial pipeline; no RoFormer may launch OpenVINO:
 
 ```text
 original mix
@@ -206,7 +206,7 @@ Goal: ensure the assembled native runtime remains controllable after several mod
 Run two bounded cancellation probes, sequentially:
 
 ```text
-one OpenVINO separation task
+one GGML/Vulkan RoFormer separation task, with explicit user permission
 one OpenVINO evidence/expert task
 ```
 
@@ -224,9 +224,7 @@ verify no child/worker remains
 verify no partial committed output was published
 ```
 
-Then immediately run one tiny already-approved OpenVINO smoke to prove the runtime remains usable after cancellation.
-
-For a non-Qwen Vulkan/Level Zero recovery probe, obtain explicit user permission first.
+Then run one tiny already-approved smoke on the same selected backend to prove each runtime remains usable after cancellation. The RoFormer recovery probe must remain batch-size-one/no-async/serial, must not use OpenVINO, and requires explicit user permission.
 
 ## 8. Qwen / full-candidate live smoke policy
 
@@ -277,4 +275,4 @@ docs/KEY_CONCLUSIONS.md
 
 Keep only the durable aggregate conclusion: READY/FAILED_SAFE, which bubbles passed/failed, models/backends materially exercised, any permission-sensitive non-Qwen Vulkan/Level Zero execution, and the exact current regression/blocker. Do not commit fixture paths, command transcripts, process narration or a verbose smoke report under `docs/`.
 
-Do not proceed into repository-wide `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md` from this card; the active task records the handoff after accepting the result.
+Do not proceed into the repository-wide release pass reserved by `AGENTS.md` from this card; the active task records the handoff after accepting the result.

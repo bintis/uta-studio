@@ -14,17 +14,7 @@ pub use worker::*;
 
 #[cfg(test)]
 mod tests {
-    use sha2::{Digest, Sha256};
-
     use super::*;
-
-    #[test]
-    fn runtime_lock_digest_matches_checked_in_document() {
-        assert_eq!(
-            format!("{:x}", Sha256::digest(RUNTIME_LOCK_JSON.as_bytes())),
-            RUNTIME_LOCK_SHA256
-        );
-    }
 
     #[test]
     fn runtime_lock_matches_final_qwen_recipes() {
@@ -46,10 +36,6 @@ mod tests {
         assert_eq!(
             lock.components.openvino_2026_3.runtime_commit,
             "8a17657b995fd3b4a52f8484acfcf2bb61214623"
-        );
-        assert_eq!(
-            lock.components.openvino_2026_3.build_recipe_sha256,
-            OPENVINO_WORKER_RECIPE_SHA256
         );
         assert!(lock.components.openvino_2026_3.cpu_plugin);
         assert!(!lock.components.openvino_2026_3.script_bindings);

@@ -1,10 +1,10 @@
 # Engineering constraints
 
-This document records Uta Studio's durable product and engineering decisions. It is the human-readable counterpart to the mandatory AI instructions in [`AGENTS.md`](../AGENTS.md).
+This document records Uta! Studio's durable product and engineering decisions. It is the human-readable counterpart to the mandatory AI instructions in [`AGENTS.md`](../AGENTS.md).
 
 ## Identity and storage
 
-Runtime directories, environment variables, frontend preload globals, logs, protocols, CSS, documentation, and package metadata use only the Uta Studio name. The default settings directory is `~/.uta-studio`; generated data may be placed in user-selected cache/model/vendor paths.
+Runtime directories, environment variables, frontend preload globals, logs, protocols, CSS, documentation, and package metadata use only the Uta! Studio name. The default settings directory is `~/.uta-studio`; generated data may be placed in user-selected cache/model/vendor paths.
 
 Source music is read-only. Removing a watched folder only disconnects it from the index. Cache deletion must describe its scope and require an explicit user action.
 
@@ -12,9 +12,9 @@ Source music is read-only. Removing a watched folder only disconnects it from th
 
 Desktop and Nix builds use packaged native workers plus system/packaged `ffmpeg`. Explicit paths use `UTA_STUDIO_FFMPEG_PATH`, `UTA_STUDIO_NATIVE_ANALYZER_PATH`, and the component-specific native worker variables. Production inference has no script runtime or package environment.
 
-Generic production models consume source-verified, pinned OpenVINO IR and fail closed when that exact model/runtime combination is not validated. Qwen3-ASR-1.7B and Qwen3 Forced Aligner remain pinned GGML/Vulkan product exceptions defined by `native-inference/runtime-lock.json`, but **current AI-agent development/acceptance on this host may not execute Vulkan inference** after the 2026-08-22 black-screen/reboot incident. Active agent GPU validation is OpenVINO-only. Vulkan-only paths may be statically audited and may reuse exact prior evidence; any new Vulkan execution requires separate explicit user authorization and the exact model-specific validation procedure. CPU is normally an explicit reference/diagnostic lane; the only product exception is an exact converted-artifact manifest that pins named CPU islands inside an explicit CPU/GPU OpenVINO topology. Such CPU placement is required execution, never fallback, and the worker must fail closed if either plugin is unavailable.
+Generic production models consume source-verified native artifacts and fail closed when the exact model/backend/runtime combination is not validated. All non-Qwen OpenVINO IR models also expose an explicit CPU-only diagnostic route; CPU is never selected as an automatic fallback. Exact legacy RoFormer GGUF artifacts use a separate GGML/Vulkan worker. All five RoFormer resources—BS-RoFormer, Inst V2, Harmony, Denoise and Dereverb—expose only user-selected GGML/Vulkan `BenchmarkCandidate` routes and must never launch OpenVINO. Every invocation forces batch size 1, no async submission and a serial pipeline. Their durable default root is `<runtime-store>/ggml-models`; `UTA_STUDIO_GGML_MODELS_DIR` may explicitly override it, and `/tmp` is never a production model location. Qwen3-ASR-1.7B and Qwen3 Forced Aligner keep their independent pinned GGML/Vulkan product runtimes defined by `native-inference/runtime-lock.json`. **AI-agent development/acceptance on this host may not execute non-Qwen Vulkan inference without separate explicit user authorization** after the 2026-08-22 black-screen/reboot incident. Vulkan-only paths may be statically audited and may reuse exact prior evidence; any new Vulkan execution requires the exact model-specific validation procedure. Manifest-pinned CPU islands inside a CPU/GPU OpenVINO topology remain required execution rather than fallback.
 
-The app must not download tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, reports each native component/model separately, and downloads only after explicit confirmation. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
+The app must not download tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, reports each native component/model separately, and downloads only after explicit confirmation. That page exposes only Runtime Manager-advertised backends per model; explicit choices persist in `model_backend_overrides`, while no entry means the pinned default. Unavailable choices fail in exact Plan Preview without fallback. The JSON `model_backend_note` is human guidance only and records the Intel XPU recommendation for the tested RoFormer GGML serial/no-async route. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
 
 ## Audio policy
 
@@ -37,7 +37,7 @@ Destructive and external commands still appear in the manifest so API coverage i
 
 ## Visual and interaction direction
 
-The interface is informed by Roon's calm music-library hierarchy and navigation, not copied at pixel level. Uta Studio adds translucent surfaces, chart-production controls, and its own logo. The key principles are:
+The interface is informed by Roon's calm music-library hierarchy and navigation, not copied at pixel level. Uta! Studio adds translucent surfaces, chart-production controls, and its own logo. The key principles are:
 
 - one-second comprehension: a clear primary action and no competing chrome;
 - consistent typography, color, spacing, buttons, menus, and back behavior;
@@ -58,7 +58,7 @@ The interface is informed by Roon's calm music-library hierarchy and navigation,
 
 ## Definition of done — final repository acceptance only
 
-The commands below are **not** per-agent acceptance. Each of the two current coding tasks runs only the package-scoped verification in its own `TASK_*.md`. The full suite below is run once after both tasks converge, as defined by `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`.
+The commands below are **not** per-card acceptance. The full suite runs only during the later explicit release pass reserved by `AGENTS.md`, after focused feature closure converges.
 
 The final repository checks are:
 
@@ -82,7 +82,7 @@ binary substitutes rather than forcing source builds.
 
 The repository must contain no tracked script-runtime source files, and a packaged analysis run must have no script-runtime process in its process tree. Native worker stdout is protocol-only NDJSON; cancellation, timeout, crash cleanup, runtime-lock identity, and fail-closed routing are release gates.
 
-During current agent and final-acceptance work, GPU inference tests are OpenVINO-only. Do not run Vulkan smoke, benchmark, stress, full-track, or intentional Vulkan-context commands. Historical RoFormer validation records document machine-level failures and make clear that even passing configurations are graph-specific; there is no general safe Vulkan mode. If future user authorization permits Vulkan again, follow the exact model-specific validation document in a fresh isolated process and never extrapolate another graph's parameters.
+Without separate current user authorization, GPU inference tests during agent and final-acceptance work are OpenVINO-only: do not run Vulkan smoke, benchmark, stress, full-track, or intentional Vulkan-context commands. Historical RoFormer validation records document machine-level failures and make clear that even passing configurations are graph-specific; there is no general safe Vulkan mode. The explicitly authorized 2026-08-24 scope covered fresh isolated serial/no-async full-song runs for the five exact legacy RoFormer GGUFs, plus two earlier 12 s BS checks. Those clean results do not authorize benchmarks, repeat/stress sequences, concurrent runs, another checkpoint, or another graph; each requires new explicit scope.
 
 In addition, use an analyzed fixture to decode editor audio with ffmpeg and perform real UTZ and UltraStar exports. Validate the UTZ ZIP/manifest/hash metadata, parse the UltraStar chart, decode both exported audio assets, confirm temporary cleanup, and smoke-launch the wrapped Nix executable.
 

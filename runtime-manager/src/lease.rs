@@ -138,7 +138,7 @@ mod tests {
             std::env::temp_dir().join(format!("uta-runtime-lease-anchor-{}", std::process::id()));
         std::fs::write(&path, b"manifest").unwrap();
         let lease = ResourceLease::acquire_with_files([(
-            "model:rmvpe:generation".to_string(),
+            "model:rmvpe:generation:anchor-test".to_string(),
             Some(path.clone()),
         )])
         .unwrap();
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn cloned_lease_keeps_generations_active() {
-        let key = "model:rmvpe:generation".to_string();
+        let key = "model:rmvpe:generation:clone-test".to_string();
         let lease = ResourceLease::acquire([key.clone()]);
         let cloned = lease.clone();
         drop(lease);

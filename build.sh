@@ -21,10 +21,11 @@ if [[ "$rust_sysroot" == /nix/store/* ]]; then
     exit 1
 fi
 
-printf 'Building Uta Studio with %s (%s)\n' \
+printf 'Building Uta! Studio with %s (%s)\n' \
     "$(cargo --version)" "$rust_sysroot"
 
 cd "$repo_root"
+tools/check-product-identity.sh
 cargo build --release --locked -p uta-studio-desktop --bin uta-studio "$@"
 
 printf '\nBuilt: %s\n' "$repo_root/target/release/uta-studio"

@@ -1,3 +1,7 @@
+// Unit-test builds intentionally compile retired analyzer compatibility helpers
+// that are unavailable from the product API but still exercise migration data.
+#![cfg_attr(test, allow(dead_code))]
+
 mod analysis_artifact;
 mod analysis_engine_adapter;
 mod analysis_experience;
@@ -47,8 +51,9 @@ pub use analysis_artifact::{
 pub use analysis_engine_adapter::{
     AnalysisRequestIntent, EngineRunDraft, EngineRunPreview, QueuedEngineRun,
     ResolvedAnalysisSource, StudioLyricToken, StudioLyricsContext, StudioLyricsContextProjection,
-    StudioLyricsMode, compile_analyze_request_v1, preview_analyze_request_v1, preview_engine_run,
-    project_lyrics_context, queue_exact_preview, resolve_true_source,
+    StudioLyricsMode, compile_analyze_request_v1, preview_analyze_request_v1,
+    preview_and_queue_engine_run, preview_engine_run, project_lyrics_context, queue_exact_preview,
+    resolve_true_source,
 };
 pub use analysis_experience::{
     ANALYSIS_EXPERIENCE_SCHEMA_VERSION, AnalysisAudioPreferences, AnalysisDefaultTarget,
@@ -72,21 +77,16 @@ pub use analysis_profile::{
     set_song_analysis_profile,
 };
 pub use analyzer::{
-    AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison, AnalysisRunHistory,
-    AnalysisStageRoute, AnalysisTask, EngineRunHistoryProjection, NodeAttempt,
+    AnalysisBatchQueueResult, AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison,
+    AnalysisRunHistory, AnalysisStageRoute, AnalysisTask, EngineRunHistoryProjection, NodeAttempt,
     NodeAttemptComparison, PendingAnalysisIntent, QueuedStatus, SongAuthoringState,
-    analysis_log_lines, analysis_log_path_for, analysis_stop_requested,
-    bypass_analysis_node_with_original_mix_for_run, cancel_analysis_run, clear_analysis_history,
-    compare_analysis_runs, compare_node_attempt_with_previous_run, configure_analysis_node_for_run,
-    delete_cache, disable_analysis_node_for_run, downstream_node_ids, enqueue_all, enqueue_one,
-    freeze_analysis_node_outputs_for_run, frozen_artifact_kinds_for_node_id, load_analysis_history,
-    load_analysis_node_attempts, load_analysis_tasks, node_can_be_bypassed_for_run,
-    node_can_be_configured_for_run, node_can_be_disabled_for_run, node_can_be_frozen_for_run,
-    pending_analysis_intent, pending_run_override_for, preview_analysis_plan_for_selection,
+    analysis_log_lines, analysis_log_path_for, cancel_analysis_run, clear_analysis_history,
+    compare_analysis_runs, compare_node_attempt_with_previous_run, delete_cache,
+    downstream_node_ids, enqueue_all, enqueue_one, load_analysis_history,
+    load_analysis_node_attempts, load_analysis_tasks, preview_analysis_plan_for_selection,
     preview_full_analysis_plan, realign, reanalyze_force_transcribe, reanalyze_full,
-    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, run_analysis_node,
-    run_analysis_node_downstream, run_analysis_plan, run_analysis_request,
-    save_node_config_as_song_profile, shutdown_server, stop_analysis_run,
+    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, shutdown_server,
+    stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -95,16 +95,15 @@ pub use artifact_workbench::{
     ArtifactDraftCommit, ArtifactDraftContent, ArtifactDraftKind, ArtifactEditDraft,
     ArtifactHealth, ArtifactHealthStatus, ArtifactInspection, ArtifactLineage, ArtifactLineageNode,
     ArtifactMediaType, ArtifactPreview, ArtifactRef, ArtifactSaveMode, ArtifactSaveOptions,
-    ArtifactTypedDiff, CaptureIntermediateRequest, ChartRevisionMergeMode, DownstreamImpact,
-    ImpactTrigger, NodeIoInspection, analysis_request_from_impact,
-    apply_artifact_revision_to_chart, artifact_capabilities, artifact_editor_text, artifact_health,
-    artifact_lineage, authored_chart_is_pinned, begin_artifact_edit,
-    capture_analysis_run_artifacts, commit_artifact_edit, compare_artifacts_typed,
-    inspect_analysis_node_io, inspect_artifact, intermediate_capture_request,
-    merge_chart_revisions, preview_artifact, preview_artifact_downstream_impact,
-    preview_artifact_edit_impact, preview_frozen_downstream_impact, preview_node_downstream_impact,
+    ArtifactTypedDiff, ChartRevisionMergeMode, DownstreamImpact, ImpactTrigger, NodeIoInspection,
+    analysis_request_from_impact, apply_artifact_revision_to_chart, artifact_capabilities,
+    artifact_editor_text, artifact_health, artifact_lineage, authored_chart_is_pinned,
+    begin_artifact_edit, capture_analysis_run_artifacts, commit_artifact_edit,
+    compare_artifacts_typed, inspect_analysis_node_io, inspect_artifact, merge_chart_revisions,
+    preview_artifact, preview_artifact_downstream_impact, preview_artifact_edit_impact,
+    preview_frozen_downstream_impact, preview_node_downstream_impact,
     queued_request_matches_preview, resolve_artifact_for_run, resolve_graph_edge_binding,
-    set_artifact_pinned, set_intermediate_capture_request,
+    set_artifact_pinned,
 };
 pub use audio_model::{
     AudioModelCatalogSummary, AudioModelFileStatus, AudioModelLicense, AudioModelStatus,
@@ -144,6 +143,7 @@ pub use editor::{
     ProblemKind, ProblemReport, ReviewReason, ReviewRegion, ReviewSeverity, Severity,
     SingingEvidenceBundle, Syllable, TrackRole, TrackSummary, apply_editor_suggestion,
     editor_action, editor_action_for_chord, editor_actions, kana_morae, syllables,
+    technique_evidence_track,
 };
 pub use export_destination::{
     ExportNodeInspection, ExportPackageKind, inspect_export_node, last_export_destination,
@@ -188,8 +188,9 @@ pub use utz_export::{
     ExportProgress, ExportableSong, export_utz, export_utz_with_progress, list_exportable_songs,
 };
 pub use vendor::{
-    AnalysisRuntimeStatus, ComputeBackend, ModelDownloadTarget, ModelInstallStatus, SetupFolders,
-    SetupProgress, SetupStep, SetupTask, SetupTaskState, analysis_runtime_status, ffmpeg_path,
+    AnalysisRuntimeStatus, AnalysisStrategyResourceStatus, ComputeBackend, ModelDownloadTarget,
+    ModelInstallStatus, SetupFolders, SetupProgress, SetupStep, SetupTask, SetupTaskState,
+    analysis_runtime_status, analysis_strategy_resource_statuses, ffmpeg_path,
     invalidate_analysis_runtime_status_cache, is_ready, model_install_statuses,
     resolve_data_path_input, run_vendor_setup, step_download_model,
 };
@@ -236,8 +237,13 @@ pub fn startup() -> Result<(), String> {
             .is_some()
         {
             analyzer::resume_engine_intent(&file_hash);
-        } else if is_ready() {
-            analyzer::enqueue_one(&file_hash);
+        } else {
+            let _ = library_db::analysis_queue_upsert_row(
+                &file_hash,
+                "failed",
+                None,
+                Some("Legacy queue entry has no exact Engine request; rebuild Plan Preview."),
+            );
         }
     }
     if is_ready() && config.auto_analyze() {

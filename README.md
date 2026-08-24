@@ -1,6 +1,6 @@
-# Uta Studio
+# Uta! Studio
 
-Uta Studio is a GPL-3.0 desktop application for authoring playable song charts.
+Uta! Studio is a GPL-3.0 desktop application for authoring playable song charts.
 It is a native Rust/Bevy application focused exclusively on producing
 editable song charts from local audio and video files.
 
@@ -14,7 +14,7 @@ editable song charts from local audio and video files.
 - Export a self-contained `.utz` package for compatible karaoke runtimes or a
   UTF-8 UltraStar 1.1 `.txt` bundle with sibling media.
 
-Uta Studio does not connect to Plex, Jellyfin, Navidrome, or another media
+Uta! Studio does not connect to Plex, Jellyfin, Navidrome, or another media
 server. It does not ship a self-hosted Web server, Docker deployment,
 player profiles, microphone capture, Sonos discovery, persistent scoring, or
 result screens. Playback and scoring belong to `uta`'s versioned Rust/WASM
@@ -35,7 +35,7 @@ repository-level [`AGENTS.md`](AGENTS.md).
 ## Documentation and localization
 
 - **[User guide / 用户说明书 / ユーザーガイド](docs/USER_GUIDE.md)** — installation, first-run setup, analysis, the offline Documentation Center, analysis artifacts, editing, export, backup, and troubleshooting in English, Simplified Chinese, and Japanese.
-- **[Documentation Center & Artifact Workbench design](docs/DESIGN_DOCUMENTATION_ARTIFACT_WORKBENCH.md)** — current design plus honest implementation status. Remaining work is listed in [`docs/UTA_STUDIO_REMAINING_DEVELOPMENT_AGENT_GUIDE.md`](docs/UTA_STUDIO_REMAINING_DEVELOPMENT_AGENT_GUIDE.md).
+- **[Documentation Center & Artifact Workbench design](docs/DESIGN_DOCUMENTATION_ARTIFACT_WORKBENCH.md)** — current design and implementation boundaries. Current closure state is tracked in [`tasks/remaining-models/STATE.md`](tasks/remaining-models/STATE.md).
 - **[Internationalization guide](docs/I18N.md)** — locale resolution, catalog maintenance, dynamic messages, tests, and migration guidance.
 
 The native interface supports English, Simplified Chinese, and Japanese. Select the language in **Settings > General > Interface language**; English remains the fallback for untranslated copy.
@@ -91,7 +91,7 @@ Release packages are built with `nix build path:.#uta-studio`. The generated
 offline documentation bundle is embedded in the desktop executable; runtime
 source Markdown files are not required.
 
-The Linux desktop uses Wayland directly. Uta Studio does not enable an X11
+The Linux desktop uses Wayland directly. Uta! Studio does not enable an X11
 backend and does not fall back to XWayland.
 
 ## Runtime Manager CLI
@@ -108,9 +108,10 @@ uta-runtime verify --output json
 ```
 
 Mutations require an explicit confirmation (`--yes` for non-interactive use).
-Artifacts are hash-verified and published as immutable generations before the
-current pointer changes. The CLI never searches for an arbitrary upstream
-“latest” model.
+Artifacts pass safe-path, regular-file, declared-file-set, byte-size, schema,
+and semantic validation before immutable generations are published and the
+current pointer changes. Hashes are retained only as identity/provenance
+metadata. The CLI never searches for an arbitrary upstream “latest” model.
 
 ## Editing and export
 
@@ -132,12 +133,13 @@ cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 
 ## Acknowledgements
 
-Uta Studio thanks the following projects for technical and interface references:
+Uta! Studio thanks the following projects for technical and interface references:
 
 - **[BSRoformer.cpp](https://github.com/yasoukyoku/BSRoformer.cpp)** for the
-  RoFormer graph and DSP technical reference used by the accepted OpenVINO
-  conversions. Current RoFormer execution is provided only by the packaged
-  OpenVINO worker.
+  RoFormer graph and DSP technical reference used by the packaged native
+  implementation. Current RoFormer execution is provided only by the packaged
+  GGML/Vulkan worker with batch size 1, synchronous submission, and a serial
+  pipeline; OpenVINO routing is rejected for all five RoFormer resources.
 - **[transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)** and
   **[qwen3-asr.cpp](https://github.com/predict-woo/qwen3-asr.cpp)** for the two
   separately pinned Qwen native runtime recipes. Their exact commits, GGML
@@ -147,10 +149,10 @@ Uta Studio thanks the following projects for technical and interface references:
   **[UltraStar Play](https://github.com/UltraStar-Deluxe/Play)** for editor
   interaction patterns, karaoke workflow references, and format conventions.
   USKMaker and UltraStar Play are MIT-licensed; Yass is GPL-3.0-or-later.
-  Uta Studio keeps a seconds/MIDI internal source model and applies export-time
+  Uta! Studio keeps a seconds/MIDI internal source model and applies export-time
   quantization only when writing targets.
 - **[NextFire MMS karaoke-tuned model](https://huggingface.co/NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn)**.
-  This AGPL-3.0 model is not shipped by Uta Studio; users install it explicitly
+  This AGPL-3.0 model is not shipped by Uta! Studio; users install it explicitly
   in **Settings > Models & runtime**. For aligned timing, use
   **Settings > Analysis > Word timing & alignment** to enable **MMS Karaoke
   (Japanese)**, then configure it in **Models & runtime > Word timing &

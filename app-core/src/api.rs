@@ -101,6 +101,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "models",
+        "analysis_strategy_resource_statuses",
+        "read",
+        true,
+        "Read exact Runtime Manager model/capability facts for Analysis strategy rows"
+    ),
+    capability!(
+        "models",
         "get_audio_model_status",
         "read",
         true,
@@ -375,48 +382,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
-        "run_analysis_plan",
-        "mutation",
-        false,
-        "Run an explicit target/disabled-node set through the generic per-node executor"
-    ),
-    capability!(
-        "analysis",
-        "run_analysis_node",
-        "mutation",
-        false,
-        "Run a single node and its real upstream closure only"
-    ),
-    capability!(
-        "analysis",
-        "run_analysis_node_downstream",
-        "mutation",
-        false,
-        "Run a node and every node that transitively consumes its output"
-    ),
-    capability!(
-        "analysis",
-        "disable_analysis_node_for_run",
-        "mutation",
-        false,
-        "Run the default full analysis with one node turned off for this run"
-    ),
-    capability!(
-        "analysis",
-        "freeze_analysis_node_outputs_for_run",
-        "mutation",
-        false,
-        "Force-reuse a node's current on-disk output for this run, ignoring config-driven cache invalidation"
-    ),
-    capability!(
-        "analysis",
-        "bypass_analysis_node_with_original_mix_for_run",
-        "mutation",
-        false,
-        "Route stems.separate around for this run, using the source media directly in place of a separated vocal stem"
-    ),
-    capability!(
-        "analysis",
         "cancel_analysis_run",
         "mutation",
         false,
@@ -477,20 +442,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "mutation",
         false,
         "Record existing cached files on disk as artifact revisions, without modifying them"
-    ),
-    capability!(
-        "analysis",
-        "intermediate_capture_request",
-        "read",
-        true,
-        "Load the explicit PreprocessedAudio retention request for a song"
-    ),
-    capability!(
-        "analysis",
-        "set_intermediate_capture_request",
-        "mutation",
-        false,
-        "Enable or disable one-shot or persistent PreprocessedAudio capture for future runs"
     ),
     capability!(
         "analysis",
@@ -936,13 +887,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
-        "run_analysis_request",
-        "mutation",
-        false,
-        "Queue the exact AnalysisRequest shown in a confirmed impact preview"
-    ),
-    capability!(
-        "analysis",
         "resolve_graph_edge_binding",
         "read",
         true,
@@ -1034,5 +978,38 @@ mod tests {
             capability.access,
             "read" | "mutation" | "destructive" | "external" | "temporary"
         )));
+    }
+
+    #[test]
+    fn product_analysis_api_exposes_only_exact_engine_execution_entries() {
+        let commands = API_CAPABILITIES
+            .iter()
+            .map(|capability| capability.command)
+            .collect::<BTreeSet<_>>();
+        for required in [
+            "enqueue_one",
+            "enqueue_all",
+            "reanalyze_transcript",
+            "reanalyze_full",
+            "reanalyze_pitch",
+            "realign",
+            "reanalyze_force_transcribe",
+            "stop_analysis_run",
+        ] {
+            assert!(commands.contains(required), "missing {required}");
+        }
+        for retired in [
+            "run_analysis_request",
+            "run_analysis_node",
+            "run_analysis_node_downstream",
+            "disable_analysis_node_for_run",
+            "freeze_analysis_node_outputs_for_run",
+            "bypass_analysis_node_with_original_mix_for_run",
+            "configure_analysis_node_for_run",
+            "intermediate_capture_request",
+            "set_intermediate_capture_request",
+        ] {
+            assert!(!commands.contains(retired), "retired command {retired}");
+        }
     }
 }

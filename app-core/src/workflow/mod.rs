@@ -192,6 +192,43 @@ mod tests {
     }
 
     #[test]
+    fn legacy_back_vocal_role_migrates_without_aliasing_harmony() {
+        let legacy: AudioRole = serde_json::from_str("\"back_vocal\"").unwrap();
+        assert_eq!(legacy, AudioRole::BackingVocal);
+        assert_eq!(serde_json::to_string(&legacy).unwrap(), "\"backing_vocal\"");
+        assert_ne!(legacy, AudioRole::HarmonyVocal);
+        assert!(
+            !WorkflowPortType::Audio(AudioRole::BackingVocal)
+                .accepts(&WorkflowPortType::Audio(AudioRole::HarmonyVocal))
+        );
+
+        let mut stored = StoredWorkflow {
+            definition: default_workflow("legacy-song"),
+            layout: WorkflowLayout::default(),
+            updated_at_ms: 7,
+        };
+        stored.definition.schema_version = 1;
+        migrate_stored_workflow(&mut stored).unwrap();
+        assert_eq!(stored.definition.schema_version, WORKFLOW_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn future_lead_partition_is_not_advertised_as_an_executable_workflow_node() {
+        assert!(
+            builtin_capabilities()
+                .iter()
+                .all(|capability| capability.id.as_str() != "audio.lead_partition")
+        );
+        let workflow = default_workflow("song-a");
+        assert!(
+            workflow
+                .nodes
+                .iter()
+                .all(|node| node.capability_id.as_str() != "audio.lead_partition")
+        );
+    }
+
+    #[test]
     fn disabled_optional_expert_is_retained_but_removed_from_execution_edges() {
         let mut workflow = default_workflow("song-a");
         set_workflow_execution_policy(

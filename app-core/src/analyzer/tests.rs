@@ -953,67 +953,28 @@ mod stopped_run_cleanup_tests {
 
 #[cfg(test)]
 mod run_analysis_plan_tests {
-    // Deliberately does not cover `run_analysis_plan`'s success path: that
-    // path calls `enqueue_one`, which spawns a real background worker
-    // thread and touches the process-wide `ANALYZER`/library_db state --
-    // out of scope for a unit test (`pipeline_flags_for_request`'s own
-    // tests above already cover the flag-derivation logic this success
-    // path relies on). Every case here is a rejection, which returns
-    // before either of those side effects happen.
     use super::{node_can_be_disabled_for_run, run_analysis_plan};
     use std::collections::BTreeSet;
 
     #[test]
-    fn rejects_disabling_a_node_the_pipeline_cannot_honor() {
+    fn legacy_node_plan_execution_is_retired_for_every_request() {
         let result = run_analysis_plan(
             "run-analysis-plan-test-song",
             BTreeSet::new(),
-            BTreeSet::from([crate::analysis_graph::AnalysisNodeId::new(
-                "music.descriptors",
-            )]),
-        );
-        let error = result.expect_err("music.descriptors cannot be gated by run_pipeline yet");
-        assert!(error.contains("music.descriptors"));
-        assert!(!node_can_be_disabled_for_run("music.descriptors"));
-    }
-
-    #[test]
-    fn rejects_disabling_an_always_required_node() {
-        let result = run_analysis_plan(
-            "run-analysis-plan-test-song-2",
             BTreeSet::new(),
-            BTreeSet::from([crate::analysis_graph::AnalysisNodeId::new(
-                "chart.build_candidate",
-            )]),
         );
-        assert!(result.is_err());
-    }
+        let error = result.expect_err("legacy node plans must never enqueue");
+        assert!(error.contains("exact Plan Preview"));
 
-    #[test]
-    fn every_pipeline_honorable_node_reports_itself_as_disableable() {
         for node_id in [
             "stems.separate",
             "pitch.extract",
             "lyrics.preprocess",
             "lyrics.transcribe",
             "lyrics.align",
-            "lyrics.import_timed",
-        ] {
-            assert!(
-                node_can_be_disabled_for_run(node_id),
-                "{node_id} should be disableable"
-            );
-        }
-        for node_id in [
-            "music.key",
-            "music.rhythm",
-            "preflight",
             "chart.build_candidate",
         ] {
-            assert!(
-                !node_can_be_disabled_for_run(node_id),
-                "{node_id} should not be disableable"
-            );
+            assert!(!node_can_be_disabled_for_run(node_id), "{node_id}");
         }
     }
 }
@@ -1259,146 +1220,9 @@ mod bypass_analysis_node_tests {
     }
 
     #[test]
-    fn node_can_be_bypassed_for_run_has_no_per_song_existence_check() {
-        // Unlike Freeze, Bypass's substitute input is the song's own source
-        // media -- always present for a real song, so this is purely
-        // structural and doesn't need a real file_hash to answer correctly.
-        assert!(node_can_be_bypassed_for_run("stems.separate"));
+    fn product_bypass_is_retired_even_where_the_legacy_pipeline_could_honor_it() {
+        assert!(!node_can_be_bypassed_for_run("stems.separate"));
         assert!(!node_can_be_bypassed_for_run("pitch.extract"));
-    }
-}
-
-#[cfg(test)]
-mod configure_node_tests {
-    //! Phase 8's Run tier (§8.4's previously-missing third tier).
-    //! Deliberately does not cover `configure_analysis_node_for_run`'s
-    //! success path (calls `enqueue_one`, same real-side-effect concern
-    //! `run_analysis_plan_tests` already documents) -- only its rejection
-    //! path, plus the pure mapping and the `PENDING_NODE_INTENTS`
-    //! read-through, which don't touch the real analyzer process.
-    use super::{
-        PENDING_NODE_INTENTS, configure_analysis_node_for_run, node_can_be_configured_for_run,
-        pending_run_override_for, save_node_config_as_song_profile,
-    };
-    use crate::analysis_profile::{
-        AnalysisProfileSnapshot, ProfileField, get_song_analysis_profile, set_song_analysis_profile,
-    };
-    use crate::config::AppConfig;
-    use std::sync::Mutex;
-
-    /// `PENDING_NODE_INTENTS` is a process-wide singleton; serialize tests
-    /// that touch it, same reasoning as `pending_intent_tests`'s guard.
-    static GUARD: Mutex<()> = Mutex::new(());
-
-    fn isolated_test_db(label: &str) -> std::sync::MutexGuard<'static, ()> {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "uta-studio-configure-node-test-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        crate::library_db::reconnect_for_test(&dir)
-    }
-
-    #[test]
-    fn only_lyrics_model_nodes_are_configurable() {
-        for id in ["lyrics.transcribe", "lyrics.align"] {
-            assert!(
-                node_can_be_configured_for_run(id),
-                "{id} should be configurable"
-            );
-        }
-        for id in [
-            "stems.separate",
-            "pitch.extract",
-            "lyrics.preprocess",
-            "lyrics.import_timed",
-            "music.analysis",
-            "preflight",
-            "chart.build_candidate",
-        ] {
-            assert!(
-                !node_can_be_configured_for_run(id),
-                "{id} should not be configurable"
-            );
-        }
-    }
-
-    #[test]
-    fn configure_and_save_both_reject_a_node_with_no_controllable_field() {
-        let error = configure_analysis_node_for_run("some-song", "music.analysis", "x".into())
-            .expect_err("music.analysis has no profile-controlled parameter");
-        assert!(error.contains("music.analysis"));
-
-        let error = save_node_config_as_song_profile("some-song", "music.analysis")
-            .expect_err("music.analysis has no profile-controlled parameter");
-        assert!(error.contains("music.analysis"));
-    }
-
-    #[test]
-    fn pending_run_override_only_surfaces_for_the_field_the_node_maps_to() {
-        let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        let hash = "configure-node-test-pending-override";
-        PENDING_NODE_INTENTS.lock().unwrap().remove(hash);
-        {
-            let mut intents = PENDING_NODE_INTENTS.lock().unwrap();
-            intents.entry(hash.to_string()).or_default().run_override =
-                Some((ProfileField::AsrEngine, "whisper".to_string()));
-        }
-
-        assert_eq!(
-            pending_run_override_for(hash, "lyrics.transcribe"),
-            Some("whisper".to_string())
-        );
-        // Alignment maps to a different field; the ASR override must not leak.
-        assert_eq!(pending_run_override_for(hash, "lyrics.align"), None);
-
-        PENDING_NODE_INTENTS.lock().unwrap().remove(hash);
-    }
-
-    #[test]
-    fn pending_run_override_is_none_when_nothing_is_queued() {
-        let _guard = GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        let hash = "configure-node-test-no-pending-override";
-        PENDING_NODE_INTENTS.lock().unwrap().remove(hash);
-        assert_eq!(pending_run_override_for(hash, "stems.separate"), None);
-    }
-
-    #[test]
-    fn save_as_song_profile_preserves_other_fields_when_saving_just_one() {
-        let _db_guard = isolated_test_db("preserve-others");
-        let hash = "configure-node-test-song-preserve";
-        let seeded = AnalysisProfileSnapshot {
-            alignment_backend: "mms_karaoke".to_string(),
-            ..AnalysisProfileSnapshot::from_app_config(&AppConfig::load(), hash)
-        };
-        set_song_analysis_profile(hash, &seeded).unwrap();
-
-        save_node_config_as_song_profile(hash, "lyrics.transcribe").unwrap();
-
-        let saved = get_song_analysis_profile(hash).unwrap();
-        assert_eq!(saved.alignment_backend, "mms_karaoke");
-        assert_eq!(saved.separator, seeded.separator);
-    }
-
-    #[test]
-    fn save_as_song_profile_seeds_a_fresh_profile_from_real_global_defaults() {
-        let _db_guard = isolated_test_db("fresh-profile");
-        let hash = "configure-node-test-song-fresh";
-        assert!(get_song_analysis_profile(hash).is_none());
-
-        save_node_config_as_song_profile(hash, "lyrics.transcribe").unwrap();
-
-        let saved = get_song_analysis_profile(hash).expect("a profile now exists");
-        let expected_global = AnalysisProfileSnapshot::from_app_config(&AppConfig::load(), hash);
-        assert_eq!(saved.asr_engine, expected_global.asr_engine);
-        // Untouched fields are also seeded from the real global config, not
-        // left as `AnalysisProfileSnapshot::default()`'s hardcoded values.
-        assert_eq!(saved.separator, expected_global.separator);
-        assert_eq!(saved.alignment_backend, expected_global.alignment_backend);
     }
 }
 
@@ -1914,7 +1738,10 @@ mod analysis_history_log_tests {
 mod enqueue_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{QueuedStatus, queue_entry_blocks_enqueue, validate_analysis_source};
+    use super::{
+        QueuedStatus, queue_entry_blocks_enqueue, reject_unversioned_queue_entry,
+        validate_analysis_source,
+    };
 
     #[test]
     fn analyze_all_retries_failed_entries_but_not_active_work() {
@@ -1929,7 +1756,37 @@ mod enqueue_tests {
     }
 
     #[test]
-    fn empty_analysis_source_is_rejected_before_server_start() {
+    fn queue_entry_without_an_exact_engine_intent_fails_closed() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-unversioned-queue-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::library_db::reconnect_for_test(&root);
+        let hash = "queue-entry-without-engine-intent";
+        crate::library_db::analysis_queue_upsert_row(hash, "queued", None, None).unwrap();
+
+        reject_unversioned_queue_entry(hash, "missing test intent");
+
+        let queue = super::AnalysisQueue::load();
+        let status = queue.entries.get(hash).expect("failed queue row retained");
+        assert!(matches!(status, QueuedStatus::Failed(message) if
+            message.contains("exact Plan Preview") && message.contains("missing test intent")));
+        assert!(
+            crate::library_db::analysis_queue_engine_intent(hash)
+                .unwrap()
+                .is_none()
+        );
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_analysis_source_is_rejected_before_cli_start() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

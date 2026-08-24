@@ -19,23 +19,16 @@ struct RuntimeManifest {
 #[derive(Debug, Deserialize)]
 struct EngineManifest {
     path: String,
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
     source_commit: String,
-    runtime_recipe_digest: String,
+    #[serde(rename = "runtime_recipe_digest")]
+    _runtime_recipe_digest: String,
 }
 
 pub struct ValidatedRuntime {
     pub engine: PathBuf,
     pub manifest_sha256: String,
-}
-
-pub fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest)
-        .map_err(|error| format!("could not hash {}: {error}", path.display()))?;
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn default_runtime_dir() -> Option<PathBuf> {
@@ -68,23 +61,22 @@ pub fn validate(kind: WorkerKind) -> Result<ValidatedRuntime, String> {
     if manifest.schema_version != 1
         || manifest.ggml_commit != GGML_COMMIT
         || engine.source_commit != kind.source_commit()
-        || engine.runtime_recipe_digest != kind.recipe_digest()
     {
         return Err("Qwen runtime identity does not match the selected recipe".to_string());
     }
     let path = root.join(relative);
-    if sha256(&path)? != engine.sha256 {
-        return Err("Qwen native engine hash mismatch".to_string());
+    if !path.is_file() {
+        return Err("Qwen native engine is unavailable".to_string());
     }
     if manifest.libraries.len() != 4 {
         return Err("Qwen runtime manifest has an unexpected library set".to_string());
     }
-    for (relative, expected) in manifest.libraries {
-        let relative = Path::new(&relative);
+    for relative in manifest.libraries.keys() {
+        let relative = Path::new(relative);
         if relative
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
-            || sha256(&root.join(relative))? != expected
+            || !root.join(relative).is_file()
         {
             return Err("Qwen native runtime library validation failed".to_string());
         }

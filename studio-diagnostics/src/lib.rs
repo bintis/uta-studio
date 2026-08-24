@@ -1,4 +1,4 @@
-//! Safe diagnostics shared by every Uta Studio desktop surface.
+//! Safe diagnostics shared by every Uta! Studio desktop surface.
 //!
 //! The runner is deliberately read-only except for verified UTZ and UltraStar
 //! exports in one uniquely named temporary directory. A drop guard always
@@ -234,7 +234,7 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
         return Err("An exported bundle has no decodable audio asset".to_string());
     }
     Ok(format!(
-        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), hashes valid, {} vocal track(s)/{charted_notes} note(s)/{pitch_frames} pitch frame(s) validated); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)",
+        "UTZ {utz_bytes} bytes ({decoded_utz_audio} audio asset(s), manifest/schema valid, {} vocal track(s)/{charted_notes} note(s)/{pitch_frames} pitch frame(s) validated); UltraStar chart {ultrastar_bytes} bytes ({decoded_ultrastar_audio} audio asset(s), parsed)",
         vocal_chart.tracks.len()
     ))
 }
@@ -383,7 +383,25 @@ pub fn run_feature_diagnostics(request: DiagnosticRequest) -> DiagnosticReport {
         });
         if let Ok(chart) = chart {
             checks.push(timed_check("editor.audio", || {
-                decode_audio(Path::new(&chart.audio.instrumental))
+                let mut sources = vec![
+                    ("instrumental", chart.audio.instrumental.as_str()),
+                    ("original", chart.audio.original.as_str()),
+                ];
+                if let Some(vocals) = chart.audio.vocals.as_deref() {
+                    sources.push(("vocals", vocals));
+                }
+                for (_, path) in &sources {
+                    decode_audio(Path::new(path))?;
+                }
+                Ok(format!(
+                    "Decoded and prepared Editor {} source role(s): {}",
+                    sources.len(),
+                    sources
+                        .iter()
+                        .map(|(role, _)| *role)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
             }));
         } else {
             checks.push(skipped("editor.audio", "Chart could not be loaded"));

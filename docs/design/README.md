@@ -1,6 +1,6 @@
-# Uta Studio architecture and design
+# Uta! Studio architecture and design
 
-This directory contains the **current durable architecture** for Uta Studio. It is organized by long-lived responsibility, not by refactor phase. Agent execution instructions live in `docs/agent-tasks/`.
+This directory contains the **current durable architecture** for Uta! Studio. It is organized by long-lived responsibility, not by refactor phase. Repository rules live in `AGENTS.md`, and current closure state lives in `tasks/remaining-models/STATE.md`.
 
 ## Authority order
 
@@ -59,6 +59,6 @@ The separated-architecture handoff supersedes earlier monolithic Singing/Audio d
 - `docs/KEY_CONCLUSIONS.md` — current technical conclusions; source/tests override stale prose.
 - `tasks/remaining-models/STATE.md` — current model/resource readiness.
 - `docs/engineering-constraints.md` — repository engineering and verification constraints.
-- `docs/agent-tasks/README.md` — operational task/runbook index.
+- `AGENTS.md` — active repository and execution rules.
 
 Do not recreate `refactor/`, `final-v1/`, or `90-REFERENCE-SUPERSEDED/` architecture folders. A future architecture change should create a new versioned design document, not a phase-named directory.

@@ -71,6 +71,47 @@ fn policy_label(policy: &app_core::ExecutionPolicy) -> &'static str {
     }
 }
 
+fn execution_policy_choices() -> [(&'static str, app_core::ExecutionPolicy); 5] {
+    [
+        ("Always", app_core::ExecutionPolicy::Always),
+        (
+            "On disagreement",
+            app_core::ExecutionPolicy::Conditional {
+                condition: app_core::ConditionalExecution::OnDisagreement,
+            },
+        ),
+        (
+            "Disagreement windows",
+            app_core::ExecutionPolicy::Conditional {
+                condition: app_core::ConditionalExecution::DisagreementWindows,
+            },
+        ),
+        (
+            "Maximum only",
+            app_core::ExecutionPolicy::Conditional {
+                condition: app_core::ConditionalExecution::MaximumOnly,
+            },
+        ),
+        ("Disabled", app_core::ExecutionPolicy::Disabled),
+    ]
+}
+
+fn port_label(port: &app_core::WorkflowPortSpec) -> String {
+    let role = match &port.port_type {
+        app_core::WorkflowPortType::Audio(app_core::AudioRole::LeadVocal) => Some("LeadVocal"),
+        app_core::WorkflowPortType::Audio(app_core::AudioRole::VocalResidual) => {
+            Some("VocalResidual")
+        }
+        app_core::WorkflowPortType::Audio(app_core::AudioRole::Vocal) => Some("Vocal"),
+        app_core::WorkflowPortType::Audio(app_core::AudioRole::Instrumental) => {
+            Some("Instrumental")
+        }
+        app_core::WorkflowPortType::Audio(app_core::AudioRole::SourceMix) => Some("SourceMix"),
+        _ => None,
+    };
+    role.map_or_else(|| port.id.clone(), |role| format!("{} · {role}", port.id))
+}
+
 struct NodeCardContext<'a> {
     selected: bool,
     analyzer_binding: Option<&'a app_core::AnalyzerBinding>,
@@ -139,20 +180,20 @@ fn node_card(
             let inputs = capability
                 .inputs
                 .iter()
-                .map(|port| port.id.as_str())
+                .map(port_label)
                 .collect::<Vec<_>>()
                 .join(" + ");
             let outputs = capability
                 .outputs
                 .iter()
-                .map(|port| port.id.as_str())
+                .map(port_label)
                 .collect::<Vec<_>>()
                 .join(" + ");
             spawn_wrapped_text(
                 card,
                 font.clone(),
                 format!(
-                    "{} → {} · {} · priority {}",
+                    "{} → {} · execution condition: {} · priority {}",
                     if inputs.is_empty() { "source" } else { &inputs },
                     outputs,
                     policy_label(&node.execution_policy),
@@ -161,6 +202,23 @@ fn node_card(
                 8.0,
                 theme.muted_foreground,
             );
+            if !capability.hard_dependencies.is_empty() {
+                spawn_wrapped_text(
+                    card,
+                    font.clone(),
+                    format!(
+                        "Hard dependencies · {}",
+                        capability
+                            .hard_dependencies
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    8.0,
+                    theme.muted_foreground,
+                );
+            }
             if capability.preserves_audio_role {
                 card.spawn(Node {
                     column_gap: px(6),
@@ -237,16 +295,48 @@ fn node_card(
                             10,
                         )),
                     );
-                    action_button(
-                        actions,
-                        font.clone(),
-                        theme,
-                        "Policy",
-                        UiAction::from(AnalysisCommand::CycleWorkflowPolicy(
-                            node.instance_id.to_string(),
-                        )),
-                    );
                 });
+                spawn_wrapped_text(
+                    card,
+                    font.clone(),
+                    "Priority changes scheduling preference only; it is not a hard dependency.",
+                    8.0,
+                    theme.muted_foreground,
+                );
+                if context.selected {
+                    spawn_text(
+                        card,
+                        font.clone(),
+                        "EXECUTION CONDITION",
+                        8.0,
+                        theme.primary,
+                    );
+                    card.spawn(Node {
+                        column_gap: px(6),
+                        row_gap: px(6),
+                        flex_wrap: FlexWrap::Wrap,
+                        ..default()
+                    })
+                    .with_children(|policies| {
+                        for (label, policy) in execution_policy_choices() {
+                            let selected = node.execution_policy == policy;
+                            action_button(
+                                policies,
+                                font.clone(),
+                                theme,
+                                if selected {
+                                    format!("✓ {label}")
+                                } else {
+                                    label.to_string()
+                                },
+                                UiAction::from(AnalysisCommand::SetWorkflowPolicy(
+                                    node.instance_id.to_string(),
+                                    policy,
+                                )),
+                            );
+                        }
+                    });
+                }
                 if context.selected {
                     card.spawn(Node {
                         column_gap: px(6),
@@ -317,7 +407,7 @@ pub(crate) fn spawn_processing_studio(
                             (
                                 node.instance_id.clone(),
                                 output.id.clone(),
-                                format!("{} · {}", capability.label, output.id),
+                                format!("{} · {}", capability.label, port_label(output)),
                             )
                         })
                 })
@@ -373,7 +463,7 @@ pub(crate) fn spawn_processing_studio(
                     .with_children(|actions| {
                         action_button(actions, font.clone(), theme, "Validate", UiAction::from(AnalysisCommand::PreviewWorkflow));
                         action_button(actions, font.clone(), theme, "Save workflow", UiAction::from(AnalysisCommand::SaveWorkflow));
-                        action_button(actions, font.clone(), theme, "Run", UiAction::from(AnalysisCommand::RunWorkflow));
+                        action_button(actions, font.clone(), theme, "Preview run…", UiAction::from(AnalysisCommand::RunWorkflow));
                     });
             });
 
@@ -398,7 +488,7 @@ pub(crate) fn spawn_processing_studio(
                     page,
                     font.clone(),
                     format!(
-                        "Workflow revision {} · {:?} · validation ready",
+                        "Workflow revision {} · {:?} · local compile valid; execution still requires exact Engine preview",
                         stored.definition.revision, stored.definition.quality_mode
                     ),
                     9.0,
@@ -471,7 +561,7 @@ pub(crate) fn spawn_processing_studio(
 
 #[cfg(test)]
 mod tests {
-    use super::{node_execution_badge, provider_metadata};
+    use super::{execution_policy_choices, node_execution_badge, port_label, provider_metadata};
 
     #[test]
     fn processing_cards_report_typed_condition_not_resource_readiness() {
@@ -495,5 +585,40 @@ mod tests {
         let native = provider_metadata(None);
         assert!(native.contains("Studio capability logic"));
         assert!(native.contains("Plan Preview"));
+    }
+
+    #[test]
+    fn every_backend_execution_condition_is_explicitly_selectable() {
+        let choices = execution_policy_choices();
+        assert_eq!(choices.len(), 5);
+        assert!(choices.iter().any(|(_, policy)| {
+            matches!(
+                policy,
+                app_core::ExecutionPolicy::Conditional {
+                    condition: app_core::ConditionalExecution::MaximumOnly
+                }
+            )
+        }));
+        assert_eq!(choices[0].0, "Always");
+        assert_eq!(choices[4].0, "Disabled");
+    }
+
+    #[test]
+    fn executable_lead_isolation_labels_lead_and_residual_without_fake_stems() {
+        let capability = app_core::list_workflow_capabilities()
+            .into_iter()
+            .find(|capability| capability.id.as_str() == "audio.lead_isolate")
+            .unwrap();
+        let labels = capability
+            .outputs
+            .iter()
+            .map(port_label)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["lead · LeadVocal", "residual · VocalResidual"]);
+        assert!(
+            !labels
+                .iter()
+                .any(|label| { label.contains("BackingVocal") || label.contains("HarmonyVocal") })
+        );
     }
 }

@@ -1,7 +1,7 @@
 # RoFormer → Intel/OpenVINO — Common Technical Contract
 
 **Purpose:** shared instructions for task cards 03–07 only
-**Accelerator authorization:** follow `docs/agent-tasks/MODEL_GPU_WORK_POLICY.md`
+**Accelerator authorization:** follow `AGENTS.md`
 
 Read this file only when executing one RoFormer card. Do not preload all model cards.
 
@@ -30,7 +30,7 @@ For the current model card:
 
 ```text
 obtain/reuse exact checkpoint and YAML/config
-verify revision + filename + size + SHA-256 before loading
+validate revision + filename + regular-file status + size before loading; retain SHA-256 only as provenance metadata
 record checkpoint license separately
 never infer architecture parameters from weights when config provides them
 ```
@@ -43,26 +43,16 @@ Only download the exact checkpoint named by the current model card when it is no
 
 Before ONNX/OpenVINO conversion, establish a **small** CPU/PyTorch or otherwise authoritative reference for the current exact checkpoint/config. A historical full-shape PyTorch/export attempt for MelBand-RoFormer reached about 22.9 GiB anonymous RSS and was OOM-killed on this host; therefore **do not begin with the model's exact full time dimension merely because the card names that shape**.
 
-Mandatory memory-safety sequence before any exact-shape reference/export:
+Reference/export observation sequence:
 
 ```text
 1. isolate every heavy phase in a separate process;
-2. measure available host RAM immediately before the phase;
-3. reserve at least 8 GiB for the compositor/OS/other host processes;
-4. place the heavy process under an enforceable memory ceiling when the host supports it
-   (cgroup/systemd MemoryMax or an equivalent process limit), with the ceiling no higher
-   than min(16 GiB, available_RAM - 8 GiB);
-5. start with a tiny representative time dimension and record peak RSS;
-6. increase the representative shape only in bounded steps while peak memory remains safely
-   below the ceiling; account for attention's non-linear/quadratic growth rather than assuming
-   linear scaling;
-7. only run an exact full-time PyTorch reference after the measured/projection bound shows it
-   can fit under the same ceiling with headroom;
-8. exit the reference process completely before export; exit the exporter before ORT; exit ORT
+2. start with a tiny representative time dimension and record peak RSS;
+3. increase the representative shape while recording memory growth; account for attention's
+   non-linear/quadratic growth rather than assuming linear scaling;
+4. exit the reference process completely before export; exit the exporter before ORT; exit ORT
    before OpenVINO validation.
 ```
-
-The memory ceiling is a safety stop, not a substitute for fixing the exporter. If a phase hits or approaches the ceiling, stop that strategy and redesign it; do not raise the ceiling toward the historical OOM envelope, add swap, or simply retry.
 
 Capture at least:
 
@@ -236,7 +226,7 @@ Do not fabricate checkpoint license terms from source-code/runtime licenses.
 
 Use package-local checks only for modified backend crates/native components. No whole-workspace or final Nix build.
 
-Non-Qwen Vulkan/Level Zero execution requires explicit user permission under `docs/agent-tasks/MODEL_GPU_WORK_POLICY.md`.
+Non-Qwen Vulkan/Level Zero execution requires explicit user permission under `AGENTS.md`.
 
 ## 12. Completion
 

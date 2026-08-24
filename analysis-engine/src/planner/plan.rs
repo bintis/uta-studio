@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use uta_runtime_manager::{ResourceRef, ResourceStatus, RuntimeManager};
 
 use crate::contract::{
-    AnalysisProfile, AnalyzeRequestV1, AudioRole, CapabilityDescriptor, CapabilityId, EngineError,
-    EngineErrorCode, EngineRequirementResourceV1, EngineRequirementsV1, EngineResult, LyricsMode,
+    AnalysisProfile, AnalyzeRequestV1, AudioRole, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
+    CapabilityDescriptor, CapabilityId, ENERGY_RATIO_GATE, EngineError, EngineErrorCode,
+    EngineRequirementResourceV1, EngineRequirementsV1, EngineResult, FINITE_SAMPLES_GATE,
+    LEAD_PURITY_GATE, LyricsMode, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE, VOCAL_TOPOLOGY_GATE,
     capability_registry,
 };
 use crate::workflow::{WorkflowExecutionPolicyV1, WorkflowExecutionV1};
+use crate::workflow_executor::CompiledWorkflowExecutionPlanV1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnginePlan {
@@ -25,6 +28,8 @@ pub struct EnginePlan {
     pub quality_gates: Vec<String>,
     pub fallback_policy: Vec<FallbackRule>,
     pub artifact_declarations: Vec<ArtifactDeclaration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_execution: Option<CompiledWorkflowExecutionPlanV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +236,17 @@ impl Planner {
         {
             requirements.add("stars", false, "notes.stars");
         }
+        if intent.needs_alignment
+            && matches!(request.lyrics.language.as_deref(), Some("zh" | "yue"))
+            && workflow_selects(
+                workflow.as_ref(),
+                "technique.analyze",
+                request.analysis.profile,
+                false,
+            )
+        {
+            requirements.add("stars", false, "technique.analyze");
+        }
         if request
             .requested_artifacts
             .stems
@@ -239,7 +255,7 @@ impl Planner {
         {
             return Err(EngineError::new(
                 EngineErrorCode::MissingCapability,
-                "backing/harmony stem extraction is not implemented in Engine v1",
+                "backing/harmony stem extraction is future capability work, not Engine v1",
             )
             .with_capability("audio.lead_partition"));
         }
@@ -285,6 +301,20 @@ impl Planner {
         let run_basic_pitch = has_model("basic_pitch");
         let run_rosvot = has_model("rosvot");
         let run_stars = has_model("stars");
+        let run_stars_notes = run_stars
+            && workflow_selects(
+                workflow.as_ref(),
+                "notes.stars",
+                request.analysis.profile,
+                request.analysis.profile == AnalysisProfile::Maximum,
+            );
+        let run_stars_technique = run_stars
+            && workflow_selects(
+                workflow.as_ref(),
+                "technique.analyze",
+                request.analysis.profile,
+                false,
+            );
         let run_denoise = has_model("melband_roformer_denoise_aufr33");
         let run_dereverb = has_model("melband_roformer_dereverb_anvuew");
         let preparation = preparation_capabilities(request.primary_source()?.role, &intent);
@@ -383,12 +413,20 @@ impl Planner {
                     &[&analysis_parent, "game", "alignment"],
                 ));
             }
-            if run_stars {
+            if run_stars_notes {
                 nodes.push(node(
                     "stars",
                     "notes.stars",
                     false,
                     &[&analysis_parent, "game", "alignment"],
+                ));
+            }
+            if run_stars_technique {
+                nodes.push(node(
+                    "stars-technique",
+                    "technique.analyze",
+                    false,
+                    &[&analysis_parent, "alignment"],
                 ));
             }
             let mut dependencies = vec!["game", "acoustic-dsp"];
@@ -407,8 +445,11 @@ impl Planner {
             if run_rosvot {
                 dependencies.push("rosvot");
             }
-            if run_stars {
+            if run_stars_notes {
                 dependencies.push("stars");
+            }
+            if run_stars_technique {
+                dependencies.push("stars-technique");
             }
             nodes.push(node(
                 "singing-fusion",
@@ -443,6 +484,21 @@ impl Planner {
             }
         }
 
+        let requested_workflow_capabilities = nodes
+            .iter()
+            .map(|node| node.capability.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        let workflow_execution = workflow
+            .as_ref()
+            .map(|workflow| {
+                CompiledWorkflowExecutionPlanV1::compile(
+                    workflow,
+                    request.analysis.profile,
+                    Some(&requested_workflow_capabilities),
+                )
+            })
+            .transpose()?;
+
         let required_capabilities = nodes
             .iter()
             .filter(|node| node.required)
@@ -468,7 +524,15 @@ impl Planner {
                 };
                 let resource = requirement.resource.parse::<ResourceRef>();
                 match resource.and_then(|resource| {
-                    manager.status(&resource, request.execution_policy.runtime_policy)
+                    let requested_backend = (resource.kind
+                        == uta_runtime_manager::ResourceKind::Model)
+                        .then(|| request.execution_policy.requested_backend_for(&resource.id))
+                        .flatten();
+                    manager.status_with_backend(
+                        &resource,
+                        request.execution_policy.runtime_policy,
+                        requested_backend,
+                    )
                 }) {
                     Ok(status) => PlannedResourceStatus {
                         requirement,
@@ -484,6 +548,7 @@ impl Planner {
             })
             .collect();
 
+        let quality_gates = quality_gates(request.analysis.profile, &nodes);
         Ok(EnginePlan {
             schema: "uta.analysis-engine.plan".to_string(),
             schema_version: 1,
@@ -499,9 +564,10 @@ impl Planner {
             requirements,
             resolved_resources,
             execution_nodes: nodes,
-            quality_gates: quality_gates(request.analysis.profile),
+            quality_gates,
             fallback_policy: fallback_policy(),
             artifact_declarations: artifact_declarations(request),
+            workflow_execution,
         })
     }
 
@@ -747,7 +813,7 @@ fn model_for_capability(capability: &str) -> Option<&'static str> {
         "notes.game" => Some("game"),
         "notes.basic_pitch" => Some("basic_pitch"),
         "notes.rosvot" => Some("rosvot"),
-        "notes.stars" => Some("stars"),
+        "notes.stars" | "technique.analyze" => Some("stars"),
         _ => None,
     }
 }
@@ -775,20 +841,30 @@ fn requested_outputs(request: &AnalyzeRequestV1) -> Vec<String> {
     result
 }
 
-fn quality_gates(profile: AnalysisProfile) -> Vec<String> {
+fn quality_gates(profile: AnalysisProfile, nodes: &[ExecutionNode]) -> Vec<String> {
     let mut gates = vec![
-        "timeline_valid".to_string(),
-        "finite_samples".to_string(),
-        "clipping".to_string(),
-        "silence_ratio".to_string(),
-        "energy_ratio".to_string(),
+        TIMELINE_VALID_GATE.to_string(),
+        FINITE_SAMPLES_GATE.to_string(),
+        CLIPPING_GATE.to_string(),
+        SILENCE_RATIO_GATE.to_string(),
+        ENERGY_RATIO_GATE.to_string(),
     ];
-    if profile != AnalysisProfile::Fast {
-        gates.extend([
-            "lead_purity".to_string(),
-            "cleanup_consistency".to_string(),
-            "vocal_topology".to_string(),
-        ]);
+    if profile == AnalysisProfile::Fast {
+        return gates;
+    }
+    let has = |capability: &str| {
+        nodes
+            .iter()
+            .any(|node| node.capability.as_str() == capability)
+    };
+    if has("audio.lead_isolate") {
+        gates.push(LEAD_PURITY_GATE.to_string());
+    }
+    if has("audio.denoise") || has("audio.dereverb") {
+        gates.push(CLEANUP_CONSISTENCY_GATE.to_string());
+    }
+    if has("fusion.singing") {
+        gates.push(VOCAL_TOPOLOGY_GATE.to_string());
     }
     gates
 }
@@ -945,6 +1021,46 @@ mod tests {
     }
 
     #[test]
+    fn quality_gate_claims_follow_the_exact_executable_audio_route() {
+        let fast = Planner::plan(&valid_request(AudioRole::OriginalMix), None).unwrap();
+        assert_eq!(
+            fast.quality_gates,
+            [
+                TIMELINE_VALID_GATE,
+                FINITE_SAMPLES_GATE,
+                CLIPPING_GATE,
+                SILENCE_RATIO_GATE,
+                ENERGY_RATIO_GATE,
+            ]
+        );
+
+        let mut balanced_request = valid_request(AudioRole::OriginalMix);
+        balanced_request.analysis.profile = AnalysisProfile::Balanced;
+        let balanced = Planner::plan(&balanced_request, None).unwrap();
+        assert_eq!(
+            balanced.quality_gates,
+            [
+                TIMELINE_VALID_GATE,
+                FINITE_SAMPLES_GATE,
+                CLIPPING_GATE,
+                SILENCE_RATIO_GATE,
+                ENERGY_RATIO_GATE,
+                LEAD_PURITY_GATE,
+                VOCAL_TOPOLOGY_GATE,
+            ]
+        );
+
+        let mut clean_pitch = valid_request(AudioRole::CleanLeadVocal);
+        clean_pitch.analysis.profile = AnalysisProfile::Balanced;
+        clean_pitch.requested_artifacts.vocal_chart = false;
+        clean_pitch.requested_artifacts.singing_analysis = false;
+        clean_pitch.requested_artifacts.transcript = false;
+        clean_pitch.requested_artifacts.alignment = false;
+        let clean_plan = Planner::plan(&clean_pitch, None).unwrap();
+        assert_eq!(clean_plan.quality_gates, fast.quality_gates);
+    }
+
+    #[test]
     fn canonical_lyrics_do_not_request_firered_challenger() {
         let mut request = valid_request(AudioRole::CleanLeadVocal);
         request.analysis.profile = AnalysisProfile::Balanced;
@@ -1024,13 +1140,14 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_backing_stem_fails_closed() {
-        let mut request = valid_request(AudioRole::LeadVocal);
-        request.requested_artifacts.stems = vec![AudioRole::BackingVocal];
-        assert_eq!(
-            Planner::requirements(&request).unwrap_err().code,
-            EngineErrorCode::MissingCapability
-        );
+    fn unsupported_backing_and_harmony_stems_fail_closed() {
+        for role in [AudioRole::BackingVocal, AudioRole::HarmonyVocal] {
+            let mut request = valid_request(AudioRole::LeadVocal);
+            request.requested_artifacts.stems = vec![role];
+            let error = Planner::requirements(&request).unwrap_err();
+            assert_eq!(error.code, EngineErrorCode::MissingCapability);
+            assert_eq!(error.capability.as_deref(), Some("audio.lead_partition"));
+        }
     }
 
     #[test]
@@ -1096,6 +1213,47 @@ mod tests {
     }
 
     #[test]
+    fn quantization_is_ordered_between_candidate_graph_and_chart_finalization() {
+        let mut request = valid_request(AudioRole::LeadVocal);
+        request.analysis.enable_quantization = true;
+        request.musical_context = Some(crate::contract::MusicalContextV1 {
+            bpm: Some(120.0),
+            key: None,
+            time_signature: Some(crate::contract::TimeSignatureV1 { beats: 4, unit: 4 }),
+            quantization_grid: Some(crate::contract::QuantizationGridV1::Sixteenth),
+            authority: crate::contract::ContextAuthority::Hint,
+        });
+        let plan = Planner::plan(&request, None).unwrap();
+        let index = |capability: &str| {
+            plan.execution_nodes
+                .iter()
+                .position(|node| node.capability.as_str() == capability)
+                .unwrap()
+        };
+        assert!(index("fusion.candidate_graph") < index("rhythm.quantize"));
+        assert!(index("rhythm.quantize") < index("finalize.vocal_chart"));
+        let quantize = plan
+            .execution_nodes
+            .iter()
+            .find(|node| node.capability.as_str() == "rhythm.quantize")
+            .unwrap();
+        assert_eq!(quantize.depends_on, ["candidate-graph"]);
+        assert_eq!(
+            plan.execution_nodes
+                .iter()
+                .find(|node| node.capability.as_str() == "finalize.vocal_chart")
+                .unwrap()
+                .depends_on,
+            ["rhythm-quantize"]
+        );
+
+        request.analysis.enable_quantization = false;
+        request.musical_context = None;
+        let disabled = Planner::plan(&request, None).unwrap();
+        assert!(!has_node(&disabled, "rhythm.quantize"));
+    }
+
+    #[test]
     fn full_candidate_reports_no_unwired_required_capability() {
         let request = valid_request(AudioRole::OriginalMix);
         let plan = Planner::plan(&request, None).unwrap();
@@ -1111,6 +1269,39 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(missing.is_empty());
         Planner::ensure_required_capabilities(&plan).unwrap();
+    }
+
+    #[test]
+    fn per_model_backend_override_is_forwarded_without_changing_other_models() {
+        let manager = RuntimeManager::new(
+            uta_runtime_manager::ResourceCatalog::default_catalog().unwrap(),
+            uta_runtime_manager::StorePaths::default(),
+        );
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.execution_policy.model_backend_overrides.insert(
+            "bs_roformer_vocals_ep317".to_string(),
+            uta_runtime_manager::NativeBackend::Vulkan,
+        );
+        let plan = Planner::plan(&request, Some(&manager)).unwrap();
+        let backend = |id: &str| {
+            plan.resolved_resources
+                .iter()
+                .find(|item| item.requirement.resource == format!("model:{id}"))
+                .and_then(|item| item.status.as_ref())
+                .and_then(|status| status.selected_backend)
+        };
+        assert_eq!(
+            backend("bs_roformer_vocals_ep317"),
+            Some(uta_runtime_manager::NativeBackend::Vulkan)
+        );
+        assert_eq!(
+            backend("rmvpe"),
+            Some(uta_runtime_manager::NativeBackend::OpenVino)
+        );
+        assert_eq!(
+            backend("qwen3_asr_1_7b"),
+            Some(uta_runtime_manager::NativeBackend::Vulkan)
+        );
     }
 
     #[test]

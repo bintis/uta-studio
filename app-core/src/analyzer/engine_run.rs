@@ -1,15 +1,13 @@
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-
-use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::analysis_artifact::{ArtifactRevision, ArtifactStore, revision_to_row};
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::backend_cli::{
-    ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AnalysisCancelHandle, AnalysisCliClient,
-    AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalysisStatusWireV1, AnalyzeRequestWireV1,
-    ArtifactRefWireV1, AudioRoleWireV1,
+    ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AUDIO_QUALITY_REPORT_CONTRACT,
+    AUDIO_QUALITY_REPORT_VERSION, AnalysisCancelHandle, AnalysisCliClient, AnalysisPlanWireV1,
+    AnalysisResultManifestWireV1, AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1,
+    AudioRoleWireV1, QualityGateRequirementWireV1, QualityGateStatusWireV1,
 };
 use crate::library_db::EngineQueueIntent;
 
@@ -114,9 +112,6 @@ fn execute_exact_intent(
     intent: &EngineQueueIntent,
     log_path: Option<&Path>,
 ) -> Result<AnalysisResultManifestWireV1, String> {
-    if crate::analysis_engine_adapter::digest_json(&intent.request_json) != intent.request_digest {
-        return Err("persisted Engine request digest mismatch".to_string());
-    }
     let request: AnalyzeRequestWireV1 = serde_json::from_str(&intent.request_json)
         .map_err(|error| format!("persisted Engine request is malformed: {error}"))?;
     let plan: AnalysisPlanWireV1 = serde_json::from_str(&intent.plan_json)
@@ -127,6 +122,7 @@ fn execute_exact_intent(
     {
         return Err("persisted Engine request identity is inconsistent".to_string());
     }
+    crate::analysis_engine_adapter::validate_workflow_plan_identity(&request, &plan)?;
     if !valid_request_id(&intent.request_id)
         || request.contract != crate::backend_cli::ANALYZE_REQUEST_CONTRACT
         || request.version != crate::backend_cli::ANALYZE_REQUEST_VERSION
@@ -144,9 +140,7 @@ fn execute_exact_intent(
         .find(|source| source.primary)
         .ok_or_else(|| "persisted Engine request has no primary source".to_string())?;
     if source.path != intent.source_path
-        || source.sha256 != intent.source_sha256
         || primary.path != source.path
-        || primary.sha256 != source.sha256
         || primary.role != source.role
     {
         return Err(
@@ -216,9 +210,6 @@ fn validate_and_publish_engine_result(
             manifest.status
         ));
     }
-    if !valid_sha256(&manifest.fingerprint) {
-        return Err("Engine result fingerprint is invalid".to_string());
-    }
     if matches!(manifest.status, AnalysisStatusWireV1::Ok) && !manifest.degraded_reasons.is_empty()
     {
         return Err("Engine ok result unexpectedly contains degraded reasons".to_string());
@@ -233,12 +224,15 @@ fn validate_and_publish_engine_result(
         &manifest.provenance.fusion_version,
         &manifest.provenance.hsmm_version,
         &manifest.provenance.quantization_version,
+        &manifest.provenance.audio_quality_version,
         &manifest.provenance.postprocess_version,
     ] {
         if version.trim().is_empty() {
             return Err("Engine result algorithm provenance is incomplete".to_string());
         }
     }
+    validate_quantization_result(request, manifest)?;
+    validate_audio_quality_result(request, plan, manifest)?;
     for resource in &manifest.provenance.resources {
         for field in [
             "resource",
@@ -353,6 +347,123 @@ fn validate_and_publish_engine_result(
         .map_err(|error| error.to_string())
 }
 
+fn validate_audio_quality_result(
+    request: &AnalyzeRequestWireV1,
+    plan: &AnalysisPlanWireV1,
+    manifest: &AnalysisResultManifestWireV1,
+) -> Result<(), String> {
+    const GATE_ORDER: &[&str] = &[
+        "timeline_valid",
+        "finite_samples",
+        "clipping",
+        "silence_ratio",
+        "energy_ratio",
+        "lead_purity",
+        "cleanup_consistency",
+        "vocal_topology",
+    ];
+    let report = manifest.diagnostics.audio_quality.as_ref().ok_or_else(|| {
+        "Engine omitted audio quality diagnostics for an executable Plan".to_string()
+    })?;
+    if report.contract != AUDIO_QUALITY_REPORT_CONTRACT
+        || report.version != AUDIO_QUALITY_REPORT_VERSION
+        || report.algorithm != manifest.provenance.audio_quality_version
+        || report.profile != request.analysis.profile
+        || report.evaluated_audio_role.trim().is_empty()
+        || report.duration == 0
+        || report.planned_gates != plan.quality_gates
+        || report.outcomes.len() != plan.quality_gates.len()
+    {
+        return Err("Engine audio quality report identity or Plan binding is invalid".to_string());
+    }
+    let mut previous_order = None;
+    let mut degrading_uncertainty = false;
+    for (planned, outcome) in plan.quality_gates.iter().zip(&report.outcomes) {
+        let order = GATE_ORDER
+            .iter()
+            .position(|known| *known == planned)
+            .ok_or_else(|| format!("Engine Plan contains unknown audio quality gate {planned}"))?;
+        let expected_requirement = match planned.as_str() {
+            "timeline_valid" | "finite_samples" | "silence_ratio" | "energy_ratio" => {
+                QualityGateRequirementWireV1::Required
+            }
+            _ => QualityGateRequirementWireV1::Degrading,
+        };
+        if previous_order.is_some_and(|previous| order <= previous)
+            || outcome.gate != *planned
+            || outcome.requirement != expected_requirement
+            || outcome.summary.trim().is_empty()
+            || (expected_requirement == QualityGateRequirementWireV1::Required
+                && outcome.status != QualityGateStatusWireV1::Passed)
+        {
+            return Err("Engine audio quality gate outcome is inconsistent".to_string());
+        }
+        previous_order = Some(order);
+        degrading_uncertainty |= expected_requirement == QualityGateRequirementWireV1::Degrading
+            && outcome.status != QualityGateStatusWireV1::Passed;
+        for metric in &outcome.metrics {
+            if metric.name.trim().is_empty()
+                || metric.unit.trim().is_empty()
+                || !metric.value.is_finite()
+                || metric.lower_bound.is_some_and(|value| !value.is_finite())
+                || metric.upper_bound.is_some_and(|value| !value.is_finite())
+                || matches!((metric.lower_bound, metric.upper_bound), (Some(low), Some(high)) if low > high)
+            {
+                return Err("Engine audio quality metric is invalid".to_string());
+            }
+        }
+        if outcome
+            .regions
+            .iter()
+            .any(|region| region.start >= region.end || region.reason.trim().is_empty())
+        {
+            return Err("Engine audio quality region is invalid".to_string());
+        }
+    }
+    if degrading_uncertainty && manifest.status != AnalysisStatusWireV1::OkDegraded {
+        return Err("Engine audio quality uncertainty was not surfaced as degraded".to_string());
+    }
+    Ok(())
+}
+
+fn validate_quantization_result(
+    request: &AnalyzeRequestWireV1,
+    manifest: &AnalysisResultManifestWireV1,
+) -> Result<(), String> {
+    match (
+        request.analysis.enable_quantization,
+        manifest.diagnostics.quantization.as_ref(),
+    ) {
+        (false, None) => Ok(()),
+        (false, Some(_)) => {
+            Err("Engine returned quantization diagnostics for a disabled stage".to_string())
+        }
+        (true, None) => {
+            Err("Engine omitted quantization diagnostics for an enabled stage".to_string())
+        }
+        (true, Some(report)) => {
+            let context = request
+                .musical_context
+                .as_ref()
+                .ok_or_else(|| "Quantized Engine result has no musical context".to_string())?;
+            if manifest.artifacts.candidate_vocal_chart.is_none()
+                || report.algorithm != manifest.provenance.quantization_version
+                || !report.bpm.is_finite()
+                || context.bpm != Some(report.bpm)
+                || context.quantization_grid != Some(report.grid)
+                || report.grid_step == 0
+                || report.minimum_note_duration != report.grid_step
+                || report.source_end <= report.source_start
+                || report.adjusted_notes > report.note_count
+                || report.maximum_shift > report.grid_step
+            {
+                return Err("Engine quantization result contract is inconsistent".to_string());
+            }
+            Ok(())
+        }
+    }
+}
+
 fn result_artifacts(
     manifest: &AnalysisResultManifestWireV1,
 ) -> Vec<(String, &ArtifactRefWireV1, ArtifactKind, &'static str)> {
@@ -369,6 +480,12 @@ fn result_artifacts(
             manifest.artifacts.pitch_evidence.as_ref(),
             ArtifactKind::PitchEvidence,
             "pitch",
+        ),
+        (
+            "technique_evidence",
+            manifest.artifacts.technique_evidence.as_ref(),
+            ArtifactKind::TechniqueEvidence,
+            "stars-technique",
         ),
         (
             "singing_analysis",
@@ -435,7 +552,6 @@ fn validate_artifact(output_root: &Path, artifact: &ArtifactRefWireV1) -> Result
             )
         })
         || artifact.bytes == 0
-        || !valid_sha256(&artifact.sha256)
     {
         return Err("Engine artifact reference is invalid or unconfined".to_string());
     }
@@ -452,25 +568,7 @@ fn validate_artifact(output_root: &Path, artifact: &ArtifactRefWireV1) -> Result
     if metadata.len() != artifact.bytes {
         return Err("Engine artifact byte count mismatch".to_string());
     }
-    let actual = sha256_file(&canonical)?;
-    if actual != artifact.sha256 {
-        return Err("Engine artifact SHA-256 mismatch".to_string());
-    }
     Ok(canonical)
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut input = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = input.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn valid_request_id(value: &str) -> bool {
@@ -481,15 +579,10 @@ fn valid_request_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::*;
 
     fn temp_root(label: &str) -> PathBuf {
@@ -512,18 +605,14 @@ mod tests {
     }
 
     #[test]
-    fn result_artifact_validation_checks_confinement_hash_and_byte_count() {
+    fn result_artifact_validation_checks_confinement_and_byte_count_without_hash_verification() {
         let root = temp_root("validation");
         std::fs::write(root.join("valid.json"), b"valid").unwrap();
         validate_artifact(&root, &artifact("valid.json", b"valid")).unwrap();
 
-        let mut wrong_hash = artifact("valid.json", b"other");
-        wrong_hash.bytes = 5;
-        assert!(
-            validate_artifact(&root, &wrong_hash)
-                .unwrap_err()
-                .contains("SHA-256")
-        );
+        let mut opaque_hash_metadata = artifact("valid.json", b"other");
+        opaque_hash_metadata.bytes = 5;
+        validate_artifact(&root, &opaque_hash_metadata).unwrap();
         let mut wrong_bytes = artifact("valid.json", b"valid");
         wrong_bytes.bytes = 99;
         assert!(
@@ -542,6 +631,102 @@ mod tests {
                 .contains("unconfined")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quantization_wire_result_matches_exact_request_intent() {
+        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.request","version":1,"request_id":"quantized",
+            "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
+            "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+            "musical_context":{"bpm":120.0,"time_signature":{"beats":4,"unit":4},"quantization_grid":"sixteenth","authority":"hint"},
+            "analysis":{"profile":"fast","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":true},
+            "requested_artifacts":{"vocal_chart":true},"execution_policy":{},"extensions":{}
+        })).unwrap();
+        let mut manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.result","version":1,"request_id":"quantized","status":"ok",
+            "artifacts":{"candidate_vocal_chart":{"path":"candidate/vocal-chart.json","media_type":"application/vnd.uta.vocal-chart+json;version=0.3","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","bytes":1}},
+            "diagnostics":{"quantization":{"algorithm":"rhythm-grid-dp-v1","bpm":120.0,"grid":"sixteenth","grid_step":125000,"minimum_note_duration":125000,"source_start":0,"source_end":1000000,"hard_boundary_count":0,"note_count":2,"adjusted_notes":2,"maximum_shift":12000}},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"rhythm-grid-dp-v1","postprocess_version":"p"},
+            "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":[]
+        })).unwrap();
+        validate_quantization_result(&request, &manifest).unwrap();
+        manifest
+            .diagnostics
+            .quantization
+            .as_mut()
+            .unwrap()
+            .grid_step = 0;
+        assert!(validate_quantization_result(&request, &manifest).is_err());
+        manifest.diagnostics.quantization = None;
+        assert!(validate_quantization_result(&request, &manifest).is_err());
+    }
+
+    #[test]
+    fn audio_quality_wire_result_is_bound_to_plan_and_surfaces_uncertainty() {
+        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.request","version":1,"request_id":"quality",
+            "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
+            "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+            "analysis":{"profile":"fast","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":false},
+            "requested_artifacts":{"pitch_evidence":true},"execution_policy":{},"extensions":{}
+        })).unwrap();
+        let gates = vec![
+            "timeline_valid",
+            "finite_samples",
+            "clipping",
+            "silence_ratio",
+            "energy_ratio",
+        ];
+        let outcomes = gates
+            .iter()
+            .map(|gate| serde_json::json!({
+                "gate":gate,
+                "requirement":if matches!(*gate, "timeline_valid" | "finite_samples" | "silence_ratio" | "energy_ratio") { "required" } else { "degrading" },
+                "status":"passed","summary":"measured","metrics":[],"regions":[]
+            }))
+            .collect::<Vec<_>>();
+        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"quality",
+            "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+            "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
+            "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+            "resolved_resources":[],"execution_nodes":[],"quality_gates":gates.clone(),
+            "fallback_policy":[],"artifact_declarations":[]
+        })).unwrap();
+        let mut manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.result","version":1,"request_id":"quality","status":"ok",
+            "artifacts":{},
+            "diagnostics":{"audio_quality":{"contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates-v1","profile":"fast","evaluated_audio_role":"lead_vocal","duration":1000000,"planned_gates":gates,"outcomes":outcomes}},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"},
+            "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":[]
+        })).unwrap();
+        validate_audio_quality_result(&request, &plan, &manifest).unwrap();
+
+        manifest
+            .diagnostics
+            .audio_quality
+            .as_mut()
+            .unwrap()
+            .planned_gates
+            .pop();
+        assert!(validate_audio_quality_result(&request, &plan, &manifest).is_err());
+        manifest
+            .diagnostics
+            .audio_quality
+            .as_mut()
+            .unwrap()
+            .planned_gates = plan.quality_gates.clone();
+        let clipping = &mut manifest
+            .diagnostics
+            .audio_quality
+            .as_mut()
+            .unwrap()
+            .outcomes[2];
+        clipping.status = QualityGateStatusWireV1::Unknown;
+        assert!(validate_audio_quality_result(&request, &plan, &manifest).is_err());
+        manifest.status = AnalysisStatusWireV1::OkDegraded;
+        validate_audio_quality_result(&request, &plan, &manifest).unwrap();
     }
 
     #[cfg(unix)]

@@ -123,6 +123,16 @@ fn spawn_segment_button(
         });
 }
 
+fn exact_strategy_for_select(kind: SettingsSelectKind) -> Option<&'static str> {
+    match kind {
+        SettingsSelectKind::AudioVocalModel => Some("vocal_extraction"),
+        SettingsSelectKind::AudioAccompanimentModel => Some("instrumental_extraction"),
+        SettingsSelectKind::AudioKaraokeModel => Some("lead_isolation"),
+        SettingsSelectKind::PitchModel => Some("pitch"),
+        _ => None,
+    }
+}
+
 fn spawn_model_row(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -201,6 +211,40 @@ fn spawn_model_row(
                     spawn_text(select, font.clone(), "v", 8.0, theme.muted_foreground);
                 });
             });
+            if let Some(strategy_id) = exact_strategy_for_select(kind) {
+                let exact = session
+                    .model_settings_job
+                    .current
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .strategy_resources
+                            .iter()
+                            .find(|status| status.strategy_id == strategy_id)
+                    });
+                let status = match exact {
+                    Some(status) if status.available => format!(
+                        "Ready · model:{} · {} · {} · {}",
+                        status.model_id, status.capability, status.validation, status.backend
+                    ),
+                    Some(status) => format!(
+                        "Blocked · model:{} · {} · {}{}",
+                        status.model_id,
+                        status.capability,
+                        status.validation,
+                        if status.reasons.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", status.reasons.join(", "))
+                        }
+                    ),
+                    None if session.model_settings_job.receiver.is_some() => {
+                        "Checking exact Runtime Manager status…".to_string()
+                    }
+                    None => "Exact Runtime Manager status unavailable".to_string(),
+                };
+                spawn_wrapped_text(card, font.clone(), status, 8.0, theme.muted_foreground);
+            }
             if open {
                 for (value, option_label) in settings_select_options(
                     kind,
@@ -568,22 +612,18 @@ pub(crate) fn spawn_analysis_header_toolbar(
         })
         .with_children(|toolbar| {
             if let Some(active) = active_task {
-                if app_core::analysis_stop_requested(&active.file_hash) {
-                    spawn_text(toolbar, font.clone(), "停止中…", 9.0, theme.destructive);
-                } else {
-                    spawn_analysis_toolbar_button(
-                        toolbar,
-                        font.clone(),
-                        icons.clone(),
-                        theme,
-                        (
-                            UiIcon::Analyze,
-                            "停止分析",
-                            false,
-                            UiAction::from(AnalysisCommand::StopAnalysis(active.file_hash.clone())),
-                        ),
-                    );
-                }
+                spawn_analysis_toolbar_button(
+                    toolbar,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    (
+                        UiIcon::Analyze,
+                        "停止分析",
+                        false,
+                        UiAction::from(AnalysisCommand::StopAnalysis(active.file_hash.clone())),
+                    ),
+                );
             } else if analysis_start_unavailable(file_hash).is_none() {
                 spawn_analysis_toolbar_button(
                     toolbar,

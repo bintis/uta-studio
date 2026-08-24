@@ -41,34 +41,21 @@ Required:
 - Provider labels are descriptive/automatic unless a typed provider-selection contract exists.
 - Readiness labels must not claim a specific capability is ready from a coarser family/bundle status.
 
-Known issue to close during Phase B:
+Card 20A closure:
 
 ```text
-Vocal extraction strategy      -> UI currently checks ModelDownloadTarget::RoFormer bundle
-Instrumental extraction        -> UI currently checks the same RoFormer bundle
+Vocal extraction       -> model:bs_roformer_vocals_ep317 / audio.extract_vocals
+Instrumental           -> model:melband_roformer_inst_v2 / audio.extract_instrumental
+Lead isolation         -> model:melband_roformer_harmony / audio.lead_isolate
+Pitch                  -> model:rmvpe / pitch.track
+Note boundaries        -> model:game / notes.game
 ```
 
-The bundle contains multiple RoFormer resources, so a missing unrelated member can falsely block a specific strategy, or a family-level status can obscure the exact required model. Feature closure must use exact resource/capability status for these specific rows or make the row explicitly family-health-only.
+Each Analysis strategy row consumes the exact Runtime Manager fact through app-core; aggregate RoFormer bundle health remains lifecycle-only and cannot gate an individual row.
 
 ### Advanced controls
 
-Known issue:
-
-```text
-Segment size
-Overlap
-Batch size
-Output normalization
-Voiced sensitivity
-```
-
-The current Analysis UI explicitly states some of these are not encoded into `AnalyzeRequestV1`. By final feature closure every interactive control must be one of:
-
-1. a versioned Workflow/node parameter that reaches `uta-analyze` and is consumed by the owning backend stage;
-2. a clearly labeled legacy-only control that is hidden/disabled for the new Engine path;
-3. removed.
-
-Do not leave editable UI whose value is ignored by the execution path.
+Card 20A retired the legacy segment size, overlap, separator/ASR batch size, output normalization and voiced-sensitivity controls from the compiled canonical UI because they are not encoded into `AnalyzeRequestV1` / the compiled Workflow. Models & runtime now states that packaged parameters are not user-editable. No editable control remains whose value is ignored by the canonical path.
 
 ## 3. Settings > Models & runtime parity
 
@@ -121,49 +108,31 @@ Required:
 
 ### Execution-policy UI
 
-Known issue to close:
-
-The current Policy button cycles:
-
-```text
-Always
--> OnDisagreement
--> DisagreementWindows
--> Disabled
--> Always
-```
-
-but the domain also supports `MaximumOnly`. The UI can display `Maximum only` when loaded from migration/defaults but cannot select it. Final closure must expose the complete supported policy set through an explicit selector/menu or an equivalent unambiguous interaction.
+Card 20A replaces the lossy Policy cycle with explicit choices for `Always`, `OnDisagreement`, `DisagreementWindows`, `MaximumOnly`, and `Disabled`. Processing cards label execution condition, scheduling priority and hard dependencies separately.
 
 Conditional policy shown in UI must correspond to real scheduler behavior after card 16; metadata-only conditions are not sufficient.
 
 ## 6. Audio lane / role parity
 
-Final design requires independent Vocal/BGM and Lead/Back/Harmony representation where supported.
-
-Known cross-layer mismatch:
+Final-v1 executable audio semantics are:
 
 ```text
-Analysis Engine AudioRole:
-  LeadVocal
-  BackingVocal
-  HarmonyVocal
-
-Editor TrackRole:
-  Lead
-  Harmony
-  Backing
-  Adlib
-
-Processing Studio Workflow AudioRole currently:
-  LeadVocal
-  BackVocal
-  (no distinct Harmony role)
+Vocal/BGM separation
+Lead isolation -> LeadVocal + VocalResidual
 ```
 
-Card 17 must close the executable semantics and the Studio Workflow domain/UI representation together. Do not add Engine `HarmonyVocal` output while leaving Processing Studio unable to route/display it.
+`audio.lead_partition` means partitioning simultaneous foreground singers and is future/optional. Processing Studio must not advertise it as a Backing/Harmony transformation, and independent BackingVocal/HarmonyVocal stem requests must fail closed.
 
-Adlib is primarily an Editor/chart role in current design; do not invent a separate audio stem unless a backend artifact contract exists.
+Editor roles remain a separate authoring domain:
+
+```text
+Lead
+Harmony
+Backing
+Adlib
+```
+
+Workflow schema persistence may retain distinct BackingVocal, HarmonyVocal and VocalResidual identities for future compatibility, but only `VocalResidual` is produced by current lead isolation. Do not infer an executable audio stem from an Editor role, and do not relabel the residual as Backing or Harmony.
 
 ## 7. Optional expert parity
 
@@ -182,7 +151,7 @@ If an expert runs only on disagreement windows, UI/graph/provenance should make 
 
 ## 8. Technique parity
 
-When `technique.analyze` becomes real:
+With card 18's real `technique.analyze` route:
 
 - Studio/Editor shows technique evidence as evidence/review, not extra MIDI notes;
 - raw STARS logits are not labeled calibrated confidence;
@@ -191,7 +160,7 @@ When `technique.analyze` becomes real:
 
 ## 9. Quantization parity
 
-If Engine quantization remains part of final-v1:
+With card 19's Engine quantization retained in final-v1:
 
 - Settings toggle maps to a real request field;
 - Planner node maps to a real execution stage;
@@ -199,7 +168,7 @@ If Engine quantization remains part of final-v1:
 - Candidate symbolic timing changes are distinguishable from raw Candidate and continuous F0;
 - Editor authoring quantize remains a separate human-authoring command.
 
-If Engine quantization is retired, remove/disable the Engine-facing toggle/node/advertised capability consistently instead of leaving a half-implemented UI knob.
+Missing explicit song BPM/grid must block Preview rather than guess a tempo.
 
 ## 10. Candidate / Review / Editor parity
 

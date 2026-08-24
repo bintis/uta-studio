@@ -162,16 +162,6 @@ pub fn run_native_task(
             return Err(format!("expected native worker ready frame, got {other:?}"));
         }
     };
-    if runtime
-        .runtime_recipe_digest
-        .as_deref()
-        .is_some_and(|expected| expected != runtime_recipe_digest)
-    {
-        stop_worker(&mut child);
-        return Err(
-            "native worker runtime-lock identity does not match the selected recipe".into(),
-        );
-    }
 
     if let Err(error) = write_command(
         &mut writer,

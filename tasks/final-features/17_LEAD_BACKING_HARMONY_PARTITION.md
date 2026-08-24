@@ -1,125 +1,123 @@
-# 17 — Lead / Backing / Harmony Partition Contract
+# 17 — Lead Isolation / Future Lead Partition Contract
 
-**Precondition:** Phase A model cards 01–13 are terminal and card 05 reports `integration_ready=yes`. Card 14 may be `SKIPPED_PRECONDITION` for unrelated Production-only blockers.
-**Task class:** semantic audio capability closure; OpenVINO execution only if a narrowly bounded already-accepted model check is strictly required
-**Owner:** Analysis Engine separation semantics + Studio local workflow-role/wire mapping only
+**State:** `READY`
+**Precondition:** Phase A model cards 01–13 are terminal and card 05 reports `integration_ready=yes`.
+**Task class:** semantic audio contract correction; no model execution
+**Owner:** Analysis Engine separation semantics + Studio local Workflow/wire mapping
 
 ## Read
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+docs/design/README.md
+docs/design/architecture/UTA_SEPARATED_ARCHITECTURE_DESIGN_v1.0.md
+docs/design/audio-analysis/UTA_ANALYSIS_ENGINE_AUDIO_ANALYSIS_FRAMEWORK_v2.1_RC.md
+docs/design/audio-analysis/UTA_ANALYSIS_ENGINE_AUDIO_SEPARATION_PLAN_v1.1.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
-tasks/final-features/17_LEAD_BACKING_HARMONY_PARTITION.md
 docs/KEY_CONCLUSIONS.md
 tasks/remaining-models/STATE.md
 ```
 
-Read the current Harmony conclusion first. Do not assume a semantic output that current source/state did not prove.
+## Contract corrected by this card
 
-## Problem
-
-Current Engine explicitly rejects requested `BackingVocal` / `HarmonyVocal` stems with `MissingCapability(audio.lead_partition)`. Final design requires independent vocal lanes while preserving truthful semantics.
-
-Current capability state before this card:
+The earlier card framing incorrectly treated `audio.lead_partition` as a
+BackingVocal-versus-HarmonyVocal classifier. The authoritative separated
+architecture defines two different capabilities:
 
 ```text
-audio.lead_isolate    implemented
-audio.lead_partition  not implemented
+audio.lead_isolate
+  complete/support-containing vocals -> foreground lead + vocal residual
+
+audio.lead_partition
+  multiple simultaneous foreground singers -> separate analysis streams
 ```
 
-## Hard semantic rule
+`audio.lead_partition` is optional/future work and is not a final-v1 baseline
+prerequisite. It must not be claimed by a foreground/support separator.
 
-A model that merely emits “karaoke”, “residual”, “other vocals”, or a second audio file does not automatically prove separate Backing and Harmony semantics.
-
-This card must establish a documented, tested mapping from accepted model/runtime outputs to the exact Engine semantic roles it claims:
+Editor roles are a separate domain:
 
 ```text
-LeadVocal
-BackingVocal
-HarmonyVocal
+Lead / Harmony / Backing / Adlib = chart-track authoring roles
 ```
 
-If the accepted model only proves Lead + one undifferentiated residual, do not split that residual into Backing/Harmony by naming convention. Either:
+Their existence does not imply that equivalent independently separated audio
+stems exist.
 
-1. implement only the exact truthful subset and keep the unsupported semantic role blocked, then create a targeted follow-up model/algorithm card; or
-2. use an already-selected/accepted source-verified model/output that genuinely distinguishes the roles.
+## Accepted model semantics
 
-Do not invent a new model in this feature card without a new focused task card and source/license/runtime audit.
-
-## Engine outcome
-
-When semantics are proven, implement `audio.lead_partition` as a real Analysis Engine stage and make requested stem behavior truthful:
+The exact accepted Karaoke checkpoint remains the implementation recipe for
+`audio.lead_isolate`. Its truthful product contract is:
 
 ```text
-requested BackingVocal -> actual backing semantic artifact
-requested HarmonyVocal -> actual harmony semantic artifact
+all vocals -> LeadVocal + VocalResidual
 ```
 
-Artifacts must preserve:
+The model is one-target. The residual is deterministic subtraction and may
+contain backing vocals, harmony, doubles, ad-libs, choir content and separation
+error. It is never promoted to `BackingVocal` or `HarmonyVocal` by filename,
+subtraction, UI copy or protocol naming.
+
+Independent BackingVocal/HarmonyVocal stem requests remain typed
+`MissingCapability(audio.lead_partition)` in v1. A future implementation must
+select a source-verified multiple-foreground separator and an appropriate
+identity/role contract; it must not reuse this residual as two aliases.
+
+## Engine and Worker outcome
+
+- `audio.lead_isolate` publishes LeadVocal and consumes the second Worker output
+  only as typed `vocal_residual` validation/working data.
+- GGML and OpenVINO routes use
+  `semantic_output=lead_vocal+backing_vocal_residual` and publish the second
+  output as `vocal_residual`.
+- `audio.lead_partition implementation_exists=false` and retains its designed
+  `partitioned_lead_vocals` output semantic.
+- Backing/Harmony requested stems fail before model resolution or execution.
+- No residual bytes are atomically published under a Backing/Harmony filename.
+
+## Studio / Workflow outcome
+
+- Processing Studio advertises only executable final-v1 transformations;
+  `audio.lead_partition` is not offered and is not inserted into migrated/default
+  Workflows.
+- `audio.lead_isolate` exposes distinct `lead` and `residual` ports.
+- Workflow schema 2 retains distinct local BackingVocal, HarmonyVocal and
+  VocalResidual role identities for persistence/future compatibility. Legacy
+  schema-1 `back_vocal` migrates to BackingVocal and never aliases Harmony.
+- Editor Lead/Harmony/Backing/Adlib chart tracks remain unchanged.
+- Studio continues through local DTOs and `AnalysisCliClient`; no backend crate
+  dependency was added.
+
+## Source and design evidence
+
+- UVR's public vocal-split code defines Karaoke as lead removal and application
+  output labels, but does not make the complement a pure harmony classifier.
+- The exact checkpoint has one neural target; subtraction proves reconstruction,
+  not Backing/Harmony taxonomy.
+- MedleyVox exposes unison/duet/main-vs-rest/N-singing separation, not independent
+  product BackingVocal/HarmonyVocal labels.
+- The authoritative Uta separation design explicitly marks arbitrary perfect
+  backing/harmony decomposition and simultaneous singer partition as future
+  work.
+
+External identities and immutable links remain in
+`docs/research/non-game-model-readiness/SOURCE_LEDGER.md` (R10, O11, O12).
+No model bytes, package, GPU or inference context were created for this card.
+
+## Acceptance
+
+Focused CPU/local tests cover:
 
 ```text
-source timeline
-sample rate/channels appropriate to the accepted separation route
-role identity
-producer/provenance
-model/runtime generation where model-derived
-atomic publication
-lossless storage policy when source/generated audio is lossless
+BackingVocal and HarmonyVocal requests fail closed
+capability registry reports lead_partition unimplemented
+Processing Studio does not advertise/insert lead_partition
+schema-1 BackVocal migration does not alias Harmony
+GGML rejects backing promotion and accepts lead+residual semantics
+lead-isolation Worker output remains exact lead_vocal + vocal_residual
 ```
 
-No requested role may be satisfied by relabeling the same bytes under two names unless the product contract explicitly defines them as aliases, which final-v1 does not.
-
-## Workflow local-domain alignment
-
-The current Studio Workflow domain uses local audio roles such as `BackVocal`, while the Analysis Engine wire contract has `BackingVocal` and `HarmonyVocal`.
-
-Reconcile this without sharing backend crates:
-
-```text
-Studio Workflow local domain
-  -> explicit local wire mapping
-  -> AnalyzeRequest/workflow extension JSON role
-  -> Engine AudioRole
-```
-
-If the local Workflow domain needs distinct `BackingVocal` and `HarmonyVocal`, add them with versioned persistence/migration so existing stored workflows remain readable. Do not import Engine `AudioRole` into app-core.
-
-Editor chart-track `Adlib` is not automatically an audio stem role. Preserve existing Editor Adlib behavior; do not invent an `Adlib` audio model unless the design explicitly requires one.
-
-## Tests
-
-Use deterministic audio fixtures and model-output fixtures where possible. If one bounded OpenVINO semantic check is required, it is one model/workload at a time and Vulkan remains forbidden.
-
-Required tests:
-
-```text
-unsupported semantic role fails closed
-lead/backing/harmony roles cannot alias accidentally
-role mapping round-trips across Studio local DTO -> CLI JSON -> Engine contract
-stored Workflow migration preserves old BackVocal data
-requested stem result contains exact semantic role
-source timeline preserved
-cancellation leaves no partial stem
-Processing Studio independent lane graph type-checks
-Desktop still consumes app-core only
-```
-
-## Capability gate
-
-Set:
-
-```text
-audio.lead_partition implementation_exists=true
-```
-
-only when at least the product-declared partition semantics are truly executable through `uta-analyze` and requested artifacts can be emitted. Do not green the capability for a placeholder adapter.
-
-## Durable completion update
-
-Set card 17's current state/result in `tasks/remaining-models/STATE.md` and update `docs/KEY_CONCLUSIONS.md` if the lead/backing/harmony semantic contract changes. Do not create a completion log under `docs/`.
-
-If semantic evidence is insufficient, finish `NEEDS_REVIEW` with the exact missing role/model/algorithm requirement; do not fake full design completion.
-
-Stop after this card.
+Card 17 is `READY` because final-v1 now matches the authoritative contract rather
+than claiming an unsupported capability. This does not claim that future
+multiple-foreground partitioning has been implemented.

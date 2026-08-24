@@ -500,60 +500,6 @@ pub(crate) fn stage_primary_node_and_artifact(
     }
 }
 
-/// The one analysis-profile parameter (if any) primarily relevant to a
-/// given node, for the inspector's PARAMETERS fact
-/// (docs/analysis-dag-redesign.md Phase 7 §7.4). Nodes with no
-/// profile-controlled parameter (preflight, music.analysis, lyrics.preprocess,
-/// lyrics.align's own timing, chart.build_candidate) return `None` rather
-/// than a fabricated value -- the fact row is simply omitted for those.
-pub(crate) fn selected_stage_parameter(
-    node_id: &str,
-    profile: &app_core::AnalysisProfileSnapshot,
-) -> Option<(&'static str, String)> {
-    match node_id {
-        "lyrics.transcribe" => Some(("ASR ENGINE", profile.asr_engine.clone())),
-        "lyrics.align" => Some(("ALIGNMENT BACKEND", profile.alignment_backend.clone())),
-        _ => None,
-    }
-}
-
-/// The `app_core::ProfileField` a node's one profile-controlled parameter
-/// maps to, if any -- same mapping as `selected_stage_parameter`'s match
-/// arms (kept as a separate small function rather than merged into it,
-/// since callers like the PARAMETER SOURCE resolution and the "Configure
-/// for this run" dialog need the field itself, not a pre-formatted label).
-pub(crate) fn node_config_profile_field(node_id: &str) -> Option<app_core::ProfileField> {
-    match node_id {
-        "lyrics.transcribe" => Some(app_core::ProfileField::AsrEngine),
-        "lyrics.align" => Some(app_core::ProfileField::AlignmentBackend),
-        _ => None,
-    }
-}
-
-/// Phase 8 §8.4: which of the three tiers (Global Defaults -> Song Profile
-/// -> Run Override) is winning for the inspector's PARAMETER SOURCE fact,
-/// backed by the same `app_core::resolve_profile_field` real execution
-/// uses -- pulled out of the giant inspector-rendering function so it's
-/// independently testable with fixtures, no IO. `field` is `None` for a
-/// node with no profile-controlled parameter at all; the caller already
-/// omits the fact row in that case (`selected_parameter.is_none()`), so the
-/// "Global default" fallback here is never actually shown.
-pub(crate) fn node_parameter_source_copy(
-    field: Option<app_core::ProfileField>,
-    global: &app_core::AnalysisProfileSnapshot,
-    song: Option<&app_core::AnalysisProfileSnapshot>,
-    run_override: Option<&str>,
-) -> &'static str {
-    let Some(field) = field else {
-        return "Global default";
-    };
-    match app_core::resolve_profile_field(field, global, song, run_override).source {
-        app_core::ProfileSource::RunOverride => "Run override (queued)",
-        app_core::ProfileSource::SongProfile => "Song profile",
-        app_core::ProfileSource::GlobalDefault => "Global default",
-    }
-}
-
 /// Minimal, dependency-free ms-since-epoch -> `"YYYY-MM-DD HH:MM"` (UTC)
 /// formatter for artifact/history timestamps in the inspector -- good
 /// enough for display without pulling in a full date/time crate for one

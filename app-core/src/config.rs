@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +10,7 @@ use crate::cache::{CachePaths, config_path};
 
 static CONFIG_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// The local folder Uta Studio scans for source audio and video files.
+/// The local folder Uta! Studio scans for source audio and video files.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export)]
@@ -36,6 +36,14 @@ pub struct AppConfig {
     /// Native acceleration preference. Production still uses only validated
     /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
+    /// Explicit model-specific backend choices. Missing entries use Runtime
+    /// Manager's pinned route and never imply fallback.
+    #[serde(default)]
+    pub model_backend_overrides: BTreeMap<String, String>,
+    /// Human-readable operator guidance retained in JSON because JSON has no
+    /// comment syntax. Runtime routing never parses this field.
+    #[serde(default = "default_model_backend_note")]
+    pub model_backend_note: String,
     pub whisper_model: Option<String>,
     pub beam_size: Option<u32>,
     pub batch_size: Option<u32>,
@@ -78,6 +86,11 @@ fn default_data_path_option() -> Option<PathBuf> {
     Some(AppConfig::default_data_path())
 }
 
+fn default_model_backend_note() -> String {
+    "Intel XPU recommendation: choose Vulkan / GGML for the five RoFormer models; that worker uses the tested serial/no-async path. Keep other models on their pinned backend unless validated separately. CPU is an explicit diagnostic route, never a fallback."
+        .to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -88,6 +101,8 @@ impl Default for AppConfig {
             fullscreen: None,
             dark_mode: None,
             compute_backend: None,
+            model_backend_overrides: BTreeMap::new(),
+            model_backend_note: default_model_backend_note(),
             whisper_model: None,
             beam_size: None,
             batch_size: None,
@@ -138,6 +153,16 @@ impl AppConfig {
             }
             .to_string(),
         );
+        self.model_backend_overrides.retain(|model_id, backend| {
+            !model_id.trim().is_empty()
+                && matches!(
+                    backend.as_str(),
+                    "openvino" | "vulkan" | "native_dsp" | "diagnostic_cpu"
+                )
+        });
+        if self.model_backend_note.trim().is_empty() {
+            self.model_backend_note = default_model_backend_note();
+        }
         self.asr_engine = Some("transcript_fusion".to_string());
         self.align_backend = Some("qwen3_forced_aligner".to_string());
         self.whisper_model = None;
@@ -214,7 +239,7 @@ impl AppConfig {
             None => (Self::default().with_defaults(), true),
         };
         if should_save && let Err(error) = config.save() {
-            tracing::error!("Could not save Uta Studio configuration: {error}");
+            tracing::error!("Could not save Uta! Studio configuration: {error}");
         }
 
         config
@@ -381,6 +406,7 @@ fn write_config_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{AppConfig, write_config_atomically};
@@ -466,6 +492,29 @@ mod tests {
         assert_eq!(repaired.separator(), "native_workflow");
         assert_eq!(repaired.asr_engine(), "transcript_fusion");
         assert_eq!(repaired.align_backend(), "qwen3_forced_aligner");
+    }
+
+    #[test]
+    fn model_backend_preferences_are_explicit_and_invalid_values_are_removed() {
+        let repaired = AppConfig {
+            model_backend_overrides: BTreeMap::from([
+                ("bs_roformer_vocals_ep317".to_string(), "vulkan".to_string()),
+                ("rmvpe".to_string(), "automatic_fallback".to_string()),
+            ]),
+            model_backend_note: String::new(),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(
+            repaired
+                .model_backend_overrides
+                .get("bs_roformer_vocals_ep317")
+                .map(String::as_str),
+            Some("vulkan")
+        );
+        assert!(!repaired.model_backend_overrides.contains_key("rmvpe"));
+        assert!(repaired.model_backend_note.contains("Intel XPU"));
+        assert!(repaired.model_backend_note.contains("serial/no-async"));
     }
 
     #[test]

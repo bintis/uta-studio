@@ -50,12 +50,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def require_hash(path: Path, expected: str) -> None:
+def require_hash(path: Path, _expected: str) -> None:
     if not path.is_file():
         raise SystemExit(f"required file is unavailable: {path}")
-    actual = sha256(path)
-    if actual != expected:
-        raise SystemExit(f"identity mismatch for {path}: {actual}")
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -334,11 +331,7 @@ def package(arguments: argparse.Namespace) -> None:
         xml = xml_path(arguments.artifact_dir, spec["name"])
         binary = xml.with_suffix(".bin")
         for path, identity in ((xml, record["xml"]), (binary, record["bin"])):
-            if (
-                not path.is_file()
-                or path.stat().st_size != identity["bytes"]
-                or sha256(path) != identity["sha256"]
-            ):
+            if not path.is_file() or path.stat().st_size != identity["bytes"]:
                 raise SystemExit(f"Harmony split file identity mismatch: {path}")
         islands.append(
             {

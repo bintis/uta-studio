@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use bevy::prelude::Component;
 
 use super::{
-    AnalysisAdvancedSection, ArtifactInspectorTab, CacheClearScope, EditorAction,
-    EditorDockSelectKind, LibraryFacet, LibrarySelectKind, LibraryView, LineageScope,
-    ProblemsFilter, SettingsSelectKind, SettingsTab, TranscriptBoundaryEdge,
-    TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle, WordSelection,
+    ArtifactInspectorTab, CacheClearScope, EditorAction, EditorDockSelectKind, LibraryFacet,
+    LibrarySelectKind, LibraryView, LineageScope, ProblemsFilter, SettingsSelectKind, SettingsTab,
+    TranscriptBoundaryEdge, TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle,
+    WordSelection,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,24 +84,18 @@ pub(crate) enum SettingsCommand {
     RefreshRuntimeStatus,
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
-    ToggleAnalysisAdvanced(AnalysisAdvancedSection),
+    SetModelBackend(String, Option<String>),
     SetAnalysisQuality(app_core::AnalysisQualityProfile),
     TogglePreserveContinuousPitch,
+    ToggleAnalysisQuantization,
     RequestSetup(Option<app_core::ModelDownloadTarget>),
     InstallAudioModel(String),
     RemoveAudioModel(String),
     CancelSetup,
     ConfirmSetup,
     ToggleTheme,
-    AdjustSeparatorSegmentSize(i32),
-    AdjustSeparatorOverlap(i32),
-    AdjustSeparatorBatchSize(i32),
-    AdjustSeparatorNormalization(i32),
-    AdjustAsrBeamSize(i8),
-    AdjustAsrBatchSize(i8),
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
-    AdjustVocalThreshold(i8),
     RestoreAnalysisDefaults,
     RequestClearCache(CacheClearScope),
     CancelClearCache,
@@ -152,7 +146,7 @@ pub(crate) enum AnalysisCommand {
     SelectWorkflowNode(String),
     MoveWorkflowNode(String, bool),
     DuplicateWorkflowNode(String),
-    CycleWorkflowPolicy(String),
+    SetWorkflowPolicy(String, app_core::ExecutionPolicy),
     AdjustWorkflowPriority(String, i32),
     RebindWorkflowAnalyzer(String, String, String),
     SaveWorkflow,
@@ -176,18 +170,7 @@ pub(crate) enum AnalysisCommand {
     ForceTranscribe(String),
     ReanalyzePitch(String),
     ReanalyzeFull(String),
-    RunAnalysisNodeOnly(String, String),
-    RunAnalysisNodeDownstream(String, String),
-    DisableAnalysisNodeForRun(String, String),
-    FreezeAnalysisNodeOutputs(String, String),
-    BypassAnalysisNodeWithOriginalMix(String, String),
     CompareNodeAttemptWithPrevious(String, String, i64),
-    SaveNodeConfigAsSongProfile(String, String),
-    OpenNodeConfigDialog(String, String),
-    CloseNodeConfigDialog,
-    ToggleNodeConfigPicker,
-    SelectNodeConfigValue(String),
-    RunNodeConfigDialog,
     OpenPlanPreview(String),
     ClosePlanPreview,
     QueueExactPreview,
@@ -218,11 +201,6 @@ pub(crate) enum AnalysisCommand {
     SetActiveArtifactRevision(Box<app_core::ArtifactRevision>),
     CancelSetActiveArtifactRevision,
     ConfirmSetActiveArtifactRevision,
-    RequestCaptureIntermediate(String),
-    CancelCaptureIntermediate,
-    ConfirmCaptureIntermediateOnce,
-    ConfirmCaptureIntermediatePersistent,
-    ConfirmDisableIntermediateCapture,
     OpenArtifactRevision(PathBuf),
     PreviewArtifactRevision(PathBuf),
     RevealArtifactRevision(PathBuf),
@@ -351,11 +329,6 @@ impl UiCommand {
                 | AnalysisCommand::SetActiveArtifactRevision(_)
                 | AnalysisCommand::CancelSetActiveArtifactRevision
                 | AnalysisCommand::ConfirmSetActiveArtifactRevision
-                | AnalysisCommand::RequestCaptureIntermediate(_)
-                | AnalysisCommand::CancelCaptureIntermediate
-                | AnalysisCommand::ConfirmCaptureIntermediateOnce
-                | AnalysisCommand::ConfirmCaptureIntermediatePersistent
-                | AnalysisCommand::ConfirmDisableIntermediateCapture
                 | AnalysisCommand::RequestDeleteArtifactRevision(_)
                 | AnalysisCommand::CancelDeleteArtifactRevision
                 | AnalysisCommand::ConfirmDeleteArtifactRevision

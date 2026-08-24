@@ -7,15 +7,22 @@ use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineRe
 
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FRAMES: usize = 4 * 60 * 60 * 100;
+#[cfg(test)]
 const RMVPE_SOURCE_SHA256: &str =
     "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd";
+#[cfg(test)]
 const RMVPE_MANIFEST_SHA256: &str =
     "cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb";
+#[cfg(test)]
 const RMVPE_BIN_SHA256: &str = "d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b";
+#[cfg(test)]
 const FCPE_SOURCE_SHA256: &str = "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0";
+#[cfg(test)]
 const FCPE_MANIFEST_SHA256: &str =
     "bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6";
+#[cfg(test)]
 const FCPE_XML_SHA256: &str = "9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237";
+#[cfg(test)]
 const FCPE_BIN_SHA256: &str = "6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,15 +80,11 @@ pub fn parse_rmvpe_pitch(
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 1
         || raw.model_id != "rmvpe"
-        || raw.backend != "openvino_gpu"
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.timeline_step_ms == 0
         || raw.sample_rate == 0
         || raw.frames.is_empty()
         || raw.frames.len() > MAX_FRAMES
-        || raw.source_model_sha256 != RMVPE_SOURCE_SHA256
-        || raw.model_manifest_sha256 != RMVPE_MANIFEST_SHA256
-        || raw.model_bin_sha256 != RMVPE_BIN_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
     {
         return Err(invalid("RMVPE evidence identity or shape is invalid"));
     }
@@ -197,12 +200,7 @@ pub fn parse_fcpe_pitch(
     .map_err(|error| invalid(format!("FCPE evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 3
         || raw.model_id != "fcpe"
-        || raw.source_model_sha256 != FCPE_SOURCE_SHA256
-        || raw.model_manifest_sha256 != FCPE_MANIFEST_SHA256
-        || raw.model_xml_sha256 != FCPE_XML_SHA256
-        || raw.model_bin_sha256 != FCPE_BIN_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
-        || raw.backend != "openvino_gpu"
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.timeline_step_ms != 10
         || raw.sample_rate != 16_000
         || raw.window_samples != 32_000
@@ -287,13 +285,6 @@ fn seconds_to_canonical(seconds: f64) -> EngineResult<u64> {
         return Err(invalid("pitch evidence time overflows"));
     }
     Ok(units.round() as u64)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "component": "uta-openvino-worker-ze-experimental",
+  "worker_protocol": "native-openvino-ir-v1",
+  "experimental": true,
+  "openvino": {
+    "version": "2026.3.0",
+    "source_url": "https://github.com/openvinotoolkit/openvino.git",
+    "source_commit": "8a17657b995fd3b4a52f8484acfcf2bb61214623",
+    "build": {
+      "shared": true,
+      "threading": "SEQ",
+      "python": false,
+      "intel_cpu": true,
+      "intel_gpu": true,
+      "intel_npu": false,
+      "gpu_runtime_type": "ZE",
+      "level_zero_support": "experimental",
+      "onednn_for_gpu": false,
+      "cm_for_gpu": false,
+      "auto_plugins": false,
+      "frontends": ["IR", "ONNX"],
+      "bundled_opencl_icd_loader": true,
+      "bundled_level_zero_loader": true,
+      "install_rpath": "$ORIGIN"
+    },
+    "gpu_properties": {
+      "INFERENCE_PRECISION_HINT": "f32",
+      "EXECUTION_MODE_HINT": "ACCURACY",
+      "GPU_ENABLE_LOOP_UNROLLING": false
+    }
+  },
+  "model_policy": {
+    "production_format": "openvino_ir_v11",
+    "source_graph_loading_during_inference": false,
+    "cpu_fallback": false,
+    "explicit_cpu_gpu_topology": "allowed_only_when_pinned_by_the_model_manifest",
+    "model_specific_identity": "installed-model-manifest"
+  },
+  "route_policy": {
+    "default_route": false,
+    "production_route": false,
+    "requires_explicit_gpu_authorization": true,
+    "must_not_replace_openvino_ocl_runtime": true
+  }
+}

@@ -67,6 +67,12 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let runtime_status = app_core::analysis_runtime_status();
+        let runtime_registry = app_core::native_runtime_registry();
+        let (strategy_resources, strategy_resources_error) =
+            match app_core::analysis_strategy_resource_statuses() {
+                Ok(statuses) => (statuses, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
         let (audio_catalog, audio_catalog_error) = match app_core::list_audio_models() {
             Ok(catalog) => (catalog, None),
             Err(error) => (
@@ -80,6 +86,9 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
         };
         let _ = sender.send(Ok(ModelSettingsSnapshot {
             runtime_status,
+            runtime_registry,
+            strategy_resources,
+            strategy_resources_error,
             audio_catalog,
             audio_catalog_error,
         }));
@@ -129,6 +138,7 @@ pub(crate) fn poll_model_settings_job(
         Err(error) => jobs.model_settings_job.error = Some(error),
     }
     invalidated.invalidate(UiDirtyRegion::Settings);
+    invalidated.invalidate(UiDirtyRegion::Analysis);
 }
 
 pub(crate) fn start_native_setup(

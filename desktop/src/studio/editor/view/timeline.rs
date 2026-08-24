@@ -390,6 +390,54 @@ pub(crate) fn spawn_editor_timeline(
                         }
                     }
                 }
+                // STARS technique output is a read-only evidence strip. The
+                // value is explicitly source-local and uncalibrated; it never
+                // creates, splits, or moves a MIDI note.
+                if editor
+                    .visible_evidence
+                    .contains(&app_core::EvidenceKind::StarsTechnique)
+                    && let Some(track) = editor
+                        .evidence
+                        .tracks
+                        .iter()
+                        .find(|track| track.kind == app_core::EvidenceKind::StarsTechnique)
+                {
+                    for group in track.points.chunks(9) {
+                        let Some(point) = group
+                            .iter()
+                            .filter(|point| {
+                                point.time >= editor.viewport_start
+                                    && point.time <= editor.viewport_end()
+                            })
+                            .max_by(|left, right| left.value.total_cmp(&right.value))
+                        else {
+                            continue;
+                        };
+                        let class = point
+                            .label
+                            .as_deref()
+                            .and_then(|label| label.split(" · ").next())
+                            .unwrap_or("technique");
+                        canvas.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: percent(time_percent(point.time, editor)),
+                                top: px(18),
+                                max_width: px(108),
+                                padding: UiRect::axes(px(4), px(2)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(4)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.card.with_alpha(0.82)),
+                            BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
+                            Text::new(format!("{class} · local {:.3} · uncal.", point.value)),
+                            ui_text_font(font.clone(), 7.0),
+                            TextColor(theme.muted_foreground),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                }
                 // Other tracks read as context: visible enough to place a
                 // second voice against, never mistakable for what is editable.
                 for ghost in ghosts.iter().filter(|note| {

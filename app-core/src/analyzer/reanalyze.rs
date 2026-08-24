@@ -1,26 +1,8 @@
 use super::*;
 
 pub fn shutdown_server() {
-    let pid = SERVER_PID.swap(0, Ordering::SeqCst);
-    if pid != 0 {
-        info!("[analyzer] Graceful shutdown of server (pid={pid})");
-        // A process killed here must not remain in the singleton.  Otherwise
-        // `ensure_server` sees `Some` and the next analysis attempts to reuse
-        // a dead connection (or, during setup, an stale native worker).
-        if let Ok(mut guard) = ANALYZER_SERVER.try_lock() {
-            if let Some(server) = guard.as_mut() {
-                let _ = server.writer.write_all(b"{\"type\":\"quit\"}\n");
-                let _ = server.writer.flush();
-            }
-            *guard = None;
-            return;
-        }
-        std::thread::spawn(move || {
-            let _ = Command::new("kill").args([&pid.to_string()]).status();
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-        });
-    }
+    // AnalysisCliClient owns and reaps each uta-analyze process. There is no
+    // shared compatibility analyzer server to stop at application shutdown.
 }
 
 pub fn delete_cache(file_hash: &str) {
@@ -32,9 +14,9 @@ pub fn delete_cache(file_hash: &str) {
     update_song_analyzed(file_hash, false, None, None, None, None, None);
 }
 
-pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) {
+pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
 
     if let Some(lang) = language
@@ -42,20 +24,24 @@ pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) {
     {
         let mut config = AppConfig::load();
         config.set_language_override(file_hash.to_string(), lang);
-        if let Err(error) = config.save() {
-            tracing::error!("Could not save language override: {error}");
-            return;
-        }
+        config
+            .save()
+            .map_err(|error| format!("Could not save language override: {error}"))?;
     }
-    reanalyze(file_hash, false);
+    queue_engine_reanalysis(
+        file_hash,
+        crate::analysis_experience::AnalysisDefaultTarget::Transcript,
+    )
 }
 
-pub fn reanalyze_full(file_hash: &str) {
+pub fn reanalyze_full(file_hash: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
-
-    reanalyze(file_hash, true);
+    queue_engine_reanalysis(
+        file_hash,
+        crate::analysis_experience::AnalysisDefaultTarget::FullCandidate,
+    )
 }
 
 /// Clears cached pitch evidence so `pitch.extract` regenerates it.
@@ -68,6 +54,7 @@ pub fn reanalyze_full(file_hash: &str) {
 /// resolve once the triggered run finishes. Used instead of deleting
 /// outright so a run that fails, crashes, or gets OOM-killed doesn't
 /// destroy the previous good output for nothing.
+#[cfg(test)]
 pub(crate) fn back_up_before_reset(path: &Path) -> Option<(PathBuf, PathBuf)> {
     if !path.is_file() {
         return None;
@@ -94,6 +81,7 @@ pub(crate) fn back_up_before_reset(path: &Path) -> Option<(PathBuf, PathBuf)> {
 /// Deliberately existence-based rather than gated on `SongResult`, since a
 /// single failed node doesn't necessarily surface as an overall run
 /// failure.
+#[cfg(test)]
 pub(crate) fn restore_or_commit_backup(original: &Path, backup: &Path) {
     if original.is_file() {
         let _ = std::fs::remove_file(backup);
@@ -102,6 +90,7 @@ pub(crate) fn restore_or_commit_backup(original: &Path, backup: &Path) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_pitch_reanalysis_reset(
     cache: &CacheDir,
     file_hash: &str,
@@ -115,21 +104,14 @@ pub(crate) fn apply_pitch_reanalysis_reset(
     .collect()
 }
 
-pub fn reanalyze_pitch(file_hash: &str) {
+pub fn reanalyze_pitch(file_hash: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
-
-    let cache = CacheDir::new();
-    let backups = apply_pitch_reanalysis_reset(&cache, file_hash);
-    let mut intents = PENDING_NODE_INTENTS.lock().unwrap();
-    let intent = intents.entry(file_hash.to_string()).or_default();
-    intent
-        .targets
-        .insert(crate::analysis_graph::AnalysisNodeId::new("pitch.extract"));
-    intent.backup_paths.extend(backups);
-    drop(intents);
-    enqueue_one(file_hash);
+    queue_engine_reanalysis(
+        file_hash,
+        crate::analysis_experience::AnalysisDefaultTarget::PitchEvidence,
+    )
 }
 
 /// Drops the transcript so `lyrics.align` regenerates it from the (possibly
@@ -140,6 +122,7 @@ pub fn reanalyze_pitch(file_hash: &str) {
 /// "失败时保留旧 Pitch"): renames the transcript and each variant aside
 /// instead of deleting outright, so a crashed/cancelled realign doesn't
 /// destroy the previous good transcript for nothing.
+#[cfg(test)]
 pub(crate) fn apply_realign_reset(cache: &CacheDir, file_hash: &str) -> Vec<(PathBuf, PathBuf)> {
     [
         cache.transcript_path(file_hash),
@@ -153,59 +136,33 @@ pub(crate) fn apply_realign_reset(cache: &CacheDir, file_hash: &str) -> Vec<(Pat
     .collect()
 }
 
-pub fn realign(file_hash: &str, language: Option<String>) {
+pub fn realign(file_hash: &str, language: Option<String>) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
 
     if let Some(lang) = language.as_ref().filter(|lang| !lang.is_empty()) {
         let mut config = AppConfig::load();
         config.set_language_override(file_hash.to_string(), lang.clone());
-        if let Err(error) = config.save() {
-            tracing::error!("Could not save language override: {error}");
-            return;
-        }
+        config
+            .save()
+            .map_err(|error| format!("Could not save language override: {error}"))?;
     }
-
-    let cache = CacheDir::new();
-    let previous_language = library_db::load_song_by_hash(file_hash)
-        .ok()
-        .flatten()
-        .and_then(|song| song.language);
-    materialize_lyrics_from_transcript(&cache, file_hash);
-    let backups = apply_realign_reset(&cache, file_hash);
-    PENDING_NODE_INTENTS
-        .lock()
-        .unwrap()
-        .entry(file_hash.to_string())
-        .or_default()
-        .backup_paths
-        .extend(backups);
-    update_song_analyzed(
+    materialize_lyrics_from_transcript(&CacheDir::new(), file_hash);
+    queue_engine_reanalysis(
         file_hash,
-        false,
-        language.or(previous_language),
-        None,
-        None,
-        None,
-        None,
-    );
-    enqueue_one(file_hash);
+        crate::analysis_experience::AnalysisDefaultTarget::Alignment,
+    )
 }
 
-pub fn reanalyze_force_transcribe(file_hash: &str) {
+pub fn reanalyze_force_transcribe(file_hash: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
-
-    PENDING_NODE_INTENTS
-        .lock()
-        .unwrap()
-        .entry(file_hash.to_string())
-        .or_default()
-        .force_transcribe = true;
-
-    reanalyze(file_hash, false);
+    queue_engine_reanalysis(
+        file_hash,
+        crate::analysis_experience::AnalysisDefaultTarget::Transcript,
+    )
 }
 
 /// Full or transcript-only reanalysis reset. Neither branch touches the
@@ -218,6 +175,7 @@ pub fn reanalyze_force_transcribe(file_hash: &str) {
 /// `CacheDir::analysis_output_paths_keep_chart` -- a real enumeration of
 /// what `delete_analysis_outputs_keep_chart` would remove, not a
 /// hand-maintained duplicate list that could drift from it.
+#[cfg(test)]
 pub(crate) fn apply_reanalyze_reset(
     cache: &CacheDir,
     file_hash: &str,
@@ -243,18 +201,24 @@ pub(crate) fn apply_reanalyze_reset(
         .collect()
 }
 
-pub(crate) fn reanalyze(file_hash: &str, full: bool) {
-    let cache = CacheDir::new();
-    let backups = apply_reanalyze_reset(&cache, file_hash, full);
-    PENDING_NODE_INTENTS
-        .lock()
-        .unwrap()
-        .entry(file_hash.to_string())
-        .or_default()
-        .backup_paths
-        .extend(backups);
-    update_song_analyzed(file_hash, false, None, None, None, None, None);
-    enqueue_one(file_hash);
+#[cfg(test)]
+pub(crate) fn reanalyze(file_hash: &str, full: bool) -> Result<(), String> {
+    queue_engine_reanalysis(
+        file_hash,
+        if full {
+            crate::analysis_experience::AnalysisDefaultTarget::FullCandidate
+        } else {
+            crate::analysis_experience::AnalysisDefaultTarget::Transcript
+        },
+    )
+}
+
+fn queue_engine_reanalysis(
+    file_hash: &str,
+    target: crate::analysis_experience::AnalysisDefaultTarget,
+) -> Result<(), String> {
+    crate::analysis_engine_adapter::preview_and_queue_engine_run(file_hash, Some(target))
+        .map(|_| ())
 }
 
 pub(crate) fn materialize_lyrics_from_transcript(cache: &CacheDir, file_hash: &str) {
@@ -299,6 +263,7 @@ pub(crate) fn materialize_lyrics_from_transcript(cache: &CacheDir, file_hash: &s
     }
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_analysis_language(language: &str) -> String {
     let normalized = language.trim().to_ascii_lowercase().replace('_', "-");
     match normalized.as_str() {

@@ -3,8 +3,13 @@
 //! The quantizer intentionally mutates only semantic note ranges. Continuous F0
 //! and pitch-bend samples retain their original canonical timestamps so evidence
 //! never becomes grid-snapped or reinterpreted as target-note geometry.
-
-use std::collections::BTreeMap;
+//!
+//! `rhythm-grid-dp-v1` interprets BPM as quarter-note beats per minute and
+//! anchors the selected subdivision to canonical time zero. It chooses a
+//! globally non-overlapping minimum-cost path, resolves exact cost ties toward
+//! the earlier range, requires one whole grid step of duration, preserves every
+//! positive rest, confines notes to source bounds, and never moves an endpoint
+//! across (or away from) an exact caller-owned hard boundary.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,8 +25,32 @@ pub struct QuantizationReportV1 {
     pub bpm: f64,
     pub grid: QuantizationGridV1,
     pub grid_step: u64,
+    pub minimum_note_duration: u64,
+    pub source_start: u64,
+    pub source_end: u64,
+    pub hard_boundary_count: usize,
+    pub note_count: usize,
     pub adjusted_notes: usize,
     pub maximum_shift: u64,
+}
+
+impl QuantizationReportV1 {
+    pub fn validate(&self) -> EngineResult<()> {
+        if self.algorithm != crate::fingerprint::QUANTIZATION_VERSION
+            || !self.bpm.is_finite()
+            || self.bpm <= 0.0
+            || self.bpm > 1_000.0
+            || self.grid_step == 0
+            || grid_step(self.bpm, self.grid)? != self.grid_step
+            || self.minimum_note_duration != self.grid_step
+            || self.source_end <= self.source_start
+            || self.adjusted_notes > self.note_count
+            || self.maximum_shift > self.grid_step
+        {
+            return Err(invalid_output("quantization report is invalid"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,8 +68,13 @@ struct DynamicState {
 pub fn quantize_singing_track(
     track: &mut CanonicalSingingTrack,
     context: &MusicalContextV1,
+    source_range: TimeRange,
+    hard_boundaries: &[TimeRange],
 ) -> EngineResult<QuantizationReportV1> {
     validate_canonical_singing_track(track).map_err(invalid_output)?;
+    if source_range.end <= source_range.start {
+        return Err(invalid_output("quantization source bounds are invalid"));
+    }
     let bpm = context.bpm.ok_or_else(missing_context)?;
     let grid = context.quantization_grid.ok_or_else(missing_context)?;
     if !bpm.is_finite() || bpm <= 0.0 {
@@ -52,34 +86,49 @@ pub fn quantize_singing_track(
         .iter()
         .map(|note| note.range)
         .collect::<Vec<_>>();
+    if original_ranges
+        .iter()
+        .any(|range| range.start < source_range.start || range.end > source_range.end)
+    {
+        return Err(invalid_output(
+            "candidate note timing escapes the authorized source timeline",
+        ));
+    }
+    let mut hard_edges = hard_boundaries
+        .iter()
+        .flat_map(|range| [range.start, range.end])
+        .collect::<Vec<_>>();
+    hard_edges.sort_unstable();
+    hard_edges.dedup();
     if original_ranges.is_empty() {
-        return Ok(QuantizationReportV1 {
+        let report = QuantizationReportV1 {
             algorithm: crate::fingerprint::QUANTIZATION_VERSION.to_string(),
             bpm,
             grid,
             grid_step: step,
+            minimum_note_duration: step,
+            source_start: source_range.start,
+            source_end: source_range.end,
+            hard_boundary_count: hard_edges.len(),
+            note_count: 0,
             adjusted_notes: 0,
             maximum_shift: 0,
-        });
+        };
+        report.validate()?;
+        return Ok(report);
     }
 
-    let word_ranges = track
-        .words
-        .iter()
-        .map(|word| (word.word_id.as_str(), word.range))
-        .collect::<BTreeMap<_, _>>();
     let candidates = track
         .notes
         .iter()
         .map(|note| {
             timing_candidates(
                 note.range,
-                note.word_id
-                    .as_deref()
-                    .and_then(|word_id| word_ranges.get(word_id).copied()),
                 note.confidence,
                 note.uncertain,
                 step,
+                source_range,
+                &hard_edges,
             )
         })
         .collect::<EngineResult<Vec<_>>>()?;
@@ -110,6 +159,9 @@ pub fn quantize_singing_track(
                     continue;
                 }
                 let quantized_gap = current.range.start - previous.range.end;
+                if original_gap > 0 && quantized_gap == 0 {
+                    continue;
+                }
                 let transition = normalized_distance(quantized_gap, original_gap, step) * 0.25;
                 let cost =
                     states[note_index - 1][previous_index].cost + current.local_cost + transition;
@@ -133,7 +185,13 @@ pub fn quantize_singing_track(
         .iter()
         .enumerate()
         .filter(|(_, state)| state.cost.is_finite())
-        .min_by(|(_, left), (_, right)| left.cost.total_cmp(&right.cost))
+        .min_by(|(left_index, left), (right_index, right)| {
+            left.cost.total_cmp(&right.cost).then_with(|| {
+                let left = candidates[last_index][*left_index].range;
+                let right = candidates[last_index][*right_index].range;
+                (left.start, left.end).cmp(&(right.start, right.end))
+            })
+        })
         .map(|(index, _)| index)
         .ok_or_else(|| {
             invalid_output("quantization could not produce non-overlapping note geometry")
@@ -166,14 +224,21 @@ pub fn quantize_singing_track(
     }
     validate_canonical_singing_track(track).map_err(invalid_output)?;
 
-    Ok(QuantizationReportV1 {
+    let report = QuantizationReportV1 {
         algorithm: crate::fingerprint::QUANTIZATION_VERSION.to_string(),
         bpm,
         grid,
         grid_step: step,
+        minimum_note_duration: step,
+        source_start: source_range.start,
+        source_end: source_range.end,
+        hard_boundary_count: hard_edges.len(),
+        note_count: original_ranges.len(),
         adjusted_notes,
         maximum_shift,
-    })
+    };
+    report.validate()?;
+    Ok(report)
 }
 
 fn grid_step(bpm: f64, grid: QuantizationGridV1) -> EngineResult<u64> {
@@ -187,10 +252,11 @@ fn grid_step(bpm: f64, grid: QuantizationGridV1) -> EngineResult<u64> {
 
 fn timing_candidates(
     original: TimeRange,
-    word_range: Option<TimeRange>,
     confidence: Option<f32>,
     uncertain: bool,
     step: u64,
+    source_range: TimeRange,
+    hard_edges: &[u64],
 ) -> EngineResult<Vec<TimingCandidate>> {
     let starts = grid_neighbors(original.start, step)?;
     let ends = grid_neighbors(original.end, step)?;
@@ -200,10 +266,15 @@ fn timing_candidates(
     let mut candidates = Vec::new();
     for start in starts {
         for end in &ends {
-            if *end <= start
+            if end.saturating_sub(start) < step
+                || start < source_range.start
+                || *end > source_range.end
                 || start.abs_diff(original.start) > step
                 || end.abs_diff(original.end) > step
-                || word_range.is_some_and(|word| start < word.start || *end > word.end)
+                || hard_edges.iter().any(|edge| {
+                    crosses_hard_edge(original.start, start, *edge)
+                        || crosses_hard_edge(original.end, *end, *edge)
+                })
             {
                 continue;
             }
@@ -230,6 +301,14 @@ fn timing_candidates(
         ));
     }
     Ok(candidates)
+}
+
+fn crosses_hard_edge(original: u64, candidate: u64, edge: u64) -> bool {
+    if original == edge {
+        candidate != edge
+    } else {
+        (original < edge) != (candidate < edge)
+    }
 }
 
 fn grid_neighbors(value: u64, step: u64) -> EngineResult<Vec<u64>> {
@@ -404,8 +483,9 @@ mod tests {
         let pitch_bend = first.notes[0].pitch_bend.clone();
         let global_f0 = first.f0_curve.clone();
 
-        let first_report = quantize_singing_track(&mut first, &context()).unwrap();
-        let second_report = quantize_singing_track(&mut second, &context()).unwrap();
+        let bounds = TimeRange::new(0, 1_000_000).unwrap();
+        let first_report = quantize_singing_track(&mut first, &context(), bounds, &[]).unwrap();
+        let second_report = quantize_singing_track(&mut second, &context(), bounds, &[]).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first_report, second_report);
@@ -433,8 +513,77 @@ mod tests {
         let original = candidate.clone();
         let mut context = context();
         context.bpm = None;
-        let error = quantize_singing_track(&mut candidate, &context).unwrap_err();
+        let error = quantize_singing_track(
+            &mut candidate,
+            &context,
+            TimeRange::new(0, 1_000_000).unwrap(),
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(error.code, EngineErrorCode::MissingRequiredInput);
+        assert_eq!(candidate, original);
+    }
+
+    #[test]
+    fn hard_edges_source_bounds_minimum_duration_and_positive_rests_are_preserved() {
+        let mut candidate = track();
+        candidate.notes[0].range = TimeRange::new(62_500, 312_500).unwrap();
+        candidate.notes[1].range = TimeRange::new(500_001, 999_000).unwrap();
+        let first_f0 = candidate.notes[0].f0_curve.clone();
+        let hard = [TimeRange::new(0, 500_000).unwrap()];
+        let report = quantize_singing_track(
+            &mut candidate,
+            &context(),
+            TimeRange::new(0, 1_000_000).unwrap(),
+            &hard,
+        )
+        .unwrap();
+        assert_eq!(report.grid_step, 125_000);
+        assert_eq!(report.minimum_note_duration, report.grid_step);
+        assert_eq!(report.hard_boundary_count, 2);
+        // Exact half-grid ties choose the earlier valid range.
+        assert_eq!(candidate.notes[0].range.start, 0);
+        assert_eq!(candidate.notes[1].range.start, 500_000);
+        assert_eq!(candidate.notes[1].range.end, 1_000_000);
+        assert!(candidate.notes[0].range.end < candidate.notes[1].range.start);
+        assert!(candidate.notes.iter().all(|note| {
+            note.range.end - note.range.start >= report.minimum_note_duration
+                && note.range.start >= report.source_start
+                && note.range.end <= report.source_end
+        }));
+        assert_eq!(candidate.notes[0].f0_curve, first_f0);
+    }
+
+    #[test]
+    fn exact_non_grid_hard_boundary_fails_without_mutation() {
+        let mut candidate = track();
+        candidate.notes[0].range.start = 113_000;
+        let original = candidate.clone();
+        let hard = [TimeRange::new(113_000, 500_000).unwrap()];
+        let error = quantize_singing_track(
+            &mut candidate,
+            &context(),
+            TimeRange::new(0, 1_000_000).unwrap(),
+            &hard,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::OutputValidationFailed);
+        assert_eq!(candidate, original);
+    }
+
+    #[test]
+    fn source_escape_fails_without_mutation() {
+        let mut candidate = track();
+        candidate.notes[1].range.end = 1_000_001;
+        let original = candidate.clone();
+        let error = quantize_singing_track(
+            &mut candidate,
+            &context(),
+            TimeRange::new(0, 1_000_000).unwrap(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::OutputValidationFailed);
         assert_eq!(candidate, original);
     }
 }

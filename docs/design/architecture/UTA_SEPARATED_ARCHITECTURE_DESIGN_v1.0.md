@@ -311,11 +311,11 @@ Plan
     ↓
 Acquire / Import
     ↓
-Source hash verify
+Source identity/provenance record
     ↓
 Convert
     ↓
-Output hash verify
+Output structure/schema validation
     ↓
 Install manifest
     ↓

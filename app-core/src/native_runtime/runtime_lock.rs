@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../../native-inference/runtime-lock.json");
 pub const RUNTIME_LOCK_SHA256: &str =
-    "5265a3a4f234717853ee54047b93ff1febaeb45e15ea1269d0aa3f98eb91faa7";
+    "d850690ed2816bf70013eded8bc7f59ab2e114c6c2b82e4b381789f13f4e4be2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeRuntimeLock {
@@ -36,6 +36,7 @@ pub struct GenericRuntimePolicyLock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeComponents {
     pub openvino_2026_3: OpenVinoLock,
+    pub ggml_vulkan_v1: GgmlVulkanLock,
     pub qwen3_forced_aligner_0_6b: QwenAlignLock,
     pub qwen3_asr_1_7b: QwenAsrLock,
 }
@@ -50,6 +51,19 @@ pub struct OpenVinoLock {
     pub production_backend: String,
     pub cpu_plugin: bool,
     pub script_bindings: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GgmlVulkanLock {
+    pub runtime_repository: String,
+    pub runtime_commit: String,
+    pub build_recipe: String,
+    pub build_recipe_sha256: String,
+    pub backend: String,
+    pub model_format: String,
+    pub validation: String,
+    pub cpu_fallback: bool,
     pub status: String,
 }
 
@@ -92,6 +106,7 @@ pub fn runtime_recipe_digest(component: &str) -> Result<String, String> {
     let lock = native_runtime_lock()?;
     let value = match component {
         "openvino_2026_3" => serde_json::to_value(lock.components.openvino_2026_3),
+        "ggml_vulkan_v1" => serde_json::to_value(lock.components.ggml_vulkan_v1),
         "qwen3_asr_1_7b" => serde_json::to_value(lock.components.qwen3_asr_1_7b),
         "qwen3_forced_aligner_0_6b" => {
             serde_json::to_value(lock.components.qwen3_forced_aligner_0_6b)

@@ -1,5 +1,6 @@
 # 20A — Studio ↔ Backend UI Parity Closure
 
+**State:** `READY`
 **Precondition:** cards 15–19 = `READY`
 **Task class:** CPU/UI/control-plane parity closure; no model inference
 **Owners:** Studio/app-core presentation + local wire/domain mapping only; backend changes only for narrowly identified contract exposure defects
@@ -8,7 +9,7 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+AGENTS.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/20A_STUDIO_BACKEND_UI_PARITY_CLOSURE.md
@@ -117,25 +118,22 @@ Priority must never be described as dependency.
 
 ## 4. Workflow audio-role parity
 
-After card 17, verify Processing Studio can represent and route the exact accepted role set.
-
-Known pre-card mismatch:
+After card 17, verify Processing Studio exposes only the exact executable final-v1 audio role set:
 
 ```text
-Engine: LeadVocal / BackingVocal / HarmonyVocal
-Workflow: LeadVocal / BackVocal only
-Editor: Lead / Harmony / Backing / Adlib
+lead isolation -> LeadVocal + VocalResidual
 ```
 
 Required:
 
-- distinct accepted Backing and Harmony Workflow role/port types if backend semantics exist;
-- versioned migration for stored Workflow data;
-- node cards / analyzer source labels / Advanced Graph render the distinct roles;
-- app-core maps local roles to local wire DTOs without importing Engine types;
-- Editor Adlib remains a chart role unless a real audio-stem contract exists.
+- do not advertise `audio.lead_partition`, BackingVocal output or HarmonyVocal output as executable;
+- node cards / analyzer source labels / Advanced Graph render LeadVocal and VocalResidual truthfully;
+- independent Backing/Harmony stem requests remain fail-closed through the CLI contract;
+- schema persistence may keep distinct BackingVocal, HarmonyVocal and VocalResidual identities for future compatibility;
+- Editor Lead/Harmony/Backing/Adlib remain chart roles and do not imply audio stems;
+- app-core maps local roles to local wire DTOs without importing Engine types.
 
-Do not collapse two accepted backend roles into one Studio `BackVocal` label.
+Do not relabel VocalResidual as Backing or Harmony.
 
 ## 5. Quantization UI parity
 
@@ -263,7 +261,7 @@ CPU/UI/local only. Include focused tests for at least:
 specific RoFormer strategy row is not gated by unrelated RoFormer bundle member
 all supported execution policies are selectable, including MaximumOnly
 Advanced controls either affect compiled/resolved parameters or are disabled/retired
-Backing and Harmony roles remain distinct through Workflow UI/domain/wire mapping
+Lead and VocalResidual remain truthful through Workflow UI/domain/wire mapping, while Backing/Harmony audio stays unavailable
 quantization toggle matches chosen card-19 contract
 optional-expert copy/badge follows current validation fact
 Plan Preview/Run remains disabled on exact backend blocker
@@ -284,3 +282,26 @@ UI surface | app-core intent/fact | wire/backend owner | prior mismatch | final 
 ```
 
 Stop after this card.
+
+## Current result
+
+**State:** `READY`
+
+Card 20A closes the known control-plane parity mismatches without adding model execution or a backend implementation dependency to Studio.
+
+| UI surface | app-core intent/fact | wire/backend owner | prior mismatch | final behavior | test |
+|---|---|---|---|---|---|
+| Settings > Analysis strategy readiness | `AnalysisStrategyResourceStatus` from `analysis_strategy_resource_statuses()` | `RuntimeCliClient` -> exact `uta-runtime show model:*` metadata/status | vocal and instrumental rows could inherit aggregate RoFormer bundle health | Vocal extraction, instrumental extraction, lead isolation, RMVPE pitch and GAME boundaries show their exact model, capability, current-policy usability, validation, backend and reasons; unrelated bundle members cannot gate a row | `exact_strategy_status_ignores_unrelated_roformer_bundle_members`; `exact_strategy_status_crosses_the_runtime_cli_without_bundle_projection`; `exact_strategy_copy_names_the_model_capability_and_runtime_fact` |
+| Models & runtime parameters | no canonical AnalyzeRequest/Workflow intent | packaged model/runtime contracts | segment size, overlap, separator/ASR batch, normalization and voiced sensitivity were editable but absent from the canonical request | legacy controls and their command/API handlers are retired from the compiled UI; Models & runtime states that packaged parameters are not editable and remains lifecycle-only | `canonical_models_page_does_not_render_legacy_advanced_controls`; typed-command/UI-API coverage tests |
+| Processing Studio execution condition | `set_workflow_execution_policy` | `uta.workflow_execution.v1` -> Engine conditional scheduler | lossy cycle omitted `MaximumOnly` | a selected analyzer exposes explicit Always, On disagreement, Disagreement windows, Maximum only and Disabled choices; priority copy states that it is not dependency, and hard dependencies are labeled separately | `every_backend_execution_condition_is_explicitly_selectable`; Workflow wire/default scheduler tests |
+| Workflow audio roles | `AudioRole::{LeadVocal,VocalResidual}` | compiled Workflow bindings and Engine workflow validation | port IDs did not visibly state roles | lead isolation cards and source labels state `LeadVocal` and `VocalResidual`; no executable Backing/Harmony output is shown or serialized | `executable_lead_isolation_labels_lead_and_residual_without_fake_stems`; `default_wire_preserves_truthful_baselines_and_conditional_experts` |
+| Quantize candidate notes | persisted `enable_quantization` resolved Global -> Song -> Run | exact AnalyzeRequest -> `rhythm.quantize` -> typed Candidate report | historical toggle was inert | switch remains reachable and maps to card 19's real Engine stage; copy states continuous PitchEvidence is untouched and missing BPM blocks Preview | `parity_closure_features_have_reachable_typed_ui_actions`; app-core quantization wire/request tests |
+| Optional expert lifecycle rows | Runtime-returned `ModelInstallStatus.validation` and backend | `uta-runtime list` | static validation copy could become stale after promotion | role copy remains product policy, while readiness/validation/backend copy is generated from the current Runtime fact; an unavailable expert does not gate unrelated requests | `optional_expert_copy_uses_the_current_runtime_validation_fact`; exact Engine Plan tests |
+| Technique evidence | read-only `TechniqueEvidenceLayer` | typed Candidate evidence returned by `uta-analyze` | backend evidence needed a reachable truthful presentation | Editor Evidence toggle reaches the STARS timeline strip; marks are non-pickable, source-named and shown as source-local/uncalibrated rather than MIDI notes or confidence | `technique_projection_is_read_only_and_calls_scores_uncalibrated`; `parity_closure_features_have_reachable_typed_ui_actions` |
+| Processing Studio Run / Plan Preview | frozen `EngineRunPreview` request JSON/digest | `AnalysisCliClient` Preview/Plan and queued exact snapshot | Run label could imply direct execution; identity was validated but not rendered | `Preview run…` saves/compiles then opens exact Engine Preview; Workflow id, revision, schema and digest are displayed; blockers or invalidation omit Analyze and app-core rejects bypass | `exact_backend_blocker_keeps_the_queue_action_disabled`; `exact_preview_snapshot_is_persisted_without_recompilation`; real CLI Workflow parity test |
+| Models & runtime lifecycle | read-only status plus explicit setup mutations | Runtime Manager lifecycle APIs | aggregate health could be mistaken for request readiness | page remains install/verify/status/repair/remove and labels aggregate baseline health; opening it never installs and Plan Preview remains request authority | Runtime CLI read-only/status tests; setup confirmation/UI API tests |
+| Candidate / Review / Editor | artifact revisions, merge commands, review navigation, evidence and audition actions | Studio-owned revision/editor APIs over Engine artifacts | symbol presence had not proved reachable controls | typed UI registry proves Candidate open/merge, Review previous/next, suggestion acceptance plus Undo, evidence toggle, track selection, waveform source and artifact audition entry points are reachable | `parity_closure_features_have_reachable_typed_ui_actions`; spawned-button and dispatch-handler API audits |
+
+The new exact strategy query is an app-core-owned local DTO/API representation; it consumes Runtime Manager facts and does not reproduce lifecycle or backend-selection policy. `api_capabilities` classifies it as `read`. Runtime status jobs remain asynchronous, read-only and never install on page open.
+
+Acceptance is CPU/UI/control-plane only: app-core passes 470 tests and Desktop passes 243 tests. The real packaged CLI contract tests remain stdout-pure. Desktop compiles cleanly. The decoupling scan finds no backend implementation dependency/import, no Desktop backend CLI launch, and no application source over 2000 lines after moving Plan Preview request rendering to `desktop/src/studio/analysis_preview.rs`. No model inference, download, Vulkan, Level Zero, OpenVINO or GPU test was run for this card.

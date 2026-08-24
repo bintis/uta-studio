@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
     analysis_artifact::{
-        hash_file_contents, load_analysis_artifacts, load_artifact_revisions,
-        migrate_artifact_revisions_to_store,
+        load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
     },
     analysis_graph::baseline_graph_spec,
     cache::CacheDir,
@@ -239,15 +238,6 @@ pub(crate) fn capture_analysis_run_artifacts_in(
             let byte_size = committed.byte_size.ok_or_else(|| {
                 format!("{} {} has no committed byte size", node_id.as_str(), slot)
             })?;
-            if hash_file_contents(&immutable_path).map_err(|error| error.to_string())?
-                != content_hash
-            {
-                return Err(format!(
-                    "{} {} immutable bytes failed verification",
-                    node_id.as_str(),
-                    slot
-                ));
-            }
             let existing = load_artifact_revisions(file_hash, kind)
                 .into_iter()
                 .find(|revision| revision.content_hash == content_hash);

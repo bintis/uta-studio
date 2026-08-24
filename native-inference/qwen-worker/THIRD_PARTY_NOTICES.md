@@ -1,6 +1,6 @@
-# Uta Studio Qwen workers — third-party notices
+# Uta! Studio Qwen workers — third-party notices
 
-The Uta Studio NDJSON worker source is GPL-3.0-only. It supervises separately
+The Uta! Studio NDJSON worker source is GPL-3.0-only. It supervises separately
 built native components and user-confirmed model installations:
 
 - `handy-computer/transcribe.cpp` at
@@ -19,9 +19,9 @@ built native components and user-confirmed model installations:
 - the local F16 GGUF derived from that canonical Forced Aligner source, accepted
   only by exact SHA-256 through Runtime Manager LocalImport.
 
-The Forced Aligner build carries Uta Studio's fail-closed patch requiring a GPU
+The Forced Aligner build carries Uta! Studio's fail-closed patch requiring a GPU
 backend. Its conversion contract uses the MIT-licensed predict-woo converter at
-the runtime commit plus Uta Studio's vendored flat-HF/classifier adaptation;
+the runtime commit plus Uta! Studio's vendored flat-HF/classifier adaptation;
 both patches and the exact conversion command are hashed or recorded in
 `native-inference/runtime-lock.json`. Full canonical-source, converted-artifact,
 runtime, and model identities and hashes are recorded in that lock and in

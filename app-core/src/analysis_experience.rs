@@ -177,8 +177,8 @@ pub struct AnalysisExperienceSettings {
     pub default_target: AnalysisDefaultTarget,
     #[serde(default = "enabled")]
     pub preserve_continuous_pitch: bool,
-    /// Retained for schema compatibility; Studio normalizes it off until the
-    /// backend exposes a real `rhythm.quantize` implementation.
+    /// Enables the Engine-owned symbolic Candidate timing stage. This does not
+    /// affect continuous pitch evidence or the Editor's authored-note command.
     #[serde(default)]
     pub enable_quantization: bool,
     pub audio: AnalysisAudioPreferences,
@@ -204,7 +204,6 @@ impl Default for AnalysisExperienceSettings {
 impl AnalysisExperienceSettings {
     pub fn normalize(&mut self) {
         self.schema_version = ANALYSIS_EXPERIENCE_SCHEMA_VERSION;
-        self.enable_quantization = false;
     }
 }
 
@@ -345,13 +344,13 @@ mod tests {
     }
 
     #[test]
-    fn normalization_retires_persisted_engine_quantization_until_backend_support_exists() {
+    fn normalization_preserves_real_engine_quantization_intent() {
         let mut settings = AnalysisExperienceSettings {
             enable_quantization: true,
             ..AnalysisExperienceSettings::default()
         };
         settings.normalize();
-        assert!(!settings.enable_quantization);
+        assert!(settings.enable_quantization);
     }
 
     #[test]

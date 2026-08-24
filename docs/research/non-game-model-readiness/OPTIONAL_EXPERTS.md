@@ -71,9 +71,9 @@ research.
 | Model purpose | Unified singing transcription, phoneme/word alignment, phoneme-level technique prediction, and global style classification [O7]. |
 | Checkpoint | Project-linked `verstar/STARS@744a7ad02e1d788452293cd903ea6a933f7862c4`; Chinese checkpoint `stars_chinese/model_ckpt_steps_200000.ckpt`, 601,773,408 bytes, published SHA-256 `9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c` [O8]. The checkpoint repo has no model-card license metadata; code MIT must not automatically be asserted for weights. |
 | Input/contract | Prefers isolated vocals and requires text/phoneme arrays and mappings; timing may be supplied or predicted [O7]. This is not a drop-in audio-only technique classifier. |
-| Current repository role | Runtime Manager defines experimental `model:stars` with `notes.stars`. `technique.analyze` remains disabled for P0. Local source/checkpoint exist. |
-| Current feasibility | Non-monolithic Stage A/B/C conversion and native Viterbi/boundary logic exist. A shared native 24 kHz frontend/exact annotation-RMVPE adapter and versioned native Chinese G2P asset now close the earlier preprocessing/phone-mapping code gaps without product-time Python. |
-| Remaining decision/gates | Complete conditioned semantic goldens, production buckets/manifests, selected-backend parity, Worker/Runtime/Engine execution, and checkpoint license identity before integration/Production promotion. |
+| Current repository role | Runtime Manager publishes `model:stars` as a native `BenchmarkCandidate` with `notes.stars` and `technique.analyze`. The Engine and Studio retain technique/style as non-authoritative read-only evidence. |
+| Current feasibility | Non-monolithic Stage A–E conversion, native Viterbi/phoneme aggregation, shared 24 kHz frontend, exact annotation-RMVPE adapter and versioned native Chinese G2P are integrated without product-time Python. CPU and bounded Intel GPU parity pass for P1. |
+| Remaining decision/gates | Broad labeled P1 quality and exact checkpoint license identity remain before Production promotion; integration is complete. |
 
 ## ROSVOT and capability placeholders
 
@@ -83,7 +83,7 @@ boundaries, and was designed for noisy/separated or accompanied singing [O9][O10
 The published checkpoint bundle also includes RWBD and RMVPE dependencies and
 was trained primarily on Mandarin M4Singer material.
 
-Current Uta Studio state:
+Current Uta! Studio state:
 
 - `notes.rosvot` is an unimplemented optional secondary-expert capability and requires TimedTranscript;
 - Runtime Manager has **no** `model:rosvot` resource until real execution exists;
@@ -93,10 +93,11 @@ Current Uta Studio state:
 
 ROSVOT is selected as an optional secondary singing-note challenger and must not replace GAME.
 
-Likewise, `technique.analyze` is a taxonomy placeholder marked baseline in the
-capability registry but is not requested by the current planner and has no
-selected Runtime Manager model. STARS is only an experimental candidate, not
-an implicit owner of every future technique capability.
+`technique.analyze` now has an exact STARS P1 owner and is scheduled only when
+that exact model is selected. Its nine raw/source-local uncalibrated phoneme
+scores and separately scoped global styles remain review evidence, not an
+implicit authority over GAME note segmentation or every future technique
+capability.
 
 ## Optional-resource metadata discrepancy summary
 

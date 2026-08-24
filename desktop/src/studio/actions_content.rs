@@ -452,10 +452,15 @@ pub(crate) fn apply_content_action(
                         invalidated.invalidate(action.0.dirty_region());
                         return;
                     }
-                    if editor.force_transcribe {
-                        app_core::reanalyze_force_transcribe(&editor.file_hash);
+                    let queue_result = if editor.force_transcribe {
+                        app_core::reanalyze_force_transcribe(&editor.file_hash)
                     } else {
-                        app_core::realign(&editor.file_hash, None);
+                        app_core::realign(&editor.file_hash, None)
+                    };
+                    if let Err(error) = queue_result {
+                        studio.shell.notice = Some(format!("Could not queue analysis: {error}"));
+                        invalidated.invalidate(action.0.dirty_region());
+                        return;
                     }
                 } else if editor.force_transcribe {
                     let mut config = AppConfig::load();
@@ -466,9 +471,17 @@ pub(crate) fn apply_content_action(
                         invalidated.invalidate(action.0.dirty_region());
                         return;
                     }
-                    app_core::reanalyze_force_transcribe(&editor.file_hash);
-                } else {
-                    app_core::realign(&editor.file_hash, Some(language.clone()));
+                    if let Err(error) = app_core::reanalyze_force_transcribe(&editor.file_hash) {
+                        studio.shell.notice = Some(format!("Could not queue analysis: {error}"));
+                        invalidated.invalidate(action.0.dirty_region());
+                        return;
+                    }
+                } else if let Err(error) =
+                    app_core::realign(&editor.file_hash, Some(language.clone()))
+                {
+                    studio.shell.notice = Some(format!("Could not queue analysis: {error}"));
+                    invalidated.invalidate(action.0.dirty_region());
+                    return;
                 }
                 studio.dialogs.language_editor = None;
                 studio.shell.config = AppConfig::load();
@@ -481,85 +494,6 @@ pub(crate) fn apply_content_action(
                         &[("{language}", &language)],
                     )
                 });
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Analysis(AnalysisCommand::SaveNodeConfigAsSongProfile(file_hash, node_id)) => {
-            // Same immediacy as Freeze/Disable/Bypass above -- fires
-            // right away and leaves the context menu open, rather than
-            // dismissing it, matching that established pattern.
-            studio.shell.notice = Some(
-                match app_core::save_node_config_as_song_profile(file_hash, node_id) {
-                    Ok(()) => {
-                        format!("Saved {node_id}'s current configuration as this song's profile.")
-                    }
-                    Err(error) => format!("Could not save song profile: {error}"),
-                },
-            );
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::OpenNodeConfigDialog(file_hash, node_id)) => {
-            if let Some(field) = node_config_profile_field(node_id) {
-                let global = app_core::AnalysisProfileSnapshot::from_app_config(
-                    &AppConfig::load(),
-                    file_hash,
-                );
-                let song = app_core::get_song_analysis_profile(file_hash);
-                let run_override = app_core::pending_run_override_for(file_hash, node_id);
-                let value = app_core::resolve_profile_field(
-                    field,
-                    &global,
-                    song.as_ref(),
-                    run_override.as_deref(),
-                )
-                .value;
-                studio.dialogs.node_config_dialog = Some(NativeNodeConfigDialog {
-                    file_hash: file_hash.clone(),
-                    node_id: node_id.clone(),
-                    field,
-                    value,
-                    picker_open: false,
-                });
-            } else {
-                studio.shell.notice = Some(format!(
-                    "{node_id} has no parameter to configure for a single run."
-                ));
-            }
-            studio.dialogs.analysis_node_context = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CloseNodeConfigDialog) => {
-            studio.dialogs.node_config_dialog = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ToggleNodeConfigPicker) => {
-            if let Some(dialog) = studio.dialogs.node_config_dialog.as_mut() {
-                dialog.picker_open = !dialog.picker_open;
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Analysis(AnalysisCommand::SelectNodeConfigValue(value)) => {
-            if let Some(dialog) = studio.dialogs.node_config_dialog.as_mut() {
-                dialog.value = value.clone();
-                dialog.picker_open = false;
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Analysis(AnalysisCommand::RunNodeConfigDialog) => {
-            if let Some(dialog) = studio.dialogs.node_config_dialog.take() {
-                studio.shell.notice = Some(
-                    match app_core::configure_analysis_node_for_run(
-                        &dialog.file_hash,
-                        &dialog.node_id,
-                        dialog.value.clone(),
-                    ) {
-                        Ok(()) => format!(
-                            "Running {} with {} for this run only.",
-                            dialog.node_id, dialog.value
-                        ),
-                        Err(error) => format!("Could not configure this run: {error}"),
-                    },
-                );
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
@@ -832,65 +766,32 @@ pub(crate) fn apply_content_action(
             }
         }
         UiCommand::Analysis(AnalysisCommand::RealignSong(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action(file_hash, || {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
                 app_core::realign(file_hash, None)
             }));
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ReanalyzeTranscript(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action(file_hash, || {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
                 app_core::reanalyze_transcript(file_hash, None)
             }));
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ForceTranscribe(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action(file_hash, || {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
                 app_core::reanalyze_force_transcribe(file_hash)
             }));
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ReanalyzePitch(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action(file_hash, || {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
                 app_core::reanalyze_pitch(file_hash)
             }));
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ReanalyzeFull(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action(file_hash, || {
+            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
                 app_core::reanalyze_full(file_hash)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RunAnalysisNodeOnly(file_hash, node_id)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::run_analysis_node(file_hash, node_id)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RunAnalysisNodeDownstream(file_hash, node_id)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::run_analysis_node_downstream(file_hash, node_id)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::DisableAnalysisNodeForRun(file_hash, node_id)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::disable_analysis_node_for_run(file_hash, node_id)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::FreezeAnalysisNodeOutputs(file_hash, node_id)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::freeze_analysis_node_outputs_for_run(file_hash, node_id)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
-            file_hash,
-            node_id,
-        )) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::bypass_analysis_node_with_original_mix_for_run(file_hash, node_id)
             }));
             invalidated.invalidate(action.0.dirty_region());
         }
@@ -1002,50 +903,6 @@ pub(crate) fn apply_content_action(
                     Err(error) => format!("Could not set active artifact revision: {error}"),
                 },
             );
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RequestCaptureIntermediate(file_hash)) => {
-            studio.dialogs.pending_intermediate_capture = Some(file_hash.clone());
-            studio.dialogs.analysis_node_context = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CancelCaptureIntermediate) => {
-            studio.dialogs.pending_intermediate_capture = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ConfirmCaptureIntermediateOnce)
-        | UiCommand::Analysis(AnalysisCommand::ConfirmCaptureIntermediatePersistent)
-        | UiCommand::Analysis(AnalysisCommand::ConfirmDisableIntermediateCapture) => {
-            let Some(file_hash) = studio.dialogs.pending_intermediate_capture.take() else {
-                return;
-            };
-            let enabled = !matches!(
-                &action.0,
-                UiCommand::Analysis(AnalysisCommand::ConfirmDisableIntermediateCapture)
-            );
-            let persistent = matches!(
-                &action.0,
-                UiCommand::Analysis(AnalysisCommand::ConfirmCaptureIntermediatePersistent)
-            );
-            let request = app_core::CaptureIntermediateRequest {
-                file_hash,
-                node_id: app_core::AnalysisNodeId::new("lyrics.preprocess"),
-                kind: app_core::ArtifactKind::PreprocessedAudio,
-                enabled,
-                persistent,
-            };
-            studio.shell.notice = Some(match app_core::set_intermediate_capture_request(&request) {
-                Ok(()) if !enabled => "Preprocessed-audio capture disabled.".to_string(),
-                Ok(()) if persistent => {
-                    "Preprocessed audio will be retained on future analysis runs until disabled."
-                        .to_string()
-                }
-                Ok(()) => {
-                    "Preprocessed audio will be retained once on the next successful analysis run."
-                        .to_string()
-                }
-                Err(error) => format!("Could not update intermediate capture: {error}"),
-            });
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::OpenArtifactRevision(path)) => {

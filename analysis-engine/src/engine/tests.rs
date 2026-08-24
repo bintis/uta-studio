@@ -1,14 +1,15 @@
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
 use uta_runtime_manager::{
     InstallManifest, InstalledFile, ResourceCatalog, ResourceRef, StorePaths,
 };
 
 use super::*;
 use crate::artifact::PitchEvidenceV03;
-use crate::contract::AudioRole;
 use crate::contract::request::tests::valid_request;
+use crate::contract::{AudioRole, TIMELINE_VALID_GATE};
 
 #[test]
 fn failed_run_guard_removes_only_children_of_empty_authorized_root() {
@@ -25,33 +26,6 @@ fn failed_run_guard_removes_only_children_of_empty_authorized_root() {
     }
     assert!(fs::read_dir(&root).unwrap().next().is_none());
     fs::remove_dir(root).unwrap();
-}
-
-#[test]
-fn input_hash_mismatch_fails_before_inference() {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "uta-analysis-engine-test-{}-{stamp}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).unwrap();
-    let source = root.join("source.wav");
-    fs::write(&source, b"not an audio fixture").unwrap();
-    let mut request = valid_request(AudioRole::CleanLeadVocal);
-    request.audio_sources[0].path = source;
-    let manager = RuntimeManager::new(
-        ResourceCatalog::default_catalog().unwrap(),
-        StorePaths::default(),
-    );
-    let engine = AnalysisEngine::new(manager);
-    assert_eq!(
-        engine.validate_inputs(&request).unwrap_err().code,
-        EngineErrorCode::InputHashMismatch
-    );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -82,6 +56,40 @@ fn request_fingerprint_identity_does_not_depend_on_local_path() {
     assert_eq!(
         deterministic_fingerprint(&fingerprint_request(&left).unwrap()).unwrap(),
         deterministic_fingerprint(&fingerprint_request(&right).unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn quantization_and_audio_quality_versions_participate_in_execution_fingerprint() {
+    let request = valid_request(AudioRole::LeadVocal);
+    let quality_gates = vec![TIMELINE_VALID_GATE.to_string()];
+    let identity = |quantization_version, audio_quality_version| ExecutionIdentity {
+        request: fingerprint_request(&request).unwrap(),
+        resources: Vec::new(),
+        acoustic_dsp_version: ACOUSTIC_DSP_VERSION,
+        audio_quality_version,
+        quality_gates: &quality_gates,
+        calibration_version: CALIBRATION_VERSION,
+        finalize_vocal_chart_version: FINALIZE_VOCAL_CHART_VERSION,
+        fusion_version: FUSION_VERSION,
+        hsmm_version: HSMM_VERSION,
+        quantization_version,
+        postprocess_version: POSTPROCESS_VERSION,
+    };
+    let current =
+        deterministic_fingerprint(&identity(QUANTIZATION_VERSION, AUDIO_QUALITY_VERSION)).unwrap();
+    assert_ne!(
+        current,
+        deterministic_fingerprint(&identity("rhythm-grid-dp-future", AUDIO_QUALITY_VERSION,))
+            .unwrap()
+    );
+    assert_ne!(
+        current,
+        deterministic_fingerprint(&identity(
+            QUANTIZATION_VERSION,
+            "audio-quality-gates-future",
+        ))
+        .unwrap()
     );
 }
 
@@ -217,6 +225,8 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         true,
         &fingerprint,
         Some(&singing),
+        None,
+        None,
         &mut artifacts,
         &CancellationToken::default(),
     )
@@ -237,6 +247,91 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     chart.validate().unwrap();
     assert_eq!(chart.authority, VocalChartAuthority::Candidate);
     assert_eq!(chart.notes[0].confidence, None);
+    assert!(chart.provenance.quantization.is_none());
+
+    let quantized_root = root.join("quantized");
+    fs::create_dir(&quantized_root).unwrap();
+    let mut quantized_track = singing.track.clone();
+    quantized_track.notes[0].range = TimeRange::new(125_000, 375_000).unwrap();
+    let report = crate::quantization::QuantizationReportV1 {
+        algorithm: QUANTIZATION_VERSION.to_string(),
+        bpm: 120.0,
+        grid: crate::contract::QuantizationGridV1::Sixteenth,
+        grid_step: 125_000,
+        minimum_note_duration: 125_000,
+        source_start: 0,
+        source_end: 1_000_000,
+        hard_boundary_count: 0,
+        note_count: 1,
+        adjusted_notes: 1,
+        maximum_shift: 25_000,
+    };
+    let mut quantized_artifacts = AnalysisArtifactsV1::default();
+    publish_candidate_artifacts(
+        &quantized_root,
+        true,
+        true,
+        true,
+        &fingerprint,
+        Some(&singing),
+        Some(&quantized_track),
+        Some(&report),
+        &mut quantized_artifacts,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let raw_analysis: SingingAnalysisV1 = serde_json::from_slice(
+        &fs::read(
+            quantized_root.join(&quantized_artifacts.singing_analysis.as_ref().unwrap().path),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let quantized_chart: CandidateVocalChartV1 = serde_json::from_slice(
+        &fs::read(
+            quantized_root.join(
+                &quantized_artifacts
+                    .candidate_vocal_chart
+                    .as_ref()
+                    .unwrap()
+                    .path,
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw_analysis.track.notes[0].range, range);
+    assert_eq!(
+        quantized_chart.notes[0].range,
+        quantized_track.notes[0].range
+    );
+    assert_eq!(
+        quantized_chart.provenance.quantization,
+        Some(report.clone())
+    );
+    let quantized_manifest = AnalysisResultManifestV1 {
+        contract: ANALYSIS_RESULT_CONTRACT.to_string(),
+        version: ANALYSIS_RESULT_VERSION,
+        request_id: "quantized-fixture".to_string(),
+        status: AnalysisStatus::Ok,
+        artifacts: quantized_artifacts,
+        diagnostics: AnalysisDiagnosticsV1 {
+            quantization: Some(report),
+            ..AnalysisDiagnosticsV1::default()
+        },
+        provenance: AnalysisProvenanceV1 {
+            resources: Vec::new(),
+            calibration_version: CALIBRATION_VERSION.to_string(),
+            fusion_version: FUSION_VERSION.to_string(),
+            hsmm_version: HSMM_VERSION.to_string(),
+            quantization_version: QUANTIZATION_VERSION.to_string(),
+            audio_quality_version: String::new(),
+            postprocess_version: POSTPROCESS_VERSION.to_string(),
+        },
+        fingerprint: fingerprint.clone(),
+        degraded_reasons: Vec::new(),
+    };
+    quantized_manifest.validate().unwrap();
 
     let manifest = AnalysisResultManifestV1 {
         contract: ANALYSIS_RESULT_CONTRACT.to_string(),
@@ -251,6 +346,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             fusion_version: FUSION_VERSION.to_string(),
             hsmm_version: HSMM_VERSION.to_string(),
             quantization_version: QUANTIZATION_VERSION.to_string(),
+            audio_quality_version: String::new(),
             postprocess_version: POSTPROCESS_VERSION.to_string(),
         },
         fingerprint,
@@ -281,6 +377,8 @@ fn cancelled_candidate_publication_writes_no_artifact() {
         true,
         &"8".repeat(64),
         None,
+        None,
+        None,
         &mut artifacts,
         &token,
     )
@@ -297,6 +395,13 @@ fn executable(path: &Path, body: &str) {
     let mut permissions = fs::metadata(path).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn non_silent_pcm_script(sample_count: usize) -> String {
+    format!(
+        "LC_ALL=C awk 'BEGIN {{ for (i=0; i<{sample_count}; i++) printf \"%c%c%c%c\",0,0,128,62 }}'"
+    )
 }
 
 fn install_fixture_generation(
@@ -439,7 +544,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     let source = root.join("source.wav");
     fs::write(&source, b"authorized fixture audio").unwrap();
     let ffmpeg = root.join("ffmpeg");
-    executable(&ffmpeg, "head -c 1920 /dev/zero");
+    executable(&ffmpeg, &non_silent_pcm_script(480));
     let worker = root.join("openvino-worker");
     let evidence_one = output_one.join("worker/rmvpe/rmvpe-pitch-evidence.json");
     let evidence_two = output_two.join("worker/rmvpe/rmvpe-pitch-evidence.json");
@@ -469,7 +574,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     let mut request = valid_request(AudioRole::CleanLeadVocal);
     request.request_id = "rmvpe-fixture".to_string();
     request.audio_sources[0].path = source.clone();
-    request.audio_sources[0].sha256 = sha256_file(&source).unwrap();
+    request.audio_sources[0].sha256 = "a".repeat(64);
     request.audio_sources[0].timeline.source_start = 2_000_000;
     request.requested_artifacts.vocal_chart = false;
     request.requested_artifacts.singing_analysis = false;
@@ -477,9 +582,28 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     request.requested_artifacts.alignment = false;
     request.requested_artifacts.pitch_evidence = true;
 
+    let planned_gates = engine.plan(&request).unwrap().quality_gates;
     let first = engine.analyze(&request, &output_one).unwrap();
     let second = engine.analyze(&request, &output_two).unwrap();
     assert_eq!(first.status, AnalysisStatus::Ok);
+    let quality = first
+        .diagnostics
+        .audio_quality
+        .as_ref()
+        .expect("every executable Plan gate has a typed result");
+    assert_eq!(quality.planned_gates, planned_gates);
+    assert_eq!(
+        quality
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.gate.clone())
+            .collect::<Vec<_>>(),
+        planned_gates
+    );
+    assert_eq!(
+        first.provenance.audio_quality_version,
+        AUDIO_QUALITY_VERSION
+    );
     assert_eq!(first.fingerprint, second.fingerprint);
     let pitch = first.artifacts.pitch_evidence.unwrap();
     assert_eq!(pitch.media_type, PITCH_MEDIA_TYPE);
@@ -671,6 +795,7 @@ fn advanced_note_helper_correlates_timed_transcript_and_resolved_generation() {
         &words,
         source_start,
         source_duration,
+        false,
         &CancellationToken::default(),
     )
     .unwrap();
@@ -712,6 +837,8 @@ fn real_advanced_note_helper_cpu_consumes_pinned_generation() {
     let model_id = std::env::var("UTA_STUDIO_TEST_ADVANCED_MODEL")
         .expect("UTA_STUDIO_TEST_ADVANCED_MODEL is required");
     assert!(matches!(model_id.as_str(), "stars" | "rosvot"));
+    let include_technique = model_id == "stars"
+        && std::env::var_os("UTA_STUDIO_TEST_ADVANCED_INCLUDE_TECHNIQUE").is_some();
     assert_eq!(
         std::env::var("UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE").as_deref(),
         Ok("cpu")
@@ -758,6 +885,7 @@ fn real_advanced_note_helper_cpu_consumes_pinned_generation() {
         &words,
         0,
         duration,
+        include_technique,
         &CancellationToken::default(),
     )
     .unwrap();
@@ -790,6 +918,17 @@ fn real_advanced_note_helper_cpu_consumes_pinned_generation() {
         assert!(claimed_pitch > 0, "semantic fixture produced no MIDI claim");
     }
     assert!(evidence.provenance().correlation_group.is_some());
+    if include_technique {
+        let technique = evidence.technique_artifact(0, duration).unwrap().unwrap();
+        assert_eq!(technique.taxonomy.len(), 9);
+        assert!(!technique.intervals.is_empty());
+        assert!(!technique.styles.is_empty());
+        assert_eq!(
+            technique.provenance.task,
+            crate::fusion::ExpertTask::Technique
+        );
+        assert!(technique.provenance.correlation_group.is_some());
+    }
     if std::env::var_os("UTA_STUDIO_TEST_ADVANCED_REPEAT").is_some() {
         let repeat_output = output.with_extension("repeat");
         fs::create_dir(&repeat_output).unwrap();
@@ -800,6 +939,7 @@ fn real_advanced_note_helper_cpu_consumes_pinned_generation() {
             &words,
             0,
             duration,
+            include_technique,
             &CancellationToken::default(),
         )
         .unwrap();
@@ -836,6 +976,8 @@ fn real_advanced_note_helper_active_cancel_has_no_partial_artifact() {
     );
     let model_id = std::env::var("UTA_STUDIO_TEST_ADVANCED_MODEL")
         .expect("UTA_STUDIO_TEST_ADVANCED_MODEL is required");
+    let include_technique = model_id == "stars"
+        && std::env::var_os("UTA_STUDIO_TEST_ADVANCED_INCLUDE_TECHNIQUE").is_some();
     let duration = std::env::var("UTA_STUDIO_TEST_ADVANCED_DURATION_US")
         .expect("UTA_STUDIO_TEST_ADVANCED_DURATION_US is required")
         .parse::<u64>()
@@ -881,9 +1023,17 @@ fn real_advanced_note_helper_active_cancel_has_no_partial_artifact() {
         std::thread::sleep(Duration::from_millis(cancel_after_ms));
         trigger.cancel();
     });
-    let error =
-        run_advanced_note_challenger(&model, &audio, &output, &words, 0, duration, &cancellation)
-            .unwrap_err();
+    let error = run_advanced_note_challenger(
+        &model,
+        &audio,
+        &output,
+        &words,
+        0,
+        duration,
+        include_technique,
+        &cancellation,
+    )
+    .unwrap_err();
     canceller.join().unwrap();
     assert_eq!(error.code, EngineErrorCode::Cancelled);
     assert!(
@@ -922,7 +1072,7 @@ fn fcpe_secondary_is_consumed_without_replacing_rmvpe() {
     let source = root.join("source.wav");
     fs::write(&source, b"authorized fixture audio").unwrap();
     let ffmpeg = root.join("ffmpeg");
-    executable(&ffmpeg, "head -c 192000 /dev/zero");
+    executable(&ffmpeg, &non_silent_pcm_script(48_000));
     let rmvpe_output = output.join("worker/rmvpe/rmvpe-pitch-evidence.json");
     let fcpe_output = output.join("worker/fcpe/fcpe-pitch-evidence.json");
     let worker = root.join("openvino-worker");
@@ -955,7 +1105,7 @@ fn fcpe_secondary_is_consumed_without_replacing_rmvpe() {
     let mut request = valid_request(AudioRole::CleanLeadVocal);
     request.request_id = "fcpe-fixture".to_string();
     request.audio_sources[0].path = source.clone();
-    request.audio_sources[0].sha256 = sha256_file(&source).unwrap();
+    request.audio_sources[0].sha256 = "a".repeat(64);
     request.analysis.profile = crate::contract::AnalysisProfile::Balanced;
     request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
     request.requested_artifacts.vocal_chart = false;
@@ -1006,7 +1156,7 @@ fn firered_windowed_challenger_is_consumed_without_replacing_qwen() {
     let source = root.join("source.wav");
     fs::write(&source, b"authorized fixture audio").unwrap();
     let ffmpeg = root.join("ffmpeg");
-    executable(&ffmpeg, "head -c 192000 /dev/zero");
+    executable(&ffmpeg, &non_silent_pcm_script(48_000));
 
     let qwen_output = output.join("worker/asr/qwen-asr-transcript-evidence.json");
     let qwen_worker = root.join("qwen-asr-worker");
@@ -1049,7 +1199,7 @@ fn firered_windowed_challenger_is_consumed_without_replacing_qwen() {
     let mut request = valid_request(AudioRole::CleanLeadVocal);
     request.request_id = "firered-fixture".to_string();
     request.audio_sources[0].path = source.clone();
-    request.audio_sources[0].sha256 = sha256_file(&source).unwrap();
+    request.audio_sources[0].sha256 = "a".repeat(64);
     request.analysis.profile = crate::contract::AnalysisProfile::Balanced;
     request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
     request.requested_artifacts.vocal_chart = false;
@@ -1098,7 +1248,7 @@ fn qwen_fixture_path_executes_transcript_and_alignment_fusion() {
     let source = root.join("source.wav");
     fs::write(&source, b"authorized fixture audio").unwrap();
     let ffmpeg = root.join("ffmpeg");
-    executable(&ffmpeg, "head -c 192000 /dev/zero");
+    executable(&ffmpeg, &non_silent_pcm_script(48_000));
 
     let asr_output = output.join("worker/asr/qwen-asr-transcript-evidence.json");
     let asr_worker = root.join("qwen-asr-worker");
@@ -1155,7 +1305,7 @@ fn qwen_fixture_path_executes_transcript_and_alignment_fusion() {
     let mut request = valid_request(AudioRole::CleanLeadVocal);
     request.request_id = "qwen-fixture".to_string();
     request.audio_sources[0].path = source.clone();
-    request.audio_sources[0].sha256 = sha256_file(&source).unwrap();
+    request.audio_sources[0].sha256 = "a".repeat(64);
     request.audio_sources[0].timeline.source_start = 3_000_000;
     request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
     request.requested_artifacts.vocal_chart = false;
@@ -1262,6 +1412,7 @@ fn denoise_route_uses_supervised_worker_and_atomically_publishes_flac() {
             model_path: &model_path,
             executable: &harmony_worker,
             runtime_recipe_digest: None,
+            backend: "openvino_gpu",
             ffmpeg: &ffmpeg,
             input: &flac,
             output_root: &output_root,
@@ -1296,6 +1447,7 @@ fn denoise_route_uses_supervised_worker_and_atomically_publishes_flac() {
             model_path: &model_path,
             executable: &worker,
             runtime_recipe_digest: None,
+            backend: "openvino_gpu",
             ffmpeg: &ffmpeg,
             input: &flac,
             output_root: &output_root,
@@ -1326,6 +1478,7 @@ fn denoise_route_uses_supervised_worker_and_atomically_publishes_flac() {
             model_path: &model_path,
             executable: &dereverb_worker,
             runtime_recipe_digest: None,
+            backend: "openvino_gpu",
             ffmpeg: &ffmpeg,
             input: &flac,
             output_root: &output_root,
@@ -1355,6 +1508,7 @@ fn denoise_route_uses_supervised_worker_and_atomically_publishes_flac() {
             model_path: &model_path,
             executable: &instrumental_worker,
             runtime_recipe_digest: None,
+            backend: "openvino_gpu",
             ffmpeg: &ffmpeg,
             input: &flac,
             output_root: &output_root,

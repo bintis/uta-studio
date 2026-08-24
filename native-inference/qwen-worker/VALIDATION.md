@@ -54,7 +54,7 @@ whitespace while preserving inner Unicode and punctuation. Language profile
 `zh,en,yue,fr,de,it,ja,ko,pt,ru,es`, maps them to the pinned runtime tokenizer
 names, and rejects unsupported values before engine launch. Alignment semantics
 profile `qwen-align-token-word-80ms-v1` identifies the runtime's 80 ms timestamp
-classes and Uta Studio's no-invented-timestamps zero-piece merge behavior.
+classes and Uta! Studio's no-invented-timestamps zero-piece merge behavior.
 
 Analysis Engine now strictly consumes the schema-2 alignment evidence, validates
 the three profiles, canonical/runtime language pairing, exact compact transcript

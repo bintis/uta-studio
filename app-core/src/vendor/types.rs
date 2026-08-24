@@ -65,6 +65,24 @@ pub struct ModelInstallStatus {
     pub validation: String,
 }
 
+/// Exact Runtime Manager fact for one Analysis strategy row. Unlike
+/// `ModelDownloadTarget::RoFormer`, this never projects bundle health onto an
+/// individual provider/capability.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisStrategyResourceStatus {
+    pub strategy_id: String,
+    pub label: String,
+    pub model_id: String,
+    pub capability: String,
+    pub available: bool,
+    pub backend: String,
+    pub validation: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -102,6 +120,7 @@ pub struct AnalysisRuntimeStatus {
     pub ffmpeg_available: bool,
     pub native_analyzer_available: bool,
     pub openvino_runtime_available: bool,
+    pub ggml_vulkan_runtime_available: bool,
     pub qwen_asr_runtime_available: bool,
     pub qwen_align_runtime_available: bool,
     pub runtime_lock_valid: bool,

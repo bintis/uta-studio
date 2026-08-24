@@ -26,6 +26,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Verify canonical product identity
+        run: tools/check-product-identity.sh
+
       - name: Read and verify version
         id: version
         shell: bash
@@ -44,7 +47,7 @@ jobs:
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Packaging Uta Studio $version"
+          echo "Packaging Uta! Studio $version"
 
   package-linux-portable:
     name: Package self-contained Linux binary
@@ -146,7 +149,10 @@ jobs:
           shared-key: linux-deb
 
       - name: Build native Linux executables
-        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+        run: >-
+          cargo build --release --locked
+          -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Verify native executable linkage
         shell: bash
@@ -189,6 +195,23 @@ jobs:
             "$root/usr/bin/uta-analyze"
           install -Dm755 target/release/uta-runtime \
             "$root/usr/bin/uta-runtime"
+          install -Dm755 target/release/uta-native-analyzer \
+            "$root/usr/bin/uta-native-analyzer"
+          install -Dm755 target/release/uta-openvino-worker \
+            "$root/usr/bin/uta-openvino-worker"
+          install -Dm755 target/release/uta-ggml-worker \
+            "$root/usr/bin/uta-ggml-worker"
+          install -Dm755 target/release/uta-qwen-asr-worker \
+            "$root/usr/bin/uta-qwen-asr-worker"
+          install -Dm755 target/release/uta-qwen-align-worker \
+            "$root/usr/bin/uta-qwen-align-worker"
+
+          install -Dm644 native-inference/openvino-worker/THIRD_PARTY_NOTICES.md \
+            "$root/usr/share/doc/uta-studio/openvino-worker-THIRD_PARTY_NOTICES.md"
+          install -Dm644 native-inference/qwen-worker/THIRD_PARTY_NOTICES.md \
+            "$root/usr/share/doc/uta-studio/qwen-worker-THIRD_PARTY_NOTICES.md"
+          install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
+            "$root/usr/share/doc/uta-studio/ggml-roformer-THIRD_PARTY_NOTICES.md"
 
           install -Dm644 icon.png \
             "$root/usr/share/uta-studio/icon.png"
@@ -198,6 +221,10 @@ jobs:
             "$root/usr/share/uta-studio/desktop/assets/icons/ui-icons.svg"
           install -Dm644 desktop/assets/icons/ui-icons.png \
             "$root/usr/share/uta-studio/desktop/assets/icons/ui-icons.png"
+          install -Dm644 desktop/assets/icons/music-placeholder.png \
+            "$root/usr/share/uta-studio/desktop/assets/icons/music-placeholder.png"
+          install -Dm644 desktop/assets/icons/music-placeholder.svg \
+            "$root/usr/share/uta-studio/desktop/assets/icons/music-placeholder.svg"
           install -Dm644 icon.png \
             "$root/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
           install -Dm644 desktop/uta-studio.desktop \
@@ -211,6 +238,11 @@ jobs:
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
           export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
           export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
+          export UTA_STUDIO_NATIVE_ANALYZER_PATH=/usr/bin/uta-native-analyzer
+          export UTA_STUDIO_OPENVINO_RUNTIME_PATH=/usr/bin/uta-openvino-worker
+          export UTA_STUDIO_GGML_RUNTIME_PATH=/usr/bin/uta-ggml-worker
+          export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH=/usr/bin/uta-qwen-asr-worker
+          export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH=/usr/bin/uta-qwen-align-worker
           export WINIT_UNIX_BACKEND=wayland
           exec /usr/lib/uta-studio/uta-studio "$@"
           SH
@@ -220,7 +252,7 @@ jobs:
           Source: uta-studio
           Section: sound
           Priority: optional
-          Maintainer: Uta Studio contributors <noreply@github.com>
+          Maintainer: Uta! Studio contributors <noreply@github.com>
           Standards-Version: 4.7.0
 
           Package: uta-studio
@@ -251,7 +283,7 @@ jobs:
           Section: sound
           Priority: optional
           Architecture: amd64
-          Maintainer: Uta Studio contributors <noreply@github.com>
+          Maintainer: Uta! Studio contributors <noreply@github.com>
           Homepage: https://github.com/${GITHUB_REPOSITORY}
           Installed-Size: ${installed_size}
           Depends: ${shlib_deps}, ca-certificates, ffmpeg, tar, unzip, xz-utils, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libegl1, libgles2, libvulkan1
@@ -326,7 +358,10 @@ jobs:
           toolchain: stable
 
       - name: Build native Linux executables
-        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+        run: >-
+          cargo build --release --locked
+          -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Verify native executable linkage
         shell: bash
@@ -372,6 +407,22 @@ jobs:
             "$payload/usr/bin/uta-analyze"
           install -Dm755 target/release/uta-runtime \
             "$payload/usr/bin/uta-runtime"
+          install -Dm755 target/release/uta-native-analyzer \
+            "$payload/usr/bin/uta-native-analyzer"
+          install -Dm755 target/release/uta-openvino-worker \
+            "$payload/usr/bin/uta-openvino-worker"
+          install -Dm755 target/release/uta-ggml-worker \
+            "$payload/usr/bin/uta-ggml-worker"
+          install -Dm755 target/release/uta-qwen-asr-worker \
+            "$payload/usr/bin/uta-qwen-asr-worker"
+          install -Dm755 target/release/uta-qwen-align-worker \
+            "$payload/usr/bin/uta-qwen-align-worker"
+          install -Dm644 native-inference/openvino-worker/THIRD_PARTY_NOTICES.md \
+            "$payload/usr/share/licenses/uta-studio/openvino-worker-THIRD_PARTY_NOTICES.md"
+          install -Dm644 native-inference/qwen-worker/THIRD_PARTY_NOTICES.md \
+            "$payload/usr/share/licenses/uta-studio/qwen-worker-THIRD_PARTY_NOTICES.md"
+          install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
+            "$payload/usr/share/licenses/uta-studio/ggml-roformer-THIRD_PARTY_NOTICES.md"
           install -Dm644 icon.png \
             "$payload/usr/share/uta-studio/icon.png"
           install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
@@ -380,6 +431,10 @@ jobs:
             "$payload/usr/share/uta-studio/desktop/assets/icons/ui-icons.svg"
           install -Dm644 desktop/assets/icons/ui-icons.png \
             "$payload/usr/share/uta-studio/desktop/assets/icons/ui-icons.png"
+          install -Dm644 desktop/assets/icons/music-placeholder.png \
+            "$payload/usr/share/uta-studio/desktop/assets/icons/music-placeholder.png"
+          install -Dm644 desktop/assets/icons/music-placeholder.svg \
+            "$payload/usr/share/uta-studio/desktop/assets/icons/music-placeholder.svg"
           install -Dm644 icon.png \
             "$payload/usr/share/icons/hicolor/512x512/apps/uta-studio.png"
           install -Dm644 desktop/uta-studio.desktop \
@@ -393,6 +448,11 @@ jobs:
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
           export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
           export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
+          export UTA_STUDIO_NATIVE_ANALYZER_PATH=/usr/bin/uta-native-analyzer
+          export UTA_STUDIO_OPENVINO_RUNTIME_PATH=/usr/bin/uta-openvino-worker
+          export UTA_STUDIO_GGML_RUNTIME_PATH=/usr/bin/uta-ggml-worker
+          export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH=/usr/bin/uta-qwen-asr-worker
+          export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH=/usr/bin/uta-qwen-align-worker
           export WINIT_UNIX_BACKEND=wayland
           exec /usr/libexec/uta-studio/uta-studio "$@"
           SH
@@ -445,7 +505,7 @@ jobs:
           cp -a payload/. %{buildroot}/
 
           %files
-          %license %{_licensedir}/uta-studio/LICENSE
+          %license %{_licensedir}/uta-studio/*
           %{_bindir}/uta-studio
           %{_libexecdir}/uta-studio/
           %{_datadir}/uta-studio/
@@ -453,7 +513,7 @@ jobs:
           %{_datadir}/icons/hicolor/512x512/apps/uta-studio.png
 
           %changelog
-          * ${changelog_date} Uta Studio contributors <noreply@github.com> - ${version}-1
+          * ${changelog_date} Uta! Studio contributors <noreply@github.com> - ${version}-1
           - Native system-dependency package
           EOF
 
@@ -494,7 +554,10 @@ jobs:
           toolchain: stable
 
       - name: Build Windows executables
-        run: cargo build --release --locked -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+        run: >-
+          cargo build --release --locked
+          -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
+          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Assemble portable ZIP
         shell: pwsh
@@ -507,10 +570,21 @@ jobs:
           Copy-Item target/release/uta-studio.exe "$root/bin/uta-studio.exe"
           Copy-Item target/release/uta-analyze.exe "$root/bin/uta-analyze.exe"
           Copy-Item target/release/uta-runtime.exe "$root/bin/uta-runtime.exe"
+          Copy-Item target/release/uta-native-analyzer.exe "$root/bin/uta-native-analyzer.exe"
+          Copy-Item target/release/uta-openvino-worker.exe "$root/bin/uta-openvino-worker.exe"
+          Copy-Item target/release/uta-ggml-worker.exe "$root/bin/uta-ggml-worker.exe"
+          Copy-Item target/release/uta-qwen-asr-worker.exe "$root/bin/uta-qwen-asr-worker.exe"
+          Copy-Item target/release/uta-qwen-align-worker.exe "$root/bin/uta-qwen-align-worker.exe"
+          New-Item -ItemType Directory -Force "$root/share/uta-studio/licenses" | Out-Null
+          Copy-Item native-inference/openvino-worker/THIRD_PARTY_NOTICES.md "$root/share/uta-studio/licenses/openvino-worker-THIRD_PARTY_NOTICES.md"
+          Copy-Item native-inference/qwen-worker/THIRD_PARTY_NOTICES.md "$root/share/uta-studio/licenses/qwen-worker-THIRD_PARTY_NOTICES.md"
+          Copy-Item native-inference/roformer/THIRD_PARTY_NOTICES.md "$root/share/uta-studio/licenses/ggml-roformer-THIRD_PARTY_NOTICES.md"
           Copy-Item icon.png "$root/share/uta-studio/icon.png"
           Copy-Item desktop/assets/fonts/NotoSansCJKsc-Regular.otf "$root/share/uta-studio/desktop/assets/fonts/"
           Copy-Item desktop/assets/icons/ui-icons.svg "$root/share/uta-studio/desktop/assets/icons/"
           Copy-Item desktop/assets/icons/ui-icons.png "$root/share/uta-studio/desktop/assets/icons/"
+          Copy-Item desktop/assets/icons/music-placeholder.png "$root/share/uta-studio/desktop/assets/icons/"
+          Copy-Item desktop/assets/icons/music-placeholder.svg "$root/share/uta-studio/desktop/assets/icons/"
           Compress-Archive -Path "$root/*" -DestinationPath "uta-studio-$version-x86_64-windows.zip"
           $hash = (Get-FileHash "uta-studio-$version-x86_64-windows.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  uta-studio-$version-x86_64-windows.zip" |

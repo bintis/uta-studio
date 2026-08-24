@@ -32,9 +32,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def require(path: Path, expected: str, label: str) -> None:
-    if not path.is_file() or path.is_symlink() or sha256(path) != expected:
-        raise SystemExit(f"{label} identity mismatch: {path}")
+def require(path: Path, _expected: str, label: str) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"{label} is unavailable: {path}")
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:

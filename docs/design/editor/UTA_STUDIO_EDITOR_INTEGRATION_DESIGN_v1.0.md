@@ -1,4 +1,4 @@
-# Uta Studio Editor Integration — 最终定稿
+# Uta! Studio Editor Integration — 最终定稿
 
 **文档版本：** v1.0
 **日期：** 2026-08-22
@@ -14,7 +14,7 @@
 
 现有 Editor 必须保留。
 
-它不只是一个结果查看器，而已经是 Uta Studio 最成熟的人工 authoring 子系统之一。
+它不只是一个结果查看器，而已经是 Uta! Studio 最成熟的人工 authoring 子系统之一。
 
 未来架构中：
 

@@ -32,6 +32,8 @@ impl SettingsTab {
 pub(crate) enum SettingsSelectKind {
     UiLanguage,
     Separator,
+    #[allow(dead_code)]
+    // retained only for loading legacy settings; canonical Analysis UI retired it
     AsrEngine,
     WhisperModel,
     AlignBackend,
@@ -44,13 +46,6 @@ pub(crate) enum SettingsSelectKind {
     AudioVocalPostprocess2,
     AudioBgmPostprocess1,
     AudioBgmPostprocess2,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AnalysisAdvancedSection {
-    Separation,
-    Pitch,
-    Asr,
 }
 
 #[derive(Clone, Copy)]
@@ -98,14 +93,3 @@ pub(crate) struct SettingsContent;
 
 #[derive(Component)]
 pub(crate) struct SettingsPageContent;
-
-#[derive(Component, Clone, Copy)]
-pub(crate) enum NumericSetting {
-    SeparatorSegmentSize,
-    SeparatorOverlap,
-    SeparatorBatchSize,
-    SeparatorNormalization,
-    AsrBeamSize,
-    AsrBatchSize,
-    VocalThreshold,
-}

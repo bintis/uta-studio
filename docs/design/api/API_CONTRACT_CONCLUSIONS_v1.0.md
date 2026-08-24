@@ -1,4 +1,4 @@
-# Uta Studio API Contract Conclusions — v1.0 FINAL
+# Uta! Studio API Contract Conclusions — v1.0 FINAL
 
 This file contains durable API conclusions only. It is not a change log or implementation journal.
 

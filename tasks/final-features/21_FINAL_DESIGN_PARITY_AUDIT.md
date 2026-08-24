@@ -1,5 +1,7 @@
 # 21 — Final-v1 Design Parity Audit
 
+**State:** `READY`
+**Audit revision:** 2
 **Precondition:** cards 15–19, 20A, and 20 are terminal; card 20A and card 20 should be `READY` for a green implementation result
 **Task class:** static/audit closure; no model inference
 **Owner:** active implementation/review agent
@@ -8,7 +10,7 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+docs/engineering-constraints.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/21_FINAL_DESIGN_PARITY_AUDIT.md
@@ -19,7 +21,6 @@ docs/design/audio-analysis/UTA_AUDIO_ANALYSIS_COVERAGE_CHECKLIST_v1.0.md
 docs/design/architecture/UTA_STUDIO_CLI_PROCESS_BOUNDARY_v1.0.md
 docs/design/integration/UTA_STUDIO_ANALYSIS_RUNTIME_INTEGRATION_DESIGN_v1.0.md
 docs/design/integration/UTA_STUDIO_ANALYSIS_SETTINGS_MODEL_SELECTION_EXECUTION_UX_DESIGN_v1.0.md
-docs/agent-tasks/FINAL_V1_ACCEPTANCE_CHECKLIST.md
 docs/KEY_CONCLUSIONS.md
 ```
 
@@ -31,7 +32,7 @@ Answer one question from current source, not historical claims:
 
 > After model closure and feature closure, is every final-v1 product capability either implemented and evidenced, or explicitly outside the final design / retained as an accepted blocker?
 
-This is not the expensive release/Nix pass. It is the final design-completeness gate before `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`.
+This is not the expensive release/Nix pass. It is the final design-completeness gate before the later explicit release pass reserved by `AGENTS.md`.
 
 ## Audit categories
 
@@ -58,7 +59,7 @@ dynamic audio transformation reorder
 type-invalid drop blocked
 cycle blocked
 duplicate processing nodes
-Vocal/BGM/Lead/Backing/Harmony lane semantics as supported by final contract
+Vocal/BGM/Lead/VocalResidual executable lanes, with Backing/Harmony retained only as chart roles/future audio identities
 analyzer binds exact artifact
 priority is not dependency
 Always/OnDisagreement/MaximumOnly/Disabled execution
@@ -142,7 +143,7 @@ packaging definitions include required CLIs/workers/notices
 canonical env vars for analysis/runtime CLIs
 ```
 
-The actual final package build is deferred to `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`.
+The actual final package build is deferred to the later explicit release pass reserved by `AGENTS.md`.
 
 ## Dynamic follow-up rule
 
@@ -180,7 +181,7 @@ process tree inspection
 git diff --check
 ```
 
-Do not run model inference or `nix build` in this static audit; accelerator authorization remains governed by `docs/agent-tasks/MODEL_GPU_WORK_POLICY.md` for any separately justified dynamic follow-up.
+Do not run model inference or `nix build` in this static audit; accelerator authorization remains governed by `AGENTS.md` for any separately justified dynamic follow-up.
 
 ## Green result
 
@@ -209,3 +210,29 @@ design area | implementation | evidence | decoupling status | remaining blocker
 ```
 
 Stop after this audit.
+
+## Current result
+
+
+**State:** `READY`
+
+Audit revision 2 reran the current-source design/parity review after 21A–21C. All revision-1 implementation gaps are closed: reachable product analysis execution uses exact `EngineQueueIntent -> AnalysisCliClient -> uta-analyze`; every advertised audio quality gate has a typed Plan-bound result and fail-closed/degraded behavior; and canonical **Uta! Studio** display identity, i18n, generated docs and active audit links are current.
+
+Revision 2 also enforced the current repository rule that hash verification is not required. Analysis Engine, app-core, Runtime Manager, native workers, conversion/install utilities and UTZ no longer recompute or compare hashes to accept/reject content. Existing hash fields remain compatibility metadata, content IDs, fingerprints or provenance. Safe-path, regular-file, declared-file-set, byte-size, schema, semantic identity, correlation, completeness and atomic-publication checks remain in force.
+
+The affected Card-20 lanes remain green. Focused non-inference suites passed: Analysis Engine `132 passed, 2 ignored`; app-core `467 passed`; Runtime Manager `61 passed`; OpenVINO Worker `53 passed`; GGML Worker `4 passed`; Qwen Worker `15 passed`; UTZ `14 passed`; and Desktop i18n `5 passed`. The product identity gate, docs-current check, process-boundary/dependency/import scans, missing-active-link scan, source-line limit, hash-rejection scan, Rust/Python/shell syntax checks, formatting and `git diff --check` passed. Packaging definitions, worker/notices coverage and canonical CLI environment variables remain statically present. No model inference, download, accelerator context or Nix build was run.
+
+### Parity matrix
+
+| design area | implementation | evidence | decoupling status | remaining blocker |
+| --- | --- | --- | --- | --- |
+| Repository/process architecture | packaged CLI protocols only; native Production execution; source media remains read-only | exact-intent and real CLI tests; dependency/import/Desktop-spawn scans | clean | final Nix/package execution is deferred to release acceptance |
+| Workflow / Processing Studio | compiled typed DAG, legal reorder/duplicates, exact bindings, five conditions, Preview/queue identity | Workflow/CLI/app-core suites and Card-20 bubble rerun | clean | none |
+| Analysis / experts / Fusion | retained capability registry is wired; conditional experts, correlated evidence, quality gates, Candidate/finalization and quantization are typed | Analysis Engine `132 passed, 2 ignored`; app-core `467 passed` | backend-owned behind `uta-analyze` | no coding gap; retained model-quality/license promotion blockers remain |
+| Audio semantics | truthful Original/Vocal/Guide/Lead/CleanLead/Instrumental roles; VocalResidual is not Backing/Harmony; no implicit fallback | semantic, quality-gate and native worker suites | clean | `audio.lead_partition` remains explicitly future/optional |
+| Editor / Evidence Workbench | Candidate/Authored, compare/merge, review, undoable suggestions, read-only evidence and selected-artifact audition are implemented | app-core/UI action coverage and Card-20 diagnostics | app-core local domain only | none |
+| Export | Studio owns atomic UTZ/UltraStar export with file-set, byte-size, schema, semantic and decode validation | app-core/UTZ/export bubble coverage | correctly outside Engine | none |
+| Contracts / packaging readiness | API catalogue, EN/zh-CN/ja parity, docs, runtime metadata, CLIs/workers/notices and Wayland wrapper are present | identity/i18n/docs/line-limit/static packaging gates | packaged boundary defined | actual Nix build/repository acceptance deferred |
+| Model/Production claims | integration and Production readiness remain separate per resource | `STATE.md` and Runtime Manager policy facts | Runtime Manager-owned | 11 explicit external quality/provenance/license blockers remain `production_ready=no` |
+
+Card 21 is green for design completeness. Card 20 remains `READY`. The next phase is the separately reserved final repository/Nix release acceptance; it must not reinterpret retained model blockers as completed Production promotion.

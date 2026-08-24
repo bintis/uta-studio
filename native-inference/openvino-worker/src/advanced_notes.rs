@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use openvino::{CompiledModel, Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
+use openvino::{
+    CompiledModel, Core, DeviceType, ElementType, PropertyKey, RwPropertyKey, Shape, Tensor,
+};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::rosvot_host;
 use crate::singing_frontend::{self, AnnotationPitch};
@@ -13,23 +14,50 @@ use crate::stars_viterbi;
 
 const FRAME_BUCKET: usize = 256;
 const NOTE_BUCKET: usize = 32;
+const PHONEME_BUCKET: usize = 256;
 const HIDDEN: usize = 256;
 const PITCH_CLASSES: usize = 89;
+const TECHNIQUE_CLASSES: usize = 9;
+const TECHNIQUE_TAXONOMY: [&str; TECHNIQUE_CLASSES] = [
+    "bubble",
+    "breathe",
+    "pharyngeal",
+    "vibrato",
+    "glissando",
+    "mixed",
+    "falsetto",
+    "weak",
+    "strong",
+];
+const STYLE_TECHNIQUE_GROUP: [&str; 10] = [
+    "control",
+    "mixed",
+    "falsetto",
+    "pharyngeal",
+    "glissando",
+    "vibrato",
+    "breathy",
+    "weak",
+    "strong",
+    "bubble",
+];
+const STYLE_LANGUAGE: [&str; 9] = [
+    "Chinese", "English", "Italian", "French", "Japanese", "Spanish", "German", "Korean", "Russian",
+];
+const STYLE_GENDER: [&str; 2] = ["female", "male"];
+const STYLE_EMOTION: [&str; 4] = ["neutral", "happy", "sad", "angry"];
+const STYLE_METHOD: [&str; 2] = ["pop", "bel_canto"];
+const STYLE_PACE: [&str; 3] = ["slow", "moderate", "fast"];
+const STYLE_RANGE: [&str; 3] = ["low", "medium", "high"];
 const RMVPE_CLASSES: usize = 360;
 const RMVPE_OVERLAP: usize = 64;
 const RMVPE_STRIDE: usize = FRAME_BUCKET - RMVPE_OVERLAP;
 const SHARED_MANIFEST_SHA256: &str =
     "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c";
-const STARS_MANIFEST_SHA256: &str =
-    "c279da93e84069cb2a5321aadda7d37e5ac2a263a8ff32084c3faab1422d83ea";
-const ROSVOT_MANIFEST_SHA256: &str =
-    "a84ef89fba4863a49198f83c232b3a8d14c1ec3b44ad58ef6407a7528e82e9e5";
 const STARS_COMMIT: &str = "f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167";
 const STARS_CHECKPOINT: &str = "9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c";
 const STARS_CONFIG: &str = "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d10a459e4e7e91";
 const ROSVOT_COMMIT: &str = "3c8332bf43adae35f6e4d64971862f2f6139b310";
-const ROSVOT_SOURCE_MANIFEST: &str =
-    "5ee3fe4d8f166da11ab0f1fbbc67fbd37e4ab906544d504876c7ebb60b0b32c8";
 const ROSVOT_CHECKPOINT: &str = "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb";
 const ROSVOT_CONFIG: &str = "2ad2cb756623418c471b7dc2f56175cce88b69a70b4a2c354fa1a78525aa54e2";
 
@@ -44,6 +72,8 @@ struct TaskConfig {
     words: Vec<ConfigWord>,
     #[serde(default)]
     device: DiagnosticDevice,
+    #[serde(default)]
+    include_technique: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,7 +85,7 @@ struct ConfigWord {
     duration: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DiagnosticDevice {
     Cpu,
@@ -70,24 +100,53 @@ struct ModelManifest {
     model_id: String,
     format: String,
     source_revision: String,
-    #[serde(default)]
-    source_manifest_sha256: Option<String>,
-    checkpoint_sha256: String,
-    config_sha256: String,
+    #[serde(default, rename = "source_manifest_sha256")]
+    _source_manifest_sha256: Option<String>,
+    #[serde(rename = "checkpoint_sha256")]
+    _checkpoint_sha256: String,
+    #[serde(rename = "config_sha256")]
+    _config_sha256: String,
     frame_bucket: usize,
     note_bucket: usize,
+    #[serde(default)]
+    phoneme_bucket: Option<usize>,
     segmentation: Segmentation,
     shared_frontend: SharedFrontend,
     #[serde(default)]
     g2p_profile: Option<String>,
-    #[serde(default)]
-    g2p_asset_sha256: Option<String>,
+    #[serde(default, rename = "g2p_asset_sha256")]
+    _g2p_asset_sha256: Option<String>,
     #[serde(default)]
     word_boundary_source: Option<String>,
     #[serde(default)]
     rwbd_included: Option<bool>,
+    #[serde(default)]
+    global_step: Option<u64>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    technique: Option<TechniqueManifest>,
+    #[serde(default)]
+    style: Option<StyleManifest>,
     graphs: Vec<String>,
     files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TechniqueManifest {
+    taxonomy: Vec<String>,
+    raw_score_projection: String,
+    calibration: String,
+    scope: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StyleManifest {
+    scope: String,
+    heads: Vec<String>,
+    calibration: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,8 +163,10 @@ struct Segmentation {
 struct SharedFrontend {
     profile: String,
     manifest: String,
-    manifest_sha256: String,
-    annotation_rmvpe_sha256: String,
+    #[serde(rename = "manifest_sha256")]
+    _manifest_sha256: String,
+    #[serde(rename = "annotation_rmvpe_sha256")]
+    _annotation_rmvpe_sha256: String,
 }
 
 struct ModelArtifact {
@@ -127,11 +188,36 @@ struct RawNote {
     midi: Option<u8>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RawTechnique {
+    start_frame: usize,
+    end_frame: usize,
+    phoneme_id: i64,
+    raw_logits: Vec<f32>,
+    source_local_scores: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RawStyleHead {
+    taxonomy: Vec<&'static str>,
+    raw_logits: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RawGlobalStyle {
+    start_frame: usize,
+    end_frame: usize,
+    heads: BTreeMap<&'static str, RawStyleHead>,
+}
+
 #[derive(Serialize)]
 struct Evidence<'a> {
     schema_version: u32,
     model_id: &'a str,
-    capability: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<&'a str>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capabilities: Vec<&'a str>,
     upstream_commit: &'a str,
     checkpoint_sha256: &'a str,
     config_sha256: &'a str,
@@ -150,6 +236,16 @@ struct Evidence<'a> {
     note_boundary_logits: Vec<f32>,
     regulated_note_boundaries: Vec<usize>,
     notes: Vec<RawNote>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    technique_taxonomy: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    technique_calibration: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    techniques: Option<Vec<RawTechnique>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    style_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    styles: Option<Vec<RawGlobalStyle>>,
     dependencies: Vec<DependencyIdentity<'a>>,
 }
 
@@ -167,6 +263,14 @@ struct SharedInputs {
 }
 
 type NoteInference = (Vec<f32>, Vec<usize>, Vec<RawNote>);
+
+struct StarsInference {
+    boundary_logits: Vec<f32>,
+    boundaries: Vec<usize>,
+    notes: Vec<RawNote>,
+    techniques: Option<Vec<RawTechnique>>,
+    styles: Option<Vec<RawGlobalStyle>>,
+}
 
 pub fn infer(
     model_id: &str,
@@ -190,19 +294,34 @@ pub fn infer(
         return Err("advanced note expert has no TimedTranscript-conditioned frames".to_string());
     }
     progress(0.35, "Running conditioned singing-note segments");
-    let (boundary_logits, boundaries, notes) = if model_id == "stars" {
-        run_stars(
+    let (boundary_logits, boundaries, notes, techniques, styles) = if model_id == "stars" {
+        let result = run_stars(
             &mut core,
             &model,
             &shared,
             &segments,
             config.device,
+            config.include_technique,
             |completed| {
-                progress(0.35 + 0.6 * completed, "Running STARS Stage A/B/C segments");
+                progress(
+                    0.35 + 0.6 * completed,
+                    if config.include_technique {
+                        "Running STARS Stage A/B/C/D/E segments"
+                    } else {
+                        "Running STARS Stage A/B/C segments"
+                    },
+                );
             },
-        )?
+        )?;
+        (
+            result.boundary_logits,
+            result.boundaries,
+            result.notes,
+            result.techniques,
+            result.styles,
+        )
     } else {
-        run_rosvot(
+        let (boundary_logits, boundaries, notes) = run_rosvot(
             &mut core,
             &model,
             &shared,
@@ -214,18 +333,25 @@ pub fn infer(
                     "Running ROSVOT frame/pitch segments",
                 );
             },
-        )?
+        )?;
+        (boundary_logits, boundaries, notes, None, None)
     };
-    let backend = match config.device {
-        DiagnosticDevice::Cpu => "openvino_cpu",
-        DiagnosticDevice::Gpu => "openvino_gpu",
+    let backend = match (model_id, config.device) {
+        (_, DiagnosticDevice::Cpu) => "openvino_cpu",
+        ("stars", DiagnosticDevice::Gpu) => "openvino_gpu_cpu_staged",
+        (_, DiagnosticDevice::Gpu) => "openvino_gpu",
     };
-    let (commit, checkpoint, config_sha, capability, g2p) = if model_id == "stars" {
+    let (commit, checkpoint, config_sha, capability, capabilities, g2p) = if model_id == "stars" {
+        let mut capabilities = vec!["notes.stars"];
+        if config.include_technique {
+            capabilities.push("technique.analyze");
+        }
         (
             STARS_COMMIT,
             STARS_CHECKPOINT,
             STARS_CONFIG,
-            "notes.stars",
+            None,
+            capabilities,
             Some(stars_g2p::PROFILE),
         )
     } else {
@@ -233,7 +359,8 @@ pub fn infer(
             ROSVOT_COMMIT,
             ROSVOT_CHECKPOINT,
             ROSVOT_CONFIG,
-            "notes.rosvot",
+            Some("notes.rosvot"),
+            Vec::new(),
             None,
         )
     };
@@ -258,9 +385,10 @@ pub fn infer(
         });
     }
     let evidence = Evidence {
-        schema_version: 1,
+        schema_version: if model_id == "stars" { 2 } else { 1 },
         model_id,
         capability,
+        capabilities,
         upstream_commit: commit,
         checkpoint_sha256: checkpoint,
         config_sha256: config_sha,
@@ -278,6 +406,13 @@ pub fn infer(
         note_boundary_logits: boundary_logits,
         regulated_note_boundaries: boundaries,
         notes,
+        technique_taxonomy: techniques.as_ref().map(|_| TECHNIQUE_TAXONOMY.to_vec()),
+        technique_calibration: techniques
+            .as_ref()
+            .map(|_| "source_local_sigmoid_uncalibrated"),
+        techniques,
+        style_scope: styles.as_ref().map(|_| "segment_global"),
+        styles,
         dependencies,
     };
     progress(0.97, "Publishing typed advanced-note evidence");
@@ -289,12 +424,13 @@ fn validate_task_config(config: &TaskConfig, audio: &[f32]) -> Result<(), String
         .source_start
         .checked_add(config.source_duration)
         .ok_or_else(|| "advanced note source timeline overflows".to_string())?;
-    if !is_sha256(&config.model_generation)
+    if !valid_identity(&config.model_generation)
         || !valid_identity(&config.timed_transcript_generation)
         || config.source_duration == 0
         || config.words.is_empty()
         || audio.is_empty()
         || audio.iter().any(|value| !value.is_finite())
+        || (config.include_technique && config.model_path.as_os_str().is_empty())
     {
         return Err("advanced note task identity or audio is invalid".to_string());
     }
@@ -319,11 +455,9 @@ fn validate_task_config(config: &TaskConfig, audio: &[f32]) -> Result<(), String
 }
 
 fn model_artifact(model_id: &str, configured: &Path) -> Result<ModelArtifact, String> {
-    let expected_manifest = match model_id {
-        "stars" => STARS_MANIFEST_SHA256,
-        "rosvot" => ROSVOT_MANIFEST_SHA256,
-        _ => return Err("advanced note worker rejects baseline substitution".to_string()),
-    };
+    if !matches!(model_id, "stars" | "rosvot") {
+        return Err("advanced note worker rejects baseline substitution".to_string());
+    }
     let directory = if configured.is_dir() {
         configured.to_path_buf()
     } else {
@@ -333,13 +467,11 @@ fn model_artifact(model_id: &str, configured: &Path) -> Result<ModelArtifact, St
             .to_path_buf()
     };
     let manifest_path = directory.join("manifest.json");
-    require_file_hash(&manifest_path, expected_manifest)?;
+    require_regular_file(&manifest_path)?;
     let manifest: ModelManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|error| error.to_string())?)
             .map_err(|error| format!("advanced note model manifest is invalid: {error}"))?;
-    let common = manifest.schema_version == 1
-        && manifest.model_id == model_id
-        && manifest.format == "openvino_ir_v11_conditioned_segmented"
+    let common = manifest.model_id == model_id
         && manifest.frame_bucket == FRAME_BUCKET
         && manifest.note_bucket == NOTE_BUCKET
         && manifest.segmentation.policy == "timed-transcript-fixed-256-v1"
@@ -347,27 +479,48 @@ fn model_artifact(model_id: &str, configured: &Path) -> Result<ModelArtifact, St
         && manifest.segmentation.frame_step_den == 24_000
         && manifest.segmentation.unconditioned_frames == "no_claim"
         && manifest.shared_frontend.profile == singing_frontend::PROFILE
-        && manifest.shared_frontend.manifest == "shared/manifest.json"
-        && manifest.shared_frontend.manifest_sha256 == SHARED_MANIFEST_SHA256
-        && manifest.shared_frontend.annotation_rmvpe_sha256
-            == singing_frontend::ANNOTATION_RMVPE_SHA256;
+        && manifest.shared_frontend.manifest == "shared/manifest.json";
     let specific = if model_id == "stars" {
-        manifest.source_revision == STARS_COMMIT
-            && manifest.checkpoint_sha256 == STARS_CHECKPOINT
-            && manifest.config_sha256 == STARS_CONFIG
-            && manifest.source_manifest_sha256.is_none()
+        manifest.schema_version == 2
+            && manifest.format == "openvino_ir_v11_conditioned_segmented_p1"
+            && manifest.source_revision == STARS_COMMIT
             && manifest.g2p_profile.as_deref() == Some(stars_g2p::PROFILE)
-            && manifest.g2p_asset_sha256.as_deref() == Some(stars_g2p::ASSET_SHA256)
             && manifest.word_boundary_source.is_none()
             && manifest.rwbd_included.is_none()
-            && manifest.graphs == ["stage-a", "stage-b", "stage-c"]
+            && manifest.phoneme_bucket == Some(PHONEME_BUCKET)
+            && manifest.global_step == Some(200_000)
+            && manifest.capabilities == ["notes.stars", "technique.analyze"]
+            && manifest.technique.as_ref().is_some_and(|technique| {
+                technique.taxonomy == TECHNIQUE_TAXONOMY
+                    && technique.raw_score_projection == "sigmoid"
+                    && technique.calibration == "source_local_uncalibrated"
+                    && technique.scope == "phoneme"
+            })
+            && manifest.style.as_ref().is_some_and(|style| {
+                style.scope == "segment_global"
+                    && style.heads
+                        == [
+                            "technique_group",
+                            "language",
+                            "gender",
+                            "emotion",
+                            "method",
+                            "pace",
+                            "range",
+                        ]
+                    && style.calibration == "uncalibrated_logits"
+            })
+            && manifest.graphs == ["stage-a", "stage-b", "stage-c", "stage-d", "stage-e"]
     } else {
-        manifest.source_revision == ROSVOT_COMMIT
-            && manifest.checkpoint_sha256 == ROSVOT_CHECKPOINT
-            && manifest.config_sha256 == ROSVOT_CONFIG
-            && manifest.source_manifest_sha256.as_deref() == Some(ROSVOT_SOURCE_MANIFEST)
+        manifest.schema_version == 1
+            && manifest.format == "openvino_ir_v11_conditioned_segmented"
+            && manifest.phoneme_bucket.is_none()
+            && manifest.global_step.is_none()
+            && manifest.capabilities.is_empty()
+            && manifest.technique.is_none()
+            && manifest.style.is_none()
+            && manifest.source_revision == ROSVOT_COMMIT
             && manifest.g2p_profile.is_none()
-            && manifest.g2p_asset_sha256.is_none()
             && manifest.word_boundary_source.as_deref() == Some("timed_transcript")
             && manifest.rwbd_included == Some(false)
             && manifest.graphs == ["frame", "pitch"]
@@ -382,11 +535,11 @@ fn model_artifact(model_id: &str, configured: &Path) -> Result<ModelArtifact, St
     {
         return Err("advanced note model generation identity is incompatible".to_string());
     }
-    for (relative, expected) in &manifest.files {
+    for relative in manifest.files.keys() {
         if !safe_relative(relative) {
             return Err("advanced note manifest contains an unsafe path".to_string());
         }
-        require_file_hash(&directory.join(relative), expected)?;
+        require_regular_file(&directory.join(relative))?;
     }
     Ok(ModelArtifact {
         directory,
@@ -409,6 +562,10 @@ fn expected_file_names(model_id: &str) -> BTreeSet<&'static str> {
             "stars-stage-b-t256-n32.bin",
             "stars-stage-c-t256-n32.xml",
             "stars-stage-c-t256-n32.bin",
+            "stars-stage-d-t256-n32.xml",
+            "stars-stage-d-t256-n32.bin",
+            "stars-stage-e-t256-n32.xml",
+            "stars-stage-e-t256-n32.bin",
         ]);
     } else {
         names.extend([
@@ -421,18 +578,60 @@ fn expected_file_names(model_id: &str) -> BTreeSet<&'static str> {
     names
 }
 
-fn configured_core(device: DiagnosticDevice) -> Result<Core, String> {
-    let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
-    let selected = match device {
-        DiagnosticDevice::Cpu => DeviceType::CPU,
-        DiagnosticDevice::Gpu => DeviceType::GPU,
-    };
+fn selected_openvino_device(
+    core: &Core,
+    device: DiagnosticDevice,
+) -> Result<DeviceType<'static>, String> {
     let devices = core
         .available_devices()
         .map_err(|error| format!("could not enumerate OpenVINO devices: {error}"))?;
-    if !devices.contains(&selected) {
-        return Err("requested OpenVINO CPU/GPU device is unavailable".to_string());
+    if matches!(device, DiagnosticDevice::Cpu) {
+        return devices
+            .into_iter()
+            .find(|candidate| candidate.as_ref() == "CPU")
+            .map(|candidate| candidate.to_owned())
+            .ok_or_else(|| "requested OpenVINO CPU device is unavailable".to_string());
     }
+    let mut intel = Vec::new();
+    for candidate in devices
+        .into_iter()
+        .filter(|candidate| candidate.as_ref().starts_with("GPU"))
+    {
+        let full_name = core
+            .get_property(&candidate, &PropertyKey::DeviceFullName)
+            .map_err(|error| {
+                format!(
+                    "could not inspect OpenVINO device {}: {error}",
+                    candidate.as_ref()
+                )
+            })?;
+        if full_name.to_ascii_lowercase().contains("intel") {
+            intel.push((candidate.to_owned(), full_name));
+        }
+    }
+    unique_intel_gpu(intel)
+}
+
+fn unique_intel_gpu(
+    candidates: Vec<(DeviceType<'static>, String)>,
+) -> Result<DeviceType<'static>, String> {
+    match candidates.as_slice() {
+        [(selected, _)] => Ok(selected.to_owned()),
+        [] => Err("requested Intel OpenVINO GPU device is unavailable".to_string()),
+        candidates => Err(format!(
+            "multiple Intel OpenVINO GPUs are available ({}); explicit inventory selection is required",
+            candidates
+                .iter()
+                .map(|(device, name)| format!("{}={name}", device.as_ref()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+fn configured_core(device: DiagnosticDevice) -> Result<Core, String> {
+    let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
+    let selected = selected_openvino_device(&core, device)?;
     let mut properties = vec![
         (RwPropertyKey::HintInferencePrecision, "f32"),
         (RwPropertyKey::HintExecutionMode, "ACCURACY"),
@@ -446,7 +645,7 @@ fn configured_core(device: DiagnosticDevice) -> Result<Core, String> {
     core.set_properties(&selected, properties)
         .map_err(|error| format!("could not configure OpenVINO accuracy mode: {error}"))?;
     if matches!(device, DiagnosticDevice::Gpu) {
-        crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
+        crate::runtime::configure_low_impact_gpu_queue_for(&mut core, &selected)?;
     }
     Ok(core)
 }
@@ -480,14 +679,9 @@ fn compile(
                 .ok_or_else(|| "IR path is not UTF-8".to_string())?,
         )
         .map_err(|error| format!("could not read {name} OpenVINO IR: {error}"))?;
-    core.compile_model(
-        &graph,
-        match device {
-            DiagnosticDevice::Cpu => DeviceType::CPU,
-            DiagnosticDevice::Gpu => DeviceType::GPU,
-        },
-    )
-    .map_err(|error| format!("could not compile {name} OpenVINO IR: {error}"))
+    let selected = selected_openvino_device(core, device)?;
+    core.compile_model(&graph, selected)
+        .map_err(|error| format!("could not compile {name} OpenVINO IR: {error}"))
 }
 
 fn shared_inputs(
@@ -619,15 +813,53 @@ fn run_stars(
     shared: &SharedInputs,
     segments: &[Segment],
     device: DiagnosticDevice,
+    include_technique: bool,
     mut progress: impl FnMut(f32),
-) -> Result<NoteInference, String> {
+) -> Result<StarsInference, String> {
     let mut stage_a = compile(core, model, "stars-stage-a-t256-n32", device)?;
-    let mut stage_b = compile(core, model, "stars-stage-b-t256-n32", device)?;
-    let mut stage_c = compile(core, model, "stars-stage-c-t256-n32", device)?;
+    let conditioned_stage_device = stars_conditioned_stage_device(device);
+    if conditioned_stage_device != device {
+        configure_explicit_cpu_stages(core)?;
+    }
+    let mut stage_b = compile(
+        core,
+        model,
+        "stars-stage-b-t256-n32",
+        conditioned_stage_device,
+    )?;
+    let mut stage_c = compile(
+        core,
+        model,
+        "stars-stage-c-t256-n32",
+        conditioned_stage_device,
+    )?;
+    let technique_stage_device = stars_technique_stage_device(device);
+    let mut stage_d = include_technique
+        .then(|| {
+            compile(
+                core,
+                model,
+                "stars-stage-d-t256-n32",
+                technique_stage_device,
+            )
+        })
+        .transpose()?;
+    let mut stage_e = include_technique
+        .then(|| {
+            compile(
+                core,
+                model,
+                "stars-stage-e-t256-n32",
+                technique_stage_device,
+            )
+        })
+        .transpose()?;
     let g2p = ChineseG2pAsset::load_embedded()?;
     let mut all_logits = vec![0.0; shared.frames];
     let mut all_boundaries = Vec::new();
     let mut all_notes = Vec::new();
+    let mut all_techniques = include_technique.then(Vec::new);
+    let mut all_styles = include_technique.then(Vec::new);
     for (index, segment) in segments.iter().enumerate() {
         let mel = padded_rows(
             &shared.mel,
@@ -667,8 +899,8 @@ fn run_stars(
             &phonemes.phone_ids,
             &phonemes.phone_to_word,
         )?;
-        let mut mel2ph = alignment.mel_to_phoneme;
-        let mut mel2word = alignment.mel_to_word;
+        let mut mel2ph = alignment.mel_to_phoneme.clone();
+        let mut mel2word = alignment.mel_to_word.clone();
         mel2ph.resize(FRAME_BUCKET, 0);
         mel2word.resize(FRAME_BUCKET, 0);
         let b = infer_tensors(
@@ -709,10 +941,213 @@ fn run_stars(
             &ranges,
             &c[3],
         );
+        if include_technique {
+            let d = infer_tensors(
+                stage_d
+                    .as_mut()
+                    .ok_or_else(|| "STARS Stage D was not compiled".to_string())?,
+                vec![
+                    tensor_f32(&[1, FRAME_BUCKET as i64, HIDDEN as i64], &a[0])?,
+                    tensor_f32(&[1, FRAME_BUCKET as i64, HIDDEN as i64], &c[0])?,
+                    tensor_f32(&[1, FRAME_BUCKET as i64], &nonpadding)?,
+                ],
+                10,
+            )?;
+            validate_stage_d(&d)?;
+            let aggregates = aggregate_phoneme_technique(
+                &d[1],
+                &d[2],
+                &alignment.phoneme_intervals,
+                segment.valid,
+            )?;
+            let e = infer_tensors(
+                stage_e
+                    .as_mut()
+                    .ok_or_else(|| "STARS Stage E was not compiled".to_string())?,
+                vec![tensor_f32(
+                    &[1, PHONEME_BUCKET as i64, HIDDEN as i64],
+                    &aggregates,
+                )?],
+                1,
+            )?;
+            require_len(
+                &e[0],
+                PHONEME_BUCKET * TECHNIQUE_CLASSES,
+                "STARS phoneme technique",
+            )?;
+            append_techniques(
+                all_techniques
+                    .as_mut()
+                    .ok_or_else(|| "STARS technique collection is unavailable".to_string())?,
+                segment.start,
+                &alignment.phoneme_intervals,
+                &e[0],
+            );
+            all_styles
+                .as_mut()
+                .ok_or_else(|| "STARS style collection is unavailable".to_string())?
+                .push(global_style(segment, &d)?);
+        }
         progress((index + 1) as f32 / segments.len() as f32);
     }
     stitch_notes(&mut all_notes);
-    Ok((all_logits, all_boundaries, all_notes))
+    Ok(StarsInference {
+        boundary_logits: all_logits,
+        boundaries: all_boundaries,
+        notes: all_notes,
+        techniques: all_techniques,
+        styles: all_styles,
+    })
+}
+
+fn validate_stage_d(outputs: &[Vec<f32>]) -> Result<(), String> {
+    let expected = [
+        FRAME_BUCKET * HIDDEN,
+        FRAME_BUCKET * HIDDEN,
+        FRAME_BUCKET,
+        STYLE_TECHNIQUE_GROUP.len(),
+        STYLE_LANGUAGE.len(),
+        STYLE_GENDER.len(),
+        STYLE_EMOTION.len(),
+        STYLE_METHOD.len(),
+        STYLE_PACE.len(),
+        STYLE_RANGE.len(),
+    ];
+    if outputs.len() != expected.len() {
+        return Err("STARS Stage D output count is invalid".to_string());
+    }
+    for (values, expected) in outputs.iter().zip(expected) {
+        require_len(values, expected, "STARS Stage D")?;
+    }
+    Ok(())
+}
+
+fn aggregate_phoneme_technique(
+    weighted: &[f32],
+    attention: &[f32],
+    intervals: &[stars_viterbi::Interval],
+    valid_frames: usize,
+) -> Result<Vec<f32>, String> {
+    require_len(
+        weighted,
+        FRAME_BUCKET * HIDDEN,
+        "STARS technique weighted frame features",
+    )?;
+    require_len(attention, FRAME_BUCKET, "STARS technique frame attention")?;
+    if intervals.is_empty()
+        || intervals.len() > PHONEME_BUCKET
+        || intervals
+            .iter()
+            .any(|interval| interval.end <= interval.start || interval.end > valid_frames)
+    {
+        return Err("STARS phoneme intervals exceed the technique bucket".to_string());
+    }
+    let mut result = vec![0.0_f32; PHONEME_BUCKET * HIDDEN];
+    for (phoneme, interval) in intervals.iter().enumerate() {
+        let denominator = attention[interval.start..interval.end]
+            .iter()
+            .copied()
+            .sum::<f32>()
+            + 1e-5;
+        for frame in interval.start..interval.end {
+            for hidden in 0..HIDDEN {
+                result[phoneme * HIDDEN + hidden] += weighted[frame * HIDDEN + hidden];
+            }
+        }
+        for value in &mut result[phoneme * HIDDEN..(phoneme + 1) * HIDDEN] {
+            *value /= denominator;
+        }
+    }
+    Ok(result)
+}
+
+fn append_techniques(
+    target: &mut Vec<RawTechnique>,
+    segment_start: usize,
+    intervals: &[stars_viterbi::Interval],
+    logits: &[f32],
+) {
+    for (phoneme, interval) in intervals.iter().enumerate() {
+        let raw_logits =
+            logits[phoneme * TECHNIQUE_CLASSES..(phoneme + 1) * TECHNIQUE_CLASSES].to_vec();
+        let source_local_scores = raw_logits
+            .iter()
+            .map(|value| 1.0 / (1.0 + (-value).exp()))
+            .collect();
+        target.push(RawTechnique {
+            start_frame: segment_start + interval.start,
+            end_frame: segment_start + interval.end,
+            phoneme_id: interval.label,
+            raw_logits,
+            source_local_scores,
+        });
+    }
+}
+
+fn style_head(taxonomy: &[&'static str], logits: &[f32]) -> RawStyleHead {
+    RawStyleHead {
+        taxonomy: taxonomy.to_vec(),
+        raw_logits: logits.to_vec(),
+    }
+}
+
+fn global_style(segment: &Segment, outputs: &[Vec<f32>]) -> Result<RawGlobalStyle, String> {
+    validate_stage_d(outputs)?;
+    Ok(RawGlobalStyle {
+        start_frame: segment.start,
+        end_frame: segment.start + segment.valid,
+        heads: BTreeMap::from([
+            (
+                "technique_group",
+                style_head(&STYLE_TECHNIQUE_GROUP, &outputs[3]),
+            ),
+            ("language", style_head(&STYLE_LANGUAGE, &outputs[4])),
+            ("gender", style_head(&STYLE_GENDER, &outputs[5])),
+            ("emotion", style_head(&STYLE_EMOTION, &outputs[6])),
+            ("method", style_head(&STYLE_METHOD, &outputs[7])),
+            ("pace", style_head(&STYLE_PACE, &outputs[8])),
+            ("range", style_head(&STYLE_RANGE, &outputs[9])),
+        ]),
+    })
+}
+
+fn stars_conditioned_stage_device(requested: DiagnosticDevice) -> DiagnosticDevice {
+    match requested {
+        // The exact immutable conditioned Stage B and Stage C IRs both retain
+        // value-dependent tensors without finite upper bounds. OpenVINO GPU
+        // correctly rejects those graphs. Pin B/C to the packaged CPU plugin;
+        // annotation RMVPE and bounded Stages A/D/E stay on the requested GPU.
+        DiagnosticDevice::Gpu => DiagnosticDevice::Cpu,
+        DiagnosticDevice::Cpu => DiagnosticDevice::Cpu,
+    }
+}
+
+fn stars_technique_stage_device(requested: DiagnosticDevice) -> DiagnosticDevice {
+    // P1 D/E are fixed, finite tensor-only islands and therefore remain on the
+    // explicitly requested device. B/C alone retain their source-dynamic CPU
+    // placement in the staged GPU topology.
+    requested
+}
+
+fn configure_explicit_cpu_stages(core: &mut Core) -> Result<(), String> {
+    if !core
+        .available_devices()
+        .map_err(|error| format!("could not enumerate OpenVINO devices: {error}"))?
+        .contains(&DeviceType::CPU)
+    {
+        return Err("STARS staged GPU route requires the packaged OpenVINO CPU plugin".to_string());
+    }
+    core.set_properties(
+        &DeviceType::CPU,
+        [
+            (RwPropertyKey::HintInferencePrecision, "f32"),
+            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
+            (RwPropertyKey::HintPerformanceMode, "LATENCY"),
+            (RwPropertyKey::NumStreams, "1"),
+            (RwPropertyKey::HintNumRequests, "1"),
+        ],
+    )
+    .map_err(|error| format!("could not configure STARS CPU Stage B/C: {error}"))
 }
 
 fn run_rosvot(
@@ -1013,26 +1448,16 @@ fn atomic_json(
     result
 }
 
-fn require_file_hash(path: &Path, expected: &str) -> Result<(), String> {
+fn require_regular_file(path: &Path) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("advanced note generation file is unavailable: {error}"))?;
-    if !metadata.file_type().is_file()
-        || metadata.file_type().is_symlink()
-        || sha256(path)? != expected
-    {
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!(
-            "advanced note generation hash mismatch: {}",
+            "advanced note generation file is invalid: {}",
             path.display()
         ));
     }
     Ok(())
-}
-
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn safe_relative(value: &str) -> bool {
@@ -1042,13 +1467,6 @@ fn safe_relative(value: &str) -> bool {
         && path
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -1122,5 +1540,49 @@ mod tests {
         assert_eq!(decode_rmvpe_frame(&values), 0.0);
         values[100] = 0.5;
         assert!(decode_rmvpe_frame(&values) > 0.0);
+    }
+
+    #[test]
+    fn intel_gpu_selection_uses_inventory_identity_not_a_fixed_device_index() {
+        let selected = unique_intel_gpu(vec![(
+            DeviceType::from("GPU.7").to_owned(),
+            "Intel(R) Arc(TM) Test Graphics".to_string(),
+        )])
+        .unwrap();
+        assert_eq!(selected.as_ref(), "GPU.7");
+        assert!(unique_intel_gpu(vec![]).is_err());
+        assert!(
+            unique_intel_gpu(vec![
+                (
+                    DeviceType::from("GPU.2").to_owned(),
+                    "Intel GPU A".to_string(),
+                ),
+                (
+                    DeviceType::from("GPU.9").to_owned(),
+                    "Intel GPU B".to_string(),
+                ),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stars_gpu_route_pins_only_dynamic_conditioned_stages_to_cpu() {
+        assert_eq!(
+            stars_conditioned_stage_device(DiagnosticDevice::Gpu),
+            DiagnosticDevice::Cpu
+        );
+        assert_eq!(
+            stars_conditioned_stage_device(DiagnosticDevice::Cpu),
+            DiagnosticDevice::Cpu
+        );
+        assert_eq!(
+            stars_technique_stage_device(DiagnosticDevice::Gpu),
+            DiagnosticDevice::Gpu
+        );
+        assert_eq!(
+            stars_technique_stage_device(DiagnosticDevice::Cpu),
+            DiagnosticDevice::Cpu
+        );
     }
 }

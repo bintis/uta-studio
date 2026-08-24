@@ -43,6 +43,69 @@ fn real_analysis_cli_ready_validate_requirements_plan_and_error_contract() {
 }
 
 #[test]
+fn real_analysis_cli_projects_quantization_between_candidate_and_finalization() {
+    let mut request = analysis_request("quantization-contract-1");
+    request["audio_sources"][0]["role"] = serde_json::json!("lead_vocal");
+    request["analysis"]["enable_quantization"] = serde_json::json!(true);
+    request["requested_artifacts"]["vocal_chart"] = serde_json::json!(true);
+    request["musical_context"] = serde_json::json!({
+        "bpm":120.0,"time_signature":{"beats":4,"unit":4},
+        "quantization_grid":"sixteenth","authority":"hint"
+    });
+    let workflow =
+        crate::workflow::compile_workflow(&crate::workflow::default_workflow("quantized-song"))
+            .unwrap();
+    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] =
+        crate::workflow::workflow_execution_extension(&workflow).unwrap();
+    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
+    client
+        .validate(&request, "quantization-contract-1")
+        .unwrap();
+    let plan = client.plan(&request, "quantization-contract-1").unwrap();
+    let index = |capability: &str| {
+        plan.execution_nodes
+            .iter()
+            .position(|node| node.capability.as_str() == capability)
+            .unwrap()
+    };
+    assert!(index("fusion.candidate_graph") < index("rhythm.quantize"));
+    assert!(index("rhythm.quantize") < index("finalize.vocal_chart"));
+}
+
+#[test]
+fn real_analysis_cli_validates_and_projects_exact_compiled_workflow() {
+    let snapshot =
+        crate::workflow::compile_workflow(&crate::workflow::default_workflow("contract-song"))
+            .unwrap();
+    let extension = crate::workflow::workflow_execution_extension(&snapshot).unwrap();
+    let mut request = analysis_request("workflow-contract-1");
+    request["analysis"]["profile"] = serde_json::json!("balanced");
+    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] = extension;
+
+    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
+    client
+        .validate(&request, "workflow-contract-1")
+        .expect("backend must independently validate the Studio workflow DTO");
+    let plan = client.plan(&request, "workflow-contract-1").unwrap();
+    let request: AnalyzeRequestWireV1 = serde_json::from_value(request).unwrap();
+    crate::analysis_engine_adapter::validate_workflow_plan_identity(&request, &plan).unwrap();
+    let workflow = plan.workflow_execution.unwrap();
+    assert_eq!(workflow.identity.workflow_id, snapshot.workflow_id);
+    assert_eq!(
+        workflow.identity.workflow_revision,
+        snapshot.workflow_revision
+    );
+    assert_eq!(
+        workflow.identity.definition_digest,
+        snapshot.definition_digest
+    );
+    assert!(workflow.nodes.iter().any(|node| {
+        node.execution_policy == "disagreement_windows"
+            && node.execution_state == WorkflowNodeExecutionStateWireV1::Deferred
+    }));
+}
+
+#[test]
 fn real_runtime_cli_result_error_status_and_read_paths_are_non_mutating() {
     let root = std::env::temp_dir().join(format!(
         "uta-studio-runtime-read-contract-{}",

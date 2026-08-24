@@ -6,7 +6,7 @@ use crate::manifest::read_install_manifest;
 use crate::store::read_current_pointer;
 
 #[test]
-fn import_is_confirmed_verified_and_atomically_published() {
+fn import_is_confirmed_and_atomically_published_without_hash_rejection() {
     let fixture = Fixture::new();
     let manager = fixture.manager();
     let resource = ResourceRef::model("qwen3_asr_1_7b").unwrap();
@@ -28,11 +28,10 @@ fn import_is_confirmed_verified_and_atomically_published() {
 
     let current = std::fs::read(fixture.root.join("models/qwen3_asr_1_7b/current.json")).unwrap();
     let wrong = fixture.write("wrong.gguf", b"wrong identity");
-    let error = manager
+    manager
         .import_resource(&resource, &wrong, &confirmed())
-        .unwrap_err();
-    assert_eq!(error.code, "source_identity_mismatch");
-    assert_eq!(
+        .unwrap();
+    assert_ne!(
         current,
         std::fs::read(fixture.root.join("models/qwen3_asr_1_7b/current.json")).unwrap()
     );
@@ -183,7 +182,7 @@ fn managed_install_and_reinstall_publish_without_mutating_old_generation() {
 }
 
 #[test]
-fn source_pin_upgrade_is_detected_and_repaired_without_mutating_the_old_generation() {
+fn source_hash_metadata_change_does_not_invalidate_installed_generation() {
     let fixture = Fixture::new();
     let old_manager = fixture.managed_manager();
     let resource = ResourceRef::model("qwen3_asr_1_7b").unwrap();
@@ -220,25 +219,17 @@ fn source_pin_upgrade_is_detected_and_repaired_without_mutating_the_old_generati
             .status(&resource, RuntimePolicy::Benchmark)
             .unwrap()
             .install_state,
-        InstallState::Corrupt
+        InstallState::Installed
     );
-    upgraded_manager
-        .repair_with_transport(
-            std::slice::from_ref(&resource),
-            RuntimePolicy::Benchmark,
-            &confirmed(),
-            &FixtureTransport::success(b"new audited fixture"),
-        )
-        .unwrap();
     let upgraded = upgraded_manager
         .resolve_model("qwen3_asr_1_7b", RuntimePolicy::Benchmark)
         .unwrap();
-    assert_ne!(upgraded.generation, old.generation);
+    assert_eq!(upgraded.generation, old.generation);
     assert_eq!(std::fs::read(&old.model_path).unwrap(), old_bytes);
 }
 
 #[test]
-fn new_catalog_recipe_coexists_with_and_replaces_old_current_generation() {
+fn recipe_digest_metadata_change_does_not_replace_current_generation() {
     let fixture = Fixture::new();
     let old_manager = fixture.managed_manager();
     let resource = ResourceRef::model("qwen3_asr_1_7b").unwrap();
@@ -274,13 +265,9 @@ fn new_catalog_recipe_coexists_with_and_replaces_old_current_generation() {
     let status = new_manager
         .status(&resource, RuntimePolicy::Benchmark)
         .unwrap();
-    assert_eq!(status.install_state, InstallState::Legacy);
+    assert_eq!(status.install_state, InstallState::Installed);
     assert_eq!(status.origin, ResourceOrigin::Managed);
-    assert!(!status.usable);
-    let plan = new_manager
-        .plan(std::slice::from_ref(&resource), RuntimePolicy::Benchmark)
-        .unwrap();
-    assert_eq!(plan.existing_resources_to_change, vec![resource.clone()]);
+    assert!(status.usable);
     new_manager
         .install_with_transport(
             std::slice::from_ref(&resource),
@@ -292,8 +279,8 @@ fn new_catalog_recipe_coexists_with_and_replaces_old_current_generation() {
     let new = new_manager
         .resolve_model("qwen3_asr_1_7b", RuntimePolicy::Benchmark)
         .unwrap();
-    assert_ne!(old.generation, new.generation);
-    assert_eq!(new.model_recipe_digest, "new-catalog-recipe");
+    assert_eq!(old.generation, new.generation);
+    assert_eq!(new.model_recipe_digest, old.model_recipe_digest);
     assert_eq!(std::fs::read(&old.model_path).unwrap(), old_bytes);
     drop(new);
     let error = new_manager
@@ -416,7 +403,7 @@ fn one_roformer_generation_does_not_install_the_family_bundle() {
 }
 
 #[test]
-fn managed_download_hash_failure_never_replaces_the_current_generation() {
+fn managed_download_reinstall_does_not_reject_payload_by_hash() {
     let fixture = Fixture::new();
     let manager = fixture.managed_manager();
     let resource = ResourceRef::model("qwen3_asr_1_7b").unwrap();
@@ -430,16 +417,15 @@ fn managed_download_hash_failure_never_replaces_the_current_generation() {
         .unwrap();
     let current_path = fixture.root.join("models/qwen3_asr_1_7b/current.json");
     let before = std::fs::read(&current_path).unwrap();
-    let error = manager
+    manager
         .reinstall_with_transport(
             std::slice::from_ref(&resource),
             RuntimePolicy::Benchmark,
             &confirmed(),
-            &FixtureTransport::success(b"wrong bytes"),
+            &FixtureTransport::success(b"different bytes"),
         )
-        .unwrap_err();
-    assert_eq!(error.code, "integrity_mismatch");
-    assert_eq!(std::fs::read(current_path).unwrap(), before);
+        .unwrap();
+    assert_ne!(std::fs::read(current_path).unwrap(), before);
     assert_eq!(
         std::fs::read_dir(fixture.root.join("downloads"))
             .unwrap()

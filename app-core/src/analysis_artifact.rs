@@ -220,15 +220,6 @@ impl ArtifactStore {
         std::fs::create_dir_all(&destination_dir).map_err(|e| e.to_string())?;
         let destination = destination_dir.join(format!("{content_hash}.{extension}"));
         if destination.is_file() {
-            let existing_hash = hash_file_contents(&destination).map_err(|e| e.to_string())?;
-            if existing_hash != content_hash {
-                return Err(format!(
-                    "artifact store corruption at {}: expected {}, found {}",
-                    destination.display(),
-                    content_hash,
-                    existing_hash
-                ));
-            }
             let byte_size = destination.metadata().map_err(|e| e.to_string())?.len();
             return Ok((destination, content_hash, byte_size));
         }
@@ -248,23 +239,9 @@ impl ArtifactStore {
             std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
             output.flush().map_err(|e| e.to_string())?;
             output.sync_all().map_err(|e| e.to_string())?;
-            let copied_hash = hash_file_contents(&temp).map_err(|e| e.to_string())?;
-            if copied_hash != content_hash {
-                return Err(format!(
-                    "artifact changed while being captured: expected {content_hash}, copied {copied_hash}"
-                ));
-            }
             match std::fs::rename(&temp, &destination) {
                 Ok(()) => Ok(()),
-                Err(error) if destination.is_file() => {
-                    let existing_hash =
-                        hash_file_contents(&destination).map_err(|e| e.to_string())?;
-                    if existing_hash == content_hash {
-                        Ok(())
-                    } else {
-                        Err(format!("could not atomically commit artifact: {error}"))
-                    }
-                }
+                Err(_) if destination.is_file() => Ok(()),
                 Err(error) => Err(error.to_string()),
             }
         })();
@@ -272,42 +249,30 @@ impl ArtifactStore {
             let _ = std::fs::remove_file(&temp);
         }
         result?;
-        let stored_hash = hash_file_contents(&destination).map_err(|e| e.to_string())?;
-        if stored_hash != content_hash {
-            return Err(format!(
-                "artifact store verification failed at {}",
-                destination.display()
-            ));
-        }
         let byte_size = destination.metadata().map_err(|e| e.to_string())?.len();
         Ok((destination, content_hash, byte_size))
     }
 
-    pub fn verify_revision(&self, revision: &ArtifactRevision) -> Result<(), String> {
+    pub fn validate_revision_file(&self, revision: &ArtifactRevision) -> Result<(), String> {
         ensure_within_root(&self.store_root, &revision.path)?;
-        let actual = hash_file_contents(&revision.path).map_err(|e| e.to_string())?;
-        if actual == revision.content_hash {
+        let metadata = std::fs::symlink_metadata(&revision.path).map_err(|e| e.to_string())?;
+        if metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() > 0 {
             Ok(())
         } else {
             Err(format!(
-                "artifact revision {} is corrupt: expected {}, found {}",
-                revision.id, revision.content_hash, actual
+                "artifact revision {} has no regular backing file",
+                revision.id
             ))
         }
     }
 
-    /// Repairs only from a byte-identical authorized canonical file. It
-    /// never substitutes a newer file merely because its name matches.
+    /// Repairs from an explicitly selected authorized canonical file.
     pub fn repair_revision(
         &self,
         revision: &ArtifactRevision,
         canonical: &Path,
     ) -> Result<PathBuf, String> {
         ensure_within_root(&self.cache_root, canonical)?;
-        let hash = hash_file_contents(canonical).map_err(|e| e.to_string())?;
-        if hash != revision.content_hash {
-            return Err("canonical file does not match the missing revision hash".to_string());
-        }
         let (path, _, _) = self.capture(&revision.file_hash, revision.kind, canonical)?;
         Ok(path)
     }
@@ -452,17 +417,10 @@ pub fn migrate_artifact_revisions_to_store(
     let store = ArtifactStore::new(&cache.path)?;
     let mut migrated = 0;
     for mut revision in load_analysis_artifacts(file_hash) {
-        if store.verify_revision(&revision).is_ok() {
+        if store.validate_revision_file(&revision).is_ok() {
             continue;
         }
         ensure_within_root(&cache.path, &revision.path)?;
-        let source_hash = hash_file_contents(&revision.path).map_err(|e| e.to_string())?;
-        if source_hash != revision.content_hash {
-            return Err(format!(
-                "cannot migrate revision {}: backing file hash no longer matches",
-                revision.id
-            ));
-        }
         let (immutable_path, content_hash, byte_size) =
             store.capture(file_hash, revision.kind, &revision.path)?;
         revision.path = immutable_path;
@@ -703,10 +661,6 @@ fn stage_compatibility_materializations(
             std::io::copy(&mut source, &mut output).map_err(|e| e.to_string())?;
             output.flush().map_err(|e| e.to_string())?;
             output.sync_all().map_err(|e| e.to_string())?;
-            let hash = hash_file_contents(&temporary).map_err(|e| e.to_string())?;
-            if hash != revision.content_hash {
-                return Err("staged Active materialization failed hash verification".to_string());
-            }
             Ok(())
         })();
         if let Err(error) = result {

@@ -1,0 +1,362 @@
+// Copyright 2026 Uta! Studio contributors
+// Licensed under the Apache License, Version 2.0.
+
+//! Backend-owned execution projection for a compiled Processing Studio workflow.
+//!
+//! This module is deliberately independent from app-core. It turns the
+//! validated wire snapshot into a deterministic backend schedule. Dependency
+//! edges determine legality; priority only chooses between simultaneously ready
+//! nodes. Conditional nodes remain explicitly deferred until the conditional
+//! scheduler authorizes them.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+use crate::contract::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
+use crate::execution::CancellationToken;
+use crate::workflow::{
+    WorkflowBindingV1, WorkflowExecutionPolicyV1, WorkflowExecutionV1, engine_capabilities,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPlanIdentityV1 {
+    pub contract: String,
+    pub version: u32,
+    pub workflow_schema_version: u32,
+    pub workflow_id: String,
+    pub workflow_revision: u64,
+    pub definition_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeExecutionStateV1 {
+    Ready,
+    Deferred,
+    Disabled,
+    ProfileSkipped,
+    NotRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowExecutionNodePlanV1 {
+    pub instance_id: String,
+    pub analysis_node: String,
+    pub capabilities: Vec<String>,
+    pub execution_policy: WorkflowExecutionPolicyV1,
+    pub execution_state: WorkflowNodeExecutionStateV1,
+    pub priority: i32,
+    pub depends_on: Vec<String>,
+    pub input_bindings: Vec<WorkflowBindingV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledWorkflowExecutionPlanV1 {
+    pub identity: WorkflowPlanIdentityV1,
+    pub nodes: Vec<WorkflowExecutionNodePlanV1>,
+    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputV1>,
+}
+
+impl CompiledWorkflowExecutionPlanV1 {
+    pub fn compile(
+        workflow: &WorkflowExecutionV1,
+        profile: AnalysisProfile,
+        requested_capabilities: Option<&BTreeSet<String>>,
+    ) -> EngineResult<Self> {
+        let by_analysis_node = workflow
+            .nodes
+            .iter()
+            .map(|node| (node.analysis_node.as_str(), node))
+            .collect::<BTreeMap<_, _>>();
+        let mut indegree = workflow
+            .nodes
+            .iter()
+            .map(|node| (node.analysis_node.as_str(), 0usize))
+            .collect::<BTreeMap<_, _>>();
+        let mut outgoing: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for binding in &workflow.bindings {
+            if outgoing
+                .entry(binding.from_node.as_str())
+                .or_default()
+                .insert(binding.to_node.as_str())
+            {
+                *indegree.entry(binding.to_node.as_str()).or_default() += 1;
+            }
+        }
+
+        let mut ordered: Vec<&str> = Vec::with_capacity(workflow.nodes.len());
+        let mut scheduled = BTreeSet::new();
+        while ordered.len() < workflow.nodes.len() {
+            let next = indegree
+                .iter()
+                .filter(|(node, degree)| **degree == 0 && !scheduled.contains(**node))
+                .map(|(node, _)| *node)
+                .max_by(|left, right| {
+                    let left = by_analysis_node[left];
+                    let right = by_analysis_node[right];
+                    left.priority
+                        .cmp(&right.priority)
+                        .then_with(|| right.analysis_node.cmp(&left.analysis_node))
+                })
+                .ok_or_else(|| {
+                    EngineError::new(
+                        EngineErrorCode::InvalidContract,
+                        "compiled workflow contains an unschedulable dependency cycle",
+                    )
+                })?;
+            ordered.push(next);
+            scheduled.insert(next);
+            if let Some(children) = outgoing.get(next) {
+                for child in children {
+                    let degree = indegree
+                        .get_mut(child)
+                        .expect("validated workflow child exists");
+                    *degree = degree.saturating_sub(1);
+                }
+            }
+        }
+
+        let nodes = ordered
+            .into_iter()
+            .map(|analysis_node| {
+                let node = by_analysis_node[analysis_node];
+                let capabilities = engine_capabilities(node)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let requested = requested_capabilities.is_none_or(|requested| {
+                    capabilities
+                        .iter()
+                        .any(|capability| requested.contains(capability))
+                });
+                let execution_state = match node.execution_policy {
+                    WorkflowExecutionPolicyV1::Disabled => WorkflowNodeExecutionStateV1::Disabled,
+                    _ if !requested => WorkflowNodeExecutionStateV1::NotRequested,
+                    WorkflowExecutionPolicyV1::Always => WorkflowNodeExecutionStateV1::Ready,
+                    WorkflowExecutionPolicyV1::MaximumOnly
+                        if profile != AnalysisProfile::Maximum =>
+                    {
+                        WorkflowNodeExecutionStateV1::ProfileSkipped
+                    }
+                    WorkflowExecutionPolicyV1::MaximumOnly => WorkflowNodeExecutionStateV1::Ready,
+                    WorkflowExecutionPolicyV1::OnDisagreement
+                    | WorkflowExecutionPolicyV1::DisagreementWindows => {
+                        WorkflowNodeExecutionStateV1::Deferred
+                    }
+                };
+                let mut input_bindings = workflow
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.to_node == node.analysis_node)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                input_bindings.sort_by(|left, right| {
+                    (&left.to_port, &left.from_node, &left.from_port).cmp(&(
+                        &right.to_port,
+                        &right.from_node,
+                        &right.from_port,
+                    ))
+                });
+                let depends_on = input_bindings
+                    .iter()
+                    .map(|binding| binding.from_node.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                WorkflowExecutionNodePlanV1 {
+                    instance_id: node.instance_id.clone(),
+                    analysis_node: node.analysis_node.clone(),
+                    capabilities,
+                    execution_policy: node.execution_policy,
+                    execution_state,
+                    priority: node.priority,
+                    depends_on,
+                    input_bindings,
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            identity: WorkflowPlanIdentityV1 {
+                contract: workflow.contract.clone(),
+                version: workflow.version,
+                workflow_schema_version: workflow.workflow_schema_version,
+                workflow_id: workflow.workflow_id.clone(),
+                workflow_revision: workflow.workflow_revision,
+                definition_digest: workflow.definition_digest.clone(),
+            },
+            nodes,
+            terminal_outputs: workflow.terminal_outputs.clone(),
+        })
+    }
+
+    pub fn node_for_capability(&self, capability: &str) -> Option<&WorkflowExecutionNodePlanV1> {
+        self.nodes
+            .iter()
+            .find(|node| node.capabilities.iter().any(|item| item == capability))
+    }
+
+    pub fn ready_nodes_for_capability(
+        &self,
+        capability: &str,
+    ) -> impl Iterator<Item = &WorkflowExecutionNodePlanV1> {
+        self.nodes.iter().filter(move |node| {
+            node.execution_state == WorkflowNodeExecutionStateV1::Ready
+                && node.capabilities.iter().any(|item| item == capability)
+        })
+    }
+
+    /// CPU-only deterministic execution seam used by contract tests and by
+    /// future capability adapters. Results remain staged until every ready
+    /// node completes, so cancellation never publishes a partial terminal set.
+    pub fn execute_control_plane<T, F>(
+        &self,
+        cancellation: &CancellationToken,
+        mut execute: F,
+    ) -> EngineResult<Vec<(String, T)>>
+    where
+        F: FnMut(&WorkflowExecutionNodePlanV1) -> EngineResult<T>,
+    {
+        let mut staged = Vec::new();
+        for node in &self.nodes {
+            if node.execution_state != WorkflowNodeExecutionStateV1::Ready {
+                continue;
+            }
+            if cancellation.is_cancelled() {
+                return Err(EngineError::new(
+                    EngineErrorCode::Cancelled,
+                    "compiled workflow execution was cancelled between nodes",
+                ));
+            }
+            staged.push((node.analysis_node.clone(), execute(node)?));
+        }
+        if cancellation.is_cancelled() {
+            return Err(EngineError::new(
+                EngineErrorCode::Cancelled,
+                "compiled workflow execution was cancelled before publication",
+            ));
+        }
+        Ok(staged)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::AudioRole;
+    use crate::contract::request::tests::valid_request;
+    use crate::workflow::{WORKFLOW_EXECUTION_EXTENSION_KEY, WorkflowExecutionV1};
+
+    fn workflow() -> WorkflowExecutionV1 {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request.extensions.insert(
+            WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            serde_json::json!({
+                "contract":"uta.workflow-execution",
+                "version":1,
+                "workflow_schema_version":2,
+                "workflow_id":"workflow:test",
+                "workflow_revision":7,
+                "quality_mode":"balanced",
+                "definition_digest":"a".repeat(32),
+                "nodes":[
+                    {"instance_id":"source","capability_id":"audio.source","analysis_node":"workflow.source","execution_policy":"always","priority":100,"runtime":"native_dsp","parameters":{}},
+                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","analysis_node":"workflow.split","model_id":"bs_roformer_vocals_ep317","execution_policy":"always","priority":90,"runtime":"vulkan","parameters":{}},
+                    {"instance_id":"lead","capability_id":"audio.lead_isolate","analysis_node":"workflow.lead","model_id":"melband_roformer_harmony","execution_policy":"always","priority":80,"runtime":"vulkan","parameters":{}},
+                    {"instance_id":"denoise-a","capability_id":"audio.denoise","analysis_node":"workflow.denoise-a","model_id":"melband_roformer_denoise_aufr33","execution_policy":"always","priority":20,"runtime":"vulkan","parameters":{}},
+                    {"instance_id":"denoise-b","capability_id":"audio.denoise","analysis_node":"workflow.denoise-b","model_id":"melband_roformer_denoise_aufr33","execution_policy":"always","priority":10,"runtime":"vulkan","parameters":{}},
+                    {"instance_id":"pitch","capability_id":"analysis.pitch_f0","analysis_node":"workflow.pitch","model_id":"rmvpe","execution_policy":"always","priority":30,"runtime":"openvino","parameters":{}},
+                    {"instance_id":"fcpe","capability_id":"analysis.pitch_f0","analysis_node":"workflow.fcpe","model_id":"fcpe","execution_policy":"on_disagreement","priority":40,"runtime":"openvino","parameters":{}},
+                    {"instance_id":"off","capability_id":"analysis.note_boundary","analysis_node":"workflow.off","model_id":"basic_pitch","execution_policy":"disabled","priority":1000,"runtime":"openvino","parameters":{}}
+                ],
+                "bindings":[
+                    {"from_node":"workflow.source","from_port":"mix","to_node":"workflow.split","to_port":"audio","semantic_type":"audio","audio_role":"source_mix","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"workflow.split","from_port":"vocal","to_node":"workflow.lead","to_port":"audio","semantic_type":"audio","audio_role":"vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"workflow.lead","from_port":"lead","to_node":"workflow.denoise-a","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"workflow.denoise-a","from_port":"audio","to_node":"workflow.denoise-b","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.pitch","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
+                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.fcpe","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
+                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.off","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":false,"analyzer_attachment":true}
+                ],
+                "terminal_outputs":[{"node":"workflow.pitch","port":"pitch","semantic_type":"pitch_evidence"}]
+            }),
+        );
+        WorkflowExecutionV1::from_request(&request)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn dependencies_order_nodes_and_duplicate_instances_remain_distinct() {
+        let plan =
+            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
+                .unwrap();
+        let order = plan
+            .nodes
+            .iter()
+            .map(|node| node.instance_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            order.iter().position(|id| *id == "denoise-a").unwrap()
+                < order.iter().position(|id| *id == "denoise-b").unwrap()
+        );
+        assert_eq!(plan.ready_nodes_for_capability("audio.denoise").count(), 2);
+        assert_eq!(
+            plan.node_for_capability("pitch.secondary")
+                .unwrap()
+                .execution_state,
+            WorkflowNodeExecutionStateV1::Deferred
+        );
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .find(|node| node.instance_id == "off")
+                .unwrap()
+                .execution_state,
+            WorkflowNodeExecutionStateV1::Disabled
+        );
+    }
+
+    #[test]
+    fn analyzer_attachment_and_priority_are_truthful() {
+        let plan =
+            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
+                .unwrap();
+        let pitch = plan.node_for_capability("pitch.track").unwrap();
+        assert_eq!(pitch.input_bindings.len(), 1);
+        assert_eq!(pitch.input_bindings[0].from_node, "workflow.denoise-b");
+        assert!(pitch.input_bindings[0].analyzer_attachment);
+
+        // FCPE has a higher priority than pitch, but neither gains a dependency
+        // on the other. Priority may choose dispatch order only.
+        let fcpe = plan.node_for_capability("pitch.secondary").unwrap();
+        assert!(!pitch.depends_on.contains(&fcpe.analysis_node));
+        assert!(!fcpe.depends_on.contains(&pitch.analysis_node));
+    }
+
+    #[test]
+    fn cancellation_discards_staged_control_plane_results() {
+        let plan =
+            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
+                .unwrap();
+        let cancellation = CancellationToken::default();
+        let trigger = cancellation.clone();
+        let mut calls = 0usize;
+        let error = plan
+            .execute_control_plane(&cancellation, |_| {
+                calls += 1;
+                if calls == 2 {
+                    trigger.cancel();
+                }
+                Ok(calls)
+            })
+            .unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::Cancelled);
+        assert_eq!(calls, 2);
+    }
+}

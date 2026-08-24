@@ -126,7 +126,6 @@ pub fn run() {
         .add_systems(Update, poll_editor_load_job)
         .add_systems(Update, poll_lyrics_search_job)
         .add_systems(Update, poll_lyrics_waveform_job)
-        .add_systems(Update, sync_numeric_settings)
         .add_systems(Update, handle_tap_release)
         .add_systems(Update, sync_editor_word_input.after(rebuild_ui))
         .add_systems(Update, sync_editor_phrase_input)
@@ -282,7 +281,7 @@ pub(crate) fn asset_root() -> String {
 
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("desktop crate must remain inside the Uta Studio workspace")
+        .expect("desktop crate must remain inside the Uta! Studio workspace")
         .to_string_lossy()
         .into_owned()
 }
@@ -301,7 +300,7 @@ pub(crate) fn debug_window_size() -> Option<(u32, u32)> {
 
 pub(crate) fn studio_window(config: &AppConfig, dark: bool) -> Window {
     Window {
-        title: "Uta Studio".to_string(),
+        title: "Uta! Studio".to_string(),
         name: Some("com.uta-studio.desktop".to_string()),
         resolution: debug_window_size().unwrap_or((1280, 720)).into(),
         decorations: false,
@@ -356,7 +355,7 @@ pub(crate) fn setup(mut commands: Commands, resources: StartupUiResources) {
         target: "uta_studio::lifecycle",
         version = env!("CARGO_PKG_VERSION"),
         executable = %executable,
-        "Uta Studio session started"
+        "Uta! Studio session started"
     );
     let StartupUiResources {
         asset_server,
@@ -884,15 +883,6 @@ fn spawn_overlay_region(
             if let Some(revision) = session.pending_artifact_active.as_ref() {
                 spawn_artifact_active_confirmation(overlay, font.clone(), theme, revision);
             }
-            if let Some(file_hash) = session.pending_intermediate_capture.as_deref() {
-                spawn_intermediate_capture_confirmation(
-                    overlay,
-                    font.clone(),
-                    session.config,
-                    theme,
-                    file_hash,
-                );
-            }
             if let Some(file_hash) = session.pending_chart_replace.as_deref() {
                 spawn_chart_replace_confirmation(overlay, font.clone(), theme, file_hash);
             }
@@ -932,7 +922,7 @@ pub(crate) fn spawn_leave_confirmation(
 ) {
     let dirty = session.editor.as_ref().is_some_and(|editor| editor.dirty);
     let (title, action) = match destination {
-        PendingLeave::Exit => ("Close Uta Studio?", "Close"),
+        PendingLeave::Exit => ("Close Uta! Studio?", "Close"),
         PendingLeave::Back | PendingLeave::Home | PendingLeave::Documentation => {
             ("Leave the editor?", "Leave")
         }

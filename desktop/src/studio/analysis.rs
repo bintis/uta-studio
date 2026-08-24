@@ -2,6 +2,8 @@
 mod analysis_actions;
 #[path = "analysis_activity.rs"]
 mod analysis_activity;
+#[path = "analysis_preview.rs"]
+mod analysis_preview;
 #[path = "analysis_render/mod.rs"]
 mod analysis_render;
 
@@ -11,4 +13,5 @@ mod analysis_tests;
 
 pub(crate) use analysis_actions::*;
 pub(crate) use analysis_activity::*;
+pub(crate) use analysis_preview::*;
 pub(crate) use analysis_render::*;

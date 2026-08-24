@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-/// Uta Studio's native Roon-inspired color system.
+/// Uta! Studio's native Roon-inspired color system.
 #[derive(Clone, Resource)]
 pub struct StudioTheme {
     pub dark: bool,

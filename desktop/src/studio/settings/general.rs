@@ -36,7 +36,7 @@ pub(crate) fn spawn_settings(
                     BorderColor::all(theme.border.with_alpha(0.26)),
                 ))
                 .with_children(|nav| {
-                    spawn_text(nav, font.clone(), "UTA STUDIO", 8.0, theme.primary);
+                    spawn_text(nav, font.clone(), "UTA! STUDIO", 8.0, theme.primary);
                     spawn_text(nav, font.clone(), "Settings", 20.0, theme.foreground);
                     spawn_wrapped_text(
                         nav,
@@ -107,7 +107,7 @@ pub(crate) fn spawn_settings(
                         nav,
                         font.clone(),
                         theme,
-                        "About Uta Studio",
+                        "About Uta! Studio",
                         10.0,
                         UiAction::from(AppCommand::OpenAbout),
                     );
@@ -334,7 +334,7 @@ pub(crate) fn spawn_general_settings(
         icons,
         theme,
         "Interface language",
-        "Choose the language used by Uta Studio. System default follows the locale provided by your operating environment.",
+        "Choose the language used by Uta! Studio. System default follows the locale provided by your operating environment.",
         SettingsSelectKind::UiLanguage,
         session,
     );

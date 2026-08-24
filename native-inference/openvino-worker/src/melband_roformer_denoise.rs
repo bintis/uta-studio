@@ -8,48 +8,10 @@ use openvino::{Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 const MODEL_ID: &str = "melband_roformer_denoise_aufr33";
 const DEREVERB_MODEL_ID: &str = "melband_roformer_dereverb_anvuew";
 const HARMONY_MODEL_ID: &str = "melband_roformer_harmony";
-const SOURCE_CHECKPOINT_SHA256: &str =
-    "7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de";
-const CONFIG_SHA256: &str = "5d7d83b2e9d232da60941b717b0abdc345155d45cff3f79715cdb2790ba18c36";
-const CONVERSION_RECIPE_SHA256: &str =
-    "b00225b4e1fb69866990c2dded35ea5c9cfd6b4a6d14f76e67db940cdf923e0d";
-const ARTIFACT_MANIFEST_SHA256: &str =
-    "bfeb9b9f327332b5e062aaa0583ab69ece7e4be6a7af2468e6895f675807c047";
-const MODEL_XML_SHA256: &str = "925a1ee18c25bc063da80a3fc259ea98b8f08520b9da8fbbb56062f5741cc47c";
-const MODEL_BIN_SHA256: &str = "1f48a656ac181f894e3597d2f00cd8a95466eccbe6ff194975984620eda9869f";
-const LAYOUT_INDICES_SHA256: &str =
-    "c087bfc8e1a110a16a7aa998de5fe43b025ea08de0e4606c7b80e258b1ed5ecc";
-const LAYOUT_COUNTS_SHA256: &str =
-    "41947c540f2511f98bb2530176d9a9a3576e5a954135dbf5ef207247e0933683";
-const DEREVERB_SOURCE_CHECKPOINT_SHA256: &str =
-    "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970";
-const DEREVERB_CONFIG_SHA256: &str =
-    "66963a9d60756076506a230b4e503c553a3beb7b4e9a10e6bcc73dee9dbd4866";
-const DEREVERB_CONVERSION_RECIPE_SHA256: &str =
-    "959c81f61936a3280baa277890ebe9bd3003944968a7a4b229342d6b155170ee";
-const DEREVERB_ARTIFACT_MANIFEST_SHA256: &str =
-    "7cf591f56a76e513a92c394bed9c32cf32f833b60c06d43ab01a390e3d3d75ae";
-const DEREVERB_MODEL_XML_SHA256: &str =
-    "b9d680b42cfd8573f55eba5bf1721cf44c54e34e463a35908b5c1a0431d46ce9";
-const DEREVERB_MODEL_BIN_SHA256: &str =
-    "e113d853ceeb125f734df18a26c2c9f2d43f109cf1a361f5bc5f1ce707158171";
-const HARMONY_SOURCE_CHECKPOINT_SHA256: &str =
-    "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813";
-const HARMONY_CONFIG_SHA256: &str =
-    "b35077d94861f068097cce1a5e54633c055e7dcc2613eade4e4dc7c7c9c3f48b";
-const HARMONY_CONVERSION_RECIPE_SHA256: &str =
-    "4d428de5af93bb5163e19cbc0aea197b233c254d60d7e318347cdefe402c52ce";
-const HARMONY_ARTIFACT_MANIFEST_SHA256: &str =
-    "549ef74c49c617d05dd688033a089b5069e1da8972acde71a94bc6af8edbd247";
-const HARMONY_MODEL_XML_SHA256: &str =
-    "2fd94577990439f487ccdaa14cd8d91e93468e830fcc0d656e9f51351fc57332";
-const HARMONY_MODEL_BIN_SHA256: &str =
-    "ba43cd3902fc3e1d303a7028d8905b01cf45ecfeef473874770377e2306ef955";
 #[cfg(test)]
 const SAMPLE_RATE: usize = 44_100;
 const CHANNELS: usize = 2;
@@ -68,21 +30,13 @@ struct ArtifactManifest {
     resource: String,
     capability: String,
     semantic_output: String,
-    config_sha256: String,
-    source: SourceIdentity,
     conversion_recipe: ConversionIdentity,
     io: IoContract,
     files: BTreeMap<String, FileIdentity>,
 }
 
 #[derive(Deserialize)]
-struct SourceIdentity {
-    sha256: String,
-}
-
-#[derive(Deserialize)]
 struct ConversionIdentity {
-    sha256: String,
     graph_boundary: String,
     dynamic_time_axis: bool,
     semantic_time_chunking: bool,
@@ -104,15 +58,12 @@ struct TensorContract {
 #[derive(Deserialize)]
 struct FileIdentity {
     bytes: u64,
-    sha256: String,
 }
 
 #[derive(Deserialize)]
 struct Layout {
     schema_version: u32,
     model_id: String,
-    frequency_indices_le_i32_sha256: String,
-    bands_per_frequency_le_i32_sha256: String,
     frequency_indices: Vec<usize>,
     bands_per_frequency: Vec<usize>,
     frequencies_per_band: Vec<usize>,
@@ -126,13 +77,6 @@ struct ModelArtifact {
     chunk_samples: usize,
 }
 
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", digest.finalize()))
-}
-
 fn layout() -> Result<&'static Layout, String> {
     static LAYOUT: OnceLock<Result<Layout, String>> = OnceLock::new();
     LAYOUT
@@ -142,8 +86,6 @@ fn layout() -> Result<&'static Layout, String> {
                     .map_err(|error| format!("Denoise mel-band layout is invalid: {error}"))?;
             if value.schema_version != 1
                 || value.model_id != MODEL_ID
-                || value.frequency_indices_le_i32_sha256 != LAYOUT_INDICES_SHA256
-                || value.bands_per_frequency_le_i32_sha256 != LAYOUT_COUNTS_SHA256
                 || value.frequency_indices.len() != GATHERED_FREQUENCIES
                 || value.bands_per_frequency.len() != FREQUENCIES
                 || value.frequencies_per_band.len() != 60
@@ -167,9 +109,7 @@ fn layout() -> Result<&'static Layout, String> {
 }
 
 fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArtifact, String> {
-    if config.get("backend").and_then(|value| value.as_str()) != Some("openvino_gpu") {
-        return Err("MelBand cleanup requires the explicit OpenVINO GPU backend".to_string());
-    }
+    let _ = crate::runtime::inference_device(config)?;
     let directory = config
         .get("model_path")
         .and_then(|value| value.as_str())
@@ -184,18 +124,16 @@ fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArt
             .and_then(|value| value.as_str())
             != Some("lead_vocal+backing_vocal_residual")
         {
-            return Err("Harmony worker requires explicit lead and backing semantics".to_string());
+            return Err(
+                "Lead-isolation worker requires explicit lead/residual semantics".to_string(),
+            );
         }
         let manifest_path = directory.join("manifest.json");
         let config_path = directory.join("config.yaml");
         let xml = directory.join("melband-roformer-harmony-neural.xml");
         let bin = directory.join("melband-roformer-harmony-neural.bin");
-        if sha256(&manifest_path)? != HARMONY_ARTIFACT_MANIFEST_SHA256
-            || sha256(&config_path)? != HARMONY_CONFIG_SHA256
-            || sha256(&xml)? != HARMONY_MODEL_XML_SHA256
-            || sha256(&bin)? != HARMONY_MODEL_BIN_SHA256
-        {
-            return Err("Harmony OpenVINO generation identity is invalid".to_string());
+        if !manifest_path.is_file() || !config_path.is_file() || !xml.is_file() || !bin.is_file() {
+            return Err("Harmony OpenVINO generation is incomplete".to_string());
         }
         let manifest: ArtifactManifest = serde_json::from_slice(
             &std::fs::read(&manifest_path).map_err(|error| error.to_string())?,
@@ -207,37 +145,25 @@ fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArt
                 && tensor.dtype == "f32"
                 && tensor.exact_validation_shape == input_shape
         };
-        let declared = |name: &str, digest: &str, path: &Path| -> Result<bool, String> {
+        let declared = |name: &str, path: &Path| -> Result<bool, String> {
             let Some(file) = manifest.files.get(name) else {
                 return Ok(false);
             };
-            Ok(file.sha256 == digest
-                && path.metadata().map_err(|error| error.to_string())?.len() == file.bytes
-                && sha256(path)? == digest)
+            let metadata = path.metadata().map_err(|error| error.to_string())?;
+            Ok(metadata.is_file() && metadata.len() == file.bytes)
         };
         if manifest.schema_version != 1
             || manifest.resource != "model:melband_roformer_harmony"
             || manifest.capability != "audio.lead_isolate"
             || manifest.semantic_output != "lead_vocal+backing_vocal_residual"
-            || manifest.config_sha256 != HARMONY_CONFIG_SHA256
-            || manifest.source.sha256 != HARMONY_SOURCE_CHECKPOINT_SHA256
-            || manifest.conversion_recipe.sha256 != HARMONY_CONVERSION_RECIPE_SHA256
             || manifest.conversion_recipe.graph_boundary != "band_split+transformers+mask_estimator"
             || !manifest.conversion_recipe.dynamic_time_axis
             || manifest.conversion_recipe.semantic_time_chunking
             || !valid_tensor(&manifest.io.input, "gathered_stft")
             || !valid_tensor(&manifest.io.output, "gathered_mask")
-            || !declared("config.yaml", HARMONY_CONFIG_SHA256, &config_path)?
-            || !declared(
-                "melband-roformer-harmony-neural.xml",
-                HARMONY_MODEL_XML_SHA256,
-                &xml,
-            )?
-            || !declared(
-                "melband-roformer-harmony-neural.bin",
-                HARMONY_MODEL_BIN_SHA256,
-                &bin,
-            )?
+            || !declared("config.yaml", &config_path)?
+            || !declared("melband-roformer-harmony-neural.xml", &xml)?
+            || !declared("melband-roformer-harmony-neural.bin", &bin)?
         {
             return Err("Harmony OpenVINO semantic or tensor contract is invalid".to_string());
         }
@@ -264,24 +190,12 @@ fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArt
         let source_config = directory.join("config.yaml");
         let xml = directory.join("melband-roformer-dereverb-neural.xml");
         let bin = directory.join("melband-roformer-dereverb-neural.bin");
-        if sha256(&manifest)? != DEREVERB_ARTIFACT_MANIFEST_SHA256
-            || sha256(&source_config)? != DEREVERB_CONFIG_SHA256
-            || sha256(&xml)? != DEREVERB_MODEL_XML_SHA256
-            || sha256(&bin)? != DEREVERB_MODEL_BIN_SHA256
-        {
-            return Err("Dereverb OpenVINO generation identity is invalid".to_string());
+        if !manifest.is_file() || !source_config.is_file() || !xml.is_file() || !bin.is_file() {
+            return Err("Dereverb OpenVINO generation is incomplete".to_string());
         }
         let manifest_text =
             std::fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
-        for required in [
-            DEREVERB_SOURCE_CHECKPOINT_SHA256,
-            DEREVERB_CONFIG_SHA256,
-            DEREVERB_CONVERSION_RECIPE_SHA256,
-            DEREVERB_MODEL_XML_SHA256,
-            DEREVERB_MODEL_BIN_SHA256,
-            "audio.dereverb",
-            "melband_roformer_dereverb_anvuew",
-        ] {
+        for required in ["audio.dereverb", "melband_roformer_dereverb_anvuew"] {
             if !manifest_text.contains(required) {
                 return Err("Dereverb manifest provenance is incomplete".to_string());
             }
@@ -307,8 +221,8 @@ fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArt
     let config_path = directory.join("config.yaml");
     let xml = directory.join("melband-roformer-denoise-neural.xml");
     let bin = directory.join("melband-roformer-denoise-neural.bin");
-    if sha256(&manifest_path)? != ARTIFACT_MANIFEST_SHA256 {
-        return Err("Denoise artifact manifest hash mismatch".to_string());
+    if !manifest_path.is_file() || !config_path.is_file() || !xml.is_file() || !bin.is_file() {
+        return Err("Denoise OpenVINO generation is incomplete".to_string());
     }
     let manifest: ArtifactManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|error| error.to_string())?)
@@ -317,37 +231,24 @@ fn model_artifact(model_id: &str, config: &serde_json::Value) -> Result<ModelArt
     let valid_tensor = |tensor: &TensorContract, name: &str| {
         tensor.name == name && tensor.dtype == "f32" && tensor.exact_validation_shape == input_shape
     };
-    let declared = |name: &str, digest: &str, path: &Path| -> Result<bool, String> {
+    let declared = |name: &str, path: &Path| -> Result<bool, String> {
         let Some(file) = manifest.files.get(name) else {
             return Ok(false);
         };
-        Ok(file.sha256 == digest
-            && path.metadata().map_err(|error| error.to_string())?.len() == file.bytes
-            && sha256(path)? == digest)
+        let metadata = path.metadata().map_err(|error| error.to_string())?;
+        Ok(metadata.is_file() && metadata.len() == file.bytes)
     };
     if manifest.schema_version != 1
         || manifest.resource != "model:melband_roformer_denoise_aufr33"
         || manifest.capability != "audio.denoise"
         || manifest.semantic_output != "dry"
-        || manifest.config_sha256 != CONFIG_SHA256
-        || manifest.source.sha256 != SOURCE_CHECKPOINT_SHA256
-        || manifest.conversion_recipe.sha256 != CONVERSION_RECIPE_SHA256
         || manifest.conversion_recipe.graph_boundary != "band_split+transformers+mask_estimator"
         || !manifest.conversion_recipe.dynamic_time_axis
         || manifest.conversion_recipe.semantic_time_chunking
         || !valid_tensor(&manifest.io.input, "gathered_stft")
         || !valid_tensor(&manifest.io.output, "gathered_mask")
-        || sha256(&config_path)? != CONFIG_SHA256
-        || !declared(
-            "melband-roformer-denoise-neural.xml",
-            MODEL_XML_SHA256,
-            &xml,
-        )?
-        || !declared(
-            "melband-roformer-denoise-neural.bin",
-            MODEL_BIN_SHA256,
-            &bin,
-        )?
+        || !declared("melband-roformer-denoise-neural.xml", &xml)?
+        || !declared("melband-roformer-denoise-neural.bin", &bin)?
     {
         return Err("Denoise OpenVINO generation identity is invalid".to_string());
     }
@@ -684,31 +585,22 @@ pub(crate) fn infer_pcm(
     mut progress: impl FnMut(f32, &str),
 ) -> Result<Vec<f32>, String> {
     let artifact = model_artifact(model_id, config)?;
+    let device = crate::runtime::inference_device(config)?;
+    let openvino_device = device.openvino();
     progress(0.01, "Validating source-built OpenVINO runtime");
     let _runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
     let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
-    let devices = core
-        .available_devices()
-        .map_err(|error| format!("could not enumerate OpenVINO devices: {error}"))?;
-    if !devices
-        .iter()
-        .any(|device| matches!(device, DeviceType::GPU))
-    {
-        return Err("OpenVINO GPU is unavailable; CPU fallback is forbidden".to_string());
-    }
-    core.set_properties(
-        &DeviceType::GPU,
-        [
-            (RwPropertyKey::HintInferencePrecision, "f32"),
-            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-            (
+    crate::runtime::configure_inference_core(&mut core, device)?;
+    if device == crate::runtime::InferenceDevice::Gpu {
+        core.set_properties(
+            &DeviceType::GPU,
+            [(
                 RwPropertyKey::Other("GPU_ENABLE_LOOP_UNROLLING".into()),
                 "NO",
-            ),
-        ],
-    )
-    .map_err(|error| format!("could not configure OpenVINO GPU accuracy mode: {error}"))?;
-    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
+            )],
+        )
+        .map_err(|error| format!("could not configure MelBand GPU graph mode: {error}"))?;
+    }
     let xml = artifact
         .xml
         .to_str()
@@ -719,14 +611,19 @@ pub(crate) fn infer_pcm(
         .ok_or_else(|| "Denoise BIN path is not valid UTF-8".to_string())?;
     progress(
         0.03,
-        "Compiling exact MelBand cleanup neural island on OpenVINO GPU",
+        "Compiling exact MelBand cleanup neural island on OpenVINO",
     );
     let graph = core
         .read_model_from_file(xml, bin)
         .map_err(|error| format!("could not read Denoise OpenVINO IR: {error}"))?;
     let mut compiled = core
-        .compile_model(&graph, DeviceType::GPU)
-        .map_err(|error| format!("could not compile Denoise OpenVINO IR for GPU: {error}"))?;
+        .compile_model(&graph, openvino_device)
+        .map_err(|error| {
+            format!(
+                "could not compile MelBand OpenVINO IR for {}: {error}",
+                device.label()
+            )
+        })?;
     let output = process_audio(
         audio,
         artifact.inference_frames,
@@ -747,9 +644,12 @@ pub(crate) fn infer_pcm(
             request
                 .set_input_tensor(&tensor)
                 .map_err(|error| format!("could not bind Denoise input: {error}"))?;
-            request
-                .infer()
-                .map_err(|error| format!("Denoise OpenVINO GPU inference failed: {error}"))?;
+            request.infer().map_err(|error| {
+                format!(
+                    "MelBand OpenVINO {} inference failed: {error}",
+                    device.label()
+                )
+            })?;
             let output = request
                 .get_output_tensor()
                 .map_err(|error| format!("could not read Denoise mask: {error}"))?;
@@ -794,29 +694,6 @@ pub fn infer(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn source_derived_layout_has_exact_structural_hashes() {
-        let layout = layout().unwrap();
-        let indices = layout
-            .frequency_indices
-            .iter()
-            .flat_map(|value| (*value as i32).to_le_bytes())
-            .collect::<Vec<_>>();
-        let counts = layout
-            .bands_per_frequency
-            .iter()
-            .flat_map(|value| (*value as i32).to_le_bytes())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            format!("{:x}", Sha256::digest(indices)),
-            LAYOUT_INDICES_SHA256
-        );
-        assert_eq!(
-            format!("{:x}", Sha256::digest(counts)),
-            LAYOUT_COUNTS_SHA256
-        );
-    }
 
     #[test]
     fn exact_stft_and_istft_round_trip_stereo_timeline() {

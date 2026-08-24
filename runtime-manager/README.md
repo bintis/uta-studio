@@ -1,6 +1,6 @@
 # Uta Runtime Manager
 
-`uta-runtime-manager` owns Uta Studio's audited runtime/model catalog, managed
+`uta-runtime-manager` owns Uta! Studio's audited runtime/model catalog, managed
 store, integrity verification, policy-aware resolution, and generation leases.
 `uta-runtime` is its local process frontend.
 

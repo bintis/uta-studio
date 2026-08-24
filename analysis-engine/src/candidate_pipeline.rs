@@ -367,11 +367,12 @@ fn provenance(
             depends_on: Vec::new(),
         });
     }
-    result.extend(
-        advanced_notes
-            .iter()
-            .map(AdvancedNoteEvidenceV1::provenance),
-    );
+    for evidence in advanced_notes {
+        result.push(evidence.provenance());
+        if evidence.techniques.is_some() {
+            result.push(evidence.technique_provenance());
+        }
+    }
     result
 }
 

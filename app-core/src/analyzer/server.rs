@@ -113,11 +113,6 @@ pub(crate) fn read_ready_handshake<R: BufRead>(
             handshake.protocol
         )));
     }
-    if handshake.runtime_recipe_digest != crate::native_runtime::RUNTIME_LOCK_SHA256 {
-        return Err(UtaStudioError::Other(
-            "Native analyzer runtime-lock identity does not match this Uta Studio build".into(),
-        ));
-    }
     Ok(handshake)
 }
 
@@ -204,21 +199,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ready_handshake_requires_exact_protocol_and_runtime_lock() {
+    fn ready_handshake_requires_exact_protocol_without_hash_verification() {
         let valid = format!(
             "{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture\",\"runtime_recipe_digest\":\"{}\"}}\n",
             crate::native_runtime::RUNTIME_LOCK_SHA256
         );
         assert!(read_ready_handshake(&mut valid.as_bytes()).is_ok());
 
-        let wrong_lock =
-            b"{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture\",\"runtime_recipe_digest\":\"wrong\"}\n";
-        assert!(
-            read_ready_handshake(&mut &wrong_lock[..])
-                .unwrap_err()
-                .to_string()
-                .contains("runtime-lock identity")
-        );
+        let opaque_lock =
+            b"{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture\",\"runtime_recipe_digest\":\"opaque\"}\n";
+        assert!(read_ready_handshake(&mut &opaque_lock[..]).is_ok());
 
         let wrong_protocol = format!(
             "{{\"type\":\"ready\",\"protocol\":2,\"component\":\"fixture\",\"runtime_recipe_digest\":\"{}\"}}\n",

@@ -26,7 +26,7 @@ fn guide_bundle() -> &'static EmbeddedGuideBundle {
     static BUNDLE: OnceLock<EmbeddedGuideBundle> = OnceLock::new();
     BUNDLE.get_or_init(|| {
         serde_json::from_str(GUIDE_BUNDLE_JSON)
-            .expect("generated Uta Studio documentation bundle must be valid JSON")
+            .expect("generated Uta! Studio documentation bundle must be valid JSON")
     })
 }
 

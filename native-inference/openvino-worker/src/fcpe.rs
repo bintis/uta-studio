@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use openvino::{Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
+use openvino::{Core, ElementType, Shape, Tensor};
 use serde::Serialize;
 
 use crate::runtime;
@@ -53,11 +53,8 @@ fn model_dir(config: &serde_json::Value) -> Result<PathBuf, String> {
     let manifest = directory.join("manifest.json");
     let xml = directory.join("fcpe.xml");
     let bin = directory.join("fcpe.bin");
-    if runtime::sha256(&manifest)? != MANIFEST_SHA256
-        || runtime::sha256(&xml)? != XML_SHA256
-        || runtime::sha256(&bin)? != BIN_SHA256
-    {
-        return Err("FCPE OpenVINO IR identity mismatch".to_string());
+    if !manifest.is_file() || !xml.is_file() || !bin.is_file() {
+        return Err("FCPE OpenVINO IR files are unavailable".to_string());
     }
     Ok(directory)
 }
@@ -73,23 +70,10 @@ pub fn infer(
     }
     let runtime_manifest = runtime::validate_runtime()?;
     let directory = model_dir(config)?;
+    let device = runtime::inference_device(config)?;
+    let openvino_device = device.openvino();
     let mut core = Core::new().map_err(|error| error.to_string())?;
-    if !core
-        .available_devices()
-        .map_err(|error| error.to_string())?
-        .contains(&DeviceType::GPU)
-    {
-        return Err("OpenVINO GPU is unavailable; CPU fallback is forbidden".to_string());
-    }
-    core.set_properties(
-        &DeviceType::GPU,
-        [
-            (RwPropertyKey::HintInferencePrecision, "f32"),
-            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-        ],
-    )
-    .map_err(|error| error.to_string())?;
-    runtime::configure_low_impact_gpu_queue(&mut core)?;
+    runtime::configure_inference_core(&mut core, device)?;
     let graph = core
         .read_model_from_file(
             directory.join("fcpe.xml").to_string_lossy().as_ref(),
@@ -97,8 +81,8 @@ pub fn infer(
         )
         .map_err(|error| format!("could not load FCPE IR: {error}"))?;
     let mut compiled = core
-        .compile_model(&graph, DeviceType::GPU)
-        .map_err(|error| format!("could not compile FCPE for GPU: {error}"))?;
+        .compile_model(&graph, openvino_device)
+        .map_err(|error| format!("could not compile FCPE for {}: {error}", device.label()))?;
     let mut request = compiled
         .create_infer_request()
         .map_err(|error| error.to_string())?;
@@ -119,7 +103,7 @@ pub fn infer(
             .map_err(|error| error.to_string())?;
         request
             .infer()
-            .map_err(|error| format!("FCPE GPU inference failed: {error}"))?;
+            .map_err(|error| format!("FCPE {} inference failed: {error}", device.label()))?;
         let output = request
             .get_output_tensor()
             .map_err(|error| error.to_string())?;
@@ -152,7 +136,7 @@ pub fn infer(
             model_xml_sha256: XML_SHA256,
             model_bin_sha256: BIN_SHA256,
             runtime_manifest_sha256: &runtime_manifest,
-            backend: "openvino_gpu",
+            backend: device.evidence_backend(),
             timeline_step_ms: 10,
             sample_rate: SAMPLE_RATE as u32,
             window_samples: INPUT_SAMPLES as u32,

@@ -31,7 +31,7 @@ pub enum TranscriptSource {
     Lrc,
 }
 
-/// Uta Studio source media always lives on the local filesystem.
+/// Uta! Studio source media always lives on the local filesystem.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export)]

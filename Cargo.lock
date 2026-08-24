@@ -6168,6 +6168,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "uta-ggml-worker"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "uta-native-analyzer"
 version = "0.6.0"
 dependencies = [

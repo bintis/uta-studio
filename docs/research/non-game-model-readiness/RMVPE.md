@@ -10,7 +10,7 @@ Two upstream identities must be retained:
 1. `Dream-High/RMVPE` is the official PyTorch implementation of “RMVPE: A
    Robust Model for Vocal Pitch Estimation in Polyphonic Music”; its code
    repository is Apache-2.0 [M1][M2].
-2. Uta Studio's exact 361,688,443-byte `rmvpe.onnx` comes from
+2. Uta! Studio's exact 361,688,443-byte `rmvpe.onnx` comes from
    `lj1995/VoiceConversionWebUI`, researched repository revision
    `e6d0c1a17da07c33557852f9dfa2bd44cc75737d`, with hosting metadata SHA-256
    `5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`

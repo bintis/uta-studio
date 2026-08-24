@@ -7,7 +7,7 @@
       "on_no_validated_backend": "fail_closed",
       "cpu": "reference_diagnostics_or_manifest_pinned_product_islands",
       "python": "forbidden_production_fallback",
-      "notes": "All non-Qwen production models consume source-verified OpenVINO IR. CPU islands are product-valid only when an exact converted-artifact manifest pins explicit CPU/GPU topology; they are never fallback. Qwen components are the only pinned GGML/Vulkan exceptions."
+      "notes": "OpenVINO remains the pinned production route for non-Qwen models. Every existing IR route also exposes an explicit CPU-only diagnostic mode with no automatic fallback. Exact GGUF RoFormer artifacts may use the separate GGML/Vulkan experimental worker; that route is never selected implicitly. Qwen components keep their independent pinned GGML/Vulkan runtimes."
     },
     "pinned_exceptions": [
       "qwen3_asr_1_7b",
@@ -25,6 +25,17 @@
       "cpu_plugin": true,
       "script_bindings": false,
       "status": "validated_rmvpe_component"
+    },
+    "ggml_vulkan_v1": {
+      "runtime_repository": "ggerganov/ggml",
+      "runtime_commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
+      "build_recipe": "native-inference/ggml-worker/runtime-recipe.json",
+      "build_recipe_sha256": "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a",
+      "backend": "vulkan",
+      "model_format": "gguf",
+      "validation": "experimental",
+      "cpu_fallback": false,
+      "status": "explicit_non_production_candidate"
     },
     "qwen3_forced_aligner_0_6b": {
       "runtime_repository": "predict-woo/qwen3-asr.cpp",

@@ -2,7 +2,7 @@
 
 Date: 2026-08-22
 
-This pack records durable upstream provenance and technical contracts for Uta Studio's non-GAME model families. Machine-local inventory snapshots, execution logs and handoff journals are intentionally not retained.
+This pack records durable upstream provenance and technical contracts for Uta! Studio's non-GAME model families. Machine-local inventory snapshots, execution logs and handoff journals are intentionally not retained.
 
 ## Scope and authority
 

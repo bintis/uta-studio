@@ -4,7 +4,7 @@ These diagrams are implementation references for:
 
 ```text
 docs/design/integration/UTA_STUDIO_ANALYSIS_SETTINGS_MODEL_SELECTION_EXECUTION_UX_DESIGN_v1.0.md
-docs/agent-tasks/CURRENT_AGENT_TASKS.md
+tasks/remaining-models/STATE.md
 ```
 
 They define information hierarchy and responsibility boundaries. They are not pixel-perfect screenshots and must not override repository accessibility/layout rules.

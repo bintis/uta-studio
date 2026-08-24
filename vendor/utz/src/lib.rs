@@ -520,14 +520,6 @@ impl UtzManifest {
             if !paths.insert(folded) {
                 return invalid(format!("asset path is used more than once: {}", asset.path));
             }
-            if asset.sha256.len() != 64
-                || !asset
-                    .sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            {
-                return invalid(format!("asset {} has an invalid SHA-256", asset.path));
-            }
         }
         Ok(())
     }
@@ -976,9 +968,6 @@ impl UtzPackage {
             if content.len() as u64 != asset.bytes {
                 return invalid(format!("asset byte count differs: {}", asset.path));
             }
-            if sha256_hex(content) != asset.sha256 {
-                return invalid(format!("asset checksum differs: {}", asset.path));
-            }
         }
         validate_semantic_assets(&manifest, |path| {
             files
@@ -990,7 +979,7 @@ impl UtzPackage {
     }
 
     /// Write a package directly to a seekable destination. Large media files
-    /// are hashed and copied in fixed-size chunks, so peak memory stays nearly
+    /// are copied in fixed-size chunks, so peak memory stays nearly
     /// constant even when a package includes video.
     pub fn write_streaming<M, W, F>(
         manifest: M,

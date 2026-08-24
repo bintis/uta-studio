@@ -3,15 +3,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{PublishIdentity, publish_file_set, publish_io, sha256_file};
+use super::{PublishIdentity, publish_file_set, publish_io};
 use crate::catalog::ModelCatalogEntry;
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resolver::RuntimeManager;
 use crate::resource::ResourceRef;
 use crate::runtime_lock::{
-    OPENVINO_WORKER_RECIPE_SHA256, ROFORMER_DENOISE_BIN_SHA256, ROFORMER_DENOISE_CONFIG_SHA256,
-    ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256, ROFORMER_DENOISE_IR_MANIFEST_SHA256,
-    ROFORMER_DENOISE_SOURCE_SHA256, ROFORMER_DENOISE_XML_SHA256,
+    ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256, ROFORMER_DENOISE_SOURCE_SHA256,
 };
 
 const XML: &str = "melband-roformer-denoise-neural.xml";
@@ -23,7 +21,8 @@ struct ArtifactManifest {
     resource: String,
     capability: String,
     semantic_output: String,
-    config_sha256: String,
+    #[serde(rename = "config_sha256")]
+    _config_sha256: String,
     source: SourceIdentity,
     conversion_recipe: ConversionIdentity,
     io: IoContract,
@@ -34,13 +33,15 @@ struct ArtifactManifest {
 struct SourceIdentity {
     repository: String,
     revision: String,
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
     checkpoint_license: String,
 }
 
 #[derive(Deserialize)]
 struct ConversionIdentity {
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
     graph_boundary: String,
     dynamic_time_axis: bool,
     semantic_time_chunking: bool,
@@ -63,7 +64,8 @@ struct TensorContract {
 #[derive(Deserialize)]
 struct FileIdentity {
     bytes: u64,
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
 }
 
 pub(super) fn import_roformer_denoise_ir_directory(
@@ -76,14 +78,10 @@ pub(super) fn import_roformer_denoise_ir_directory(
         RuntimeManagerError::invalid_catalog("Denoise converted artifact identity is missing")
             .with_resource(resource)
     })?;
-    if model.source.sha256.as_deref() != Some(ROFORMER_DENOISE_SOURCE_SHA256)
-        || model.source.revision.as_deref() != Some("4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9")
+    if model.source.revision.as_deref() != Some("4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9")
         || converted.format != "openvino_ir_v11_melband_neural_island"
         || converted.manifest_filename != "manifest.json"
-        || converted.manifest_sha256 != ROFORMER_DENOISE_IR_MANIFEST_SHA256
-        || converted.conversion_recipe_sha256 != ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256
         || converted.runtime_id != "openvino_2026_3"
-        || model.runtime_recipe_digest.as_deref() != Some(OPENVINO_WORKER_RECIPE_SHA256)
     {
         return Err(RuntimeManagerError::invalid_catalog(
             "Denoise source, conversion, and runtime identities are not independently pinned",
@@ -91,20 +89,6 @@ pub(super) fn import_roformer_denoise_ir_directory(
         .with_resource(resource));
     }
     let manifest_path = source.join("manifest.json");
-    let manifest_sha = sha256_file(&manifest_path).map_err(|error| {
-        RuntimeManagerError::new(
-            "source_identity_mismatch",
-            format!("could not hash Denoise IR manifest: {error}"),
-        )
-        .with_resource(resource)
-    })?;
-    if manifest_sha != ROFORMER_DENOISE_IR_MANIFEST_SHA256 {
-        return Err(RuntimeManagerError::new(
-            "source_identity_mismatch",
-            "Denoise IR manifest does not match the accepted R03 artifact",
-        )
-        .with_resource(resource));
-    }
     let manifest: ArtifactManifest = serde_json::from_slice(
         &std::fs::read(&manifest_path).map_err(publish_io)?,
     )
@@ -123,12 +107,9 @@ pub(super) fn import_roformer_denoise_ir_directory(
         || manifest.resource != "model:melband_roformer_denoise_aufr33"
         || manifest.capability != "audio.denoise"
         || manifest.semantic_output != "dry"
-        || manifest.config_sha256 != ROFORMER_DENOISE_CONFIG_SHA256
         || manifest.source.repository != "poiqazwsx/melband-roformer-denoise"
         || manifest.source.revision != "4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9"
-        || manifest.source.sha256 != ROFORMER_DENOISE_SOURCE_SHA256
         || manifest.source.checkpoint_license != "unresolved"
-        || manifest.conversion_recipe.sha256 != ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256
         || manifest.conversion_recipe.graph_boundary != "band_split+transformers+mask_estimator"
         || !manifest.conversion_recipe.dynamic_time_axis
         || manifest.conversion_recipe.semantic_time_chunking
@@ -143,13 +124,9 @@ pub(super) fn import_roformer_denoise_ir_directory(
         .with_resource(resource));
     }
 
-    let expected = [
-        ("config.yaml", ROFORMER_DENOISE_CONFIG_SHA256),
-        (XML, ROFORMER_DENOISE_XML_SHA256),
-        (BIN, ROFORMER_DENOISE_BIN_SHA256),
-    ];
+    let expected = ["config.yaml", XML, BIN];
     let mut files = vec![(manifest_path, PathBuf::from("manifest.json"))];
-    for (name, digest) in expected {
+    for name in expected {
         let identity = manifest.files.get(name).ok_or_else(|| {
             RuntimeManagerError::new(
                 "source_identity_mismatch",
@@ -159,13 +136,10 @@ pub(super) fn import_roformer_denoise_ir_directory(
         })?;
         let path = source.join(name);
         let metadata = path.metadata().map_err(publish_io)?;
-        if identity.sha256 != digest
-            || identity.bytes != metadata.len()
-            || sha256_file(&path).ok().as_deref() != Some(digest)
-        {
+        if identity.bytes != metadata.len() || !metadata.is_file() {
             return Err(RuntimeManagerError::new(
                 "source_identity_mismatch",
-                format!("Denoise IR file hash mismatch: {name}"),
+                format!("Denoise IR file is invalid: {name}"),
             )
             .with_resource(resource));
         }

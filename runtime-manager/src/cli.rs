@@ -57,7 +57,7 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
     if matches!(command, "help" | "--help" | "-h") {
         println!(
             "uta-runtime <list|show|status|paths|plan|setup|install|import|verify|repair|reinstall|remove|doctor|smoke|resolve>\n\
-             resources are positional kind:id values; mutations require --yes"
+             resources are positional kind:id values; resolve accepts --backend; mutations require --yes"
         );
         return Ok(0);
     }
@@ -67,6 +67,10 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         .transpose()
         .map_err(CliError::from)?
         .unwrap_or_default();
+    let requested_backend = option(&arguments, "--backend")
+        .map(str::parse)
+        .transpose()
+        .map_err(CliError::from)?;
     let mut paths = option(&arguments, "--store")
         .map(PathBuf::from)
         .map_or_else(StorePaths::from_env, |root| {
@@ -81,7 +85,11 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         "list" => serde_json::to_value(manager.list(policy).map_err(CliError::from)?)?,
         "show" => {
             let resource = exactly_one_resource(&arguments)?;
-            serde_json::to_value(manager.show(&resource, policy).map_err(CliError::from)?)?
+            serde_json::to_value(
+                manager
+                    .show_with_backend(&resource, policy, requested_backend)
+                    .map_err(CliError::from)?,
+            )?
         }
         "status" => {
             let selected = resources(&arguments)?;
@@ -90,7 +98,9 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
             } else {
                 selected
                     .iter()
-                    .map(|resource| manager.status(resource, policy))
+                    .map(|resource| {
+                        manager.status_with_backend(resource, policy, requested_backend)
+                    })
                     .collect::<RuntimeManagerResult<Vec<_>>>()
                     .map_err(CliError::from)?
             };
@@ -208,7 +218,7 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
                 ));
             }
             let resolved = manager
-                .resolve_model(&resource.id, policy)
+                .resolve_model_with_backend(&resource.id, policy, requested_backend)
                 .map_err(CliError::from)?;
             serde_json::to_value(ResolvedIdentity {
                 resource,
@@ -330,6 +340,7 @@ fn option_takes_value(argument: &str) -> bool {
             | "--store"
             | "--legacy-models"
             | "--policy"
+            | "--backend"
             | "--requirements"
             | "--from"
             | "--source"

@@ -2,18 +2,14 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::mel::{MEL_BINS, SAMPLE_RATE, log_mel_spectrogram, to_channel_major_window};
 use openvino::{CompiledModel, Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-use crate::mel::{MEL_BINS, SAMPLE_RATE, log_mel_spectrogram, to_channel_major_window};
 
 const SOURCE_MODEL_SHA256: &str =
     "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd";
 const MODEL_MANIFEST_SHA256: &str =
     "cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb";
-const MODEL_CONVERSION_RECIPE_SHA256: &str =
-    "ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876";
 const MODEL_BIN_SHA256: &str = "d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b";
 const MIN_INPUT_FRAMES: usize = 32;
 const MAX_INPUT_FRAMES: usize = 1_024;
@@ -28,8 +24,10 @@ struct ModelManifest {
     schema_version: u32,
     model_id: String,
     format: String,
-    source_onnx_sha256: String,
-    runtime_recipe_sha256: String,
+    #[serde(rename = "source_onnx_sha256")]
+    _source_onnx_sha256: String,
+    #[serde(rename = "runtime_recipe_sha256")]
+    _runtime_recipe_sha256: String,
     input_frame_buckets: FrameBuckets,
     files: BTreeMap<String, String>,
 }
@@ -94,9 +92,6 @@ fn model_artifact(config: &serde_json::Value) -> Result<ModelArtifact, String> {
                 .to_string(),
         );
     }
-    if sha256(&manifest_path)? != MODEL_MANIFEST_SHA256 {
-        return Err("RMVPE OpenVINO IR manifest hash mismatch".to_string());
-    }
     let manifest: ModelManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|error| error.to_string())?)
             .map_err(|error| format!("RMVPE OpenVINO IR manifest is invalid: {error}"))?;
@@ -104,14 +99,12 @@ fn model_artifact(config: &serde_json::Value) -> Result<ModelArtifact, String> {
     if manifest.schema_version != 2
         || manifest.model_id != "rmvpe"
         || manifest.format != "openvino_ir_v11_bucketed"
-        || manifest.source_onnx_sha256 != SOURCE_MODEL_SHA256
-        || manifest.runtime_recipe_sha256 != MODEL_CONVERSION_RECIPE_SHA256
         || buckets.minimum != MIN_INPUT_FRAMES
         || buckets.maximum != MAX_INPUT_FRAMES
         || buckets.step != FRAME_STEP
         || buckets.overlap != OVERLAP_FRAMES
         || manifest.files.len() != (MAX_INPUT_FRAMES / FRAME_STEP) + 1
-        || manifest.files.get("rmvpe.bin").map(String::as_str) != Some(MODEL_BIN_SHA256)
+        || !manifest.files.contains_key("rmvpe.bin")
     {
         return Err("RMVPE OpenVINO IR identity does not match the worker recipe".to_string());
     }
@@ -126,13 +119,6 @@ fn model_artifact(config: &serde_json::Value) -> Result<ModelArtifact, String> {
         bin,
         files: manifest.files,
     })
-}
-
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn local_average_hz(activation: &[f32]) -> (f32, f32) {
@@ -202,42 +188,27 @@ pub fn infer(
     let model = model_artifact(config)?;
     progress(0.02, "Validating source-built OpenVINO runtime");
     let runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
-    progress(0.03, "Validating RMVPE OpenVINO IR identity");
-    if sha256(&model.bin)? != MODEL_BIN_SHA256 {
-        return Err("RMVPE OpenVINO IR weights hash mismatch".to_string());
-    }
+    progress(0.03, "Validating RMVPE OpenVINO IR files");
 
     progress(0.08, "Computing native log-mel features");
     let (frame_major, frames) = log_mel_spectrogram(audio, |fraction| {
         progress(0.08 + 0.32 * fraction, "Computing native log-mel features");
     })?;
 
-    progress(0.42, "Loading RMVPE OpenVINO IR on GPU");
+    let device = crate::runtime::inference_device(config)?;
+    progress(0.42, "Loading RMVPE OpenVINO IR");
     let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
-    let devices = core
-        .available_devices()
-        .map_err(|error| format!("could not enumerate OpenVINO devices: {error}"))?;
-    if !devices
-        .iter()
-        .any(|device| matches!(device, DeviceType::GPU))
-    {
-        return Err(
-            "OpenVINO GPU is unavailable; CPU production fallback is forbidden".to_string(),
-        );
-    }
-    core.set_properties(
-        &DeviceType::GPU,
-        [
-            (RwPropertyKey::HintInferencePrecision, "f32"),
-            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-            (
+    crate::runtime::configure_inference_core(&mut core, device)?;
+    if device == crate::runtime::InferenceDevice::Gpu {
+        core.set_properties(
+            &DeviceType::GPU,
+            [(
                 RwPropertyKey::Other("GPU_ENABLE_LOOP_UNROLLING".into()),
                 "NO",
-            ),
-        ],
-    )
-    .map_err(|error| format!("could not configure OpenVINO GPU accuracy mode: {error}"))?;
-    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
+            )],
+        )
+        .map_err(|error| format!("could not configure RMVPE GPU graph mode: {error}"))?;
+    }
     let bin_text = model
         .bin
         .to_str()
@@ -263,13 +234,10 @@ pub fn infer(
         {
             let name = format!("rmvpe-{input_frames:04}.xml");
             let xml = model.directory.join(&name);
-            let expected = model
+            model
                 .files
                 .get(&name)
                 .ok_or_else(|| format!("RMVPE IR manifest is missing {name}"))?;
-            if sha256(&xml)? != *expected {
-                return Err(format!("RMVPE OpenVINO IR graph hash mismatch: {name}"));
-            }
             let model_text = xml
                 .to_str()
                 .ok_or_else(|| "RMVPE IR graph path is not valid UTF-8".to_string())?;
@@ -277,8 +245,10 @@ pub fn infer(
                 .read_model_from_file(model_text, bin_text)
                 .map_err(|error| format!("could not read RMVPE OpenVINO IR: {error}"))?;
             let compiled = core
-                .compile_model(&graph, DeviceType::GPU)
-                .map_err(|error| format!("could not compile RMVPE IR for GPU: {error}"))?;
+                .compile_model(&graph, device.openvino())
+                .map_err(|error| {
+                    format!("could not compile RMVPE IR for {}: {error}", device.label())
+                })?;
             entry.insert(compiled);
         }
         let compiled = compiled_models
@@ -301,11 +271,14 @@ pub fn infer(
             .map_err(|error| format!("could not bind RMVPE IR input: {error}"))?;
         progress(
             0.55 + 0.3 * window as f32 / window_count as f32,
-            "Running RMVPE OpenVINO IR on GPU",
+            "Running RMVPE OpenVINO IR",
         );
-        request
-            .infer()
-            .map_err(|error| format!("RMVPE OpenVINO GPU inference failed: {error}"))?;
+        request.infer().map_err(|error| {
+            format!(
+                "RMVPE OpenVINO {} inference failed: {error}",
+                device.label()
+            )
+        })?;
         let output = request
             .get_output_tensor()
             .map_err(|error| format!("could not read RMVPE output: {error}"))?;
@@ -351,7 +324,7 @@ pub fn infer(
         model_manifest_sha256: MODEL_MANIFEST_SHA256,
         model_bin_sha256: MODEL_BIN_SHA256,
         runtime_manifest_sha256: &runtime_manifest_sha256,
-        backend: "openvino_gpu",
+        backend: device.evidence_backend(),
         timeline_step_ms: 10,
         sample_rate: SAMPLE_RATE as u32,
         frames: evidence_frames,

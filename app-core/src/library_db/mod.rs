@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::uta_studio_dir;
 
 mod analysis_artifacts;
+#[cfg(test)]
 mod analysis_capture_requests;
 mod analysis_history;
 mod analysis_node_artifacts;
@@ -40,6 +41,7 @@ pub use analysis_artifacts::{
     analysis_artifact_set_invalidated, analysis_artifact_set_pinned, analysis_artifact_upsert,
     analysis_artifacts_for_kind, analysis_artifacts_for_song, analysis_artifacts_publish_batch,
 };
+#[cfg(test)]
 pub use analysis_capture_requests::{
     AnalysisCaptureRequestRow, analysis_capture_request_delete, analysis_capture_request_get,
     analysis_capture_request_upsert,

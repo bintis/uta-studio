@@ -154,9 +154,9 @@ fn validate_canonical_source(locale: &str, source: &str) -> Result<(), String> {
     if source.trim().is_empty() {
         return Err(format!("{locale}: document is empty"));
     }
-    if !source.starts_with("# Uta Studio") {
+    if !source.starts_with("# Uta! Studio") {
         return Err(format!(
-            "{locale}: document must start with the Uta Studio title"
+            "{locale}: document must start with the Uta! Studio title"
         ));
     }
     if !source.contains("{{APP_VERSION}}") {
@@ -310,7 +310,7 @@ fn markdown_link_targets(source: &str) -> Vec<&str> {
 
 fn build_combined(documents: &[LocaleDocument], app_version: &str) -> String {
     let mut output = format!(
-        "# Uta Studio User Guide / 用户说明书 / ユーザーガイド\n\n**Applies to:** Uta Studio {app_version}\n**Document revision:** {DOCUMENT_REVISION}\n**License:** Documentation distributed with the GPL-3.0 project.\n\n[English](#english) · [简体中文](#简体中文) · [日本語](#日本語)\n\n> This file is generated from `docs/user-guide/*.md`. Do not edit it directly.\n"
+        "# Uta! Studio User Guide / 用户说明书 / ユーザーガイド\n\n**Applies to:** Uta! Studio {app_version}\n**Document revision:** {DOCUMENT_REVISION}\n**License:** Documentation distributed with the GPL-3.0 project.\n\n[English](#english) · [简体中文](#简体中文) · [日本語](#日本語)\n\n> This file is generated from `docs/user-guide/*.md`. Do not edit it directly.\n"
     );
     for document in documents {
         output.push_str("\n---\n\n## ");
@@ -319,7 +319,7 @@ fn build_combined(documents: &[LocaleDocument], app_version: &str) -> String {
         output.push_str(
             document
                 .source
-                .trim_start_matches("# Uta Studio User Guide")
+                .trim_start_matches("# Uta! Studio User Guide")
                 .trim(),
         );
         output.push('\n');
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn duplicate_anchors_are_rejected() {
-        let source = "# Uta Studio User Guide\n### 1. Same\ntext\n#### 1. Same\ntext\n";
+        let source = "# Uta! Studio User Guide\n### 1. Same\ntext\n#### 1. Same\ntext\n";
         assert!(parse_headings("en", source)
             .unwrap_err()
             .contains("duplicate"));
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn broken_links_are_rejected() {
-        let source = "# Uta Studio User Guide\n### 1. Start\n[bad](#missing)\n";
+        let source = "# Uta! Studio User Guide\n### 1. Start\n[bad](#missing)\n";
         let headings = parse_headings("en", source).unwrap();
         assert!(validate_links("en", source, &headings).is_err());
     }

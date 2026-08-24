@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 
 const MAX_EVIDENCE_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(test)]
 const QWEN_ASR_MODEL_SHA256: &str =
     "b7afe3674f653fa84f712ed2440353c6e7cf7f93697fef76b05a26538b24844e";
+const QWEN_ASR_LONG_INPUT_POLICY: &str = "qwen-asr-windowed-90s-v1";
+const QWEN_ASR_WINDOW_SECONDS: f64 = 90.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -84,15 +87,7 @@ impl TranscriptArtifactV1 {
                 }
             }
             TranscriptAuthorityV1::Generated => {
-                if self
-                    .model_sha256
-                    .as_deref()
-                    .is_none_or(|value| !is_sha256(value))
-                    || self
-                        .runtime_manifest_sha256
-                        .as_deref()
-                        .is_none_or(|value| !is_sha256(value))
-                {
+                if self.model_sha256.is_none() || self.runtime_manifest_sha256.is_none() {
                     return Err(invalid("generated transcript provenance is incomplete"));
                 }
             }
@@ -112,6 +107,27 @@ struct QwenTranscriptEvidenceV2 {
     language_contract: QwenLanguageContractV1,
     language: String,
     text: String,
+    #[serde(default)]
+    long_input: Option<QwenAsrLongInputV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QwenAsrLongInputV1 {
+    policy: String,
+    max_window_seconds: f64,
+    source_duration_seconds: f64,
+    segments: Vec<QwenAsrSegmentV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QwenAsrSegmentV1 {
+    index: usize,
+    audio_start_seconds: f64,
+    audio_end_seconds: f64,
+    detected_language: String,
+    text_characters: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,12 +144,14 @@ pub fn parse_qwen_transcript(path: &Path) -> EngineResult<TranscriptArtifactV1> 
         || raw.model_id != "qwen3_asr_1_7b"
         || raw.language.trim().is_empty()
         || raw.text.trim().is_empty()
-        || raw.model_sha256 != QWEN_ASR_MODEL_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
         || raw.backend != "vulkan"
         || raw.language_contract.version != 1
         || raw.language_contract.explicit_hint_policy != "reject"
         || raw.language_contract.evidence_source != "runtime_detected"
+        || raw
+            .long_input
+            .as_ref()
+            .is_some_and(|long_input| !valid_qwen_asr_windowing(long_input))
     {
         return Err(invalid(
             "Qwen transcript evidence identity or text is invalid",
@@ -170,15 +188,37 @@ fn read_bounded_json<T: serde::de::DeserializeOwned>(path: &Path) -> EngineResul
         .map_err(|error| invalid(format!("evidence JSON is invalid: {error}")))
 }
 
-fn valid_confidence(value: f32) -> bool {
-    value.is_finite() && (0.0..=1.0).contains(&value)
+fn valid_qwen_asr_windowing(value: &QwenAsrLongInputV1) -> bool {
+    if value.policy != QWEN_ASR_LONG_INPUT_POLICY
+        || !value.max_window_seconds.is_finite()
+        || (value.max_window_seconds - QWEN_ASR_WINDOW_SECONDS).abs() > f64::EPSILON
+        || !value.source_duration_seconds.is_finite()
+        || value.source_duration_seconds <= 0.0
+        || value.segments.is_empty()
+    {
+        return false;
+    }
+    let mut expected_start = 0.0;
+    for (index, segment) in value.segments.iter().enumerate() {
+        if segment.index != index
+            || !segment.audio_start_seconds.is_finite()
+            || !segment.audio_end_seconds.is_finite()
+            || (segment.audio_start_seconds - expected_start).abs() > 0.001
+            || segment.audio_end_seconds <= segment.audio_start_seconds
+            || segment.audio_end_seconds - segment.audio_start_seconds
+                > QWEN_ASR_WINDOW_SECONDS + 0.001
+            || segment.detected_language.trim().is_empty()
+            || segment.text_characters == 0
+        {
+            return false;
+        }
+        expected_start = segment.audio_end_seconds;
+    }
+    (expected_start - value.source_duration_seconds).abs() <= 0.001
 }
 
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn valid_confidence(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {
@@ -207,7 +247,18 @@ mod tests {
                     "evidence_source": "runtime_detected"
                 },
                 "language": "en",
-                "text": "sing now"
+                "text": "sing now",
+                "long_input": {
+                    "policy": QWEN_ASR_LONG_INPUT_POLICY,
+                    "max_window_seconds": QWEN_ASR_WINDOW_SECONDS,
+                    "source_duration_seconds": 100.0,
+                    "segments": [
+                        {"index":0,"audio_start_seconds":0.0,"audio_end_seconds":90.0,
+                         "detected_language":"en","text_characters":4},
+                        {"index":1,"audio_start_seconds":90.0,"audio_end_seconds":100.0,
+                         "detected_language":"en","text_characters":3}
+                    ]
+                }
             }))
             .unwrap(),
         )
@@ -218,5 +269,22 @@ mod tests {
         assert!(transcript.tokens.is_empty());
         assert_eq!(transcript.confidence, None);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn malformed_qwen_window_coverage_fails_closed() {
+        let value = QwenAsrLongInputV1 {
+            policy: QWEN_ASR_LONG_INPUT_POLICY.to_string(),
+            max_window_seconds: QWEN_ASR_WINDOW_SECONDS,
+            source_duration_seconds: 100.0,
+            segments: vec![QwenAsrSegmentV1 {
+                index: 0,
+                audio_start_seconds: 1.0,
+                audio_end_seconds: 90.0,
+                detected_language: "en".to_string(),
+                text_characters: 3,
+            }],
+        };
+        assert!(!valid_qwen_asr_windowing(&value));
     }
 }

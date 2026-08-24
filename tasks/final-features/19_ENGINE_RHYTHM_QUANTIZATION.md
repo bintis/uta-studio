@@ -1,5 +1,6 @@
 # 19 — Engine Rhythm Quantization Contract Closure
 
+**State:** `READY`
 **Precondition:** model cards 01–13 are terminal and no machine-level safety stop is active. Production-only model blockers do not block this CPU-only symbolic feature card.
 **Task class:** CPU-only deterministic symbolic processing
 **Owner:** Analysis Engine; Studio owns user-facing edit/export UX
@@ -8,7 +9,7 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+AGENTS.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/19_ENGINE_RHYTHM_QUANTIZATION.md
@@ -138,3 +139,27 @@ Set card 19's current state/result in `tasks/remaining-models/STATE.md`. Update 
 Include chosen contract, algorithm/version, Planner/result changes, CPU test matrix, and process-boundary scan.
 
 Stop after this card.
+
+## Current result
+
+**State:** `READY`
+
+Engine quantization remains in final-v1 as the real optional `rhythm.quantize` symbolic stage. The reconciled DAG and capability semantics are:
+
+```text
+fusion.candidate_graph: canonical_singing_track
+  -> rhythm.quantize: quantized_canonical_singing_track
+  -> finalize.vocal_chart: candidate_vocal_chart
+```
+
+The selected single-output contract keeps `SingingAnalysis` and all raw evidence unquantized while finalizing the optionally quantized track into the one Candidate VocalChart. Candidate chart provenance and `AnalysisDiagnosticsV1.quantization` both carry a typed `QuantizationReportV1`; app-core owns an independent wire DTO and rejects missing, unsolicited, mismatched, malformed or artifact-less reports across the `uta-analyze` process boundary. Authority remains `Candidate`; Authored revisions are never read or overwritten by this stage.
+
+The actual fingerprinted algorithm is `rhythm-grid-dp-v1`. BPM means quarter-note beats per minute; the Studio toggle supplies an explicit sixteenth-note grid only when a Full Candidate chart is requested and the song has a valid explicit BPM. The grid is anchored to canonical time zero. A deterministic dynamic program chooses globally ordered non-overlapping ranges, resolves equal-cost ties toward the earlier range, requires one full grid step of duration, preserves positive rests, confines all endpoints to the authorized source timeline, and refuses to move an endpoint across—or away from an exact—caller hard boundary. Missing BPM/grid, missing Candidate output, impossible hard constraints, source escape and arithmetic overflow fail explicitly without mutating the input.
+
+Only Candidate note start/end ranges can change. Global and note-local continuous F0, pitch bends, raw GAME/STARS/ROSVOT/alignment evidence, the unquantized SingingAnalysis, and disabled-stage timing remain unchanged. Quantization report identity and `QUANTIZATION_VERSION` participate in Candidate provenance, result provenance and the Engine execution fingerprint.
+
+Settings > Analysis now exposes the persisted `Quantize candidate notes` switch. It maps through Global/Song/Run resolution to `analysis.enable_quantization`; Plan Preview blocks a quantized request without explicit song BPM. The separate Editor Quantize command remains an explicit human operation on the Authored/working-copy document and does not duplicate the Engine implementation.
+
+CPU acceptance covers deterministic expected geometry, half-grid tie handling, minimum duration, positive rests, source bounds, hard-boundary refusal with no mutation, missing context, non-overlap, exact continuous-evidence preservation, raw SingingAnalysis versus quantized Candidate publication, Candidate authority, algorithm-version fingerprint changes, Planner ordering, capability semantic types, typed backend/local result validation and a real `uta-analyze` Preview/Plan round trip with the compiled Workflow extension. Analysis Engine and app-core suites pass, including stdout-pure CLI tests. Desktop compiles without a backend implementation dependency.
+
+The process-boundary scan is clean: app-core/desktop contain no `uta_analysis_engine::` or `uta_runtime_manager::` imports, neither Studio crate depends on those backend crates, Desktop has no direct `uta-analyze`/`uta-runtime` process launch, and machine-protocol tests remain stdout-pure. No model, GPU, Vulkan or OpenVINO execution was used for card 19.

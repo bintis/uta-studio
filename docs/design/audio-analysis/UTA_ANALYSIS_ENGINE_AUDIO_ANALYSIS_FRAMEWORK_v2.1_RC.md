@@ -67,7 +67,7 @@ UTA_SINGING_ENGINE_AUDIO_SEPARATION_PLAN_v1
              ┌────────────────┼─────────────────┐
              │                │                 │
              ▼                ▼                 ▼
-   Runtime Manager     Analysis Engine       Uta Studio
+   Runtime Manager     Analysis Engine       Uta! Studio
       models +             execution           product
       runtimes               plane            control
 ```
@@ -78,7 +78,7 @@ UTA_SINGING_ENGINE_AUDIO_SEPARATION_PLAN_v1
 UTZ
  ↑                  ↑
  │                  │
-Analysis Engine    Uta Studio
+Analysis Engine    Uta! Studio
 
 Runtime Manager
         ↑             ↑
@@ -198,7 +198,7 @@ Engine 不负责：
 
 ---
 
-## 2.4 Uta Studio
+## 2.4 Uta! Studio
 
 Studio 是 control plane + product layer。
 
@@ -262,7 +262,7 @@ whisper.cpp
 Vocal2Midi
 ```
 
-而不是第二个 Uta Studio。
+而不是第二个 Uta! Studio。
 
 典型场景：
 
@@ -3197,7 +3197,7 @@ representations.ultrastar
 
 # 89. Studio API 原则
 
-优先复用现有 Uta Studio app API：
+优先复用现有 Uta! Studio app API：
 
 ```text
 list_audio_models
@@ -3423,7 +3423,7 @@ performance error
 # 96. Studio integration flow
 
 ```text
-Uta Studio
+Uta! Studio
     |
     | choose inputs / artifacts / constraints
     v
@@ -3829,7 +3829,7 @@ memory pressure
 # 108. 最终架构摘要
 
 ```text
-                         UTA STUDIO
+                         UTA! STUDIO
                product / workflow / authoring
                             |
                             v
@@ -3867,7 +3867,7 @@ memory pressure
        VocalChart 0.3 PitchEvidence 0.3 SingingAnalysis/0.3
              |
              v
-                     Uta Studio Artifact DB
+                     Uta! Studio Artifact DB
              |
              v
                      Candidate / Editor
@@ -3900,7 +3900,7 @@ Runtime Manager
 Analysis Engine
 = audio inference + evidence fusion execution plane
 
-Uta Studio
+Uta! Studio
 = workflow + artifact + authoring product
 ```
 
@@ -3947,7 +3947,7 @@ Studio/Engine 的核心原则：
 
 > **Studio 管“跑什么与使用什么结果”，Engine 管“具体怎么跑”。**
 
-这一版可以作为后续 `uta-analysis-engine`、`uta-runtime-manager` 和 Uta Studio Processing Studio 集成的统一音频分析架构基线。
+这一版可以作为后续 `uta-analysis-engine`、`uta-runtime-manager` 和 Uta! Studio Processing Studio 集成的统一音频分析架构基线。
 
 
 ---
@@ -4008,7 +4008,7 @@ baseline valid
 
 ---
 
-# Appendix C — Uta Studio 工程约束
+# Appendix C — Uta! Studio 工程约束
 
 与 `bintis/uta-studio@native-inference` 集成时继续遵守：
 

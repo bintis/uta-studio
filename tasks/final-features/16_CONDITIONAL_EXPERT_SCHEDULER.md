@@ -1,5 +1,7 @@
 # 16 — Conditional Expert Scheduler
 
+**State:** READY
+
 **Precondition:** card 15 = `READY`
 **Task class:** CPU/control-plane scheduler closure; real model inference is forbidden in implementation acceptance
 **Owner:** Analysis Engine / uta-analyze
@@ -8,7 +10,7 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
+AGENTS.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/16_CONDITIONAL_EXPERT_SCHEDULER.md

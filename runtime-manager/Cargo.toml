@@ -4,7 +4,7 @@ version = "0.6.0"
 authors = ["bintis"]
 edition = "2024"
 license = "GPL-3.0-only"
-description = "Verified native model and runtime lifecycle manager for Uta Studio"
+description = "Verified native model and runtime lifecycle manager for Uta! Studio"
 
 [lib]
 name = "uta_runtime_manager"

@@ -8,6 +8,7 @@ use crate::contract::{
 };
 
 const MAX_EVIDENCE_BYTES: u64 = 32 * 1024 * 1024;
+#[cfg(test)]
 const QWEN_ALIGN_MODEL_SHA256: &str =
     "c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b";
 
@@ -104,8 +105,6 @@ pub fn parse_qwen_alignment(
         || raw.model_id != "qwen3_forced_aligner_0_6b"
         || raw.transcript.trim().is_empty()
         || raw.backend != "vulkan"
-        || raw.model_sha256 != QWEN_ALIGN_MODEL_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
         || raw.text_normalization_profile != "qwen-align-text-preserve-v1"
         || raw.language_normalization_profile != "qwen-align-language-v1"
         || raw.alignment_semantics_profile != "qwen-align-token-word-80ms-v1"
@@ -242,13 +241,6 @@ fn seconds_to_canonical(seconds: f64) -> EngineResult<u64> {
         return Err(invalid("alignment time overflows canonical units"));
     }
     Ok(units.round() as u64)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

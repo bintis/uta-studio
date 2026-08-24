@@ -1,8 +1,8 @@
-# Uta Studio User Guide
+# Uta! Studio User Guide
 
-### 1. Uta Studio 的用途
+### 1. Uta! Studio 的用途
 
-Uta Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。标准流程如下：
+Uta! Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。标准流程如下：
 
 1. 添加一个或多个监视文件夹。
 2. 扫描本地媒体并建立曲库索引。
@@ -11,7 +11,7 @@ Uta Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。�
 5. 保存人工制作的谱面。
 6. 导出 **Uta 包（`.utz`）**或 **UltraStar 1.1（`.txt`）**包。
 
-Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、谱面和临时制作数据会单独存放。
+Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览、谱面和临时制作数据会单独存放。
 
 ### 2. 安装
 
@@ -24,7 +24,7 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
-Uta Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
+Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
 
 #### Debian / Ubuntu
 
@@ -68,7 +68,7 @@ sha256sum -c uta-studio-{{APP_VERSION}}-linux-deb.sha256
 - **简体中文**
 - **日本語**
 
-选择会保存到 Uta Studio 配置中。开发者或便携启动脚本也可使用 `UTA_STUDIO_LOCALE=en`、`zh-CN` 或 `ja` 强制覆盖。
+选择会保存到 Uta! Studio 配置中。开发者或便携启动脚本也可使用 `UTA_STUDIO_LOCALE=en`、`zh-CN` 或 `ja` 强制覆盖。
 
 **界面语言与歌曲分析语言不同。** 界面语言只改变菜单和消息；歌曲分析语言控制单首歌曲的转录和对齐，应从该歌曲的语言操作中设置。
 
@@ -104,7 +104,7 @@ Music/
 4. 阅读确认信息，包括模型大小和许可证提示。
 5. 明确确认后才开始设置。
 
-Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，并复用已有模型文件。应用启动、打开页面或运行诊断都不会自动下载运行时或模型。
+Uta! Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，并复用已有模型文件。应用启动、打开页面或运行诊断都不会自动下载运行时或模型。
 
 #### 3.5 打开文档中心
 
@@ -141,19 +141,19 @@ Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，�
 
 ### 6. 分析流水线
 
-Uta Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分析产物**；可在歌曲分析图中查看修订、来源、真实节点进度和编辑器入口。详见[分析产物](guide:artifacts)。
+Uta! Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分析产物**；可在歌曲分析图中查看修订、来源、真实节点进度和编辑器入口。详见[分析产物](guide:artifacts)。
 
 #### 01 · 人声与 BGM 分离
 
 人声与 BGM 使用彼此独立的分离分支。每个分支单独选择分离模型，之后有两个按顺序执行的后处理槽；每个槽可设为关闭、降噪或降回声。BGM 产物直接进入谱面构建，人声产物则进入音高与歌词分析。
 
-可用选项包括经过验证的 RoFormer 人声/BGM、主唱/和声分离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
+可用选项包括经过验证的 RoFormer 人声/BGM 分离、主唱隔离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
 
 建议先使用“均衡”配置。节省内存配置可降低峰值占用；高质量配置通常更慢，并需要更多内存。
 
 #### 02 · 歌词转录
 
-FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
+FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta! Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
 
 更大的识别模型可能改善困难素材，但会增加内存和处理时间。请在**模型与运行环境**中确认所选模型已安装。
 
@@ -248,7 +248,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 默认设置/数据根目录为 `~/.uta-studio`，除非另行配置数据位置。迁移或重装前：
 
-1. 关闭 Uta Studio。
+1. 关闭 Uta! Studio。
 2. 备份 `~/.uta-studio` 或已配置的数据根目录。
 3. 备份已制作/导出的 `.utz` 与 UltraStar 包。
 4. 单独保留原始源媒体。
@@ -305,7 +305,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 分析使用已配置的本地运行环境执行。LRCLIB 搜索是明确触发的联网歌词查询。模型设置在确认后可能访问模型托管服务。
 
-Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
+Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
 
 ### 14. 文档中心
 
@@ -336,14 +336,14 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 ### 15. 分析产物
 
-分析会把生成文件写入 Uta Studio 缓存，而不会改写源媒体。产物工作台从歌曲的分析图中，按类型查看这些修订。
+分析会把生成文件写入 Uta! Studio 缓存，而不会改写源媒体。产物工作台从歌曲的分析图中，按类型查看这些修订。
 
 #### 修订、当前选用与固定
 
 - **修订**是一份不可变快照。之后的分析会生成新修订，而不会改写旧字节。
 - **当前选用（Active）**是后续操作默认使用的修订。
 - **固定（Pin）**保护修订不被删除和缓存清理。真正要删除时，需要先取消固定。
-- 早于精确绑定记录的旧运行会标为**旧版/未跟踪**。Uta Studio 不会根据文件名或修改时间编造缺失的来源。
+- 早于精确绑定记录的旧运行会标为**旧版/未跟踪**。Uta! Studio 不会根据文件名或修改时间编造缺失的来源。
 - 临时预处理音频标为**临时（Ephemeral）**，除非你明确捕获它。
 
 #### 查看节点输入输出
@@ -427,6 +427,6 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 ## Processing Studio 与证据复核
 
-从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；Vocal、BGM、Lead 与 Back/Harmony 保持独立 lane。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
+从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；当前可执行音频 lane 是 Vocal、BGM、Lead 与 Vocal Residual。Backing 和 Harmony 在未来音频分流能力实现前仍是制谱轨角色。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
 
 完成的运行会生成可替换的 Candidate revision。编辑器始终让人工音符保持最高视觉与语义优先级，并提供只读 Evidence 和 disagreement-first Review queue。接受建议会进入正常 undo 历史；重新分析绝不会静默替换 Authored revision。出现新 Candidate 时请使用 Compare 或 Merge。

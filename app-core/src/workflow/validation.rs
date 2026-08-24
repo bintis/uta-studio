@@ -14,6 +14,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowValidationCode {
+    UnsupportedVersion,
     DuplicateNode,
     UnknownCapability,
     DuplicateSingletonCapability,
@@ -301,6 +302,18 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> WorkflowValidationR
         .map(|capability| (capability.id.clone(), capability))
         .collect::<BTreeMap<_, _>>();
     let mut report = WorkflowValidationReport::default();
+    if definition.schema_version != super::WORKFLOW_SCHEMA_VERSION {
+        report.issues.push(issue(
+            WorkflowValidationCode::UnsupportedVersion,
+            format!(
+                "Workflow schema {} is unsupported; migrate to schema {}.",
+                definition.schema_version,
+                super::WORKFLOW_SCHEMA_VERSION
+            ),
+            None,
+            None,
+        ));
+    }
     let mut seen_nodes = BTreeSet::new();
     let mut seen_singletons = BTreeSet::new();
     let mut nodes = BTreeMap::new();

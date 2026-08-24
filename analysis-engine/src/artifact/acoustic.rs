@@ -41,7 +41,6 @@ impl AcousticEvidenceV1 {
             || self.sample_rate == 0
             || self.window_samples == 0
             || self.semantic_audio_role.trim().is_empty()
-            || !is_sha256(&self.decoded_audio_sha256)
             || self.frames.is_empty()
         {
             return Err(invalid("acoustic evidence identity or shape is invalid"));
@@ -66,13 +65,6 @@ impl AcousticEvidenceV1 {
         }
         Ok(())
     }
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

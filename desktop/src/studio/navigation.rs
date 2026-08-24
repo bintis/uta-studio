@@ -88,9 +88,6 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.analysis_log_viewer.is_some() {
         return Some(UiAction::from(AnalysisCommand::CloseAnalysisLogViewer));
     }
-    if session.node_config_dialog.is_some() {
-        return Some(UiAction::from(AnalysisCommand::CloseNodeConfigDialog));
-    }
     if session.artifact_diff.is_some() {
         return Some(UiAction::from(AnalysisCommand::CloseArtifactDiff));
     }
@@ -131,9 +128,6 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
         return Some(UiAction::from(
             AnalysisCommand::CancelSetActiveArtifactRevision,
         ));
-    }
-    if session.pending_intermediate_capture.is_some() {
-        return Some(UiAction::from(AnalysisCommand::CancelCaptureIntermediate));
     }
     if session.pending_chart_replace.is_some() {
         return Some(UiAction::from(AnalysisCommand::CancelReplaceAuthoredChart));

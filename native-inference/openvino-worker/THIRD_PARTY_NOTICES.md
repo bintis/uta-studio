@@ -1,6 +1,6 @@
-# Uta Studio OpenVINO worker — third-party notices
+# Uta! Studio OpenVINO worker — third-party notices
 
-The Uta Studio worker source is distributed under GPL-3.0-only. It interfaces
+The Uta! Studio worker source is distributed under GPL-3.0-only. It interfaces
 with the following independently licensed components:
 
 - **OpenVINO Runtime 2026.3.0**, its bundled OpenCL ICD loader, and

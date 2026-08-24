@@ -11,6 +11,8 @@ use crate::contract::{
 };
 use crate::execution::CancellationToken;
 
+use super::{SignalAccumulator, SignalMetrics};
+
 const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 const MAX_AUDIO_SECONDS: u64 = 4 * 60 * 60;
 const MAX_CHANNELS: u16 = 32;
@@ -49,6 +51,7 @@ struct SourceFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedAudio {
     pub facts: DecodedAudioFactsV1,
+    pub(crate) metrics: SignalMetrics,
 }
 
 pub fn decode_audio(ffmpeg: &Path, source_id: &str, source: &Path) -> EngineResult<DecodedAudio> {
@@ -170,7 +173,7 @@ pub(crate) fn decode_audio_with_cancellation(
     let max_samples = u64::from(source_facts.sample_rate)
         .saturating_mul(MAX_AUDIO_SECONDS)
         .saturating_mul(u64::from(source_facts.channels));
-    let mut peak = 0.0_f32;
+    let mut statistics = SignalAccumulator::new();
     let mut invalid_sample = false;
     let mut read_error = None;
     let mut was_cancelled = false;
@@ -198,7 +201,7 @@ pub(crate) fn decode_audio_with_cancellation(
                 invalid_sample = true;
                 break;
             }
-            peak = peak.max(value.abs());
+            statistics.push(value);
             sample_count += 1;
             if sample_count > max_samples {
                 break;
@@ -278,6 +281,7 @@ pub(crate) fn decode_audio_with_cancellation(
             )
         })?;
 
+    let metrics = statistics.finish();
     Ok(DecodedAudio {
         facts: DecodedAudioFactsV1 {
             source_id: source_id.to_string(),
@@ -287,9 +291,10 @@ pub(crate) fn decode_audio_with_cancellation(
             channels: source_facts.channels,
             frame_count,
             duration,
-            peak,
+            peak: metrics.peak,
             decode_backend: ffmpeg_identity(ffmpeg),
         },
+        metrics,
     })
 }
 

@@ -15,8 +15,9 @@ pub use acoustic::{
     AcousticEvidenceV1,
 };
 pub use advanced_notes::{
-    AdvancedNoteEvidenceV1, AdvancedRawNoteV1, DependencyIdentity, DependencyKind,
-    parse_advanced_note_evidence,
+    AdvancedNoteEvidenceV1, AdvancedRawGlobalStyleV1, AdvancedRawNoteV1, AdvancedRawStyleHeadV1,
+    AdvancedRawTechniqueV1, DependencyIdentity, DependencyKind, GlobalStyleIntervalV1,
+    TechniqueEvidenceV1, TechniqueIntervalV1, parse_advanced_note_evidence,
 };
 pub use alignment::{AlignmentArtifactV1, AlignmentItemV1, parse_qwen_alignment};
 pub use basic_pitch::{BasicPitchEvidenceV3, BasicPitchFrameV3, parse_basic_pitch_evidence};

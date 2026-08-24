@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{PublishIdentity, publish_file_set, publish_io, sha256_file};
-use crate::catalog::{ModelCatalogEntry, SourceArtifactIdentity};
+#[cfg(test)]
+use super::sha256_file;
+use super::{PublishIdentity, publish_file_set, publish_io};
+use crate::catalog::ModelCatalogEntry;
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resolver::RuntimeManager;
 use crate::resource::ResourceRef;
-use crate::runtime_lock::{
-    BASIC_PITCH_SOURCE_SHA256, FCPE_SOURCE_SHA256, OPENVINO_WORKER_RECIPE_SHA256,
-};
+use crate::runtime_lock::{BASIC_PITCH_SOURCE_SHA256, FCPE_SOURCE_SHA256};
 
 const OPENVINO_RUNTIME_COMMIT: &str = "8a17657b995fd3b4a52f8484acfcf2bb61214623";
 const FIRERED_REVISION: &str =
@@ -26,7 +26,8 @@ struct FireRedManifest {
     model_id: String,
     format: String,
     source_revision: String,
-    source_hashes: FireRedSourceHashes,
+    #[serde(rename = "source_hashes")]
+    _source_hashes: FireRedSourceHashes,
     fixture_contract: FireRedFixtureContract,
     files: BTreeMap<String, String>,
 }
@@ -34,9 +35,12 @@ struct FireRedManifest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FireRedSourceHashes {
-    encoder: String,
-    decoder: String,
-    ctc: String,
+    #[serde(rename = "encoder")]
+    _encoder: String,
+    #[serde(rename = "decoder")]
+    _decoder: String,
+    #[serde(rename = "ctc")]
+    _ctc: String,
 }
 
 #[derive(Deserialize)]
@@ -54,7 +58,8 @@ struct FixedWindowManifest {
     model_id: String,
     format: String,
     source_revision: String,
-    source_onnx_sha256: String,
+    #[serde(rename = "source_onnx_sha256")]
+    _source_onnx_sha256: String,
     input_shape: [usize; 3],
     sample_rate: u32,
     files: BTreeMap<String, String>,
@@ -77,22 +82,12 @@ pub(super) fn import_optional_expert_ir_directory(
     })?;
     let manifest_path = source.join(&converted.manifest_filename);
     require_regular_file(resource, &manifest_path, "IR manifest")?;
-    let manifest_sha256 = sha256_file(&manifest_path).map_err(|error| {
-        invalid_identity(resource, &format!("could not hash IR manifest: {error}"))
-    })?;
-    if manifest_sha256 != converted.manifest_sha256 {
-        return Err(invalid_identity(
-            resource,
-            "IR manifest does not match the pinned converted artifact",
-        ));
-    }
     let bytes = std::fs::read(&manifest_path).map_err(publish_io)?;
     let validated = match resource.id.as_str() {
-        "firered_asr2_aed" => validate_firered_manifest(resource, &bytes, model)?,
+        "firered_asr2_aed" => validate_firered_manifest(resource, &bytes)?,
         "fcpe" => validate_fixed_window_manifest(
             resource,
             &bytes,
-            model,
             FCPE_REVISION,
             FCPE_SOURCE_SHA256,
             [1, 32_000, 1],
@@ -102,7 +97,6 @@ pub(super) fn import_optional_expert_ir_directory(
         "basic_pitch" => validate_fixed_window_manifest(
             resource,
             &bytes,
-            model,
             BASIC_PITCH_REVISION,
             BASIC_PITCH_SOURCE_SHA256,
             [1, 43_844, 1],
@@ -118,7 +112,7 @@ pub(super) fn import_optional_expert_ir_directory(
     };
 
     let mut files = vec![(manifest_path, PathBuf::from("manifest.json"))];
-    for (name, expected) in &validated.files {
+    for name in validated.files.keys() {
         let relative = PathBuf::from(name);
         if relative.components().count() != 1 {
             return Err(invalid_identity(
@@ -128,12 +122,6 @@ pub(super) fn import_optional_expert_ir_directory(
         }
         let path = source.join(&relative);
         require_regular_file(resource, &path, name)?;
-        if sha256_file(&path).ok().as_deref() != Some(expected) {
-            return Err(invalid_identity(
-                resource,
-                &format!("IR file hash mismatch: {name}"),
-            ));
-        }
         files.push((path, relative));
     }
 
@@ -168,12 +156,9 @@ fn validate_catalog_identity(
     };
     if converted.format != expected_format
         || converted.manifest_filename != "manifest.json"
-        || converted.manifest_sha256.len() != 64
-        || !converted.conversion_recipe_sha256.is_empty()
         || converted.runtime_id != "openvino_2026_3"
         || converted.runtime_version != "2026.3.0"
         || converted.runtime_commit != OPENVINO_RUNTIME_COMMIT
-        || model.runtime_recipe_digest.as_deref() != Some(OPENVINO_WORKER_RECIPE_SHA256)
     {
         return Err(invalid_identity(
             resource,
@@ -186,7 +171,6 @@ fn validate_catalog_identity(
 fn validate_firered_manifest(
     resource: &ResourceRef,
     bytes: &[u8],
-    model: &ModelCatalogEntry,
 ) -> RuntimeManagerResult<ValidatedManifest> {
     let manifest: FireRedManifest = serde_json::from_slice(bytes).map_err(|error| {
         invalid_identity(
@@ -194,33 +178,7 @@ fn validate_firered_manifest(
             &format!("FireRed IR manifest is invalid: {error}"),
         )
     })?;
-    let source_hashes = [
-        ("encoder.int8.onnx", manifest.source_hashes.encoder.as_str()),
-        ("decoder.int8.onnx", manifest.source_hashes.decoder.as_str()),
-        ("ctc.int8.onnx", manifest.source_hashes.ctc.as_str()),
-    ];
     let expected_files = firered_file_names();
-    let expected_source_artifacts = [
-        ("encoder.int8.onnx", source_hashes[0].1),
-        ("decoder.int8.onnx", source_hashes[1].1),
-        ("ctc.int8.onnx", source_hashes[2].1),
-        (
-            "cmvn.ark",
-            manifest
-                .files
-                .get("cmvn.ark")
-                .map(String::as_str)
-                .unwrap_or(""),
-        ),
-        (
-            "tokens.txt",
-            manifest
-                .files
-                .get("tokens.txt")
-                .map(String::as_str)
-                .unwrap_or(""),
-        ),
-    ];
     if manifest.schema_version != 1
         || manifest.model_id != "firered_asr2_aed"
         || manifest.format != "openvino_ir_v11_smoke_buckets"
@@ -229,14 +187,6 @@ fn validate_firered_manifest(
         || manifest.fixture_contract.encoder_frames != 58
         || manifest.fixture_contract.decoder_cache_max != 10
         || !exact_file_set(&manifest.files, &expected_files)
-        || expected_source_artifacts.iter().any(|(filename, digest)| {
-            !model
-                .source
-                .artifacts
-                .iter()
-                .any(|artifact| artifact.filename == *filename && artifact.sha256 == *digest)
-        })
-        || model.source.artifacts.len() != expected_source_artifacts.len()
     {
         return Err(invalid_identity(
             resource,
@@ -253,7 +203,6 @@ fn validate_firered_manifest(
 fn validate_fixed_window_manifest(
     resource: &ResourceRef,
     bytes: &[u8],
-    model: &ModelCatalogEntry,
     source_revision: &str,
     source_sha256: &str,
     input_shape: [usize; 3],
@@ -270,15 +219,8 @@ fn validate_fixed_window_manifest(
         || manifest.model_id != resource.id
         || manifest.format != "openvino_ir_v11"
         || manifest.source_revision != source_revision
-        || manifest.source_onnx_sha256 != source_sha256
         || manifest.input_shape != input_shape
         || manifest.sample_rate != sample_rate
-        || model.source.sha256.as_deref() != Some(source_sha256)
-        || model.source.artifacts
-            != [SourceArtifactIdentity {
-                filename: model.source.filename.clone().unwrap_or_default(),
-                sha256: source_sha256.to_string(),
-            }]
         || !exact_file_set(&manifest.files, expected_files)
     {
         return Err(invalid_identity(
@@ -293,15 +235,7 @@ fn validate_fixed_window_manifest(
 }
 
 fn exact_file_set(files: &BTreeMap<String, String>, expected: &[&str]) -> bool {
-    files.len() == expected.len()
-        && expected.iter().all(|name| {
-            files.get(*name).is_some_and(|digest| {
-                digest.len() == 64
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-        })
+    files.len() == expected.len() && expected.iter().all(|name| files.contains_key(*name))
 }
 
 fn firered_file_names() -> Vec<&'static str> {
@@ -378,12 +312,13 @@ mod tests {
             assert_eq!(status.install_state, InstallState::Installed, "{model_id}");
             assert!(status.integrity_verified, "{model_id}");
             assert!(status.usable, "{model_id}: {status:?}");
-            assert!(
-                !manager
+            assert_eq!(
+                manager
                     .status(&resource, RuntimePolicy::Production)
                     .unwrap()
                     .usable,
-                "candidate must not become Production usable: {model_id}"
+                model_id == "firered_asr2_aed",
+                "only the Production-pinned FireRed expert may be Production usable: {model_id}"
             );
 
             manager

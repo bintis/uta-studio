@@ -1,5 +1,6 @@
 # 20 — Product E2E Feature Bubble
 
+**State:** `READY`
 **Precondition:** cards 15–19 and 20A = `READY`; Phase A model cards are terminal, while Production-only model blockers may remain explicitly retained
 **Task class:** validation-only integration smoke; fix nothing broad in this card
 **GPU:** OpenVINO live workloads only; Vulkan remains unauthorized
@@ -8,7 +9,6 @@
 
 ```text
 AGENTS.md
-docs/agent-tasks/MODEL_GPU_WORK_POLICY.md
 tasks/final-features/PROCESS_BOUNDARY_RULES.md
 tasks/final-features/STUDIO_BACKEND_UI_PARITY.md
 tasks/final-features/20_PRODUCT_E2E_FEATURE_BUBBLE.md
@@ -55,18 +55,18 @@ No direct Studio backend crate calls are allowed.
 
 ## Bubble B — semantic audio lanes
 
-Using short owned/authorized stereo fixtures and already-accepted model generations, run one workload at a time and verify the truthful available lane set:
+Using short owned/authorized stereo fixtures and already-accepted model generations, run one workload at a time and verify the truthful final-v1 lane set:
 
 ```text
 Original Mix
  -> vocal extraction
- -> Lead
- -> Backing
- -> Harmony
+ -> Lead + VocalResidual
 
 Original Mix
  -> Instrumental
 ```
+
+Verify independent BackingVocal/HarmonyVocal requests fail closed as future capability work, and that Processing Studio does not advertise `audio.lead_partition` as an executable Backing/Harmony splitter. Editor Backing/Harmony chart roles remain independent authoring semantics.
 
 Also exercise optional cleanup where product Workflow includes it:
 
@@ -142,7 +142,7 @@ Using Candidate/Authored product state from the scenario, verify Studio-owned ex
 
 ```text
 UTZ export
-manifest/hash validation
+manifest/file-set/byte-size/semantic validation
 UltraStar export
 chart parse
 exported audio decode
@@ -192,3 +192,21 @@ Set card 20's current state/result in `tasks/remaining-models/STATE.md`. Update 
 In the task handoff, summarize only the scenarios that materially passed/failed, whether any model boundary was live/replayed/fail-closed, process-boundary/cancellation/export conclusions, and the exact retained blocker if one remains.
 
 A fully green **feature-integration** phase requires this card = `READY`. `READY` here means Studio/CLI/Engine/Editor/export composition is truthful and executable, including labeled replay/fail-closed seams at separately blocked live model boundaries. It does not promote or erase any model `production_ready=no` result.
+
+## Current result
+
+**State:** `READY`
+
+Bubbles A–C passed. Real `uta-analyze` process tests preserved immutable Workflow snapshot/digest identity, legal reorder/duplicate behavior, invalid graph rejection, exact analyzer binding, disabled/conditional policies and scheduler-owned `MaximumOnly` / disagreement behavior. Semantic lane fixtures preserved timeline/audio typing, atomic FLAC publication and `LeadVocal + VocalResidual`; Backing/Harmony audio remained fail-closed. Candidate/Fusion fixtures preserved dependency correlation, unknown confidence, continuous F0, uncalibrated STARS evidence, read-only technique projection and symbolic-only quantization.
+
+The actual Runtime Manager inventory was read through machine JSON with all required model identities present. OpenVINO resources were installed/usable under their recorded states. The five RoFormer entries in the default inventory were legacy Vulkan resources and therefore unusable/fail-closed; no new Vulkan execution was authorized or attempted. Their live audio behavior was labeled replay from the accepted card-14 serial model bubble, while this card exercised product semantic topology with deterministic native fake-worker fixtures. No OpenVINO/Level Zero/GPU context or model inference was created.
+
+Bubble D's focused Editor/Workbench/UI actions passed. The initial Studio diagnostic found that a USDX song's indexed chart `.txt` path was incorrectly treated as original audio. The focused fix now resolves the authorized USDX-declared audio instead; an isolated non-audio-source regression test proves ffmpeg failure leaves source bytes untouched and removes partial preview output. The rerun loaded the real editor-ready chart and decoded/prepared all three Editor roles—instrumental, original and vocals—through ffmpeg and native GStreamer. Studio diagnostics now checks every exposed Editor audio role rather than accepting instrumental-only success.
+
+Bubble E used supplied canonical Chinese `月远` and English `sing now` requests. Both crossed the real standalone `uta-analyze validate` and `plan` process boundary and produced Candidate/Pitch/SingingAnalysis/Alignment plans without requesting ASR. This was a live control-plane scenario with the Qwen boundary avoided by canonical input, not a new live Qwen acceptance.
+
+Bubble F passed from real Authored product state: validated UTZ with two decoded audio assets, one vocal track, 587 notes and 34,791 pitch frames, plus a parsed UltraStar chart with two decoded audio assets. Existing-target overwrite refusal passed and the unique temporary export directory was removed.
+
+Bubble G passed focused fake-worker failure/cancellation coverage: protocol pollution and correlation failures fail closed, cancellation is request-correlated, stalled decoder/worker process groups are killed and reaped, staged Workflow and Candidate results are discarded, and pre-cancelled requests perform no resource or output work. The previously accepted card-18 OpenVINO cancellation evidence remains replay-only. No worker, ffmpeg, partial compatibility preview or temporary export remained.
+
+Focused app-core/Desktop/diagnostics checks, process-boundary scans, line limits and `git diff --check` pass. The 21B affected semantic-audio/Candidate rerun also passed through the complete Analysis Engine CPU/fake suite and complete app-core suite: exact Plan quality gates produced typed results, cleanup damage fell back explicitly, and required quality failures remained fail-closed. Card 21 revision 2 then reran the affected suites after removing hash-based acceptance/rejection while preserving path, regular-file, file-set, byte-size, schema, semantic, correlation and atomic-publication checks. Separately blocked model promotion states remain unchanged and do not weaken this feature-integration result.

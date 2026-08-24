@@ -168,6 +168,28 @@ fn finish_native_editor_load(
         editor.evidence = bundle;
         editor.review_index = (!editor.evidence.review_regions.is_empty()).then_some(0);
     }
+    if let Some(technique_revision) = revisions
+        .iter()
+        .filter(|revision| revision.kind == app_core::ArtifactKind::TechniqueEvidence)
+        .max_by_key(|revision| revision.created_at_ms)
+        && let Ok(bytes) = std::fs::read(&technique_revision.path)
+    {
+        let source = app_core::ArtifactRef {
+            file_hash: technique_revision.file_hash.clone(),
+            kind: technique_revision.kind,
+            revision_id: technique_revision.id.clone(),
+        };
+        if let Ok(track) = app_core::technique_evidence_track(&bytes, source) {
+            editor
+                .evidence
+                .tracks
+                .retain(|existing| existing.kind != app_core::EvidenceKind::StarsTechnique);
+            editor.evidence.tracks.push(track);
+            editor
+                .visible_evidence
+                .insert(app_core::EvidenceKind::StarsTechnique);
+        }
+    }
     let opened_chart = source.or_else(|| {
         revisions
             .iter()

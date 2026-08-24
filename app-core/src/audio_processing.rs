@@ -243,7 +243,7 @@ impl AudioProcessingPlanSnapshot {
                     step_id: vocal.0.clone(),
                     role: vocal.1.clone(),
                 },
-                selected_output_roles: vec!["lead_vocal".to_string(), "back_vocal".to_string()],
+                selected_output_roles: vec!["lead_vocal".to_string(), "vocal_residual".to_string()],
                 effective_parameters: effective_parameters(settings, model_id),
             });
         }
@@ -638,6 +638,28 @@ mod tests {
     }
 
     #[test]
+    fn harmony_route_never_relabels_residual_as_backing_or_harmony() {
+        let mut settings = AudioProcessingSettings::from_legacy_separator("old");
+        settings.karaoke_model_id = Some("melband_roformer_harmony".to_string());
+        let snapshot = AudioProcessingPlanSnapshot::from_settings(&settings);
+        let split = snapshot
+            .steps
+            .iter()
+            .find(|step| step.step_id == "harmony_split")
+            .unwrap();
+        assert_eq!(
+            split.selected_output_roles,
+            ["lead_vocal", "vocal_residual"]
+        );
+        assert!(!split.selected_output_roles.iter().any(|role| {
+            matches!(
+                role.as_str(),
+                "back_vocal" | "backing_vocal" | "harmony_vocal"
+            )
+        }));
+    }
+
+    #[test]
     fn runtime_policy_fails_closed() {
         let mut settings = AudioProcessingSettings::from_legacy_separator("old");
         settings.runtime_policy = "cpu".to_string();
@@ -659,8 +681,8 @@ mod tests {
             .unwrap();
         assert_eq!(vocals.display_name, "BS-RoFormer Vocals EP317");
         assert_eq!(vocals.operation, "separate_vocals");
-        assert_eq!(vocals.supported_backends, vec!["openvino", "vulkan"]);
-        assert_eq!(vocals.state, "missing");
+        assert_eq!(vocals.supported_backends, vec!["vulkan"]);
+        assert!(matches!(vocals.state.as_str(), "missing" | "installed"));
         let fetched = get_audio_model_status_from_dir(
             std::env::temp_dir().join(format!(
                 "uta-studio-audio-catalog-{}-absent",

@@ -225,25 +225,7 @@ pub(crate) fn calculate_key_shift(original_key: &str, offset: i32) -> (String, f
     (key, 2f64.powf(f64::from(offset) / 12.0))
 }
 
-pub(crate) fn run_analysis_action(file_hash: &str, action: impl FnOnce()) -> String {
-    let Some(song) = app_core::load_song_by_hash(file_hash).ok().flatten() else {
-        return format!("Song not found: {file_hash}");
-    };
-    if matches!(
-        song.transcript_source,
-        Some(app_core::TranscriptSource::Usdx)
-    ) {
-        return "This action is unavailable for imported USDX charts.".to_string();
-    }
-    action();
-    format!("Queued analysis for “{}”.", song.title)
-}
-
-/// Like `run_analysis_action`, for the Phase 4 executor's `Result`-returning
-/// entry points (`run_analysis_node`/`disable_analysis_node_for_run`), which
-/// can genuinely refuse a request (e.g. disabling an `AlwaysRequired` node)
-/// instead of always succeeding the way every legacy special-case function
-/// above does.
+/// Queue one exact Engine-backed action and surface request-specific blockers.
 pub(crate) fn run_analysis_action_checked(
     file_hash: &str,
     action: impl FnOnce() -> Result<(), String>,

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Explicit user/developer installation action. Existing model/runtime files are
-# verified and retained; this script never replaces them.
+# retained; this script never replaces them.
 readonly ASR_SHA256="b7afe3674f653fa84f712ed2440353c6e7cf7f93697fef76b05a26538b24844e"
 readonly ALIGN_SHA256="c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b"
 readonly GGML_COMMIT="8c63e70982c95ceb862e3a1073a2c1beef75d60a"
@@ -26,39 +26,32 @@ command -v "${patchelf_bin}" >/dev/null || {
     exit 2
 }
 
-verify_source() {
-    local path="$1" expected="$2"
+require_source() {
+    local path="$1"
     [[ -f "${path}" ]] || { printf 'source is unavailable: %s\n' "${path}" >&2; exit 2; }
-    local actual
-    actual="$(sha256sum "${path}" | cut -d' ' -f1)"
-    [[ "${actual}" == "${expected}" ]] || {
-        printf 'source hash mismatch for %s\n' "${path}" >&2
-        exit 3
-    }
 }
 
 copy_model() {
-    local source="$1" destination="$2" expected="$3"
+    local source="$1" destination="$2"
     if [[ -e "${destination}" ]]; then
-        verify_source "${destination}" "${expected}"
+        require_source "${destination}"
         return
     fi
     mkdir -p "$(dirname "${destination}")"
     local temporary="${destination}.tmp.$$"
     trap 'rm -f -- "${temporary}"' RETURN
     cp --reflink=auto "${source}" "${temporary}"
-    verify_source "${temporary}" "${expected}"
     sync "${temporary}"
     mv "${temporary}" "${destination}"
     trap - RETURN
 }
 
-verify_source "${UTA_QWEN_ASR_MODEL_SOURCE}" "${ASR_SHA256}"
-verify_source "${UTA_QWEN_ALIGN_MODEL_SOURCE}" "${ALIGN_SHA256}"
+require_source "${UTA_QWEN_ASR_MODEL_SOURCE}"
+require_source "${UTA_QWEN_ALIGN_MODEL_SOURCE}"
 copy_model "${UTA_QWEN_ASR_MODEL_SOURCE}" \
-    "${models_dir}/qwen-asr/Qwen3-ASR-1.7B-Q4_K_M.gguf" "${ASR_SHA256}"
+    "${models_dir}/qwen-asr/Qwen3-ASR-1.7B-Q4_K_M.gguf"
 copy_model "${UTA_QWEN_ALIGN_MODEL_SOURCE}" \
-    "${models_dir}/qwen-align/qwen3-forced-aligner-predict-woo-f16.gguf" "${ALIGN_SHA256}"
+    "${models_dir}/qwen-align/qwen3-forced-aligner-predict-woo-f16.gguf"
 
 align_install_manifest="${models_dir}/qwen-align/install-manifest.json"
 if [[ ! -e "${align_install_manifest}" ]]; then

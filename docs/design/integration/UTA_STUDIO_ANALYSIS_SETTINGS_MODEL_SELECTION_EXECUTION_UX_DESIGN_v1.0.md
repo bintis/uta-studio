@@ -1,10 +1,10 @@
-# Uta Studio — Analysis Settings, Model Selection & Execution Plan UX Design v1.0
+# Uta! Studio — Analysis Settings, Model Selection & Execution Plan UX Design v1.0
 
 **Status:** implementation design
 **Date:** 2026-08-22
 **Scope:** `Settings > Analysis`, song-level analysis profile, per-run overrides, Processing Studio, Plan Preview, and `Settings > Models & runtime`
 **Companion architecture:** `docs/design/integration/UTA_STUDIO_ANALYSIS_RUNTIME_INTEGRATION_DESIGN_v1.0.md`
-**Current task index:** `docs/agent-tasks/CURRENT_AGENT_TASKS.md`
+**Current closure index:** `tasks/remaining-models/STATE.md`
 **Studio/backend process contract:** `docs/design/architecture/UTA_STUDIO_CLI_PROCESS_BOUNDARY_v1.0.md`
 **Visual index:** `docs/design/ui/analysis-settings/README.md`
 
@@ -1502,7 +1502,7 @@ Status semantics must not depend solely on color.
 
 # 38. Mobile/narrow window behavior
 
-Uta Studio desktop may still be resized narrow.
+Uta! Studio desktop may still be resized narrow.
 
 Under narrow width:
 
@@ -1641,7 +1641,7 @@ desktop/src/studio/processing_studio/...
     capability topology editing
 ```
 
-Current work ownership is defined by `docs/agent-tasks/CURRENT_AGENT_TASKS.md` and the active task named there; any app-core/Desktop work must still preserve the process boundary defined here.
+Current work ownership and repository rules are defined by `AGENTS.md`, while `tasks/remaining-models/STATE.md` records closure state; any app-core/Desktop work must still preserve the process boundary defined here.
 
 Use existing repository module boundaries where they already serve these responsibilities; the names above are architectural suggestions, not a requirement to create every file verbatim.
 
@@ -1709,7 +1709,7 @@ Do not claim provider preferences affect real Engine v1 execution unless the ver
 
 The finished product should be explainable in four sentences:
 
-> **Analysis chooses how Uta Studio should analyze. Processing Studio chooses the allowed product-level processing topology. Models & runtime manages what is locally installed and production-usable. Plan Preview shows exactly what the Engine will actually run before the user commits.**
+> **Analysis chooses how Uta! Studio should analyze. Processing Studio chooses the allowed product-level processing topology. Models & runtime manages what is locally installed and production-usable. Plan Preview shows exactly what the Engine will actually run before the user commits.**
 
 And one safety rule:
 

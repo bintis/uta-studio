@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explicit source build. Uta Studio never invokes this during startup or
+# Explicit source build. Uta! Studio never invokes this during startup or
 # diagnostics. No model is downloaded by this script.
 readonly ASR_COMMIT="ea077b87590bcfb090d7c38c03ab36cd1c7005d3"
 readonly ALIGN_COMMIT="6dcc586e5073fd6e85ee5728e75f0903d6c70c6c"
 readonly GGML_COMMIT="8c63e70982c95ceb862e3a1073a2c1beef75d60a"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly PATCH_SHA256="2cebde6c9c1a0919f66dcfdc79542c01ef464a83721ea33356f8d15175bf0ecd"
 
 : "${UTA_QWEN_ASR_SOURCE_DIR:?set UTA_QWEN_ASR_SOURCE_DIR to the pinned transcribe.cpp checkout}"
 : "${UTA_QWEN_ALIGN_SOURCE_DIR:?set UTA_QWEN_ALIGN_SOURCE_DIR to the pinned qwen3-asr.cpp checkout}"
@@ -22,7 +21,7 @@ vulkan_lib="${UTA_QWEN_VULKAN_LIB_DIR}"
 build="${UTA_QWEN_BUILD_DIR:-${HOME}/.cache/uta-studio/native-runtime/build/qwen-native-v1}"
 jobs="${UTA_QWEN_BUILD_JOBS:-$(nproc)}"
 
-for tool in git g++ gcc patch sha256sum; do
+for tool in git g++ gcc patch; do
     command -v "${tool}" >/dev/null || { printf 'missing build tool: %s\n' "${tool}" >&2; exit 2; }
 done
 for spec in "${asr_source}:${ASR_COMMIT}" "${align_source}:${ALIGN_COMMIT}" "${ggml_source}:${GGML_COMMIT}"; do
@@ -33,8 +32,6 @@ for spec in "${asr_source}:${ASR_COMMIT}" "${align_source}:${ALIGN_COMMIT}" "${g
         exit 3
     }
 done
-actual_patch="$(sha256sum "${SCRIPT_DIR}/patches/predict-woo-require-gpu.patch" | cut -d' ' -f1)"
-[[ "${actual_patch}" == "${PATCH_SHA256}" ]] || { printf 'Qwen integration patch mismatch\n' >&2; exit 3; }
 for library in libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
     [[ -f "${ggml_lib}/${library}" ]] || { printf 'pinned GGML Vulkan build is incomplete\n' >&2; exit 2; }
 done

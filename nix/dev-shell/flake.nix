@@ -1,5 +1,5 @@
 {
-  description = "Uta Studio lightweight offline development shell";
+  description = "Uta! Studio lightweight offline development shell";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -55,6 +55,7 @@
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
               export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
               export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
+              export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
               export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"
               export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/debug/uta-qwen-align-worker"
               export WINIT_UNIX_BACKEND=wayland

@@ -32,7 +32,7 @@ The Engine defines semantic capabilities and artifact roles. Runtime recipes dec
 
 ## 2. Responsibility boundary
 
-### Uta Studio owns
+### Uta! Studio owns
 
 - user workflow;
 - source/artifact selection;
@@ -61,7 +61,7 @@ The Engine defines semantic capabilities and artifact roles. Runtime recipes dec
 
 - model/runtime catalog;
 - install/remove/repair;
-- SHA-256 verification;
+- SHA-256 provenance metadata without hash-based acceptance/rejection;
 - runtime recipe validation;
 - backend/device compatibility;
 - readiness and resolved model/runtime locations.

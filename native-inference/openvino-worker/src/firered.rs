@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use openvino::{Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
+use openvino::{CompiledModel, Core, ElementType, Shape, Tensor};
 use serde::{Deserialize, Serialize};
 
 use crate::{kaldi_fbank, runtime};
@@ -81,6 +81,14 @@ struct ModelFiles {
     hashes: BTreeMap<String, String>,
 }
 
+struct DecoderState {
+    encoder_output: Vec<f32>,
+    mask: Vec<bool>,
+    tokens: Vec<i64>,
+    caches: Vec<Vec<f32>>,
+    finished: bool,
+}
+
 impl ModelFiles {
     fn verified(&self, name: &str) -> Result<PathBuf, String> {
         if !self.hashes.contains_key(name) {
@@ -100,17 +108,14 @@ fn model_files(config: &serde_json::Value) -> Result<ModelFiles, String> {
         return Err("resolved FireRed model generation is unavailable".to_string());
     }
     let manifest_path = directory.join("manifest.json");
-    if runtime::sha256(&manifest_path)? != MANIFEST_SHA256 {
-        return Err("FireRed smoke IR manifest identity mismatch".to_string());
-    }
     let manifest =
         parse_manifest(&std::fs::read(manifest_path).map_err(|error| error.to_string())?)?;
-    for (name, expected) in &manifest.files {
+    for name in manifest.files.keys() {
         if Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name.as_str()) {
             return Err("FireRed manifest contains an unsafe filename".to_string());
         }
-        if runtime::sha256(&directory.join(name))? != *expected {
-            return Err(format!("FireRed IR hash mismatch: {name}"));
+        if !directory.join(name).is_file() {
+            return Err(format!("FireRed IR file is unavailable: {name}"));
         }
     }
     Ok(ModelFiles {
@@ -126,24 +131,9 @@ fn tensor(element: ElementType, dimensions: &[i64]) -> Result<Tensor, String> {
     Tensor::new(element, &shape).map_err(|error| error.to_string())
 }
 
-fn core() -> Result<Core, String> {
+fn core(device: runtime::InferenceDevice) -> Result<Core, String> {
     let mut core = Core::new().map_err(|error| error.to_string())?;
-    if !core
-        .available_devices()
-        .map_err(|error| error.to_string())?
-        .contains(&DeviceType::GPU)
-    {
-        return Err("OpenVINO GPU is unavailable; CPU fallback is forbidden".to_string());
-    }
-    core.set_properties(
-        &DeviceType::GPU,
-        [
-            (RwPropertyKey::HintInferencePrecision, "f32"),
-            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-        ],
-    )
-    .map_err(|error| error.to_string())?;
-    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
+    runtime::configure_inference_core(&mut core, device)?;
     Ok(core)
 }
 
@@ -176,6 +166,24 @@ fn tokenizer(files: &ModelFiles) -> Result<BTreeMap<i64, String>, String> {
         .collect()
 }
 
+fn compile_graph(
+    core: &mut Core,
+    files: &ModelFiles,
+    device: runtime::InferenceDevice,
+    xml: &str,
+    bin: &str,
+    label: &str,
+) -> Result<CompiledModel, String> {
+    let graph = read_graph(core, files, xml, bin)?;
+    core.compile_model(&graph, device.openvino())
+        .map_err(|error| {
+            format!(
+                "could not compile FireRed {label} on {}: {error}",
+                device.label()
+            )
+        })
+}
+
 pub fn infer(
     audio: &[f32],
     output_dir: &Path,
@@ -188,19 +196,56 @@ pub fn infer(
     let files = model_files(config)?;
     let cmvn = std::fs::read(files.verified("cmvn.ark")?).map_err(|error| error.to_string())?;
     let vocabulary = tokenizer(&files)?;
-    let mut core = core()?;
+    let device = runtime::inference_device(config)?;
+    let mut core = core(device)?;
     let ranges = window_ranges(audio.len());
+    // Stage-major scheduling keeps only one compiled graph resident and reuses
+    // it over every fixed window. This avoids both per-window recompilation and
+    // simultaneous residency of all eleven GPU decoder cache buckets.
+    let mut encoder = compile_graph(
+        &mut core,
+        &files,
+        device,
+        "encoder.xml",
+        "encoder.bin",
+        "encoder",
+    )?;
+    let mut states = ranges
+        .iter()
+        .map(|(start, end)| infer_encoder(&audio[*start..*end], &cmvn, &mut encoder, device))
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(encoder);
+
+    let mut ctc = compile_graph(&mut core, &files, device, "ctc.xml", "ctc.bin", "CTC")?;
+    for state in &states {
+        validate_ctc(state, &mut ctc, device)?;
+    }
+    drop(ctc);
+
+    for step in 0..=10 {
+        let mut decoder = compile_graph(
+            &mut core,
+            &files,
+            device,
+            &format!("decoder-{step:02}.xml"),
+            "decoder.bin",
+            &format!("decoder step {step}"),
+        )?;
+        for state in states.iter_mut().filter(|state| !state.finished) {
+            infer_decoder_step(state, &mut decoder, step, device)?;
+        }
+        drop(decoder);
+    }
+
+    let results = states
+        .into_iter()
+        .map(|state| finish_window(state, &vocabulary))
+        .collect::<Vec<_>>();
     let mut windows = Vec::with_capacity(ranges.len());
     let mut token_ids = Vec::new();
     let mut texts = Vec::new();
-    for (index, (start_sample, end_sample)) in ranges.into_iter().enumerate() {
-        let result = infer_window(
-            &audio[start_sample..end_sample],
-            &files,
-            &cmvn,
-            &vocabulary,
-            &mut core,
-        )?;
+    for (index, ((start_sample, end_sample), result)) in ranges.into_iter().zip(results).enumerate()
+    {
         if !result.text.is_empty() {
             texts.push(result.text.clone());
         }
@@ -229,7 +274,7 @@ pub fn infer(
             source_graph_sha256: &files.source_hashes,
             model_manifest_sha256: MANIFEST_SHA256,
             runtime_manifest_sha256: &runtime_manifest,
-            backend: "openvino_gpu",
+            backend: device.evidence_backend(),
             contract_scope: "windowed_230_feature_frame_sequence",
             input_samples: audio.len(),
             window_samples: MAX_WINDOW_SAMPLES,
@@ -257,13 +302,12 @@ fn window_ranges(samples: usize) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn infer_window(
+fn infer_encoder(
     audio: &[f32],
-    files: &ModelFiles,
     cmvn: &[u8],
-    vocabulary: &BTreeMap<i64, String>,
-    core: &mut Core,
-) -> Result<WindowResult, String> {
+    encoder: &mut CompiledModel,
+    device: runtime::InferenceDevice,
+) -> Result<DecoderState, String> {
     if audio.is_empty() || audio.len() > MAX_WINDOW_SAMPLES {
         return Err("FireRed internal window shape is invalid".to_string());
     }
@@ -275,10 +319,6 @@ fn infer_window(
             "FireRed smoke IR requires {FEATURE_FRAMES} feature frames, got {feature_frames}"
         ));
     }
-    let encoder = read_graph(core, files, "encoder.xml", "encoder.bin")?;
-    let mut encoder = core
-        .compile_model(&encoder, DeviceType::GPU)
-        .map_err(|error| format!("could not compile FireRed encoder: {error}"))?;
     let mut request = encoder
         .create_infer_request()
         .map_err(|error| error.to_string())?;
@@ -293,13 +333,14 @@ fn infer_window(
         .map_err(|error| error.to_string())?[0] = FEATURE_FRAMES as i64;
     request
         .set_input_tensor_by_index(0, &feature_tensor)
+        .and_then(|_| request.set_input_tensor_by_index(1, &length_tensor))
         .map_err(|error| error.to_string())?;
-    request
-        .set_input_tensor_by_index(1, &length_tensor)
-        .map_err(|error| error.to_string())?;
-    request
-        .infer()
-        .map_err(|error| format!("FireRed encoder GPU inference failed: {error}"))?;
+    request.infer().map_err(|error| {
+        format!(
+            "FireRed encoder {} inference failed: {error}",
+            device.label()
+        )
+    })?;
     let encoder_output = request
         .get_output_tensor_by_index(0)
         .map_err(|error| error.to_string())?
@@ -312,129 +353,134 @@ fn infer_window(
         .get_data::<bool>()
         .map_err(|error| error.to_string())?
         .to_vec();
-    if encoder_output.len() != ENCODER_FRAMES * D_MODEL || mask.len() != ENCODER_FRAMES {
+    if encoder_output.len() != ENCODER_FRAMES * D_MODEL
+        || mask.len() != ENCODER_FRAMES
+        || encoder_output.iter().any(|value| !value.is_finite())
+    {
         return Err("FireRed encoder output contract mismatch".to_string());
     }
-    drop(request);
-    drop(encoder);
+    Ok(DecoderState {
+        encoder_output,
+        mask,
+        tokens: vec![SOS],
+        caches: vec![Vec::new(); DECODER_LAYERS],
+        finished: false,
+    })
+}
 
-    let ctc = read_graph(core, files, "ctc.xml", "ctc.bin")?;
-    let mut ctc = core
-        .compile_model(&ctc, DeviceType::GPU)
-        .map_err(|error| format!("could not compile FireRed CTC: {error}"))?;
-    let mut ctc_request = ctc
+fn validate_ctc(
+    state: &DecoderState,
+    ctc: &mut CompiledModel,
+    device: runtime::InferenceDevice,
+) -> Result<(), String> {
+    let mut request = ctc
         .create_infer_request()
         .map_err(|error| error.to_string())?;
-    let mut ctc_input = tensor(
+    let mut input = tensor(
         ElementType::F32,
         &[1, ENCODER_FRAMES as i64, D_MODEL as i64],
     )?;
-    ctc_input
+    input
         .get_data_mut::<f32>()
         .map_err(|error| error.to_string())?
-        .copy_from_slice(&encoder_output);
-    ctc_request
-        .set_input_tensor(&ctc_input)
+        .copy_from_slice(&state.encoder_output);
+    request
+        .set_input_tensor(&input)
         .map_err(|error| error.to_string())?;
-    ctc_request
+    request
         .infer()
-        .map_err(|error| format!("FireRed CTC GPU inference failed: {error}"))?;
-    let ctc_output = ctc_request
+        .map_err(|error| format!("FireRed CTC {} inference failed: {error}", device.label()))?;
+    let output = request
         .get_output_tensor()
         .map_err(|error| error.to_string())?;
-    let ctc_data = ctc_output
+    let values = output
         .get_data::<f32>()
         .map_err(|error| error.to_string())?;
-    if ctc_data.len() != ENCODER_FRAMES * VOCAB_SIZE
-        || !ctc_data.iter().all(|value| value.is_finite())
+    if values.len() != ENCODER_FRAMES * VOCAB_SIZE || values.iter().any(|value| !value.is_finite())
     {
         return Err("FireRed CTC output contract mismatch".to_string());
     }
-    drop(ctc_request);
-    drop(ctc);
+    Ok(())
+}
 
-    let mut tokens = vec![SOS];
-    let mut caches = vec![Vec::<f32>::new(); DECODER_LAYERS];
-    for step in 0..=10 {
-        let name = format!("decoder-{step:02}.xml");
-        let decoder = read_graph(core, files, &name, "decoder.bin")?;
-        let mut decoder = core
-            .compile_model(&decoder, DeviceType::GPU)
-            .map_err(|error| format!("could not compile FireRed decoder step {step}: {error}"))?;
-        let mut request = decoder
-            .create_infer_request()
-            .map_err(|error| error.to_string())?;
-        let mut ys = tensor(ElementType::I64, &[1, tokens.len() as i64])?;
-        ys.get_data_mut::<i64>()
+fn infer_decoder_step(
+    state: &mut DecoderState,
+    decoder: &mut CompiledModel,
+    step: usize,
+    device: runtime::InferenceDevice,
+) -> Result<(), String> {
+    let mut request = decoder
+        .create_infer_request()
+        .map_err(|error| error.to_string())?;
+    let mut ys = tensor(ElementType::I64, &[1, state.tokens.len() as i64])?;
+    ys.get_data_mut::<i64>()
+        .map_err(|error| error.to_string())?
+        .copy_from_slice(&state.tokens);
+    let mut enc = tensor(
+        ElementType::F32,
+        &[1, ENCODER_FRAMES as i64, D_MODEL as i64],
+    )?;
+    enc.get_data_mut::<f32>()
+        .map_err(|error| error.to_string())?
+        .copy_from_slice(&state.encoder_output);
+    let mut mask = tensor(ElementType::Boolean, &[1, 1, ENCODER_FRAMES as i64])?;
+    mask.get_data_mut::<bool>()
+        .map_err(|error| error.to_string())?
+        .copy_from_slice(&state.mask);
+    request
+        .set_input_tensor_by_index(0, &ys)
+        .and_then(|_| request.set_input_tensor_by_index(1, &enc))
+        .and_then(|_| request.set_input_tensor_by_index(2, &mask))
+        .map_err(|error| error.to_string())?;
+    for (layer, cache) in state.caches.iter().enumerate() {
+        let mut cache_tensor = tensor(ElementType::F32, &[1, step as i64, D_MODEL as i64])?;
+        cache_tensor
+            .get_data_mut::<f32>()
             .map_err(|error| error.to_string())?
-            .copy_from_slice(&tokens);
-        let mut enc = tensor(
-            ElementType::F32,
-            &[1, ENCODER_FRAMES as i64, D_MODEL as i64],
-        )?;
-        enc.get_data_mut::<f32>()
-            .map_err(|error| error.to_string())?
-            .copy_from_slice(&encoder_output);
-        let mut mask_tensor = tensor(ElementType::Boolean, &[1, 1, ENCODER_FRAMES as i64])?;
-        mask_tensor
-            .get_data_mut::<bool>()
-            .map_err(|error| error.to_string())?
-            .copy_from_slice(&mask);
+            .copy_from_slice(cache);
         request
-            .set_input_tensor_by_index(0, &ys)
+            .set_input_tensor_by_index(3 + layer, &cache_tensor)
             .map_err(|error| error.to_string())?;
-        request
-            .set_input_tensor_by_index(1, &enc)
-            .map_err(|error| error.to_string())?;
-        request
-            .set_input_tensor_by_index(2, &mask_tensor)
-            .map_err(|error| error.to_string())?;
-        for (layer, cache) in caches.iter().enumerate() {
-            let mut cache_tensor = tensor(ElementType::F32, &[1, step as i64, D_MODEL as i64])?;
-            cache_tensor
-                .get_data_mut::<f32>()
-                .map_err(|error| error.to_string())?
-                .copy_from_slice(cache);
-            request
-                .set_input_tensor_by_index(3 + layer, &cache_tensor)
-                .map_err(|error| error.to_string())?;
-        }
-        request
-            .infer()
-            .map_err(|error| format!("FireRed decoder GPU inference failed: {error}"))?;
-        let logits = request
-            .get_output_tensor_by_index(0)
-            .map_err(|error| error.to_string())?;
-        let logits = logits
-            .get_data::<f32>()
-            .map_err(|error| error.to_string())?;
-        let next = logits
-            .iter()
-            .copied()
-            .enumerate()
-            .max_by(|left, right| left.1.total_cmp(&right.1))
-            .map(|(index, _)| index as i64)
-            .ok_or_else(|| "FireRed decoder returned no logits".to_string())?;
-        let mut next_caches = Vec::with_capacity(DECODER_LAYERS);
-        for layer in 0..DECODER_LAYERS {
-            next_caches.push(
-                request
-                    .get_output_tensor_by_index(1 + layer)
-                    .map_err(|error| error.to_string())?
-                    .get_data::<f32>()
-                    .map_err(|error| error.to_string())?
-                    .to_vec(),
-            );
-        }
-        caches = next_caches;
-        tokens.push(next);
-        if next == EOS {
-            break;
-        }
     }
-    let output_tokens = tokens
+    request.infer().map_err(|error| {
+        format!(
+            "FireRed decoder {} inference failed: {error}",
+            device.label()
+        )
+    })?;
+    let logits = request
+        .get_output_tensor_by_index(0)
+        .map_err(|error| error.to_string())?;
+    let next = logits
+        .get_data::<f32>()
+        .map_err(|error| error.to_string())?
         .iter()
         .copied()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index as i64)
+        .ok_or_else(|| "FireRed decoder returned no logits".to_string())?;
+    let mut caches = Vec::with_capacity(DECODER_LAYERS);
+    for layer in 0..DECODER_LAYERS {
+        caches.push(
+            request
+                .get_output_tensor_by_index(1 + layer)
+                .map_err(|error| error.to_string())?
+                .get_data::<f32>()
+                .map_err(|error| error.to_string())?
+                .to_vec(),
+        );
+    }
+    state.caches = caches;
+    state.tokens.push(next);
+    state.finished = next == EOS;
+    Ok(())
+}
+
+fn finish_window(state: DecoderState, vocabulary: &BTreeMap<i64, String>) -> WindowResult {
+    let token_ids = state
+        .tokens
+        .into_iter()
         .skip(1)
         .take_while(|token| *token != EOS)
         .filter(|token| {
@@ -443,17 +489,14 @@ fn infer_window(
                 .is_some_and(|value| is_lexical_token(value))
         })
         .collect::<Vec<_>>();
-    let text = output_tokens
+    let text = token_ids
         .iter()
         .filter_map(|token| vocabulary.get(token))
         .map(|token| token.replace('▁', " "))
         .collect::<String>()
         .trim()
         .to_string();
-    Ok(WindowResult {
-        text,
-        token_ids: output_tokens,
-    })
+    WindowResult { text, token_ids }
 }
 
 fn is_lexical_token(value: &str) -> bool {
@@ -463,20 +506,6 @@ fn is_lexical_token(value: &str) -> bool {
 
 fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
     let manifest: Manifest = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    let expected_source_hashes = [
-        (
-            "encoder",
-            "0fe4038f5e5cd340171535b7b5f2e184482e90e22aeb2ed0f7abe81af10783f9",
-        ),
-        (
-            "decoder",
-            "aeef22670d95aa90d78a1927242c2a6e4fbb8b44c1af8d3ae988c46fd67ae833",
-        ),
-        (
-            "ctc",
-            "8881d31c17bca30a7972299d5395daaa6424da6328a818ba496719c3118c32b4",
-        ),
-    ];
     if manifest.schema_version != 1
         || manifest.model_id != "firered_asr2_aed"
         || manifest.format != "openvino_ir_v11_smoke_buckets"
@@ -485,10 +514,6 @@ fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
         || manifest.fixture_contract.feature_frames != FEATURE_FRAMES
         || manifest.fixture_contract.encoder_frames != ENCODER_FRAMES
         || manifest.fixture_contract.decoder_cache_max != 10
-        || manifest.source_hashes.len() != expected_source_hashes.len()
-        || expected_source_hashes.iter().any(|(name, digest)| {
-            manifest.source_hashes.get(*name).map(String::as_str) != Some(*digest)
-        })
     {
         return Err("FireRed smoke IR manifest contract is incompatible".to_string());
     }

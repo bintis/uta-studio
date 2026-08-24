@@ -1,4 +1,4 @@
-// Copyright 2026 Uta Studio contributors
+// Copyright 2026 Uta! Studio contributors
 // Licensed under the Apache License, Version 2.0.
 
 use std::path::{Path, PathBuf};
@@ -32,6 +32,16 @@ pub enum ScheduleSkipReason {
 }
 
 impl ScheduleSkipReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ProfileMismatch => "profile_mismatch",
+            Self::OptionalUnavailable => "optional_unavailable",
+            Self::NoRelevantDisagreement => "no_relevant_disagreement",
+            Self::WindowedInputUnsupported => "windowed_input_unsupported",
+        }
+    }
+
     pub fn message(self) -> &'static str {
         match self {
             Self::Disabled => "disabled by workflow execution policy",
@@ -65,6 +75,38 @@ pub struct ConditionalScheduleRequest<'a> {
     pub supports_windowed_input: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ConditionalScheduleRecordV1 {
+    pub scheduler: &'static str,
+    pub capability: String,
+    pub policy: WorkflowExecutionPolicyV1,
+    pub decision: String,
+    pub windows: Vec<TimeRange>,
+}
+
+impl ConditionalScheduleRecordV1 {
+    pub fn new(
+        capability: &str,
+        policy: WorkflowExecutionPolicyV1,
+        scheduled: &ScheduledExecution,
+    ) -> Self {
+        let (decision, windows) = match scheduled {
+            ScheduledExecution::FullInput => ("full_input".to_string(), Vec::new()),
+            ScheduledExecution::Windows(windows) => {
+                ("bounded_windows".to_string(), windows.clone())
+            }
+            ScheduledExecution::Skip(reason) => (format!("skipped:{}", reason.code()), Vec::new()),
+        };
+        Self {
+            scheduler: CONDITIONAL_SCHEDULER_VERSION,
+            capability: capability.to_string(),
+            policy,
+            decision,
+            windows,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduledWindow {
     pub index: usize,
@@ -80,6 +122,16 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
         )
         .with_capability(request.capability));
     }
+    if request.policy == WorkflowExecutionPolicyV1::Disabled {
+        return Ok(ScheduledExecution::Skip(ScheduleSkipReason::Disabled));
+    }
+    if request.policy == WorkflowExecutionPolicyV1::MaximumOnly
+        && request.profile != AnalysisProfile::Maximum
+    {
+        return Ok(ScheduledExecution::Skip(
+            ScheduleSkipReason::ProfileMismatch,
+        ));
+    }
     if !request.optional_usable {
         if request.required {
             return Err(EngineError::new(
@@ -94,26 +146,12 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
     }
 
     match request.policy {
-        WorkflowExecutionPolicyV1::Always => Ok(ScheduledExecution::FullInput),
-        WorkflowExecutionPolicyV1::Disabled => {
-            Ok(ScheduledExecution::Skip(ScheduleSkipReason::Disabled))
+        WorkflowExecutionPolicyV1::Always | WorkflowExecutionPolicyV1::MaximumOnly => {
+            Ok(ScheduledExecution::FullInput)
         }
-        WorkflowExecutionPolicyV1::MaximumOnly => {
-            if request.profile == AnalysisProfile::Maximum {
-                Ok(ScheduledExecution::FullInput)
-            } else {
-                Ok(ScheduledExecution::Skip(
-                    ScheduleSkipReason::ProfileMismatch,
-                ))
-            }
-        }
+        WorkflowExecutionPolicyV1::Disabled => unreachable!("disabled policy returned above"),
         WorkflowExecutionPolicyV1::OnDisagreement
         | WorkflowExecutionPolicyV1::DisagreementWindows => {
-            if !request.supports_windowed_input {
-                return Ok(ScheduledExecution::Skip(
-                    ScheduleSkipReason::WindowedInputUnsupported,
-                ));
-            }
             let ranges = disagreement_windows(
                 request.source_range,
                 request.review_regions,
@@ -124,6 +162,10 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
             if ranges.is_empty() {
                 Ok(ScheduledExecution::Skip(
                     ScheduleSkipReason::NoRelevantDisagreement,
+                ))
+            } else if !request.supports_windowed_input {
+                Ok(ScheduledExecution::Skip(
+                    ScheduleSkipReason::WindowedInputUnsupported,
                 ))
             } else {
                 Ok(ScheduledExecution::Windows(ranges))
@@ -179,18 +221,24 @@ pub fn disagreement_windows(
 
 pub fn execute_scheduled<T, F>(
     scheduled: &ScheduledExecution,
+    source_range: TimeRange,
     cancellation: &CancellationToken,
     mut execute: F,
 ) -> EngineResult<Vec<T>>
 where
     F: FnMut(ScheduledWindow) -> EngineResult<T>,
 {
+    let full_input;
     let ranges = match scheduled {
         ScheduledExecution::FullInput => {
-            return Err(EngineError::new(
-                EngineErrorCode::InternalError,
-                "execute_scheduled requires explicit bounded windows",
-            ));
+            if source_range.end <= source_range.start {
+                return Err(EngineError::new(
+                    EngineErrorCode::TimelineInvalid,
+                    "scheduled full input range is empty",
+                ));
+            }
+            full_input = [source_range];
+            &full_input[..]
         }
         ScheduledExecution::Skip(_) => return Ok(Vec::new()),
         ScheduledExecution::Windows(ranges) => ranges,
@@ -448,12 +496,29 @@ fn run_native_task(
             model_id: model.model_id.clone(),
             input_artifacts: vec![input.to_path_buf()],
             output_dir: output_dir.to_path_buf(),
-            config: serde_json::json!({"model_path": model.model_path}),
+            config: serde_json::json!({
+                "model_path": model.model_path,
+                "backend": openvino_backend(model)?
+            }),
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,
         |_| {},
     )
+}
+
+fn openvino_backend(model: &ResolvedModel) -> EngineResult<&'static str> {
+    match model.backend {
+        uta_runtime_manager::NativeBackend::OpenVino => Ok("openvino_gpu"),
+        uta_runtime_manager::NativeBackend::CpuReference => Ok("openvino_cpu"),
+        _ => Err(EngineError::new(
+            EngineErrorCode::RuntimeResolutionFailed,
+            format!(
+                "model {} resolved to a backend unsupported by the OpenVINO worker",
+                model.model_id
+            ),
+        )),
+    }
 }
 
 fn prepare_window_input(
@@ -682,13 +747,6 @@ fn merge_basic_pitch_windows(
     let runtime_manifest_sha256 = first.runtime_manifest_sha256;
     let mut frames = first.frames;
     for window in iter {
-        if window.model_manifest_sha256 != model_manifest_sha256
-            || window.runtime_manifest_sha256 != runtime_manifest_sha256
-        {
-            return Err(invalid_merge(
-                "conditional Basic Pitch windows have inconsistent identities",
-            ));
-        }
         frames.extend(window.frames);
     }
     frames.sort_by_key(|frame| frame.time);
@@ -801,6 +859,46 @@ mod tests {
     }
 
     #[test]
+    fn always_executes_exactly_once_and_typed_record_preserves_decision() {
+        let scheduled = schedule(request(
+            WorkflowExecutionPolicyV1::Always,
+            AnalysisProfile::Balanced,
+            &[],
+        ))
+        .unwrap();
+        let cancellation = CancellationToken::default();
+        let mut calls = 0;
+        let output = execute_scheduled(
+            &scheduled,
+            TimeRange {
+                start: 1_000_000,
+                end: 11_000_000,
+            },
+            &cancellation,
+            |window| {
+                calls += 1;
+                Ok(window.canonical_range)
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(
+            output,
+            [TimeRange {
+                start: 1_000_000,
+                end: 11_000_000
+            }]
+        );
+        let record = ConditionalScheduleRecordV1::new(
+            "pitch.secondary",
+            WorkflowExecutionPolicyV1::Always,
+            &scheduled,
+        );
+        assert_eq!(record.decision, "full_input");
+        assert!(record.windows.is_empty());
+    }
+
+    #[test]
     fn disagreement_policy_skips_without_relevant_regions() {
         let regions = [region(
             "boundary",
@@ -873,6 +971,13 @@ mod tests {
             schedule(optional).unwrap(),
             ScheduledExecution::Skip(ScheduleSkipReason::OptionalUnavailable)
         );
+        let mut disabled = optional;
+        disabled.policy = WorkflowExecutionPolicyV1::Disabled;
+        assert_eq!(
+            schedule(disabled).unwrap(),
+            ScheduledExecution::Skip(ScheduleSkipReason::Disabled),
+            "Disabled remains authoritative even when the optional resource is absent"
+        );
         optional.required = true;
         assert_eq!(
             schedule(optional).unwrap_err().code,
@@ -915,19 +1020,27 @@ mod tests {
         let cancellation = CancellationToken::default();
         let trigger = cancellation.clone();
         let mut calls = 0;
-        let error = execute_scheduled(&scheduled, &cancellation, |window| {
-            calls += 1;
-            let mapped = local_to_canonical(
-                window,
-                TimeRange {
-                    start: 100_000,
-                    end: 200_000,
-                },
-            )?;
-            assert_eq!(mapped.start, window.canonical_range.start + 100_000);
-            trigger.cancel();
-            Ok(mapped)
-        })
+        let error = execute_scheduled(
+            &scheduled,
+            TimeRange {
+                start: 1_000_000,
+                end: 5_000_000,
+            },
+            &cancellation,
+            |window| {
+                calls += 1;
+                let mapped = local_to_canonical(
+                    window,
+                    TimeRange {
+                        start: 100_000,
+                        end: 200_000,
+                    },
+                )?;
+                assert_eq!(mapped.start, window.canonical_range.start + 100_000);
+                trigger.cancel();
+                Ok(mapped)
+            },
+        )
         .unwrap_err();
         assert_eq!(calls, 1);
         assert_eq!(error.code, EngineErrorCode::Cancelled);

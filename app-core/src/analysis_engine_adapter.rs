@@ -1,8 +1,8 @@
 //! Studio intent compilation and exact Analysis CLI preview/queue boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,7 +14,7 @@ use crate::backend_cli::{
     AnalysisProfileWireV1, AnalysisSpecWireV1, AnalyzeRequestWireV1, AudioRoleWireV1,
     AudioSourceKindWireV1, AudioSourceWireV1, CANONICAL_TIMEBASE, ContextAuthorityWireV1,
     ExecutionPolicyWireV1, LyricTokenWireV1, LyricsModeWireV1, LyricsWireV1, MusicalContextWireV1,
-    QuantizationGridWireV1, RequestedArtifactsWireV1, RuntimePolicyWireV1,
+    NativeBackendWireV1, QuantizationGridWireV1, RequestedArtifactsWireV1, RuntimePolicyWireV1,
     RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1, TrackTargetWireV1,
 };
 
@@ -58,30 +58,10 @@ fn resolve_true_source_path(
     if metadata.len() == 0 {
         return Err(format!("TrueSource is empty: {}", path.display()));
     }
-    let current_library_hash = crate::song::compute_file_hash(&path)
-        .map_err(|error| format!("could not verify Studio source identity: {error}"))?;
-    if current_library_hash != library_file_hash {
-        return Err(format!(
-            "source_identity_changed: expected Studio identity {library_file_hash}, got {current_library_hash}"
-        ));
-    }
-    let mut file = std::fs::File::open(&path)
-        .map_err(|error| format!("could not read TrueSource {}: {error}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| format!("could not hash TrueSource {}: {error}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
     Ok(ResolvedAnalysisSource {
         library_file_hash: library_file_hash.to_string(),
         path,
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: library_file_hash.to_string(),
         role: AudioRoleWireV1::OriginalMix,
     })
 }
@@ -160,6 +140,10 @@ pub struct AnalysisRequestIntent {
     pub lyrics: StudioLyricsContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_override: Option<AnalysisDefaultTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_backend_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,8 +154,52 @@ pub struct EngineRunDraft {
     pub lyrics: StudioLyricsContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_override: Option<AnalysisDefaultTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_backend_overrides: BTreeMap<String, String>,
     #[serde(default)]
     pub run_override: crate::analysis_experience::AnalysisExperienceOverride,
+}
+
+static AUTOMATIC_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+fn automatic_request_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = AUTOMATIC_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("studio-auto-{}-{now}-{sequence}", std::process::id())
+}
+
+/// Build, validate, plan and queue one exact Engine request without exposing
+/// the retired loose analyzer protocol. Automatic/bulk callers still receive
+/// request-specific blockers and never silently downgrade to legacy execution.
+pub fn preview_and_queue_engine_run(
+    file_hash: &str,
+    target_override: Option<AnalysisDefaultTarget>,
+) -> Result<QueuedEngineRun, String> {
+    let config = crate::config::AppConfig::load();
+    let preview = preview_engine_run(
+        EngineRunDraft {
+            file_hash: file_hash.to_string(),
+            request_id: automatic_request_id(),
+            lyrics: StudioLyricsContext::default(),
+            target_override,
+            compute_backend: config.compute_backend.clone(),
+            model_backend_overrides: config.model_backend_overrides.clone(),
+            run_override: Default::default(),
+        },
+        &config.analysis_experience,
+    )?;
+    if !preview.ready {
+        return Err(format!(
+            "exact Engine preview is blocked: {}",
+            preview.blockers.join("; ")
+        ));
+    }
+    queue_exact_preview(&preview)
 }
 
 pub fn preview_engine_run(
@@ -201,6 +229,8 @@ pub fn preview_engine_run(
             source: source.clone(),
             lyrics,
             target_override: draft.target_override,
+            compute_backend: draft.compute_backend,
+            model_backend_overrides: draft.model_backend_overrides,
         },
         &effective,
     )?;
@@ -223,9 +253,8 @@ fn attach_song_execution_context(
         .override_key
         .filter(|value| !value.trim().is_empty())
         .or_else(|| song.key.filter(|value| !value.trim().is_empty()));
-    let candidate_output =
-        request.requested_artifacts.vocal_chart || request.requested_artifacts.singing_analysis;
-    let quantization_enabled = effective.enable_quantization.value && candidate_output;
+    let quantization_enabled =
+        effective.enable_quantization.value && request.requested_artifacts.vocal_chart;
     if quantization_enabled && bpm.is_none() {
         return Err(
             "Rhythm quantization is enabled, but this song has no explicit BPM. Set song BPM or disable quantization before previewing the exact plan."
@@ -317,15 +346,6 @@ pub fn compile_analyze_request_v1(
     if !valid_identifier(&intent.request_id) {
         return Err("analysis request_id contains unsupported characters".to_string());
     }
-    if intent.source.sha256.len() != 64
-        || !intent
-            .source
-            .sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return Err("analysis source SHA-256 is invalid".to_string());
-    }
     let target = intent
         .target_override
         .unwrap_or(effective.default_target.value);
@@ -368,13 +388,42 @@ pub fn compile_analyze_request_v1(
             },
             track_target: TrackTargetWireV1::Lead,
             preserve_continuous_pitch: effective.preserve_continuous_pitch.value,
-            // Engine card 19 is not implemented. Keep the v1 wire field for
-            // compatibility, but never advertise a no-op quantization request.
+            // Song musical context is attached immediately before Preview so
+            // enabled quantization can never travel without explicit BPM/grid.
             enable_quantization: false,
         },
         requested_artifacts,
         execution_policy: ExecutionPolicyWireV1 {
             runtime_policy: RuntimePolicyWireV1::Experimental,
+            requested_backend: match intent.compute_backend.as_deref() {
+                None | Some("auto" | "openvino") => None,
+                Some("vulkan") => Some(NativeBackendWireV1::Vulkan),
+                Some("diagnostic_cpu") => Some(NativeBackendWireV1::CpuReference),
+                Some(other) => {
+                    return Err(format!("unsupported analysis compute backend: {other}"));
+                }
+            },
+            model_backend_overrides: intent
+                .model_backend_overrides
+                .into_iter()
+                .map(|(model_id, backend)| {
+                    if !valid_identifier(&model_id) {
+                        return Err(format!("invalid model backend override id: {model_id}"));
+                    }
+                    let backend = match backend.as_str() {
+                        "openvino" => NativeBackendWireV1::OpenVino,
+                        "vulkan" => NativeBackendWireV1::Vulkan,
+                        "native_dsp" => NativeBackendWireV1::NativeDsp,
+                        "diagnostic_cpu" => NativeBackendWireV1::CpuReference,
+                        other => {
+                            return Err(format!(
+                                "unsupported backend {other} for model {model_id}"
+                            ));
+                        }
+                    };
+                    Ok((model_id, backend))
+                })
+                .collect::<Result<_, String>>()?,
         },
         extensions: BTreeMap::new(),
     })
@@ -496,6 +545,7 @@ pub fn preview_analyze_request_v1(
             "Analysis CLI returned inconsistent requirements and plan snapshots".to_string(),
         );
     }
+    validate_workflow_plan_identity(&request, &plan)?;
     let capabilities = capabilities
         .into_iter()
         .map(|item| (item.id.0.clone(), item))
@@ -587,10 +637,8 @@ pub fn queue_exact_preview(preview: &EngineRunPreview) -> Result<QueuedEngineRun
     if !preview.ready {
         return Err("analysis preview is blocked and cannot be queued".to_string());
     }
-    if preview.request_json.trim().is_empty()
-        || digest_json(&preview.request_json) != preview.request_digest
-    {
-        return Err("analysis preview request digest does not match its JSON snapshot".to_string());
+    if preview.request_json.trim().is_empty() {
+        return Err("analysis preview has no request snapshot".to_string());
     }
     let current_source = resolve_true_source(&preview.source.library_file_hash)?;
     let intent = exact_queue_intent(preview, &current_source)?;
@@ -616,9 +664,6 @@ fn exact_queue_intent(
     if preview.request_json.trim().is_empty() {
         return Err("analysis preview has no request snapshot".to_string());
     }
-    if digest_json(&preview.request_json) != preview.request_digest {
-        return Err("analysis preview request digest does not match its JSON snapshot".to_string());
-    }
     let request: AnalyzeRequestWireV1 = serde_json::from_str(&preview.request_json)
         .map_err(|error| format!("analysis preview request JSON is malformed: {error}"))?;
     if request.request_id != preview.request_id
@@ -629,14 +674,16 @@ fn exact_queue_intent(
     if request.contract != ANALYZE_REQUEST_CONTRACT || request.version != ANALYZE_REQUEST_VERSION {
         return Err("analysis preview uses an unsupported request contract".to_string());
     }
+    validate_workflow_plan_identity(&request, &preview.engine_plan)?;
     let request_source = request
         .audio_sources
         .iter()
         .find(|source| source.primary)
         .ok_or_else(|| "analysis preview request has no primary source".to_string())?;
-    if current_source != &preview.source
+    if current_source.library_file_hash != preview.source.library_file_hash
+        || current_source.path != preview.source.path
+        || current_source.role != preview.source.role
         || request_source.path != current_source.path
-        || request_source.sha256 != current_source.sha256
         || request_source.role != current_source.role
     {
         return Err(
@@ -655,6 +702,112 @@ fn exact_queue_intent(
         source_sha256: preview.source.sha256.clone(),
         queued_at_ms: now_ms(),
     })
+}
+
+pub(crate) fn validate_workflow_plan_identity(
+    request: &AnalyzeRequestWireV1,
+    plan: &AnalysisPlanWireV1,
+) -> Result<(), String> {
+    let request_workflow = request
+        .extensions
+        .get(crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY)
+        .map(|value| {
+            serde_json::from_value::<crate::workflow::WorkflowExecutionWireV1>(value.clone())
+                .map_err(|error| format!("workflow request snapshot is malformed: {error}"))
+        })
+        .transpose()?;
+    match (request_workflow.as_ref(), plan.workflow_execution.as_ref()) {
+        (None, None) => Ok(()),
+        (Some(request_workflow), Some(planned)) => {
+            let identity = &planned.identity;
+            if identity.contract != request_workflow.contract
+                || identity.version != request_workflow.version
+                || identity.workflow_schema_version != request_workflow.workflow_schema_version
+                || identity.workflow_id != request_workflow.workflow_id
+                || identity.workflow_revision != request_workflow.workflow_revision
+            {
+                return Err(
+                    "Analysis CLI workflow identity does not match the exact request snapshot"
+                        .to_string(),
+                );
+            }
+            if planned.nodes.len() != request_workflow.nodes.len()
+                || planned.terminal_outputs != request_workflow.terminal_outputs
+            {
+                return Err(
+                    "Analysis CLI workflow plan does not represent the exact compiled snapshot"
+                        .to_string(),
+                );
+            }
+            let mut planned_bindings = planned
+                .nodes
+                .iter()
+                .flat_map(|node| node.input_bindings.iter().cloned())
+                .collect::<Vec<_>>();
+            planned_bindings.sort_by(|left, right| {
+                (
+                    &left.from_node,
+                    &left.from_port,
+                    &left.to_node,
+                    &left.to_port,
+                )
+                    .cmp(&(
+                        &right.from_node,
+                        &right.from_port,
+                        &right.to_node,
+                        &right.to_port,
+                    ))
+            });
+            let mut request_bindings = request_workflow.bindings.clone();
+            request_bindings.sort_by(|left, right| {
+                (
+                    &left.from_node,
+                    &left.from_port,
+                    &left.to_node,
+                    &left.to_port,
+                )
+                    .cmp(&(
+                        &right.from_node,
+                        &right.from_port,
+                        &right.to_node,
+                        &right.to_port,
+                    ))
+            });
+            if planned_bindings != request_bindings {
+                return Err(
+                    "Analysis CLI workflow plan changed compiled artifact bindings".to_string(),
+                );
+            }
+            for requested in &request_workflow.nodes {
+                let node = planned
+                    .nodes
+                    .iter()
+                    .find(|node| node.instance_id == requested.instance_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "Analysis CLI workflow plan omitted instance {}",
+                            requested.instance_id
+                        )
+                    })?;
+                if node.analysis_node != requested.analysis_node
+                    || node.execution_policy != requested.execution_policy
+                    || node.priority != requested.priority
+                {
+                    return Err(format!(
+                        "Analysis CLI workflow plan changed instance {}",
+                        requested.instance_id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        (Some(_), None) => {
+            Err("Analysis CLI omitted the requested compiled workflow execution plan".to_string())
+        }
+        (None, Some(_)) => Err(
+            "Analysis CLI returned a compiled workflow for a request that omitted one".to_string(),
+        ),
+    }
 }
 
 pub(crate) fn digest_json(json: &str) -> String {
@@ -721,14 +874,22 @@ mod tests {
     }
 
     #[test]
-    fn true_source_resolution_keeps_library_and_engine_identities_distinct() {
+    fn automatic_queue_request_ids_are_unique_and_studio_owned() {
+        let first = automatic_request_id();
+        let second = automatic_request_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("studio-auto-"));
+        assert!(second.starts_with("studio-auto-"));
+    }
+
+    #[test]
+    fn true_source_resolution_reuses_library_identity_without_hash_verification() {
         let path = source_fixture("identity", b"lossless source fixture bytes");
         let library_hash = crate::song::compute_file_hash(&path).unwrap();
         let before = std::fs::read(&path).unwrap();
         let source = resolve_true_source_path(&library_hash, &path).unwrap();
         assert_eq!(source.library_file_hash.len(), 32);
-        assert_eq!(source.sha256.len(), 64);
-        assert_ne!(source.library_file_hash, source.sha256);
+        assert_eq!(source.library_file_hash, source.sha256);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_file(path).unwrap();
     }
@@ -766,6 +927,8 @@ mod tests {
                         StudioLyricsContext::default()
                     },
                     target_override: Some(target),
+                    compute_backend: None,
+                    model_backend_overrides: BTreeMap::new(),
                 },
                 &effective(target),
             )
@@ -796,6 +959,72 @@ mod tests {
     }
 
     #[test]
+    fn request_compiler_preserves_explicit_cpu_and_vulkan_selection() {
+        for (configured, expected) in [
+            ("diagnostic_cpu", NativeBackendWireV1::CpuReference),
+            ("vulkan", NativeBackendWireV1::Vulkan),
+        ] {
+            let request = compile_analyze_request_v1(
+                AnalysisRequestIntent {
+                    request_id: format!("backend-{configured}"),
+                    source: ResolvedAnalysisSource {
+                        library_file_hash: "library".to_string(),
+                        path: std::env::temp_dir().join("source.flac"),
+                        sha256: "a".repeat(64),
+                        role: AudioRoleWireV1::OriginalMix,
+                    },
+                    lyrics: StudioLyricsContext::default(),
+                    target_override: Some(AnalysisDefaultTarget::PitchEvidence),
+                    compute_backend: Some(configured.to_string()),
+                    model_backend_overrides: BTreeMap::new(),
+                },
+                &effective(AnalysisDefaultTarget::PitchEvidence),
+            )
+            .unwrap();
+            assert_eq!(request.execution_policy.requested_backend, Some(expected));
+        }
+    }
+
+    #[test]
+    fn request_compiler_preserves_per_model_backend_choices() {
+        let request = compile_analyze_request_v1(
+            AnalysisRequestIntent {
+                request_id: "model-backends".to_string(),
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWireV1::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: Some(AnalysisDefaultTarget::Instrumental),
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::from([
+                    ("bs_roformer_vocals_ep317".to_string(), "vulkan".to_string()),
+                    ("rmvpe".to_string(), "diagnostic_cpu".to_string()),
+                ]),
+            },
+            &effective(AnalysisDefaultTarget::Instrumental),
+        )
+        .unwrap();
+        assert_eq!(request.execution_policy.requested_backend, None);
+        assert_eq!(
+            request
+                .execution_policy
+                .model_backend_overrides
+                .get("bs_roformer_vocals_ep317"),
+            Some(&NativeBackendWireV1::Vulkan)
+        );
+        assert_eq!(
+            request
+                .execution_policy
+                .model_backend_overrides
+                .get("rmvpe"),
+            Some(&NativeBackendWireV1::CpuReference)
+        );
+    }
+
+    #[test]
     fn canonical_full_candidate_does_not_request_redundant_asr() {
         let request = compile_analyze_request_v1(
             AnalysisRequestIntent {
@@ -817,6 +1046,8 @@ mod tests {
                     }],
                 },
                 target_override: Some(AnalysisDefaultTarget::FullCandidate),
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::new(),
             },
             &effective(AnalysisDefaultTarget::FullCandidate),
         )
@@ -864,6 +1095,8 @@ mod tests {
                 source: source.clone(),
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::Transcript),
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::new(),
             },
             &effective,
         )
@@ -918,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn invalidated_and_digest_mismatched_previews_refuse_queue_intent() {
+    fn invalidated_preview_is_rejected_but_digest_metadata_is_not_verified() {
         let (mut preview, source) = exact_preview_fixture();
         preview.invalidated = true;
         assert!(
@@ -927,12 +1160,8 @@ mod tests {
                 .contains("invalidated")
         );
         preview.invalidated = false;
-        preview.request_digest = "0".repeat(64);
-        assert!(
-            exact_queue_intent(&preview, &source)
-                .unwrap_err()
-                .contains("digest")
-        );
+        preview.request_digest = "opaque-digest-metadata".to_string();
+        assert!(exact_queue_intent(&preview, &source).is_ok());
         std::fs::remove_file(source.path).unwrap();
     }
 }

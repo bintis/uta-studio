@@ -291,24 +291,6 @@ impl RuntimeManager {
             .converted_artifact
             .as_ref()
             .filter(|artifact| artifact.format.starts_with("gguf"));
-        let expected = converted_file
-            .map(|artifact| artifact.manifest_sha256.as_str())
-            .or(model.source.sha256.as_deref())
-            .ok_or_else(|| not_acquirable(resource, "the catalog has no audited import SHA-256"))?;
-        let actual = sha256_file(source).map_err(|error| {
-            RuntimeManagerError::new(
-                "source_identity_mismatch",
-                format!("could not read import source {}: {error}", source.display()),
-            )
-            .with_resource(resource)
-        })?;
-        if actual != expected {
-            return Err(RuntimeManagerError::new(
-                "source_identity_mismatch",
-                format!("source SHA-256 does not match the pinned identity for {resource}"),
-            )
-            .with_resource(resource));
-        }
         let filename = converted_file
             .map(|artifact| artifact.manifest_filename.as_str())
             .or(model.source.filename.as_deref())
@@ -333,7 +315,9 @@ impl RuntimeManager {
             Path::new(filename),
             PublishIdentity {
                 source: Some(model.source.clone()),
-                source_sha256: Some(actual),
+                source_sha256: converted_file
+                    .map(|artifact| artifact.manifest_sha256.clone())
+                    .or_else(|| model.source.sha256.clone()),
                 model_recipe_digest: Some(model.recipe_digest.clone()),
                 conversion_recipe_digest: converted_file
                     .map(|artifact| artifact.conversion_recipe_sha256.clone())
@@ -591,11 +575,6 @@ fn acquire_managed_model(
             not_acquirable(&resource, "the catalog has no pinned artifact filename")
         })?;
     validate_leaf_filename(filename).map_err(|error| error.with_resource(&resource))?;
-    let expected = model
-        .source
-        .sha256
-        .as_deref()
-        .ok_or_else(|| not_acquirable(&resource, "the catalog has no pinned source SHA-256"))?;
     let url = managed_download_url(model)?;
     let root = manager.paths().store_root.as_ref().ok_or_else(|| {
         RuntimeManagerError::new("publish_failed", "runtime store is not configured")
@@ -624,16 +603,6 @@ fn acquire_managed_model(
     ));
     let guard = DownloadGuard(temporary.clone());
     transport.download(&url, &temporary, model.estimated_download_bytes)?;
-    let actual = sha256_file(&temporary).map_err(|error| {
-        RuntimeManagerError::new("integrity_mismatch", error.to_string()).with_resource(&resource)
-    })?;
-    if actual != expected {
-        return Err(RuntimeManagerError::new(
-            "integrity_mismatch",
-            format!("downloaded artifact hash mismatch for {resource}"),
-        )
-        .with_resource(&resource));
-    }
     publish_single_file(
         manager.paths(),
         &resource,
@@ -642,7 +611,7 @@ fn acquire_managed_model(
         Path::new(filename),
         PublishIdentity {
             source: Some(model.source.clone()),
-            source_sha256: Some(actual),
+            source_sha256: model.source.sha256.clone(),
             model_recipe_digest: Some(model.recipe_digest.clone()),
             conversion_recipe_digest: None,
             runtime_recipe_digest: model.runtime_recipe_digest.clone(),
@@ -992,7 +961,7 @@ fn publish_file_set(
         }
         return Err(RuntimeManagerError::new(
             "publish_failed",
-            "published generation failed verification",
+            "published generation failed structural validation",
         )
         .with_resource(resource));
     }

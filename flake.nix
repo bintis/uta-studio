@@ -1,5 +1,5 @@
 {
-  description = "Uta Studio AI chart editor and multi-format song exporter";
+  description = "Uta! Studio AI chart editor and multi-format song exporter";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -67,8 +67,20 @@
 
             buildPhase = ''
               runHook preBuild
-              cargo build --release --locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-native-analyzer -p uta-openvino-worker -p uta-qwen-worker
+              cargo build --release --locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
               runHook postBuild
+            '';
+
+            preCheck = ''
+              export PATH="$PWD/target/release:$PATH"
+              export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
+              export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/release/uta-analyze"
+              export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/release/uta-runtime"
+              export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/release/uta-native-analyzer"
+              export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/release/uta-openvino-worker"
+              export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/release/uta-ggml-worker"
+              export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/release/uta-qwen-asr-worker"
+              export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/release/uta-qwen-align-worker"
             '';
 
             installPhase = ''
@@ -79,6 +91,7 @@
               install -Dm755 target/release/uta-analyze $out/bin/.uta-analyze-unwrapped
               install -Dm755 target/release/uta-native-analyzer $out/bin/uta-native-analyzer
               install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
+              install -Dm755 target/release/uta-ggml-worker $out/bin/uta-ggml-worker
               install -Dm755 target/release/uta-qwen-asr-worker $out/bin/uta-qwen-asr-worker
               install -Dm755 target/release/uta-qwen-align-worker $out/bin/uta-qwen-align-worker
               install -Dm644 native-inference/openvino-worker/THIRD_PARTY_NOTICES.md \
@@ -89,8 +102,18 @@
                 $out/share/uta-studio/native-inference/openvino-worker/convert-rmvpe-to-ir.sh
               install -Dm644 native-inference/openvino-worker/runtime-recipe.json \
                 $out/share/uta-studio/native-inference/openvino-worker/runtime-recipe.json
+              install -Dm644 native-inference/openvino-worker/runtime-recipe-ze-experimental.json \
+                $out/share/uta-studio/native-inference/openvino-worker/runtime-recipe-ze-experimental.json
               install -Dm644 native-inference/openvino-worker/tools/convert-model.cpp \
                 $out/share/uta-studio/native-inference/openvino-worker/tools/convert-model.cpp
+              install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
+                $out/share/uta-studio/licenses/ggml-roformer-THIRD_PARTY_NOTICES.md
+              install -Dm755 native-inference/ggml-worker/build-ggml-runtime.sh \
+                $out/share/uta-studio/native-inference/ggml-worker/build-ggml-runtime.sh
+              install -Dm644 native-inference/ggml-worker/runtime-recipe.json \
+                $out/share/uta-studio/native-inference/ggml-worker/runtime-recipe.json
+              mkdir -p $out/share/uta-studio/native-inference/roformer
+              cp -R native-inference/roformer/. $out/share/uta-studio/native-inference/roformer/
               install -Dm644 native-inference/qwen-worker/THIRD_PARTY_NOTICES.md \
                 $out/share/uta-studio/licenses/qwen-worker-THIRD_PARTY_NOTICES.md
               install -Dm755 native-inference/qwen-worker/build-qwen-engines.sh \
@@ -108,12 +131,15 @@
                 $out/share/uta-studio/desktop/assets/icons/ui-icons.png
               install -Dm644 desktop/assets/icons/music-placeholder.png \
                 $out/share/uta-studio/desktop/assets/icons/music-placeholder.png
+              install -Dm644 desktop/assets/icons/music-placeholder.svg \
+                $out/share/uta-studio/desktop/assets/icons/music-placeholder.svg
               install -Dm644 icon.png $out/share/icons/hicolor/512x512/apps/uta-studio.png
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               runtimeWrapperArgs=(
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg
                 --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer
                 --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker
+                --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker
                 --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker
                 --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}"
@@ -129,6 +155,7 @@
                 --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
                 --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer \
                 --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker \
+                --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker \
                 --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker \
                 --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker \
                 --set WINIT_UNIX_BACKEND wayland \
@@ -193,6 +220,7 @@
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
               export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
               export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
+              export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
               export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"
               export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/debug/uta-qwen-align-worker"
               export WINIT_UNIX_BACKEND=wayland

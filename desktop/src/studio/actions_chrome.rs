@@ -99,6 +99,9 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
             studio.analysis.analysis_model_panel_open = true;
+            if studio.jobs.model_settings_job.current.is_none() {
+                studio.jobs.request_model_settings_refresh = true;
+            }
             studio.library.library_view = LibraryView::Queue;
             studio.library.library_facet = None;
             studio.shell.route = StudioRoute::Library;
@@ -165,40 +168,19 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::CycleWorkflowPolicy(node_id)) => {
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowPolicy(node_id, policy)) => {
             if let Some(workflow) = studio.analysis.workflow.as_mut() {
-                let node_id = app_core::WorkflowNodeId::new(node_id);
-                let current = workflow
-                    .definition
-                    .nodes
-                    .iter()
-                    .find(|node| node.instance_id == node_id)
-                    .map(|node| node.execution_policy.clone());
-                let next = match current {
-                    Some(app_core::ExecutionPolicy::Always) => {
-                        app_core::ExecutionPolicy::Conditional {
-                            condition: app_core::ConditionalExecution::OnDisagreement,
-                        }
-                    }
-                    Some(app_core::ExecutionPolicy::Conditional {
-                        condition: app_core::ConditionalExecution::OnDisagreement,
-                    }) => app_core::ExecutionPolicy::Conditional {
-                        condition: app_core::ConditionalExecution::DisagreementWindows,
-                    },
-                    Some(app_core::ExecutionPolicy::Conditional { .. }) => {
-                        app_core::ExecutionPolicy::Disabled
-                    }
-                    Some(app_core::ExecutionPolicy::Disabled) => app_core::ExecutionPolicy::Always,
-                    None => app_core::ExecutionPolicy::Always,
-                };
                 match app_core::set_workflow_execution_policy(
                     &mut workflow.definition,
-                    &node_id,
-                    next,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    policy.clone(),
                 ) {
                     Ok(()) => {
                         studio.analysis.workflow_compile_error = None;
-                        studio.shell.notice = Some("Execution policy changed.".to_string());
+                        studio.shell.notice = Some(
+                            "Execution condition changed; priority and dependencies are unchanged."
+                                .to_string(),
+                        );
                     }
                     Err(error) => {
                         studio.analysis.workflow_compile_error = Some(error.clone());
@@ -405,6 +387,11 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisModelPanel) => {
             studio.analysis.analysis_model_panel_open = !studio.analysis.analysis_model_panel_open;
+            if studio.analysis.analysis_model_panel_open
+                && studio.jobs.model_settings_job.current.is_none()
+            {
+                studio.jobs.request_model_settings_refresh = true;
+            }
             studio.dialogs.open_settings_select = None;
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
@@ -703,7 +690,7 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Library(LibraryCommand::AnalyzeAll) => {
-            app_core::enqueue_all(&studio.library.filters());
+            let queued = app_core::enqueue_all(&studio.library.filters());
             studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
             studio.library.library_view = LibraryView::Queue;
             studio.library.library_facet = None;
@@ -713,10 +700,10 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
             studio.library.refresh();
-            studio.shell.notice = Some(
-                "Matching unanalyzed songs were queued. Missing resources will be reported per request instead of blocking the whole UI."
-                    .to_string(),
-            );
+            studio.shell.notice = Some(format!(
+                "Queued {} exact Engine request(s); {} request(s) were blocked during Plan Preview.",
+                queued.queued, queued.blocked
+            ));
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::App(AppCommand::Folders) => {

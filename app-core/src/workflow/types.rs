@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -54,7 +54,9 @@ pub enum AudioRole {
     SourceMix,
     Vocal,
     LeadVocal,
-    BackVocal,
+    #[serde(rename = "backing_vocal", alias = "back_vocal")]
+    BackingVocal,
+    HarmonyVocal,
     VocalResidual,
     Instrumental,
     Drums,
@@ -100,7 +102,10 @@ impl WorkflowPortType {
                 (
                     Self::Audio(AudioRole::Vocal),
                     Self::Audio(
-                        AudioRole::LeadVocal | AudioRole::BackVocal | AudioRole::VocalResidual
+                        AudioRole::LeadVocal
+                            | AudioRole::BackingVocal
+                            | AudioRole::HarmonyVocal
+                            | AudioRole::VocalResidual
                     )
                 )
             )

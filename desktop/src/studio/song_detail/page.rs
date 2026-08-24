@@ -707,7 +707,7 @@ pub(crate) fn spawn_song_detail(
                                     font.clone(),
                                     theme,
                                     "UTZ project",
-                                    "Export the full editable project file for Uta Studio.",
+                                    "Export the full editable project file for Uta! Studio.",
                                     Some((
                                         "Export UTZ",
                                         UiAction::from(LibraryCommand::ExportUtz(song.file_hash.clone())),

@@ -390,6 +390,7 @@ pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {
         .map(|error| format!("Could not save settings: {error}"))
 }
 
+#[cfg(any())]
 pub(crate) fn sync_numeric_settings(
     mut inputs: Query<(&mut EditableText, &NumericSetting)>,
     mut shell: ResMut<ShellState>,

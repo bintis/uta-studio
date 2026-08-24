@@ -1,6 +1,6 @@
-# Uta Studio User Guide / 用户说明书 / ユーザーガイド
+# Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta Studio 0.6.0
+**Applies to:** Uta! Studio 0.6.0
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -12,9 +12,9 @@
 
 ## English
 
-### 1. What Uta Studio does
+### 1. What Uta! Studio does
 
-Uta Studio turns local audio or video into an editable karaoke chart. Its normal workflow is:
+Uta! Studio turns local audio or video into an editable karaoke chart. Its normal workflow is:
 
 1. Add one or more watched folders.
 2. Scan supported local media into the library.
@@ -23,7 +23,7 @@ Uta Studio turns local audio or video into an editable karaoke chart. Its normal
 5. Save the authored chart.
 6. Export either an **Uta package (`.utz`)** or **UltraStar 1.1 (`.txt`)** bundle.
 
-Uta Studio does not move or delete source media. Generated stems, models, previews, charts, and temporary authoring data are stored separately.
+Uta! Studio does not move or delete source media. Generated stems, models, previews, charts, and temporary authoring data are stored separately.
 
 ### 2. Installation
 
@@ -80,7 +80,7 @@ Open **Settings → General → Interface language** and choose:
 - **简体中文**
 - **日本語**
 
-The selection is saved in Uta Studio’s configuration. Developers and portable-launch scripts may override it with `UTA_STUDIO_LOCALE=en`, `zh-CN`, or `ja`.
+The selection is saved in Uta! Studio’s configuration. Developers and portable-launch scripts may override it with `UTA_STUDIO_LOCALE=en`, `zh-CN`, or `ja`.
 
 **Interface language is not the same as song analysis language.** Interface language changes menus and messages. Song analysis language controls transcription/alignment for an individual song and is edited from that song’s language action.
 
@@ -116,7 +116,7 @@ Open **Settings → Models & runtime**.
 4. Read the confirmation, including model size and license notices.
 5. Confirm the setup explicitly.
 
-Uta Studio uses packaged native workers plus compatible local or packaged `ffmpeg` and existing model files. It does not download runtime components or models merely because the application was launched, a page opened, or diagnostics ran.
+Uta! Studio uses packaged native workers plus compatible local or packaged `ffmpeg` and existing model files. It does not download runtime components or models merely because the application was launched, a page opened, or diagnostics ran.
 
 #### 3.5 Open the Documentation Center
 
@@ -153,19 +153,19 @@ Library playback includes previous/next, pause/play, repeat modes, shuffle, mute
 
 ### 6. Analysis pipeline
 
-Uta Studio executes an explicit node-based DAG. Generated files are typed **analysis artifacts**; inspect revisions, lineage, real node progress, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
+Uta! Studio executes an explicit node-based DAG. Generated files are typed **analysis artifacts**; inspect revisions, lineage, real node progress, and editor routing from the song’s analysis graph. See [Analysis artifacts](guide:artifacts).
 
 #### 01 · Vocal and BGM separation
 
 Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
 
-Available choices include validated RoFormer vocal/BGM, lead/back separation, denoise, and dereverb models. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis stays local; existing chart data changes only after explicit re-analysis.
+Available choices include validated RoFormer vocal/BGM separation, lead isolation, denoise, and dereverb models. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis stays local; existing chart data changes only after explicit re-analysis.
 
 Use a balanced profile first. Memory-saving profiles reduce peak use; quality profiles usually take longer and can require more memory.
 
 #### 02 · Lyrics transcription
 
-FireRedASR2-AED and Qwen3-ASR produce independent transcript evidence. Uta Studio fuses their token evidence into Canonical Lyrics instead of silently choosing one complete transcript.
+FireRedASR2-AED and Qwen3-ASR produce independent transcript evidence. Uta! Studio fuses their token evidence into Canonical Lyrics instead of silently choosing one complete transcript.
 
 A larger recognition model can improve difficult material but costs more memory and processing time. Confirm the selected model is installed on **Models & runtime**.
 
@@ -260,7 +260,7 @@ Exports UTF-8 UltraStar 1.1 text plus sibling media. Export preserves normal, go
 
 The default settings/data root is `~/.uta-studio`, unless a different data location is configured. Before migrating or reinstalling:
 
-1. Close Uta Studio.
+1. Close Uta! Studio.
 2. Back up `~/.uta-studio` or the configured data root.
 3. Back up authored/exported `.utz` and UltraStar bundles.
 4. Keep original source media separately.
@@ -317,7 +317,7 @@ Choose a language manually in **Settings → General → Interface language**. S
 
 Analysis runs locally with the configured runtime. LRCLIB search is an explicit network-facing lyrics lookup. Model setup is explicit and may contact model hosts after confirmation.
 
-Uta Studio is GPL-3.0. Optional third-party models and tools retain their own licenses. Review the confirmation shown before downloading separately licensed artifacts.
+Uta! Studio is GPL-3.0. Optional third-party models and tools retain their own licenses. Review the confirmation shown before downloading separately licensed artifacts.
 
 ### 14. Documentation Center
 
@@ -330,7 +330,7 @@ Open it from:
 - **F1**, which opens context help for the current page or selected analysis node;
 - a DAG node **Help** action, or an artifact menu **About this artifact** action.
 
-The document language follows **Settings → General → Interface language**. The article body is not re-translated at runtime; Uta Studio selects the matching English, Simplified Chinese, or Japanese source first. Viewer chrome still uses the interface catalogue.
+The document language follows **Settings → General → Interface language**. The article body is not re-translated at runtime; Uta! Studio selects the matching English, Simplified Chinese, or Japanese source first. Viewer chrome still uses the interface catalogue.
 
 #### Browse and search the guide
 
@@ -338,7 +338,7 @@ Search is local to the embedded guide. Headings rank higher than body lines. CJK
 
 On a wide window the page uses a contents column, the article, and search or history. On a narrow window those columns stack. Back and Forward remember the sections you opened.
 
-If **F1** is pressed from the chart editor while the chart has unsaved changes, Uta Studio asks before leaving the editor.
+If **F1** is pressed from the chart editor while the chart has unsaved changes, Uta! Studio asks before leaving the editor.
 
 #### Context help and safe links
 
@@ -348,14 +348,14 @@ Only in-guide, `guide:`, `node:`, `artifact:`, `problem:`, and `https://` links 
 
 ### 15. Analysis artifacts
 
-Analysis writes generated files into Uta Studio’s cache, not over your source media. The Artifact Workbench inspects those files as typed revisions from the song’s analysis graph.
+Analysis writes generated files into Uta! Studio’s cache, not over your source media. The Artifact Workbench inspects those files as typed revisions from the song’s analysis graph.
 
 #### Revisions, Active, and Pin
 
 - A **revision** is one immutable snapshot. A later analysis creates another revision; it does not rewrite the old bytes.
 - **Active** is the revision later actions use by default.
 - **Pin** protects a revision from delete and cache cleanup. Unpin it first if you really want it removed.
-- Older runs that predate exact binding records are labelled **Legacy / untracked**. Uta Studio does not invent missing lineage from a filename or modification time.
+- Older runs that predate exact binding records are labelled **Legacy / untracked**. Uta! Studio does not invent missing lineage from a filename or modification time.
 - Temporary preprocess audio is labelled **Ephemeral** unless you explicitly capture it.
 
 #### Inspect Node I/O
@@ -439,7 +439,7 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 ## Processing Studio and evidence review
 
-Open **Processing Studio** from a song page to edit the machine workflow. Audio transformations rewrite real typed dataflow; Vocal, BGM, Lead, and Back/Harmony remain separate lanes. Analyzer attachments choose a concrete audio artifact, while analyzer order only changes ready-node priority. Invalid types, missing hard dependencies, and cycles cannot be saved. **Advanced Graph** displays the exact compiled DAG.
+Open **Processing Studio** from a song page to edit the machine workflow. Audio transformations rewrite real typed dataflow; the executable audio lanes are Vocal, BGM, Lead, and Vocal Residual. Backing and Harmony remain chart-authoring roles until a future audio partition capability exists. Analyzer attachments choose a concrete audio artifact, while analyzer order only changes ready-node priority. Invalid types, missing hard dependencies, and cycles cannot be saved. **Advanced Graph** displays the exact compiled DAG.
 
 A completed run creates a replaceable Candidate revision. The Editor keeps authored notes visually and semantically dominant, exposes read-only evidence and a disagreement-first Review queue, and applies accepted suggestions through normal undo history. Re-analysis never silently replaces an Authored revision. Use Compare or Merge when a newer Candidate is available.
 
@@ -447,9 +447,9 @@ A completed run creates a replaceable Candidate revision. The Editor keeps autho
 
 ## 简体中文
 
-### 1. Uta Studio 的用途
+### 1. Uta! Studio 的用途
 
-Uta Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。标准流程如下：
+Uta! Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。标准流程如下：
 
 1. 添加一个或多个监视文件夹。
 2. 扫描本地媒体并建立曲库索引。
@@ -458,7 +458,7 @@ Uta Studio 可将本地音频或视频制作成可编辑的卡拉 OK 谱面。�
 5. 保存人工制作的谱面。
 6. 导出 **Uta 包（`.utz`）**或 **UltraStar 1.1（`.txt`）**包。
 
-Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、谱面和临时制作数据会单独存放。
+Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览、谱面和临时制作数据会单独存放。
 
 ### 2. 安装
 
@@ -471,7 +471,7 @@ Uta Studio 不会移动或删除源媒体。生成的分轨、模型、预览、
 3. 从解压后的文件夹运行 `uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
 
-Uta Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
+Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用系统 WASAPI 输出；FLAC、MP3、WAV、Ogg/Vorbis 及常见 AAC/MP4 输入无需另装解码包。
 
 #### Debian / Ubuntu
 
@@ -515,7 +515,7 @@ sha256sum -c uta-studio-0.6.0-linux-deb.sha256
 - **简体中文**
 - **日本語**
 
-选择会保存到 Uta Studio 配置中。开发者或便携启动脚本也可使用 `UTA_STUDIO_LOCALE=en`、`zh-CN` 或 `ja` 强制覆盖。
+选择会保存到 Uta! Studio 配置中。开发者或便携启动脚本也可使用 `UTA_STUDIO_LOCALE=en`、`zh-CN` 或 `ja` 强制覆盖。
 
 **界面语言与歌曲分析语言不同。** 界面语言只改变菜单和消息；歌曲分析语言控制单首歌曲的转录和对齐，应从该歌曲的语言操作中设置。
 
@@ -551,7 +551,7 @@ Music/
 4. 阅读确认信息，包括模型大小和许可证提示。
 5. 明确确认后才开始设置。
 
-Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，并复用已有模型文件。应用启动、打开页面或运行诊断都不会自动下载运行时或模型。
+Uta! Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，并复用已有模型文件。应用启动、打开页面或运行诊断都不会自动下载运行时或模型。
 
 #### 3.5 打开文档中心
 
@@ -588,19 +588,19 @@ Uta Studio 使用打包的原生 Worker、兼容的本地或打包 `ffmpeg`，�
 
 ### 6. 分析流水线
 
-Uta Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分析产物**；可在歌曲分析图中查看修订、来源、真实节点进度和编辑器入口。详见[分析产物](guide:artifacts)。
+Uta! Studio 使用按节点执行的明确 DAG。生成文件是带类型的**分析产物**；可在歌曲分析图中查看修订、来源、真实节点进度和编辑器入口。详见[分析产物](guide:artifacts)。
 
 #### 01 · 人声与 BGM 分离
 
 人声与 BGM 使用彼此独立的分离分支。每个分支单独选择分离模型，之后有两个按顺序执行的后处理槽；每个槽可设为关闭、降噪或降回声。BGM 产物直接进入谱面构建，人声产物则进入音高与歌词分析。
 
-可用选项包括经过验证的 RoFormer 人声/BGM、主唱/和声分离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
+可用选项包括经过验证的 RoFormer 人声/BGM 分离、主唱隔离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
 
 建议先使用“均衡”配置。节省内存配置可降低峰值占用；高质量配置通常更慢，并需要更多内存。
 
 #### 02 · 歌词转录
 
-FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
+FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta! Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
 
 更大的识别模型可能改善困难素材，但会增加内存和处理时间。请在**模型与运行环境**中确认所选模型已安装。
 
@@ -695,7 +695,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 默认设置/数据根目录为 `~/.uta-studio`，除非另行配置数据位置。迁移或重装前：
 
-1. 关闭 Uta Studio。
+1. 关闭 Uta! Studio。
 2. 备份 `~/.uta-studio` 或已配置的数据根目录。
 3. 备份已制作/导出的 `.utz` 与 UltraStar 包。
 4. 单独保留原始源媒体。
@@ -752,7 +752,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 分析使用已配置的本地运行环境执行。LRCLIB 搜索是明确触发的联网歌词查询。模型设置在确认后可能访问模型托管服务。
 
-Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
+Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
 
 ### 14. 文档中心
 
@@ -783,14 +783,14 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 ### 15. 分析产物
 
-分析会把生成文件写入 Uta Studio 缓存，而不会改写源媒体。产物工作台从歌曲的分析图中，按类型查看这些修订。
+分析会把生成文件写入 Uta! Studio 缓存，而不会改写源媒体。产物工作台从歌曲的分析图中，按类型查看这些修订。
 
 #### 修订、当前选用与固定
 
 - **修订**是一份不可变快照。之后的分析会生成新修订，而不会改写旧字节。
 - **当前选用（Active）**是后续操作默认使用的修订。
 - **固定（Pin）**保护修订不被删除和缓存清理。真正要删除时，需要先取消固定。
-- 早于精确绑定记录的旧运行会标为**旧版/未跟踪**。Uta Studio 不会根据文件名或修改时间编造缺失的来源。
+- 早于精确绑定记录的旧运行会标为**旧版/未跟踪**。Uta! Studio 不会根据文件名或修改时间编造缺失的来源。
 - 临时预处理音频标为**临时（Ephemeral）**，除非你明确捕获它。
 
 #### 查看节点输入输出
@@ -874,7 +874,7 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 ## Processing Studio 与证据复核
 
-从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；Vocal、BGM、Lead 与 Back/Harmony 保持独立 lane。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
+从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；当前可执行音频 lane 是 Vocal、BGM、Lead 与 Vocal Residual。Backing 和 Harmony 在未来音频分流能力实现前仍是制谱轨角色。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
 
 完成的运行会生成可替换的 Candidate revision。编辑器始终让人工音符保持最高视觉与语义优先级，并提供只读 Evidence 和 disagreement-first Review queue。接受建议会进入正常 undo 历史；重新分析绝不会静默替换 Authored revision。出现新 Candidate 时请使用 Compare 或 Merge。
 
@@ -882,9 +882,9 @@ Uta Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证�
 
 ## 日本語
 
-### 1. Uta Studio について
+### 1. Uta! Studio について
 
-Uta Studio は、ローカルの音声・動画から編集可能なカラオケ譜面を作成するデスクトップアプリです。基本的な流れは次のとおりです。
+Uta! Studio は、ローカルの音声・動画から編集可能なカラオケ譜面を作成するデスクトップアプリです。基本的な流れは次のとおりです。
 
 1. 監視するフォルダーを1つ以上追加する。
 2. 対応するローカルメディアをスキャンしてライブラリに登録する。
@@ -893,7 +893,7 @@ Uta Studio は、ローカルの音声・動画から編集可能なカラオケ
 5. 制作した譜面を保存する。
 6. **Uta パッケージ（`.utz`）**または **UltraStar 1.1（`.txt`）**として書き出す。
 
-Uta Studio が元メディアを移動・削除することはありません。生成したステム、モデル、プレビュー、譜面、一時制作データは別に保存されます。
+Uta! Studio が元メディアを移動・削除することはありません。生成したステム、モデル、プレビュー、譜面、一時制作データは別に保存されます。
 
 ### 2. インストール
 
@@ -950,7 +950,7 @@ sha256sum -c uta-studio-0.6.0-linux-deb.sha256
 - **简体中文**
 - **日本語**
 
-選択内容は Uta Studio の設定に保存されます。開発用・ポータブル起動スクリプトでは `UTA_STUDIO_LOCALE=en`、`zh-CN`、`ja` で上書きできます。
+選択内容は Uta! Studio の設定に保存されます。開発用・ポータブル起動スクリプトでは `UTA_STUDIO_LOCALE=en`、`zh-CN`、`ja` で上書きできます。
 
 **表示言語と楽曲の解析言語は別の設定です。** 表示言語はメニューやメッセージを変更します。解析言語は楽曲ごとの文字起こし・アラインメントに使われ、各楽曲の言語操作から設定します。
 
@@ -986,7 +986,7 @@ Music/
 4. モデル容量とライセンスを含む確認内容を読みます。
 5. 明示的に確定してからセットアップを開始します。
 
-Uta Studio は同梱ネイティブ Worker、互換性のあるローカルまたは同梱 `ffmpeg`、既存モデルを使用します。起動、ページ表示、診断だけでランタイムやモデルをダウンロードすることはありません。
+Uta! Studio は同梱ネイティブ Worker、互換性のあるローカルまたは同梱 `ffmpeg`、既存モデルを使用します。起動、ページ表示、診断だけでランタイムやモデルをダウンロードすることはありません。
 
 #### 3.5 ドキュメントセンターを開く
 
@@ -1023,19 +1023,19 @@ Uta Studio は同梱ネイティブ Worker、互換性のあるローカルま�
 
 ### 6. 解析パイプライン
 
-Uta Studio はノード単位で実行される明示的な DAG を使用します。生成ファイルは型付きの**解析成果物**です。版、由来、実際のノード進捗、エディターへの導線は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
+Uta! Studio はノード単位で実行される明示的な DAG を使用します。生成ファイルは型付きの**解析成果物**です。版、由来、実際のノード進捗、エディターへの導線は楽曲の解析グラフから確認します。詳細は[解析成果物](guide:artifacts)を参照してください。
 
 #### 01 · ボーカルと BGM の分離
 
 ボーカルと BGM は独立した分離ブランチで処理します。各ブランチで分離モデルを個別に選び、その後に順番どおり実行される2つの後処理スロットを設定します。各スロットはオフ、ノイズ除去、残響除去から選べます。BGM 成果物は譜面構築へ直接渡り、ボーカル成果物はピッチ・歌詞解析へ渡ります。
 
-検証済みの RoFormer ボーカル/BGM、リード/ハーモニー分離、ノイズ除去、残響除去モデルを利用できます。カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。解析はローカルで行われ、既存譜面は明示的な再解析後にだけ変わります。
+検証済みの RoFormer ボーカル/BGM 分離、リード分離、ノイズ除去、残響除去モデルを利用できます。カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。解析はローカルで行われ、既存譜面は明示的な再解析後にだけ変わります。
 
 まずはバランス設定を推奨します。省メモリ設定はピーク使用量を下げ、高品質設定は通常より長い処理時間と多くのメモリを必要とします。
 
 #### 02 · 歌詞文字起こし
 
-FireRedASR2-AED と Qwen3-ASR は独立した転写エビデンスを生成します。Uta Studio は一方の全文を選ぶのではなく、token 単位で Canonical Lyrics に融合します。
+FireRedASR2-AED と Qwen3-ASR は独立した転写エビデンスを生成します。Uta! Studio は一方の全文を選ぶのではなく、token 単位で Canonical Lyrics に融合します。
 
 大きい認識モデルは難しい素材を改善する場合がありますが、メモリと処理時間が増えます。**モデルとランタイム**で選択モデルがインストール済みか確認してください。
 
@@ -1130,7 +1130,7 @@ UTF-8 UltraStar 1.1 テキストと同階層のメディアを書き出します
 
 既定の設定/データルートは `~/.uta-studio` です。別のデータ場所を設定した場合はそちらが使われます。移行・再インストール前には：
 
-1. Uta Studio を終了する。
+1. Uta! Studio を終了する。
 2. `~/.uta-studio` または設定済みデータルートをバックアップする。
 3. 制作・書き出し済み `.utz` と UltraStar パッケージをバックアップする。
 4. 元メディアを別途保管する。
@@ -1187,7 +1187,7 @@ X11 専用ではなく Wayland セッションであること、グラフィッ�
 
 解析は設定済みのローカルランタイムで実行されます。LRCLIB 検索は明示的に実行するネットワーク歌詞検索です。モデルセットアップは確認後にモデルホストへ接続する場合があります。
 
-Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそれぞれのライセンスが適用されます。別ライセンスの成果物をダウンロードする前に確認内容を読んでください。
+Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそれぞれのライセンスが適用されます。別ライセンスの成果物をダウンロードする前に確認内容を読んでください。
 
 ### 14. ドキュメントセンター
 
@@ -1218,7 +1218,7 @@ Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそ
 
 ### 15. 解析成果物
 
-解析は生成ファイルを Uta Studio のキャッシュへ書き、ソースメディアは上書きしません。成果物ワークベンチは、楽曲の解析グラフからそれらのファイルを型付きリビジョンとして検査します。
+解析は生成ファイルを Uta! Studio のキャッシュへ書き、ソースメディアは上書きしません。成果物ワークベンチは、楽曲の解析グラフからそれらのファイルを型付きリビジョンとして検査します。
 
 #### リビジョン、Active、Pin
 
@@ -1309,6 +1309,6 @@ Uta Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそ
 
 ## Processing Studio とエビデンス確認
 
-曲ページから **Processing Studio** を開き、機械処理ワークフローを編集します。音声 Transformation は実際の型付きデータフローを書き換え、Vocal、BGM、Lead、Back/Harmony は独立した lane のままです。Analyzer attachment は具体的な音声 Artifact を選択し、Analyzer の並び順は ready-node の優先度だけを変更します。型不一致、hard dependency の欠落、cycle を含むワークフローは保存できません。**Advanced Graph** は正確な compiled DAG を表示します。
+曲ページから **Processing Studio** を開き、機械処理ワークフローを編集します。音声 Transformation は実際の型付きデータフローを書き換え、現在実行可能な音声 lane は Vocal、BGM、Lead、Vocal Residual です。Backing と Harmony は将来の音声分割機能が実装されるまで譜面トラックの役割です。Analyzer attachment は具体的な音声 Artifact を選択し、Analyzer の並び順は ready-node の優先度だけを変更します。型不一致、hard dependency の欠落、cycle を含むワークフローは保存できません。**Advanced Graph** は正確な compiled DAG を表示します。
 
 完了した実行は再生成可能な Candidate revision を作成します。エディターでは人が編集した音符が常に最優先で、読み取り専用 Evidence と disagreement-first Review queue を利用できます。提案の適用は通常の undo 履歴に入り、再解析が Authored revision を暗黙に置き換えることはありません。新しい Candidate は Compare または Merge で確認します。

@@ -49,7 +49,7 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("Failed to run the Uta Studio desktop command: {e}");
+            eprintln!("Failed to run the Uta! Studio desktop command: {e}");
             ExitCode::FAILURE
         }
     }

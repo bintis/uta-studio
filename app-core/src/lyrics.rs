@@ -5,8 +5,8 @@ use tracing::{info, warn};
 use ts_rs::TS;
 
 use crate::analyzer::{
-    AnalysisArtifactCommit, AnalysisProgressSnapshot, AnalysisStageRoute, enqueue_one,
-    is_usdx_song, mark_stems_only, prepare_lrc_no_stems, unix_time_ms, update_song_analyzed,
+    AnalysisArtifactCommit, AnalysisProgressSnapshot, AnalysisStageRoute, is_usdx_song,
+    prepare_lrc_no_stems, unix_time_ms,
 };
 use crate::cache::CacheDir;
 use crate::library_db;
@@ -65,7 +65,7 @@ pub fn lrclib_candidates(song: &Song) -> Vec<LrclibCandidate> {
     );
     let resp = match agent
         .get(&url)
-        .header("User-Agent", "Uta Studio/1.0")
+        .header("User-Agent", "Uta! Studio/1.0")
         .call()
     {
         Ok(r) => r,
@@ -179,18 +179,14 @@ pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<()
     }
 
     let cache = CacheDir::new();
-    let previous_language = library_db::load_song_by_hash(file_hash)
-        .ok()
-        .flatten()
-        .and_then(|song| song.language);
     write_lyrics_file(&cache, file_hash, &normalized)
         .map_err(|e| format!("Failed to write lyrics file: {e}"))?;
 
-    apply_lyrics_edit_reset(&cache, file_hash);
-
-    update_song_analyzed(file_hash, false, previous_language, None, None, None, None);
-    enqueue_one(file_hash);
-    Ok(())
+    crate::analysis_engine_adapter::preview_and_queue_engine_run(
+        file_hash,
+        Some(crate::analysis_experience::AnalysisDefaultTarget::Alignment),
+    )
+    .map(|_| ())
 }
 
 /// Build the editable transcript JSON from parsed LRC segments.
@@ -236,6 +232,12 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
     if is_usdx_song(file_hash) {
         return Err("Cannot provide lyrics for USDX songs".to_string());
     }
+    if separate_stems {
+        return Err(
+            "Engine v1 cannot combine timed-LRC authoring with a stem-only request. Author on the original mix or run a separately previewed supported analysis target."
+                .to_string(),
+        );
+    }
 
     let parsed = lrc::parse_lrc(lrc_text)?;
 
@@ -249,24 +251,13 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
 
     let language = song.language.clone();
 
-    if separate_stems {
-        let value = build_lrc_transcript(&parsed, language.as_deref(), None, 1.0, false);
-        write_transcript_json(&cache, file_hash, &value)
-            .map_err(|e| format!("Failed to write transcript: {e}"))?;
-        // Stays not-analyzed until stem separation finishes.
-        update_song_analyzed(file_hash, false, language, None, None, None, None);
-        mark_stems_only(file_hash);
-        enqueue_one(file_hash);
-    } else {
-        let value = build_lrc_transcript(&parsed, language.as_deref(), None, 1.0, true);
-        write_transcript_json(&cache, file_hash, &value)
-            .map_err(|e| format!("Failed to write transcript: {e}"))?;
-        // Authoring over the original mix needs no separation. Prepare everything
-        // synchronously (materialize audio, detect the key) and only then mark
-        // the song ready — no status-queue pass, and no transient window where
-        // authoring assets aren't in place yet.
-        prepare_lrc_no_stems(file_hash).map_err(|e| e.to_string())?;
-    }
+    let value = build_lrc_transcript(&parsed, language.as_deref(), None, 1.0, true);
+    write_transcript_json(&cache, file_hash, &value)
+        .map_err(|e| format!("Failed to write transcript: {e}"))?;
+    // Authoring over the original mix is a local Studio operation. It does not
+    // launch the retired compatibility analyzer or pretend timed LRC is an
+    // Engine v1 alignment artifact.
+    prepare_lrc_no_stems(file_hash).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -366,7 +357,7 @@ fn record_timed_lyrics_import(
         }],
         input_revision_ids: vec![None],
         operation: "Imported timed lyrics".to_string(),
-        implementation: "Uta Studio LRC parser".to_string(),
+        implementation: "Uta! Studio LRC parser".to_string(),
         model: "N/A".to_string(),
         stage_progress: 100,
         requested_device: "cpu".to_string(),
@@ -387,7 +378,7 @@ fn record_timed_lyrics_import(
         stage_progress: 100,
         operation: "Timed lyrics imported".to_string(),
         detail: "Transcript rebuilt directly from the provided timed LRC.".to_string(),
-        implementation: "Uta Studio LRC parser".to_string(),
+        implementation: "Uta! Studio LRC parser".to_string(),
         model: "N/A".to_string(),
         device: "cpu".to_string(),
         requested_device: "cpu".to_string(),
@@ -423,7 +414,7 @@ fn record_timed_lyrics_import(
             status: "succeeded",
             progress: 100,
             operation: "Imported timed lyrics",
-            implementation: "Uta Studio LRC parser",
+            implementation: "Uta! Studio LRC parser",
             model: "N/A",
             requested_device: "cpu",
             actual_device: "cpu",
@@ -450,6 +441,7 @@ pub(crate) fn write_lyrics_file(
     Ok(out)
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_lrclib_lyrics(song: &Song, cache: &CacheDir) -> Option<PathBuf> {
     let existing = cache.lyrics_path(&song.file_hash);
     if existing.is_file() {

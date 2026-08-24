@@ -21,6 +21,7 @@ pub(crate) static LIVE_ANALYSIS: LazyLock<Mutex<HashMap<String, AnalysisProgress
     LazyLock::new(|| Mutex::new(HashMap::new()));
 pub(crate) static ANALYSIS_STARTED: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(test)]
 pub(crate) static STOP_REQUESTED: LazyLock<Mutex<BTreeSet<String>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 pub(crate) static RETRY_ATTEMPT_ROUTES: LazyLock<Mutex<HashMap<String, Vec<AnalysisStageRoute>>>> =
@@ -83,6 +84,7 @@ pub(crate) fn append_analysis_log_path(path: Option<&Path>, message: &str) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn append_analysis_log_node_event(
     path: Option<&Path>,
     node_id: &str,
@@ -102,7 +104,7 @@ pub(crate) fn append_analysis_log_node_event(
             "event": event,
             "stage_progress": progress.min(100),
             "msg": message,
-            "implementation": "Uta Studio native preflight",
+            "implementation": "Uta! Studio native preflight",
             "requested_device": "cpu",
             "actual_device": "cpu",
         });
@@ -111,6 +113,7 @@ pub(crate) fn append_analysis_log_node_event(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn append_analysis_log_attempt(
     path: Option<&Path>,
     attempt: usize,
@@ -153,6 +156,7 @@ pub(crate) fn append_analysis_log_terminal(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn append_analysis_artifacts(path: Option<&Path>, routes: &[AnalysisStageRoute]) {
     let Some(path) = path else {
         return;
@@ -265,12 +269,9 @@ pub(crate) fn node_attempt_status(node_event: Option<&str>) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn take_stop_requested(file_hash: &str) -> bool {
     STOP_REQUESTED.lock().unwrap().remove(file_hash)
-}
-
-pub fn analysis_stop_requested(file_hash: &str) -> bool {
-    STOP_REQUESTED.lock().unwrap().contains(file_hash)
 }
 
 pub(crate) fn node_attempt_status_for_route(route: &AnalysisStageRoute) -> &'static str {
@@ -360,23 +361,7 @@ pub(crate) fn finish_analysis_history(file_hash: &str, status: &str, error_messa
     };
     record_node_attempts(run_id, file_hash, &snapshot);
     match crate::artifact_workbench::capture_analysis_run_artifacts(run_id, file_hash) {
-        Ok(()) => {
-            let captured_preprocessed_audio = snapshot.stage_routes.iter().any(|route| {
-                route.committed_outputs.iter().any(|output| {
-                    output.artifact_kind == "PreprocessedAudio"
-                        && output.content_hash.is_some()
-                        && output.capture_error.is_none()
-                })
-            });
-            if captured_preprocessed_audio
-                && let Some(request) = ACTIVE_CAPTURE_REQUESTS.lock().unwrap().remove(file_hash)
-                && !request.persistent
-            {
-                let mut disabled = request;
-                disabled.enabled = false;
-                let _ = crate::artifact_workbench::set_intermediate_capture_request(&disabled);
-            }
-        }
+        Ok(()) => {}
         Err(error) => {
             let message = format!("Artifact lineage recording failed after output commit: {error}");
             append_analysis_log_path(snapshot.analysis_log_path.as_deref(), &message);
@@ -385,6 +370,7 @@ pub(crate) fn finish_analysis_history(file_hash: &str, status: &str, error_messa
     }
 }
 
+#[cfg(test)]
 pub(crate) fn update_live_analysis(file_hash: &str, snapshot: AnalysisProgressSnapshot) {
     let mut live = LIVE_ANALYSIS.lock().unwrap();
     let mut snapshot = snapshot;
@@ -421,6 +407,7 @@ pub(crate) fn update_live_analysis(file_hash: &str, snapshot: AnalysisProgressSn
     live.insert(file_hash.to_string(), snapshot);
 }
 
+#[cfg(test)]
 pub(crate) fn preserve_retry_attempt(file_hash: &str) {
     let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get(file_hash).cloned() else {
         return;
@@ -433,11 +420,13 @@ pub(crate) fn preserve_retry_attempt(file_hash: &str) {
         .extend(snapshot.stage_routes);
 }
 
+#[cfg(test)]
 pub(crate) fn capture_committed_outputs(file_hash: &str, routes: &mut [AnalysisStageRoute]) {
     let cache = CacheDir::new();
     capture_committed_outputs_in(&cache, file_hash, routes);
 }
 
+#[cfg(test)]
 pub(crate) fn capture_committed_outputs_in(
     cache: &CacheDir,
     file_hash: &str,
@@ -529,6 +518,7 @@ pub(crate) fn capture_committed_outputs_in(
 /// boolean special cases -- the native worker protocol is unchanged; only how
 /// Rust decides those booleans changed.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub(crate) struct PendingNodeIntent {
     pub(crate) targets: BTreeSet<crate::analysis_graph::AnalysisNodeId>,
     /// Distinct from `targets`: this is an input-source override ("don't
@@ -591,7 +581,7 @@ pub struct PendingAnalysisIntent {
     pub bypassed_nodes: BTreeSet<crate::analysis_graph::AnalysisNodeId>,
 }
 
-pub fn pending_analysis_intent(file_hash: &str) -> PendingAnalysisIntent {
+pub(crate) fn pending_analysis_intent(file_hash: &str) -> PendingAnalysisIntent {
     PENDING_NODE_INTENTS
         .lock()
         .unwrap()
@@ -605,7 +595,7 @@ pub fn pending_analysis_intent(file_hash: &str) -> PendingAnalysisIntent {
         .unwrap_or_default()
 }
 
-pub fn frozen_artifact_kinds_for_node_id(
+pub(crate) fn frozen_artifact_kinds_for_node_id(
     node_id: &str,
 ) -> BTreeSet<crate::analysis_graph::ArtifactKind> {
     frozen_artifact_kinds_for_node(&crate::analysis_graph::AnalysisNodeId::new(node_id))
@@ -629,10 +619,12 @@ pub fn downstream_node_ids(node_id: &str) -> BTreeSet<crate::analysis_graph::Ana
 pub(crate) static FROZEN_CONFIGS: LazyLock<Mutex<HashMap<String, AppConfig>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
 pub(crate) static ACTIVE_CAPTURE_REQUESTS: LazyLock<
     Mutex<HashMap<String, crate::artifact_workbench::CaptureIntermediateRequest>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
 pub(crate) fn freeze_intermediate_capture_request(file_hash: &str) {
     let Ok(request) = crate::artifact_workbench::intermediate_capture_request(file_hash) else {
         return;
@@ -653,6 +645,7 @@ pub(crate) fn freeze_intermediate_capture_request(file_hash: &str) {
 /// enqueue and this point -- or `fallback` for a job with no frozen entry
 /// (e.g. one enqueued by an older build mid-upgrade, so this can never
 /// panic or block a run outright).
+#[cfg(test)]
 pub(crate) fn resolve_frozen_config(
     file_hash: &str,
     initial_hash: &str,
@@ -682,6 +675,7 @@ pub(crate) fn resolve_frozen_config(
 /// Empty `targets` means "no special intent was stashed for this run" --
 /// self-contained default of "run everything," so callers don't have to
 /// duplicate that empty-check themselves.
+#[cfg(test)]
 fn configured_audio_processing() -> (
     crate::audio_processing::AudioProcessingPlanSnapshot,
     BTreeSet<crate::analysis_graph::AnalysisNodeId>,
@@ -700,6 +694,7 @@ fn configured_audio_processing() -> (
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_execution_plan(
     targets: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
     disabled_nodes: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
@@ -740,6 +735,7 @@ pub(crate) fn build_execution_plan(
 /// `chart.build_candidate`) is computed unconditionally regardless of what
 /// the plan says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct PipelineFlags {
     pub(crate) skip_transcription: bool,
     pub(crate) skip_separation: bool,
@@ -749,6 +745,7 @@ pub(crate) struct PipelineFlags {
     pub(crate) bypass_separation: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn pipeline_flags_from_plan(plan: &crate::analysis_plan::AnalysisPlan) -> PipelineFlags {
     use crate::analysis_graph::AnalysisNodeId;
     use crate::analysis_plan::NodeState;
@@ -819,6 +816,7 @@ pub(crate) fn pipeline_flags_from_plan(plan: &crate::analysis_plan::AnalysisPlan
 /// pitchy detection), so nothing downstream is unsafe to still run. Every
 /// legacy special-case caller (which never disables anything) just passes
 /// an empty `disabled_nodes` set, so this is a no-op change for them.
+#[cfg(test)]
 pub(crate) fn pipeline_flags_for_request(
     targets: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
     disabled_nodes: &BTreeSet<crate::analysis_graph::AnalysisNodeId>,
@@ -845,6 +843,7 @@ pub(crate) fn pipeline_flags_for_request(
 /// `music.key`/`music.rhythm` -- accepting a disable request for it would
 /// silently have no effect on what native worker actually runs, so
 /// `run_analysis_plan` rejects it up front instead.
+#[cfg(test)]
 pub(crate) fn pipeline_can_honor_disable(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
     matches!(
         id.as_str(),
@@ -872,6 +871,7 @@ pub(crate) fn pipeline_can_honor_disable(id: &crate::analysis_graph::AnalysisNod
 /// now split into typed artifacts, but the native pipeline still has no
 /// independent freeze control for those stages, so this predicate remains
 /// deliberately narrower than the artifact schema.
+#[cfg(test)]
 pub(crate) fn pipeline_can_honor_freeze(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
     matches!(id.as_str(), "stems.separate" | "pitch.extract")
 }
@@ -903,6 +903,7 @@ pub(crate) fn frozen_artifact_kinds_for_node(
 /// Freeze exists to prevent. Takes `&CacheDir` rather than resolving one
 /// itself so tests can point it at a temp directory instead of the real
 /// (and possibly absent) data directory.
+#[cfg(test)]
 pub(crate) fn node_output_exists_for_freeze(
     cache: &crate::cache::CacheDir,
     file_hash: &str,
@@ -927,6 +928,7 @@ pub(crate) fn node_output_exists_for_freeze(
 /// `disabled_nodes` entry is checked against `pipeline_can_honor_disable`
 /// and the plan's own warnings first, so a caller never gets silent success
 /// for a disable request the pipeline has no way to actually act on.
+#[cfg(test)]
 pub fn run_analysis_plan(
     file_hash: &str,
     targets: BTreeSet<crate::analysis_graph::AnalysisNodeId>,
@@ -941,56 +943,18 @@ pub fn run_analysis_plan(
 
 /// Queue the exact request an impact preview already classified. Confirmation
 /// uses this instead of reconstructing targets from a node id.
-pub fn run_analysis_request(request: crate::analysis_plan::AnalysisRequest) -> Result<(), String> {
-    if is_usdx_song(&request.file_hash) {
-        return Err("this action is unavailable for imported USDX charts".to_string());
-    }
-    for id in &request.disabled_nodes {
-        if !pipeline_can_honor_disable(id) {
-            return Err(format!(
-                "{id} cannot be disabled for a single run yet -- it is computed together with sibling nodes that always run"
-            ));
-        }
-    }
-    let execution_graph = request
-        .workflow_execution
-        .as_ref()
-        .map(|snapshot| snapshot.graph.clone())
-        .unwrap_or_else(crate::analysis_graph::baseline_graph_spec);
-    let plan = crate::analysis_plan::build_plan(&execution_graph, &request)
-        .map_err(|error| error.to_string())?;
-    if let Some(warning) = plan.warnings.first() {
-        return Err(format!("{}: {}", warning.node, warning.message));
-    }
-    if request.workflow_execution.is_none()
-        && let Err(warnings) = pipeline_flags_for_request(
-            &request.targets,
-            &request.disabled_nodes,
-            &request.frozen_artifacts,
-            &request.bypassed_nodes,
-        )
-    {
-        return Err(match warnings.first() {
-            Some(warning) => format!("{}: {}", warning.node, warning.message),
-            None => "invalid analysis request: unknown or not-applicable target node".to_string(),
-        });
-    }
-    {
-        let mut intents = PENDING_NODE_INTENTS.lock().unwrap();
-        let intent = intents.entry(request.file_hash.clone()).or_default();
-        intent.targets.extend(request.targets);
-        intent.disabled_nodes.extend(request.disabled_nodes);
-        intent.frozen_artifacts.extend(request.frozen_artifacts);
-        intent.bypassed_nodes.extend(request.bypassed_nodes);
-        intent.workflow_execution = request.workflow_execution;
-    }
-    enqueue_one(&request.file_hash);
-    Ok(())
+#[cfg(test)]
+pub fn run_analysis_request(_request: crate::analysis_plan::AnalysisRequest) -> Result<(), String> {
+    Err(
+        "legacy node-target AnalysisRequest execution is retired; open exact Plan Preview and queue a supported Engine artifact target"
+            .to_string(),
+    )
 }
 
 /// §7.5 "Run this node only": a single-node target run through the generic
 /// executor, honoring the node's real upstream closure (Phase 1 planner)
 /// rather than a special-cased flag.
+#[cfg(test)]
 pub fn run_analysis_node(file_hash: &str, node_id: &str) -> Result<(), String> {
     run_analysis_plan(
         file_hash,
@@ -1039,6 +1003,7 @@ pub(crate) fn downstream_closure(
 /// check (`_cached_separator_matches`, the `music_analysis.json` version
 /// check, ...) still short-circuits anything that hasn't actually changed,
 /// the same way it already does for any other multi-target run today.
+#[cfg(test)]
 pub fn run_analysis_node_downstream(file_hash: &str, node_id: &str) -> Result<(), String> {
     let graph = crate::analysis_graph::baseline_graph_spec();
     let targets = downstream_closure(&graph, &crate::analysis_graph::AnalysisNodeId::new(node_id));
@@ -1048,6 +1013,7 @@ pub fn run_analysis_node_downstream(file_hash: &str, node_id: &str) -> Result<()
 /// §7.5 "Disable for this run": the default full run
 /// (`chart.build_candidate`, via `run_analysis_plan`'s empty-targets
 /// default) with one node turned off.
+#[cfg(test)]
 pub fn disable_analysis_node_for_run(file_hash: &str, node_id: &str) -> Result<(), String> {
     run_analysis_plan(
         file_hash,
@@ -1060,8 +1026,9 @@ pub fn disable_analysis_node_for_run(file_hash: &str, node_id: &str) -> Result<(
 /// have a chance of succeeding for `node_id`, so the Node Context Menu can
 /// omit or grey out the button instead of offering an action that
 /// `run_analysis_plan` is guaranteed to reject.
-pub fn node_can_be_disabled_for_run(node_id: &str) -> bool {
-    pipeline_can_honor_disable(&crate::analysis_graph::AnalysisNodeId::new(node_id))
+#[cfg(test)]
+pub(crate) fn node_can_be_disabled_for_run(_node_id: &str) -> bool {
+    false
 }
 
 /// §7.5 "Freeze current outputs" -- Phase 4 §4.5's Freeze consumer. Unlike
@@ -1075,6 +1042,7 @@ pub fn node_can_be_disabled_for_run(node_id: &str) -> bool {
 /// both re-checked here rather than trusted from the UI's own
 /// `node_can_be_frozen_for_run` call, since a caller could race a "Freeze"
 /// click against the very run that would produce the output being frozen.
+#[cfg(test)]
 pub fn freeze_analysis_node_outputs_for_run(file_hash: &str, node_id: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
         return Err("this action is unavailable for imported USDX charts".to_string());
@@ -1100,7 +1068,7 @@ pub fn freeze_analysis_node_outputs_for_run(file_hash: &str, node_id: &str) -> R
             .frozen_artifacts
             .extend(frozen_artifact_kinds_for_node(&id));
     }
-    enqueue_one(file_hash);
+    enqueue_one(file_hash)?;
     Ok(())
 }
 
@@ -1109,12 +1077,9 @@ pub fn freeze_analysis_node_outputs_for_run(file_hash: &str, node_id: &str) -> R
 /// this specific song right now (structurally freezable *and* it already
 /// has output on disk), so the Node Context Menu can omit the button
 /// instead of offering an action guaranteed to fail.
-pub fn node_can_be_frozen_for_run(file_hash: &str, node_id: &str) -> bool {
-    let id = crate::analysis_graph::AnalysisNodeId::new(node_id);
-    let Some(cache) = crate::cache::CacheDir::try_new() else {
-        return false;
-    };
-    pipeline_can_honor_freeze(&id) && node_output_exists_for_freeze(&cache, file_hash, &id)
+#[cfg(test)]
+pub(crate) fn node_can_be_frozen_for_run(_file_hash: &str, _node_id: &str) -> bool {
+    false
 }
 
 /// Node ids `run_pipeline` can currently honor a Bypass request for.
@@ -1123,6 +1088,7 @@ pub fn node_can_be_frozen_for_run(file_hash: &str, node_id: &str) -> bool {
 /// around via Original Mix"): the source media itself is always a valid
 /// substitute input for whatever `stems.separate` would have produced. No
 /// other node has an alternate input concept today.
+#[cfg(test)]
 pub(crate) fn pipeline_can_honor_bypass(id: &crate::analysis_graph::AnalysisNodeId) -> bool {
     id.as_str() == "stems.separate"
 }
@@ -1135,6 +1101,7 @@ pub(crate) fn pipeline_can_honor_bypass(id: &crate::analysis_graph::AnalysisNode
 /// `freeze_analysis_node_outputs_for_run`, this never goes through
 /// `run_analysis_plan`'s rejection path -- a bypass never disables
 /// anything, so it can't make the plan reject a downstream node.
+#[cfg(test)]
 pub fn bypass_analysis_node_with_original_mix_for_run(
     file_hash: &str,
     node_id: &str,
@@ -1153,7 +1120,7 @@ pub fn bypass_analysis_node_with_original_mix_for_run(
         let intent = intents.entry(file_hash.to_string()).or_default();
         intent.bypassed_nodes.insert(id);
     }
-    enqueue_one(file_hash);
+    enqueue_one(file_hash)?;
     Ok(())
 }
 
@@ -1163,8 +1130,9 @@ pub fn bypass_analysis_node_with_original_mix_for_run(
 /// `bypass_analysis_node_with_original_mix_for_run`'s doc comment), so the
 /// Node Context Menu can omit the button instead of offering an action
 /// guaranteed to fail.
-pub fn node_can_be_bypassed_for_run(node_id: &str) -> bool {
-    pipeline_can_honor_bypass(&crate::analysis_graph::AnalysisNodeId::new(node_id))
+#[cfg(test)]
+pub(crate) fn node_can_be_bypassed_for_run(_node_id: &str) -> bool {
+    false
 }
 
 /// The one profile-controlled parameter (if any) a node's output actually
@@ -1172,6 +1140,7 @@ pub fn node_can_be_bypassed_for_run(node_id: &str) -> bool {
 /// mapping exactly, so the Node Context Menu's "Configure for this
 /// run"/"Save as song profile" buttons and the inspector's PARAMETER fact
 /// row can never disagree about which nodes have a real, controllable knob.
+#[cfg(test)]
 pub(crate) fn node_config_field_for(
     node_id: &str,
 ) -> Option<crate::analysis_profile::ProfileField> {
@@ -1188,15 +1157,17 @@ pub(crate) fn node_config_field_for(
 /// Context Menu can omit both buttons for a node with no real
 /// profile-controlled parameter instead of offering actions guaranteed to
 /// have no effect.
-pub fn node_can_be_configured_for_run(node_id: &str) -> bool {
-    node_config_field_for(node_id).is_some()
+#[cfg(test)]
+pub(crate) fn node_can_be_configured_for_run(_node_id: &str) -> bool {
+    false
 }
 
 /// Read-only peek at a pending Run override for the inspector's PARAMETER
 /// SOURCE display -- deliberately does not drain `PENDING_NODE_INTENTS` the
 /// way `process_song` does, since this is called on every render and must
 /// not consume a real queued run's override out from under it.
-pub fn pending_run_override_for(file_hash: &str, node_id: &str) -> Option<String> {
+#[cfg(test)]
+pub(crate) fn pending_run_override_for(file_hash: &str, node_id: &str) -> Option<String> {
     let field = node_config_field_for(node_id)?;
     let intents = PENDING_NODE_INTENTS.lock().unwrap();
     intents.get(file_hash).and_then(|intent| {
@@ -1215,6 +1186,7 @@ pub fn pending_run_override_for(file_hash: &str, node_id: &str) -> Option<String
 /// `process_song` the same way `targets`/`disabled_nodes` already are), and
 /// targets `node_id` the same way `run_analysis_node` does so the override
 /// actually reaches a run that executes this node.
+#[cfg(test)]
 pub fn configure_analysis_node_for_run(
     file_hash: &str,
     node_id: &str,
@@ -1236,7 +1208,7 @@ pub fn configure_analysis_node_for_run(
             .insert(crate::analysis_graph::AnalysisNodeId::new(node_id));
         intent.run_override = Some((field, value));
     }
-    enqueue_one(file_hash);
+    enqueue_one(file_hash)?;
     Ok(())
 }
 
@@ -1247,6 +1219,7 @@ pub fn configure_analysis_node_for_run(
 /// the real global defaults, via `AnalysisProfileSnapshot::from_app_config`,
 /// if none exists yet) so saving one node's field never clobbers another
 /// field a previous "Save as song profile" call already persisted.
+#[cfg(test)]
 pub fn save_node_config_as_song_profile(file_hash: &str, node_id: &str) -> Result<(), String> {
     use crate::analysis_profile::{
         AnalysisProfileSnapshot, ProfileField, get_song_analysis_profile, resolve_profile_field,
@@ -1387,6 +1360,7 @@ pub fn preview_analysis_plan_for_selection(
 /// unavoidable side effect of today's pipeline.py, regenerates pitch too --
 /// see docs/analysis-dag-redesign.md Phase 4 status note) without
 /// transcribing, preserving the transcript built from provided LRC.
+#[cfg(test)]
 pub fn mark_stems_only(file_hash: &str) {
     PENDING_NODE_INTENTS
         .lock()
@@ -1498,24 +1472,11 @@ pub(crate) fn resume_engine_intent(file_hash: &str) {
     ensure_worker_running(&mut state);
 }
 
-pub fn enqueue_one(file_hash: &str) {
+pub fn enqueue_one(file_hash: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
-        return;
+        return Err("this action is unavailable for imported USDX charts".to_string());
     }
-    let mut state = ANALYZER.lock().unwrap();
-    if state.active_hash.as_deref() == Some(file_hash) {
-        return;
-    }
-    if !state.queue.iter().any(|h| h == file_hash) {
-        freeze_intermediate_capture_request(file_hash);
-        state.queue.push_back(file_hash.to_string());
-        update_queue_status(file_hash, QueuedStatus::Queued);
-        FROZEN_CONFIGS
-            .lock()
-            .unwrap()
-            .insert(file_hash.to_string(), AppConfig::load());
-    }
-    ensure_worker_running(&mut state);
+    crate::analysis_engine_adapter::preview_and_queue_engine_run(file_hash, None).map(|_| ())
 }
 
 pub(crate) fn queue_entry_blocks_enqueue(status: Option<&QueuedStatus>) -> bool {
@@ -1525,17 +1486,9 @@ pub(crate) fn queue_entry_blocks_enqueue(status: Option<&QueuedStatus>) -> bool 
     )
 }
 
-/// Phase 6 `cancel_analysis_run`. Deliberately scoped to the *queued, not
-/// yet started* case only: the single background worker thread
-/// (`spawn_worker`) runs `process_song` synchronously against a live native worker
-/// subprocess with no interrupt hook in the wire protocol, so a genuinely
-/// running analysis cannot be safely cancelled mid-node today (killing the
-/// analyzer server outright would corrupt whatever node was mid-write and
-/// take down every *other* queued song's server connection with it). This
-/// is why "取消一个正在执行的节点需要节点函数是可中断的独立单元" in
-/// docs/plan.md's Phase 4 §4.2 note remains a real, separate blocker for
-/// the running case -- rejecting cleanly (not pretending to cancel, not
-/// panicking) is safer than either.
+/// Remove a queued request before execution starts. Active requests use
+/// `stop_analysis_run`, which cancels the request-correlated uta-analyze
+/// process group through `AnalysisCliClient`.
 pub fn cancel_analysis_run(file_hash: &str) -> Result<(), String> {
     let mut state = ANALYZER.lock().unwrap();
     if state.active_hash.as_deref() == Some(file_hash) {
@@ -1574,71 +1527,39 @@ pub fn stop_analysis_run(file_hash: &str) -> Result<(), String> {
             Err(format!("{file_hash} is not currently queued or running"))
         };
     }
-    if let Some(result) = super::engine_run::cancel_active_engine(file_hash) {
-        return result;
-    }
-    STOP_REQUESTED.lock().unwrap().insert(file_hash.to_string());
-    let result = ACTIVE_SERVER_CHILD
-        .lock()
-        .unwrap()
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "the analyzer process is not available".to_string())
-        .and_then(|child| {
-            child
-                .lock()
-                .map_err(|_| "the analyzer process lock is unavailable".to_string())?
-                .kill()
-                .map_err(|error| format!("could not stop analyzer process: {error}"))
-        });
-    if result.is_err() {
-        STOP_REQUESTED.lock().unwrap().remove(file_hash);
-    }
-    result
+    super::engine_run::cancel_active_engine(file_hash).unwrap_or_else(|| {
+        Err("active queue entry has no cancellable exact Engine request".to_string())
+    })
 }
 
-pub fn enqueue_all(filters: &LibraryMenuFilters) {
-    let queue = AnalysisQueue::load();
-    let mut state = ANALYZER.lock().unwrap();
-    // One snapshot for the whole batch (all newly-queued jobs join the
-    // queue in this same synchronous call, so there's no window for global
-    // settings to change between them) rather than re-reading the config
-    // file from disk once per song.
-    let batch_config = AppConfig::load();
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnalysisBatchQueueResult {
+    pub queued: usize,
+    pub blocked: usize,
+}
 
+pub fn enqueue_all(filters: &LibraryMenuFilters) -> AnalysisBatchQueueResult {
+    let queue = AnalysisQueue::load();
     let pending_hashes =
         library_db::iter_file_hashes_filtered_not_analyzed(filters).unwrap_or_default();
-
-    let mut newly_queued = Vec::new();
+    let mut result = AnalysisBatchQueueResult::default();
     for file_hash in pending_hashes {
-        // A failed row is history, not active work. "Analyze all" must be able
-        // to retry it without asking the user to clear the activity log.
-        let blocked_by_active_entry = queue_entry_blocks_enqueue(queue.entries.get(&file_hash));
-        if !blocked_by_active_entry
-            && state.active_hash.as_deref() != Some(&file_hash)
-            && !state.queue.iter().any(|h| h == &file_hash)
-        {
-            state.queue.push_back(file_hash.clone());
-            freeze_intermediate_capture_request(&file_hash);
-            FROZEN_CONFIGS
-                .lock()
-                .unwrap()
-                .insert(file_hash.clone(), batch_config.clone());
-            newly_queued.push(file_hash);
+        if queue_entry_blocks_enqueue(queue.entries.get(&file_hash)) {
+            continue;
+        }
+        match crate::analysis_engine_adapter::preview_and_queue_engine_run(&file_hash, None) {
+            Ok(_) => result.queued += 1,
+            Err(error) => {
+                result.blocked += 1;
+                let message = format!("Exact Engine preview blocked: {error}");
+                let _ = library_db::analysis_queue_upsert_row(
+                    &file_hash,
+                    "failed",
+                    None,
+                    Some(&message),
+                );
+            }
         }
     }
-
-    let should_start = !state.worker_running && !state.queue.is_empty();
-    if should_start {
-        state.worker_running = true;
-    }
-    drop(state);
-
-    for hash in &newly_queued {
-        let _ = library_db::analysis_queue_upsert_row(hash, "queued", None, None);
-    }
-
-    if should_start {
-        spawn_worker();
-    }
+    result
 }

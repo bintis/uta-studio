@@ -9,6 +9,7 @@ use crate::resource::{ResourceKind, ResourceRef};
 pub struct StorePaths {
     pub store_root: Option<PathBuf>,
     pub legacy_models_root: Option<PathBuf>,
+    ggml_models_root: Option<PathBuf>,
     runtime_overrides: Vec<(String, PathBuf)>,
     tool_overrides: Vec<(String, PathBuf)>,
 }
@@ -19,13 +20,19 @@ impl StorePaths {
     }
 
     pub fn from_env() -> Self {
+        let store_root = std::env::var_os("UTA_STUDIO_RUNTIME_STORE")
+            .map(PathBuf::from)
+            .or_else(default_store_root);
+        let ggml_models_root = select_ggml_models_root(
+            std::env::var_os("UTA_STUDIO_GGML_MODELS_DIR").map(PathBuf::from),
+            store_root.as_deref(),
+        );
         let mut paths = Self {
-            store_root: std::env::var_os("UTA_STUDIO_RUNTIME_STORE")
-                .map(PathBuf::from)
-                .or_else(default_store_root),
+            store_root,
             legacy_models_root: std::env::var_os("UTA_STUDIO_MODELS_DIR")
                 .or_else(|| std::env::var_os("UTA_STUDIO_MODELS_PATH"))
                 .map(PathBuf::from),
+            ggml_models_root,
             runtime_overrides: Vec::new(),
             tool_overrides: Vec::new(),
         };
@@ -37,6 +44,11 @@ impl StorePaths {
                 "openvino_2026_3",
                 "UTA_STUDIO_OPENVINO_RUNTIME_PATH",
                 "uta-openvino-worker",
+            ),
+            (
+                "ggml_vulkan_v1",
+                "UTA_STUDIO_GGML_RUNTIME_PATH",
+                "uta-ggml-worker",
             ),
             (
                 "qwen_asr_runtime",
@@ -76,6 +88,26 @@ impl StorePaths {
     pub fn with_legacy_models_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.legacy_models_root = Some(root.into());
         self
+    }
+
+    pub fn with_ggml_models_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.ggml_models_root = Some(root.into());
+        self
+    }
+
+    pub fn ggml_model_path(&self, model_id: &str) -> Option<PathBuf> {
+        let directory = match model_id {
+            "melband_roformer_harmony" => "melband_roformer_karaoke_aufr33_viperx",
+            "bs_roformer_vocals_ep317"
+            | "melband_roformer_inst_v2"
+            | "melband_roformer_denoise_aufr33"
+            | "melband_roformer_dereverb_anvuew" => model_id,
+            _ => return None,
+        };
+        self.ggml_models_root
+            .as_ref()
+            .map(|root| root.join(directory).join("model-fp16.gguf"))
+            .filter(|path| path.is_file())
     }
 
     pub fn with_runtime_override(
@@ -147,6 +179,7 @@ impl StorePaths {
             leases_root: store_root.as_ref().map(|root| root.join("leases")),
             locks_root: store_root.as_ref().map(|root| root.join("locks")),
             legacy_models_root: self.legacy_models_root.clone(),
+            ggml_models_root: self.ggml_models_root.clone(),
             ffmpeg_path: self.tool_executable("ffmpeg"),
             runtime_executables: self
                 .runtime_overrides
@@ -176,6 +209,8 @@ pub struct PathsSummary {
     pub locks_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_models_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ggml_models_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ffmpeg_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -218,11 +253,18 @@ fn executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
+fn select_ggml_models_root(
+    configured: Option<PathBuf>,
+    store_root: Option<&Path>,
+) -> Option<PathBuf> {
+    configured.or_else(|| store_root.map(|root| root.join("ggml-models")))
+}
+
 fn default_store_root() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .map(|root| root.join("Uta Studio").join("runtime"))
+            .map(|root| root.join("Uta! Studio").join("runtime"))
     } else {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -243,6 +285,19 @@ pub fn read_current_pointer(path: &Path) -> Option<CurrentPointer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ggml_models_default_belongs_to_the_durable_runtime_store() {
+        let store = Path::new("/durable/runtime");
+        assert_eq!(
+            select_ggml_models_root(None, Some(store)),
+            Some(store.join("ggml-models"))
+        );
+        assert_eq!(
+            select_ggml_models_root(Some(PathBuf::from("/explicit/models")), Some(store)),
+            Some(PathBuf::from("/explicit/models"))
+        );
+    }
 
     #[cfg(unix)]
     #[test]

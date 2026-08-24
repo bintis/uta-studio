@@ -7,6 +7,7 @@ members = [
   "native-audio",
   "runtime-manager",
   "native-inference/native-analyzer",
+  "native-inference/ggml-worker",
   "native-inference/openvino-worker",
   "native-inference/qwen-worker",
   "studio-diagnostics",

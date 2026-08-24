@@ -6,6 +6,7 @@ use crate::fusion::{
     CanonicalLyrics, CanonicalNote, CanonicalSingingTrack, CanonicalWordBoundary,
     EvidenceProvenance, F0Point, HarmonyMetadata, validate_canonical_singing_track,
 };
+use crate::quantization::QuantizationReportV1;
 
 pub const CANDIDATE_VOCAL_CHART_CONTRACT: &str = "uta.analysis-engine.candidate-vocal-chart";
 pub const CANDIDATE_VOCAL_CHART_VERSION: u32 = 1;
@@ -21,6 +22,8 @@ pub enum VocalChartAuthority {
 pub struct CandidateVocalChartProvenanceV1 {
     pub execution_fingerprint: String,
     pub finalize_algorithm: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<QuantizationReportV1>,
     #[serde(default)]
     pub evidence: Vec<EvidenceProvenance>,
 }
@@ -53,8 +56,13 @@ impl CandidateVocalChartV1 {
             || self.version != CANDIDATE_VOCAL_CHART_VERSION
             || self.format_version != CANDIDATE_VOCAL_CHART_FORMAT_VERSION
             || self.timebase != CANONICAL_TIMEBASE
-            || !is_sha256(&self.provenance.execution_fingerprint)
+            || self.provenance.execution_fingerprint.trim().is_empty()
             || self.provenance.finalize_algorithm != FINALIZE_VOCAL_CHART_VERSION
+            || self
+                .provenance
+                .quantization
+                .as_ref()
+                .is_some_and(|report| report.validate().is_err())
         {
             return Err(invalid(
                 "Candidate VocalChart contract or provenance is invalid",
@@ -110,8 +118,9 @@ pub fn finalize_candidate_vocal_chart(
     track: &CanonicalSingingTrack,
     execution_fingerprint: &str,
     preserve_continuous_pitch: bool,
+    quantization: Option<&QuantizationReportV1>,
 ) -> EngineResult<CandidateVocalChartV1> {
-    if track.schema_version != 1 || !is_sha256(execution_fingerprint) {
+    if track.schema_version != 1 || execution_fingerprint.trim().is_empty() {
         return Err(invalid(
             "candidate graph version or execution fingerprint is invalid",
         ));
@@ -141,18 +150,12 @@ pub fn finalize_candidate_vocal_chart(
         provenance: CandidateVocalChartProvenanceV1 {
             execution_fingerprint: execution_fingerprint.to_string(),
             finalize_algorithm: FINALIZE_VOCAL_CHART_VERSION.to_string(),
+            quantization: quantization.cloned(),
             evidence: track.provenance.clone(),
         },
     };
     chart.validate()?;
     Ok(chart)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {
@@ -245,7 +248,7 @@ mod tests {
     #[test]
     fn finalization_is_candidate_only_and_preserves_exact_continuous_timing() {
         let track = track();
-        let chart = finalize_candidate_vocal_chart(&track, &"a".repeat(64), true).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"a".repeat(64), true, None).unwrap();
         assert_eq!(chart.authority, VocalChartAuthority::Candidate);
         assert_eq!(chart.notes[0].range, track.notes[0].range);
         assert_eq!(chart.continuous_pitch, track.f0_curve);
@@ -255,7 +258,7 @@ mod tests {
     #[test]
     fn explicit_continuous_pitch_disable_does_not_change_note_timing() {
         let track = track();
-        let chart = finalize_candidate_vocal_chart(&track, &"b".repeat(64), false).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"b".repeat(64), false, None).unwrap();
         assert!(chart.continuous_pitch.is_empty());
         assert!(chart.notes[0].f0_curve.is_empty());
         assert!(chart.notes[0].pitch_bend.is_empty());
@@ -273,7 +276,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let chart = finalize_candidate_vocal_chart(&track(), &"c".repeat(64), true).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track(), &"c".repeat(64), true, None).unwrap();
         let reference = write_json_artifact(
             &root,
             Path::new("candidate/vocal-chart.json"),

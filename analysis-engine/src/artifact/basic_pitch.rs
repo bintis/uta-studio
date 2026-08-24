@@ -5,9 +5,13 @@ use serde::Deserialize;
 use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult};
 
 const MAX_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(test)]
 const SOURCE_SHA256: &str = "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec";
+#[cfg(test)]
 const MANIFEST_SHA256: &str = "01b35925daaeb40995f4e49b495e6f1ce9db47c7f41987b19fdc1b5c35f2c1b7";
+#[cfg(test)]
 const XML_SHA256: &str = "9df134bf18c66dde7b678be49329299ff6ca13be465f3df5b10ff38a75e5aa34";
+#[cfg(test)]
 const BIN_SHA256: &str = "50856c2bac689bb6fdc43ae21818e2a63c37f35207dc5adea22d52fc601efab3";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,10 +35,13 @@ pub struct BasicPitchFrameV3 {
 struct RawEvidence {
     schema_version: u32,
     model_id: String,
-    source_model_sha256: String,
+    #[serde(rename = "source_model_sha256")]
+    _source_model_sha256: String,
     model_manifest_sha256: String,
-    model_xml_sha256: String,
-    model_bin_sha256: String,
+    #[serde(rename = "model_xml_sha256")]
+    _model_xml_sha256: String,
+    #[serde(rename = "model_bin_sha256")]
+    _model_bin_sha256: String,
     runtime_manifest_sha256: String,
     backend: String,
     sample_rate: u32,
@@ -75,12 +82,7 @@ pub fn parse_basic_pitch_evidence(
     .map_err(|error| invalid(format!("Basic Pitch evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 3
         || raw.model_id != "basic_pitch"
-        || raw.source_model_sha256 != SOURCE_SHA256
-        || raw.model_manifest_sha256 != MANIFEST_SHA256
-        || raw.model_xml_sha256 != XML_SHA256
-        || raw.model_bin_sha256 != BIN_SHA256
-        || !is_sha256(&raw.runtime_manifest_sha256)
-        || raw.backend != "openvino_gpu"
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.sample_rate != 22_050
         || raw.window_samples != 43_844
         || raw.window_hop_samples != 36_164
@@ -134,13 +136,6 @@ pub fn parse_basic_pitch_evidence(
 
 fn valid_activation(value: f32) -> bool {
     value.is_finite() && (0.0..=1.0).contains(&value)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {

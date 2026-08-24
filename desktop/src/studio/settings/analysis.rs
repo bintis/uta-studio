@@ -53,6 +53,15 @@ pub(crate) fn spawn_analysis_settings(
         session.config.preserve_continuous_pitch(),
         UiAction::from(SettingsCommand::TogglePreserveContinuousPitch),
     );
+    spawn_switch_setting_row(
+        parent,
+        font.clone(),
+        theme,
+        "Quantize candidate notes",
+        "Apply quantization only to candidate-chart behavior, after note inference; never to continuous PitchEvidence.",
+        session.config.enable_quantization(),
+        UiAction::from(SettingsCommand::ToggleAnalysisQuantization),
+    );
     spawn_select_setting_row(
         parent,
         font.clone(),
@@ -105,6 +114,7 @@ pub(crate) fn spawn_analysis_settings(
         model_selection_description,
         Some(model_selection_action),
     );
+    spawn_exact_strategy_readiness(parent, font.clone(), theme, session);
     spawn_setting_row(
         parent,
         font.clone(),
@@ -156,6 +166,70 @@ pub(crate) fn spawn_analysis_settings(
             UiAction::from(SettingsCommand::RestoreAnalysisDefaults),
         )),
     );
+}
+
+fn strategy_readiness_copy(status: &app_core::AnalysisStrategyResourceStatus) -> (String, String) {
+    let state = if status.available {
+        "READY UNDER CURRENT POLICY"
+    } else {
+        "BLOCKED"
+    };
+    let reasons = if status.reasons.is_empty() {
+        String::new()
+    } else {
+        format!(" · reasons: {}", status.reasons.join(", "))
+    };
+    (
+        format!("{} · {state}", status.label),
+        format!(
+            "Exact resource model:{} · capability {} · validation {} · backend {}{}",
+            status.model_id, status.capability, status.validation, status.backend, reasons
+        ),
+    )
+}
+
+fn spawn_exact_strategy_readiness(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    session: &StudioSessionView<'_>,
+) {
+    if let Some(snapshot) = session.model_settings_job.current.as_ref() {
+        for status in &snapshot.strategy_resources {
+            let (title, description) = strategy_readiness_copy(status);
+            spawn_setting_row(
+                parent,
+                font.clone(),
+                theme,
+                title,
+                description,
+                None::<(String, UiAction)>,
+            );
+        }
+        if let Some(error) = snapshot.strategy_resources_error.as_deref() {
+            spawn_setting_row(
+                parent,
+                font,
+                theme,
+                "Exact strategy readiness unavailable",
+                format!("Runtime Manager status query failed: {error}"),
+                None::<(String, UiAction)>,
+            );
+        }
+    } else {
+        spawn_setting_row(
+            parent,
+            font,
+            theme,
+            "Exact strategy readiness",
+            if session.model_settings_job.receiver.is_some() {
+                "Reading exact model/capability facts from Runtime Manager…"
+            } else {
+                "Runtime status has not been loaded. Reopen Analysis settings to retry."
+            },
+            None::<(String, UiAction)>,
+        );
+    }
 }
 
 fn quality_label(quality: app_core::AnalysisQualityProfile) -> &'static str {
@@ -260,6 +334,8 @@ fn spawn_quality_setting_row(
         });
 }
 
+// Retained only as non-compiled migration reference for legacy configuration keys.
+#[cfg(any())]
 pub(crate) fn spawn_advanced_controls(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -397,6 +473,7 @@ pub(crate) fn spawn_advanced_controls(
     }
 }
 
+#[cfg(any())]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_number_setting_row(
     parent: &mut ChildSpawnerCommands,
@@ -684,4 +761,35 @@ pub(crate) fn spawn_shift_setting_row(
                     });
             });
         });
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::strategy_readiness_copy;
+
+    #[test]
+    fn exact_strategy_copy_names_the_model_capability_and_runtime_fact() {
+        let status = app_core::AnalysisStrategyResourceStatus {
+            strategy_id: "vocal_extraction".to_string(),
+            label: "Vocal extraction".to_string(),
+            model_id: "bs_roformer_vocals_ep317".to_string(),
+            capability: "audio.extract_vocals".to_string(),
+            available: true,
+            backend: "openvino".to_string(),
+            validation: "benchmark_candidate".to_string(),
+            reasons: Vec::new(),
+        };
+        let (title, description) = strategy_readiness_copy(&status);
+        assert!(title.contains("READY UNDER CURRENT POLICY"));
+        assert!(description.contains("model:bs_roformer_vocals_ep317"));
+        assert!(description.contains("audio.extract_vocals"));
+        assert!(description.contains("benchmark_candidate"));
+    }
+
+    #[test]
+    fn canonical_models_page_does_not_render_legacy_advanced_controls() {
+        let models_page = include_str!("models.rs");
+        assert!(!models_page.contains("spawn_advanced_controls("));
+        assert!(models_page.contains("No editable model parameters"));
+    }
 }

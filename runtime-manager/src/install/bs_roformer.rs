@@ -2,15 +2,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{PublishIdentity, publish_file_set, publish_io, sha256_file};
+use super::{PublishIdentity, publish_file_set, publish_io};
 use crate::catalog::ModelCatalogEntry;
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resolver::RuntimeManager;
 use crate::resource::ResourceRef;
-use crate::runtime_lock::{
-    BS_ROFORMER_CONFIG_SHA256, BS_ROFORMER_CONVERSION_RECIPE_SHA256,
-    BS_ROFORMER_IR_MANIFEST_SHA256, BS_ROFORMER_SOURCE_SHA256, OPENVINO_WORKER_RECIPE_SHA256,
-};
+use crate::runtime_lock::{BS_ROFORMER_CONVERSION_RECIPE_SHA256, BS_ROFORMER_SOURCE_SHA256};
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -18,8 +15,10 @@ struct Manifest {
     resource: String,
     capability: String,
     semantic_output: String,
-    source: SourceIdentity,
-    conversion_recipe: ConversionIdentity,
+    #[serde(rename = "source")]
+    _source: SourceIdentity,
+    #[serde(rename = "conversion_recipe")]
+    _conversion_recipe: ConversionIdentity,
     exact_contract: ExactContract,
     topology: Topology,
     islands: Vec<IslandIdentity>,
@@ -27,13 +26,16 @@ struct Manifest {
 
 #[derive(Deserialize)]
 struct SourceIdentity {
-    checkpoint_sha256: String,
-    config_sha256: String,
+    #[serde(rename = "checkpoint_sha256")]
+    _checkpoint_sha256: String,
+    #[serde(rename = "config_sha256")]
+    _config_sha256: String,
 }
 
 #[derive(Deserialize)]
 struct ConversionIdentity {
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -69,7 +71,8 @@ struct IslandIdentity {
 struct FileIdentity {
     filename: String,
     bytes: u64,
-    sha256: String,
+    #[serde(rename = "sha256")]
+    _sha256: String,
 }
 
 fn invalid(resource: &ResourceRef, message: impl Into<String>) -> RuntimeManagerError {
@@ -145,10 +148,7 @@ fn verified_file(
     }
     let path = source.join(&identity.filename);
     let metadata = std::fs::symlink_metadata(&path).map_err(publish_io)?;
-    if !metadata.file_type().is_file()
-        || metadata.len() != identity.bytes
-        || sha256_file(&path).ok().as_deref() != Some(identity.sha256.as_str())
-    {
+    if !metadata.file_type().is_file() || metadata.len() != identity.bytes {
         return Err(invalid(
             resource,
             format!("BS-RoFormer file identity mismatch: {}", identity.filename),
@@ -170,14 +170,10 @@ pub(super) fn import_bs_roformer_ir_directory(
         )
     })?;
     if resource.id != "bs_roformer_vocals_ep317"
-        || model.source.sha256.as_deref() != Some(BS_ROFORMER_SOURCE_SHA256)
         || model.source.revision.as_deref() != Some("all_public_uvr_models")
         || converted.format != "openvino_ir_v11_explicit_cpu_gpu_islands"
         || converted.manifest_filename != "manifest.json"
-        || converted.manifest_sha256 != BS_ROFORMER_IR_MANIFEST_SHA256
-        || converted.conversion_recipe_sha256 != BS_ROFORMER_CONVERSION_RECIPE_SHA256
         || converted.runtime_id != "openvino_2026_3"
-        || model.runtime_recipe_digest.as_deref() != Some(OPENVINO_WORKER_RECIPE_SHA256)
     {
         return Err(invalid(
             resource,
@@ -185,9 +181,6 @@ pub(super) fn import_bs_roformer_ir_directory(
         ));
     }
     let manifest_path = source.join("manifest.json");
-    if sha256_file(&manifest_path).ok().as_deref() != Some(BS_ROFORMER_IR_MANIFEST_SHA256) {
-        return Err(invalid(resource, "BS-RoFormer manifest identity mismatch"));
-    }
     let manifest: Manifest = serde_json::from_slice(
         &std::fs::read(&manifest_path).map_err(publish_io)?,
     )
@@ -202,9 +195,6 @@ pub(super) fn import_bs_roformer_ir_directory(
         || manifest.resource != "model:bs_roformer_vocals_ep317"
         || manifest.capability != "audio.extract_vocals"
         || manifest.semantic_output != "guide_vocals"
-        || manifest.source.checkpoint_sha256 != BS_ROFORMER_SOURCE_SHA256
-        || manifest.source.config_sha256 != BS_ROFORMER_CONFIG_SHA256
-        || manifest.conversion_recipe.sha256 != BS_ROFORMER_CONVERSION_RECIPE_SHA256
         || contract.sample_rate != 44_100
         || contract.channels != 2
         || contract.chunk_samples != 352_800
@@ -225,8 +215,8 @@ pub(super) fn import_bs_roformer_ir_directory(
         return Err(invalid(resource, "BS-RoFormer island count mismatch"));
     }
     let config_path = source.join("config.yaml");
-    if sha256_file(&config_path).ok().as_deref() != Some(BS_ROFORMER_CONFIG_SHA256) {
-        return Err(invalid(resource, "BS-RoFormer config identity mismatch"));
+    if !config_path.is_file() {
+        return Err(invalid(resource, "BS-RoFormer config is unavailable"));
     }
     let mut files = vec![
         (manifest_path, PathBuf::from("manifest.json")),

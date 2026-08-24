@@ -109,7 +109,7 @@ pub(crate) fn spawn_folders(
                         spawn_wrapped_text(
                             copy,
                             font.clone(),
-                            "Browse watched source locations and open the configured output folder. Uta Studio never moves or deletes source media.",
+                            "Browse watched source locations and open the configured output folder. Uta! Studio never moves or deletes source media.",
                             10.0,
                             theme.muted_foreground,
                         );
@@ -767,7 +767,7 @@ pub(crate) fn spawn_remove_folder_confirmation(
                 ),
                 (
                     Text::new(format!(
-                        "{}\n\nUta Studio will update its library index but will not move or delete any source media.",
+                        "{}\n\nUta! Studio will update its library index but will not move or delete any source media.",
                         path.display()
                     )),
                     ui_text_font(font.clone(), 10.0),

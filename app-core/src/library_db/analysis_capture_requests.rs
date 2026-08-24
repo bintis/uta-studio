@@ -11,6 +11,7 @@ pub struct AnalysisCaptureRequestRow {
     pub created_at_ms: i64,
 }
 
+#[cfg(test)]
 pub fn analysis_capture_request_get(
     file_hash: &str,
     node_id: &str,

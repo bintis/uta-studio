@@ -34,15 +34,18 @@ impl Drop for OpenVinoLease {
     }
 }
 
-fn uses_openvino_worker(expectation: &WorkerExpectation) -> bool {
-    expectation.component == "uta-openvino-worker"
+fn uses_non_qwen_accelerator_worker(expectation: &WorkerExpectation) -> bool {
+    matches!(
+        expectation.component.as_str(),
+        "uta-openvino-worker" | "uta-ggml-worker"
+    )
 }
 
 fn acquire_openvino_lease(
     expectation: &WorkerExpectation,
     cancellation: &CancellationToken,
 ) -> EngineResult<Option<OpenVinoLease>> {
-    if !uses_openvino_worker(expectation) {
+    if !uses_non_qwen_accelerator_worker(expectation) {
         return Ok(None);
     }
     static GATE: OnceLock<Mutex<OpenVinoGate>> = OnceLock::new();
@@ -51,7 +54,7 @@ fn acquire_openvino_lease(
         if cancellation.is_cancelled() {
             return Err(EngineError::new(
                 EngineErrorCode::Cancelled,
-                "analysis task was cancelled while waiting for the OpenVINO runtime",
+                "analysis task was cancelled while waiting for the native accelerator runtime",
             ));
         }
         match gate.try_lock() {
@@ -66,7 +69,7 @@ fn acquire_openvino_lease(
             if cancellation.is_cancelled() {
                 return Err(EngineError::new(
                     EngineErrorCode::Cancelled,
-                    "analysis task was cancelled during OpenVINO runtime quiescence",
+                    "analysis task was cancelled during native accelerator runtime quiescence",
                 ));
             }
             std::thread::sleep(
@@ -75,7 +78,8 @@ fn acquire_openvino_lease(
         }
     }
     // The lease remains held through process shutdown, preventing another
-    // in-process analysis job from creating a concurrent OpenVINO GPU context.
+    // in-process analysis job from creating a concurrent non-Qwen OpenVINO or
+    // GGML/Vulkan context.
     guard.last_exit = None;
     Ok(Some(OpenVinoLease { gate: guard }))
 }
@@ -155,13 +159,7 @@ impl SupervisedWorker {
             WorkerFrame::Ready {
                 protocol,
                 component,
-                runtime_recipe_digest,
-            } if protocol == PROTOCOL_VERSION
-                && component == expectation.component
-                && expectation
-                    .runtime_recipe_digest
-                    .as_ref()
-                    .is_none_or(|expected| runtime_recipe_digest.as_ref() == Some(expected)) => {}
+            } if protocol == PROTOCOL_VERSION && component == expectation.component => {}
             WorkerFrame::Ready { .. } => {
                 return Err(EngineError::new(
                     EngineErrorCode::WorkerProtocolMismatch,
@@ -348,8 +346,6 @@ enum WorkerFrame {
     Ready {
         protocol: u32,
         component: String,
-        #[serde(default)]
-        runtime_recipe_digest: Option<String>,
     },
     Progress {
         task_id: String,
@@ -620,12 +616,14 @@ mod tests {
     }
 
     #[test]
-    fn only_openvino_workers_use_the_process_quiescence_gate() {
-        assert!(uses_openvino_worker(&WorkerExpectation {
-            component: "uta-openvino-worker".to_string(),
-            runtime_recipe_digest: None,
-        }));
-        assert!(!uses_openvino_worker(&WorkerExpectation {
+    fn non_qwen_accelerator_workers_use_the_process_quiescence_gate() {
+        for component in ["uta-openvino-worker", "uta-ggml-worker"] {
+            assert!(uses_non_qwen_accelerator_worker(&WorkerExpectation {
+                component: component.to_string(),
+                runtime_recipe_digest: None,
+            }));
+        }
+        assert!(!uses_non_qwen_accelerator_worker(&WorkerExpectation {
             component: "uta-qwen-asr-worker".to_string(),
             runtime_recipe_digest: None,
         }));

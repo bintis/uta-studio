@@ -1,5 +1,3 @@
-//! Activity center: analysis session graph, stage nodes, and history.
-
 use crate::studio::*;
 
 #[derive(Resource)]
@@ -23,9 +21,6 @@ pub(crate) struct AnalysisNodeMenuAction {
     pub(crate) action: UiAction,
 }
 
-/// Context actions are capability-driven. In particular, the analyzer has
-/// only stem/pitch/lyrics execution groups, so no menu item claims to run a
-/// child node "only" when the backend will actually execute its whole group.
 #[derive(Clone)]
 pub(crate) struct AnalysisNodeContextMenu {
     pub(crate) node_id: String,
@@ -37,33 +32,10 @@ pub(crate) struct AnalysisNodeContextMenu {
     pub(crate) label: String,
     pub(crate) retry_action: Option<AnalysisNodeMenuAction>,
     pub(crate) run_downstream_action: Option<AnalysisNodeMenuAction>,
-    /// `None` when `app_core::node_can_be_disabled_for_run` refuses this
-    /// node -- the button is omitted rather than offered and guaranteed to
-    /// error.
-    pub(crate) disable_node_action: Option<UiAction>,
-    /// `None` when `app_core::node_can_be_frozen_for_run` refuses this node
-    /// -- either it has no standalone freezable output at all
-    /// (`pipeline_can_honor_freeze`), or it's structurally freezable but
-    /// this song doesn't have that output on disk yet.
-    pub(crate) freeze_node_action: Option<UiAction>,
-    /// `None` when `app_core::node_can_be_bypassed_for_run` refuses this
-    /// node (i.e. it isn't `stems.separate` -- no other node has an
-    /// alternate input to route through yet).
-    pub(crate) bypass_node_action: Option<UiAction>,
     /// `None` when no history run is currently selected -- "Compare with
     /// previous attempt" needs a `current_run_id` to diff against, which
     /// only exists once a run is selected in the Activity/Queue view.
     pub(crate) compare_node_action: Option<UiAction>,
-    /// Phase 8: `None` when `app_core::node_can_be_configured_for_run`
-    /// refuses this node -- i.e. it has no real legacy profile-controlled
-    /// parameter (`lyrics.transcribe`/`lyrics.align` only; BGM and vocal
-    /// model selection live in the audio-processing snapshot). "Save as
-    /// song profile" fires immediately (no dialog --
-    /// it persists whatever value is currently in effect); "Configure for
-    /// this run…" opens `NativeNodeConfigDialog` since it needs a new value
-    /// picked first.
-    pub(crate) save_as_song_profile_action: Option<UiAction>,
-    pub(crate) open_configure_dialog_action: Option<UiAction>,
     /// §8.3 migration table's "Force transcribe -> Transcription Node ->
     /// Force Recompute": only offered for `lyrics.transcribe` (the only
     /// node "ignore online lyrics, transcribe again" is meaningful for).
@@ -81,9 +53,6 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// the existing `UiAction::ReanalyzeTranscript`/
     /// `app_core::reanalyze_transcript` Song Detail already calls.
     pub(crate) refetch_align_action: Option<UiAction>,
-    /// PreprocessedAudio is ephemeral unless the user explicitly requests
-    /// retention. Only the real `lyrics.preprocess` boundary offers this.
-    pub(crate) capture_intermediate_action: Option<UiAction>,
     /// §7.5's last item, "View logs": always offered because a node filter is
     /// meaningful for every node. Opens the selected run's dedicated JSONL
     /// log; legacy runs without `log_path` show an explicit empty state.
@@ -95,21 +64,6 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// the state it's currently in.
     pub(crate) compound_toggle: Option<(&'static str, UiAction)>,
     pub(crate) position: Vec2,
-}
-
-/// Phase 8 "Configure for this run…": a draft one-run override for a single
-/// node's profile-controlled field. Modeled directly on
-/// `song_detail.rs::NativeLanguageEditor`/`spawn_language_editor` -- opened
-/// pre-filled with the node's current *effective* value (same
-/// `resolve_profile_field` result the inspector's PARAMETER SOURCE fact
-/// uses), so the dialog and the inspector never disagree about what's
-/// currently in effect.
-pub(crate) struct NativeNodeConfigDialog {
-    pub(crate) file_hash: String,
-    pub(crate) node_id: String,
-    pub(crate) field: app_core::ProfileField,
-    pub(crate) value: String,
-    pub(crate) picker_open: bool,
 }
 
 /// Temporary Run Analysis state. The compiled `EngineRunPreview` is the exact
@@ -159,6 +113,8 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
             request_id: format!("studio-{nonce}"),
             lyrics: Default::default(),
             target_override: draft.target_overridden.then_some(draft.target),
+            compute_backend: config.compute_backend.clone(),
+            model_backend_overrides: config.model_backend_overrides.clone(),
             run_override: draft.run_override.clone(),
         },
         &config.analysis_experience,
@@ -413,208 +369,6 @@ pub(crate) fn spawn_analysis_log_viewer(
         });
 }
 
-/// Display label for a `ProfileField` -- same strings
-/// `selected_stage_parameter` already uses for the PARAMETER fact row, kept
-/// consistent so the dialog and the inspector call the same knob the same
-/// name.
-pub(crate) fn profile_field_label(field: app_core::ProfileField) -> &'static str {
-    match field {
-        app_core::ProfileField::Separator => "SEPARATOR",
-        app_core::ProfileField::AsrEngine => "ASR ENGINE",
-        app_core::ProfileField::AlignmentBackend => "ALIGNMENT BACKEND",
-    }
-}
-
-/// The `SettingsSelectKind` whose option list/labels a `ProfileField`
-/// reuses -- no new option lists invented for this dialog, just the
-/// existing Settings tab ones (`settings_select_options`/
-/// `settings_select_label`) pointed at a different value source.
-pub(crate) fn profile_field_settings_kind(field: app_core::ProfileField) -> SettingsSelectKind {
-    match field {
-        app_core::ProfileField::Separator => SettingsSelectKind::Separator,
-        app_core::ProfileField::AsrEngine => SettingsSelectKind::AsrEngine,
-        app_core::ProfileField::AlignmentBackend => SettingsSelectKind::AlignBackend,
-    }
-}
-
-pub(crate) fn spawn_node_config_dialog(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    dialog: &NativeNodeConfigDialog,
-    intel_backend: bool,
-    notice: Option<&str>,
-) {
-    parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(0),
-                right: px(0),
-                top: px(0),
-                bottom: px(0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(theme.background.with_alpha(0.78)),
-            ZIndex(92),
-        ))
-        .with_children(|overlay| {
-            overlay
-                .spawn((
-                    Node {
-                        width: px(470),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(24)),
-                        row_gap: px(11),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(8)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.card),
-                    BorderColor::all(theme.border),
-                ))
-                .with_children(|body| {
-                    spawn_text(
-                        body,
-                        font.clone(),
-                        profile_field_label(dialog.field),
-                        8.0,
-                        theme.primary,
-                    );
-                    spawn_text(
-                        body,
-                        font.clone(),
-                        format!("Configure {} for this run", dialog.node_id),
-                        17.0,
-                        theme.foreground,
-                    );
-                    spawn_wrapped_text(
-                        body,
-                        font.clone(),
-                        "Applies only to the next run of this node -- it is not saved. Use \"Save as song profile\" from the node's menu to persist a choice.",
-                        10.0,
-                        theme.muted_foreground,
-                    );
-                    let kind = profile_field_settings_kind(dialog.field);
-                    let options = settings_select_options(kind, intel_backend);
-                    let current_label = settings_select_label(kind, &dialog.value);
-                    body.spawn((
-                        Button,
-                        UiAction::from(AnalysisCommand::ToggleNodeConfigPicker),
-                        Node {
-                            width: percent(100),
-                            height: px(40),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::horizontal(px(11)),
-                            column_gap: px(8),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(5)),
-                            ..default()
-                        },
-                        BackgroundColor(theme.background.with_alpha(0.65)),
-                        BorderColor::all(if dialog.picker_open {
-                            theme.primary.with_alpha(0.64)
-                        } else {
-                            theme.border.with_alpha(0.72)
-                        }),
-                    ))
-                    .with_children(|selector| {
-                        spawn_text(selector, font.clone(), current_label, 11.0, theme.foreground);
-                        selector.spawn(Node {
-                            flex_grow: 1.0,
-                            ..default()
-                        });
-                        spawn_text(
-                            selector,
-                            font.clone(),
-                            if dialog.picker_open { "^" } else { "v" },
-                            9.0,
-                            theme.primary,
-                        );
-                    });
-                    if dialog.picker_open {
-                        body.spawn((
-                            Node {
-                                width: percent(100),
-                                flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(px(5)),
-                                row_gap: px(2),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(5)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.background.with_alpha(0.82)),
-                            BorderColor::all(theme.border.with_alpha(0.72)),
-                        ))
-                        .with_children(|picker| {
-                            for (value, label) in options {
-                                let selected = dialog.value == *value;
-                                picker
-                                    .spawn((
-                                        Button,
-                                        UiAction::from(AnalysisCommand::SelectNodeConfigValue((*value).into())),
-                                        Node {
-                                            width: percent(100),
-                                            min_height: px(30),
-                                            align_items: AlignItems::Center,
-                                            padding: UiRect::horizontal(px(9)),
-                                            border_radius: BorderRadius::all(px(4)),
-                                            ..default()
-                                        },
-                                        BackgroundColor(if selected {
-                                            theme.primary.with_alpha(0.13)
-                                        } else {
-                                            Color::NONE
-                                        }),
-                                    ))
-                                    .with_children(|option| {
-                                        spawn_text(
-                                            option,
-                                            font.clone(),
-                                            *label,
-                                            9.0,
-                                            if selected {
-                                                theme.foreground
-                                            } else {
-                                                theme.muted_foreground
-                                            },
-                                        );
-                                    });
-                            }
-                        });
-                    }
-                    if let Some(notice) = notice {
-                        spawn_wrapped_text(body, font.clone(), notice, 9.0, theme.destructive);
-                    }
-                    body.spawn(Node {
-                        width: percent(100),
-                        justify_content: JustifyContent::FlexEnd,
-                        column_gap: px(8),
-                        ..default()
-                    })
-                    .with_children(|actions| {
-                        spawn_text_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Cancel",
-                            10.0,
-                            UiAction::from(AnalysisCommand::CloseNodeConfigDialog),
-                        );
-                        spawn_action_button(
-                            actions,
-                            font,
-                            theme,
-                            "Run with this configuration",
-                            UiAction::from(AnalysisCommand::RunNodeConfigDialog),
-                        );
-                    });
-                });
-        });
-}
-
 /// Escape closes the Plan Preview dialog, same idea as
 /// `handle_library_search_keyboard`'s Escape-closes-search handling.
 pub(crate) fn handle_plan_preview_keyboard(
@@ -702,6 +456,14 @@ pub(crate) fn handle_analysis_log_viewer_scroll(
     let content = computed.content_size() * computed.inverse_scale_factor();
     let max = (content.y - size.y).max(0.0);
     position.y = (position.y + delta).clamp(0.0, max);
+}
+
+pub(crate) fn exact_preview_allows_queue(
+    ready: bool,
+    blockers: &[String],
+    invalidated: bool,
+) -> bool {
+    ready && blockers.is_empty() && !invalidated
 }
 
 pub(crate) fn spawn_plan_preview_dialog(
@@ -884,10 +646,13 @@ pub(crate) fn spawn_plan_preview_dialog(
                             "Manage models…",
                             UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                         );
-                        let request_ready = draft
-                            .engine_preview
-                            .as_ref()
-                            .is_ok_and(|preview| preview.ready);
+                        let request_ready = draft.engine_preview.as_ref().is_ok_and(|preview| {
+                            exact_preview_allows_queue(
+                                preview.ready,
+                                &preview.blockers,
+                                preview.invalidated,
+                            )
+                        });
                         if request_ready {
                             spawn_compact_action_button(
                                 actions,
@@ -1098,43 +863,6 @@ fn spawn_run_quality_row(
                 );
             }
         });
-}
-
-fn spawn_preview_request_summary(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    draft: &PlanPreviewDraft,
-    preview: &app_core::EngineRunPreview,
-) {
-    spawn_text(parent, font.clone(), "EXACT REQUEST", 8.0, theme.primary);
-    let quality = draft
-        .effective_settings
-        .as_ref()
-        .map(|effective| format!("{:?}", effective.quality_profile.value))
-        .unwrap_or_else(|| "Unavailable".to_string());
-    for line in [
-        format!(
-            "Quality · {quality} · Source: {}",
-            preview_quality_source(draft)
-        ),
-        format!(
-            "TrueSource · {:?} · testing policy",
-            preview.engine_plan.source_route.input_role
-        ),
-        format!(
-            "Requested outputs · {}",
-            preview
-                .engine_plan
-                .requested_outputs
-                .iter()
-                .map(|output| artifact_product_label(output))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    ] {
-        spawn_wrapped_text(parent, font.clone(), line, 9.0, theme.foreground);
-    }
 }
 
 fn spawn_preview_lyrics_context(
@@ -1428,47 +1156,17 @@ fn analysis_node_execution_actions(
     Option<AnalysisNodeMenuAction>,
     Option<AnalysisNodeMenuAction>,
 ) {
-    let targeted = || {
-        UiAction::from(AnalysisCommand::RunAnalysisNodeOnly(
-            file_hash.to_string(),
-            node_id.to_string(),
-        ))
-    };
-    let downstream = |label| {
-        Some(AnalysisNodeMenuAction {
-            label,
-            action: UiAction::from(AnalysisCommand::RunAnalysisNodeDownstream(
-                file_hash.to_string(),
-                node_id.to_string(),
-            )),
-        })
-    };
+    // Engine v1 exposes artifact-level exact requests, not arbitrary legacy
+    // node execution/reuse. Offer only actions that compile to one of those
+    // typed targets; unsupported granular routes stay absent rather than
+    // falling through to uta-native-analyzer.
     let retry = match node_id {
-        "music.analysis" | "music.key" | "music.rhythm" | "music.descriptors" => {
-            Some(AnalysisNodeMenuAction {
-                label: "Re-run music analysis route",
-                action: targeted(),
-            })
-        }
-        "stems.separate"
-        | "stems.vocals"
-        | "vocals.denoise"
-        | "vocals.dereverb"
-        | "stems.instrumental"
-        | "instrumental.denoise"
-        | "instrumental.dereverb"
-        | "stems.karaoke"
-        | "stems.multistem"
-        | "stems.bind_analysis_outputs" => Some(AnalysisNodeMenuAction {
-            label: "Re-run configured stem pipeline",
-            action: targeted(),
-        }),
         "pitch.extract" => Some(AnalysisNodeMenuAction {
             label: "Rebuild pitch evidence",
             action: UiAction::from(AnalysisCommand::ReanalyzePitch(file_hash.to_string())),
         }),
         "lyrics.transcribe" => Some(AnalysisNodeMenuAction {
-            label: "Retranscribe and align",
+            label: "Retranscribe",
             action: UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string())),
         }),
         "lyrics.align" => Some(AnalysisNodeMenuAction {
@@ -1477,28 +1175,14 @@ fn analysis_node_execution_actions(
         }),
         "chart.build_candidate" => Some(AnalysisNodeMenuAction {
             label: "Rebuild candidate chart route",
-            action: targeted(),
-        }),
-        _ => None,
-    };
-    let downstream = match node_id {
-        "preflight" => Some(AnalysisNodeMenuAction {
-            label: "Run full analysis pipeline",
             action: UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
         }),
-        "stems.separate"
-        | "stems.vocals"
-        | "vocals.denoise"
-        | "vocals.dereverb"
-        | "stems.instrumental"
-        | "instrumental.denoise"
-        | "instrumental.dereverb"
-        | "stems.karaoke"
-        | "stems.multistem"
-        | "stems.bind_analysis_outputs" => downstream("Run stem route and downstream"),
-        "lyrics.preprocess" => downstream("Run preprocessing and lyrics route"),
         _ => None,
     };
+    let downstream = (node_id == "preflight").then(|| AnalysisNodeMenuAction {
+        label: "Run full analysis pipeline",
+        action: UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
+    });
     (retry, downstream)
 }
 
@@ -1518,24 +1202,6 @@ pub(crate) fn build_analysis_node_context_menu(
         label: label.to_string(),
         retry_action,
         run_downstream_action,
-        disable_node_action: app_core::node_can_be_disabled_for_run(node_id).then(|| {
-            UiAction::from(AnalysisCommand::DisableAnalysisNodeForRun(
-                file_hash.to_string(),
-                node_id.to_string(),
-            ))
-        }),
-        freeze_node_action: app_core::node_can_be_frozen_for_run(file_hash, node_id).then(|| {
-            UiAction::from(AnalysisCommand::FreezeAnalysisNodeOutputs(
-                file_hash.to_string(),
-                node_id.to_string(),
-            ))
-        }),
-        bypass_node_action: app_core::node_can_be_bypassed_for_run(node_id).then(|| {
-            UiAction::from(AnalysisCommand::BypassAnalysisNodeWithOriginalMix(
-                file_hash.to_string(),
-                node_id.to_string(),
-            ))
-        }),
         compare_node_action: selected_run_id.map(|run_id| {
             UiAction::from(AnalysisCommand::CompareNodeAttemptWithPrevious(
                 file_hash.to_string(),
@@ -1543,29 +1209,10 @@ pub(crate) fn build_analysis_node_context_menu(
                 run_id,
             ))
         }),
-        save_as_song_profile_action: app_core::node_can_be_configured_for_run(node_id).then(|| {
-            UiAction::from(AnalysisCommand::SaveNodeConfigAsSongProfile(
-                file_hash.to_string(),
-                node_id.to_string(),
-            ))
-        }),
-        open_configure_dialog_action: app_core::node_can_be_configured_for_run(node_id).then(
-            || {
-                UiAction::from(AnalysisCommand::OpenNodeConfigDialog(
-                    file_hash.to_string(),
-                    node_id.to_string(),
-                ))
-            },
-        ),
         force_transcribe_action: node_can_force_transcribe(node_id)
             .then(|| UiAction::from(AnalysisCommand::ForceTranscribe(file_hash.to_string()))),
         refetch_align_action: node_can_refetch_and_align(node_id)
             .then(|| UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))),
-        capture_intermediate_action: (node_id == "lyrics.preprocess").then(|| {
-            UiAction::from(AnalysisCommand::RequestCaptureIntermediate(
-                file_hash.to_string(),
-            ))
-        }),
         view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAnalysisLogViewer(
             file_hash.to_string(),
             node_id.to_string(),
@@ -1854,15 +1501,7 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     downstream.action,
                 );
             }
-            if context.disable_node_action.is_some()
-                || context.freeze_node_action.is_some()
-                || context.bypass_node_action.is_some()
-                || context.open_configure_dialog_action.is_some()
-                || context.save_as_song_profile_action.is_some()
-                || context.force_transcribe_action.is_some()
-                || context.refetch_align_action.is_some()
-                || context.capture_intermediate_action.is_some()
-            {
+            if context.force_transcribe_action.is_some() || context.refetch_align_action.is_some() {
                 menu.spawn(Node {
                     height: px(5),
                     ..default()
@@ -1873,56 +1512,6 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     "RUN OPTIONS",
                     7.0,
                     theme.muted_foreground,
-                );
-            }
-            if let Some(disable_action) = context.disable_node_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Disable for this run",
-                    11.0,
-                    disable_action,
-                );
-            }
-            if let Some(freeze_action) = context.freeze_node_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Freeze current outputs",
-                    11.0,
-                    freeze_action,
-                );
-            }
-            if let Some(bypass_action) = context.bypass_node_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Bypass with original mix",
-                    11.0,
-                    bypass_action,
-                );
-            }
-            if let Some(configure_action) = context.open_configure_dialog_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Configure for this run…",
-                    11.0,
-                    configure_action,
-                );
-            }
-            if let Some(save_profile_action) = context.save_as_song_profile_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Save as song profile",
-                    11.0,
-                    save_profile_action,
                 );
             }
             if let Some(force_transcribe_action) = context.force_transcribe_action.clone() {
@@ -1943,16 +1532,6 @@ pub(crate) fn spawn_analysis_node_context_menu(
                     "Refetch lyrics & align",
                     11.0,
                     refetch_align_action,
-                );
-            }
-            if let Some(capture_action) = context.capture_intermediate_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Capture intermediate output on next run…",
-                    11.0,
-                    capture_action,
                 );
             }
             if let Some((toggle_label, toggle_action)) = context.compound_toggle.clone() {

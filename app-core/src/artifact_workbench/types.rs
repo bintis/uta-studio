@@ -4,6 +4,7 @@
 //! render these values without reading cache files or inventing lineage.
 
 use std::path::PathBuf;
+#[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use crate::library_db;
 
 use super::inspect::{bounded_read, inspect_artifact, revision_by_id};
 
+#[cfg(test)]
 fn workbench_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -412,7 +414,8 @@ pub struct CaptureIntermediateRequest {
 /// Only the real `lyrics.preprocess -> PreprocessedAudio` boundary is
 /// supported; accepting arbitrary pairs would create a misleading setting
 /// the analyzer cannot honor.
-pub fn set_intermediate_capture_request(
+#[cfg(test)]
+pub(crate) fn set_intermediate_capture_request(
     request: &CaptureIntermediateRequest,
 ) -> Result<(), String> {
     if request.file_hash.trim().is_empty() {
@@ -448,7 +451,8 @@ pub fn set_intermediate_capture_request(
     }
 }
 
-pub fn intermediate_capture_request(
+#[cfg(test)]
+pub(crate) fn intermediate_capture_request(
     file_hash: &str,
 ) -> Result<Option<CaptureIntermediateRequest>, String> {
     let kind = serde_json::to_value(ArtifactKind::PreprocessedAudio)

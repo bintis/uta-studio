@@ -619,24 +619,6 @@ fn spawn_analysis_session_surface(
     } else {
         "None recorded".to_string()
     };
-    let selected_parameter = plan_preview
-        .as_ref()
-        .and_then(|plan| selected_stage_parameter(plan_node_id, &plan.profile_snapshot));
-    // Phase 8 §8.4: a real three-tier resolution (Global Defaults -> Song
-    // Profile -> Run Override), replacing the old binary "song profile
-    // exists at all? y/n" check -- backed by the identical
-    // `resolve_profile_field` real execution uses (`process_song`), so this
-    // fact row and what actually runs can never disagree.
-    let selected_parameter_source = node_parameter_source_copy(
-        node_config_profile_field(plan_node_id),
-        &app_core::AnalysisProfileSnapshot::from_app_config(
-            &app_core::AppConfig::load(),
-            &task.file_hash,
-        ),
-        app_core::get_song_analysis_profile(&task.file_hash).as_ref(),
-        app_core::pending_run_override_for(&task.file_hash, plan_node_id).as_deref(),
-    );
-
     parent
         .spawn((
             Node {
@@ -1194,14 +1176,8 @@ fn spawn_analysis_session_surface(
                             // history run, DURATION from the same route's
                             // real `started_at_ms`/`finished_at_ms`
                             // (native worker progress frames, Phase 7's
-                            // "Duration 检查器字段" gap closed), and the
-                            // node's one profile parameter (+ its source)
-                            // only when the selected node actually has one
-                            // (`selected_stage_parameter`) -- PARAMETER
-                            // SOURCE-without-a-parameter is intentionally
-                            // omitted rather than faked: a source with no
-                            // parameter to source would be meaningless.
-                            let mut fact_rows: Vec<(&str, String)> = vec![
+                            // "Duration 检查器字段" gap closed).
+                            let fact_rows: Vec<(&str, String)> = vec![
                                 ("IMPLEMENTATION", selected_implementation.to_string()),
                                 ("MODEL / ALGORITHM", selected_model.to_string()),
                                 ("REQUESTED DEVICE", selected_requested_device.to_string()),
@@ -1215,11 +1191,6 @@ fn spawn_analysis_session_surface(
                                 ("FALLBACK", selected_fallback_text.clone()),
                                 ("ERROR", selected_error_text.clone()),
                             ];
-                            if let Some((label, value)) = selected_parameter.clone() {
-                                fact_rows.push((label, value));
-                                fact_rows
-                                    .push(("PARAMETER SOURCE", selected_parameter_source.to_string()));
-                            }
                             for (label, value) in fact_rows {
                                 let value_color = if label == "ERROR" && value != "None recorded" {
                                     theme.destructive
@@ -1662,16 +1633,6 @@ fn spawn_analysis_session_surface(
     }
     if let Some(context) = session.analysis_export_context.as_ref() {
         spawn_analysis_export_context_menu(parent, font.clone(), theme, context);
-    }
-    if let Some(dialog) = session.node_config_dialog.as_ref() {
-        spawn_node_config_dialog(
-            parent,
-            font.clone(),
-            theme,
-            dialog,
-            session.config.compute_backend.as_deref() == Some("intel"),
-            session.notice.as_deref(),
-        );
     }
     if let Some(draft) = session.plan_preview_draft.as_ref() {
         spawn_plan_preview_dialog(

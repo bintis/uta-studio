@@ -13,6 +13,8 @@ pub const ANALYZE_REQUEST_CONTRACT: &str = "uta.analysis-engine.request";
 pub const ANALYZE_REQUEST_VERSION: u32 = 1;
 pub const ANALYSIS_RESULT_CONTRACT: &str = "uta.analysis-engine.result";
 pub const ANALYSIS_RESULT_VERSION: u32 = 1;
+pub const AUDIO_QUALITY_REPORT_CONTRACT: &str = "uta.analysis-engine.audio-quality-report";
+pub const AUDIO_QUALITY_REPORT_VERSION: u32 = 1;
 pub const CANONICAL_TIMEBASE: u32 = 1_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,10 +204,16 @@ pub struct RequestedArtifactsWireV1 {
     pub stems: Vec<AudioRoleWireV1>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicyWireV1 {
     #[serde(default)]
     pub runtime_policy: RuntimePolicyWireV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_backend: Option<super::NativeBackendWireV1>,
+    /// Model-specific choices take precedence over the global selection.
+    /// Missing entries retain each model's Runtime Manager-pinned route.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_backend_overrides: BTreeMap<String, super::NativeBackendWireV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +240,8 @@ pub struct AnalyzeRequestWireV1 {
 fn testing_execution_policy() -> ExecutionPolicyWireV1 {
     ExecutionPolicyWireV1 {
         runtime_policy: RuntimePolicyWireV1::Experimental,
+        requested_backend: None,
+        model_backend_overrides: BTreeMap::new(),
     }
 }
 
@@ -292,6 +302,50 @@ pub struct ExecutionNodeWireV1 {
     pub depends_on: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPlanIdentityWireV1 {
+    pub contract: String,
+    pub version: u32,
+    pub workflow_schema_version: u32,
+    pub workflow_id: String,
+    pub workflow_revision: u64,
+    pub definition_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeExecutionStateWireV1 {
+    Ready,
+    Deferred,
+    Disabled,
+    ProfileSkipped,
+    NotRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowExecutionNodePlanWireV1 {
+    pub instance_id: String,
+    pub analysis_node: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub execution_policy: String,
+    pub execution_state: WorkflowNodeExecutionStateWireV1,
+    pub priority: i32,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub input_bindings: Vec<crate::workflow::WorkflowBindingWireV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowExecutionPlanWireV1 {
+    pub identity: WorkflowPlanIdentityWireV1,
+    #[serde(default)]
+    pub nodes: Vec<WorkflowExecutionNodePlanWireV1>,
+    #[serde(default)]
+    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputWireV1>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedResourceStatusWireV1 {
     pub requirement: AnalysisRequirementResourceWireV1,
@@ -330,6 +384,8 @@ pub struct AnalysisPlanWireV1 {
     pub quality_gates: Vec<String>,
     pub fallback_policy: Vec<FallbackRuleWireV1>,
     pub artifact_declarations: Vec<ArtifactDeclarationWireV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_execution: Option<WorkflowExecutionPlanWireV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +432,8 @@ pub struct AnalysisArtifactsWireV1 {
     #[serde(default)]
     pub pitch_evidence: Option<ArtifactRefWireV1>,
     #[serde(default)]
+    pub technique_evidence: Option<ArtifactRefWireV1>,
+    #[serde(default)]
     pub singing_analysis: Option<ArtifactRefWireV1>,
     #[serde(default)]
     pub transcript: Option<ArtifactRefWireV1>,
@@ -386,6 +444,92 @@ pub struct AnalysisArtifactsWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuantizationReportWireV1 {
+    pub algorithm: String,
+    pub bpm: f64,
+    pub grid: QuantizationGridWireV1,
+    pub grid_step: u64,
+    pub minimum_note_duration: u64,
+    pub source_start: u64,
+    pub source_end: u64,
+    pub hard_boundary_count: usize,
+    pub note_count: usize,
+    pub adjusted_notes: usize,
+    pub maximum_shift: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityGateRequirementWireV1 {
+    Required,
+    Degrading,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityGateStatusWireV1 {
+    Passed,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityMetricWireV1 {
+    pub name: String,
+    pub value: f64,
+    pub unit: String,
+    #[serde(default)]
+    pub lower_bound: Option<f64>,
+    #[serde(default)]
+    pub upper_bound: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QualityRegionWireV1 {
+    pub start: u64,
+    pub end: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityGateOutcomeWireV1 {
+    pub gate: String,
+    pub requirement: QualityGateRequirementWireV1,
+    pub status: QualityGateStatusWireV1,
+    pub summary: String,
+    #[serde(default)]
+    pub metrics: Vec<QualityMetricWireV1>,
+    #[serde(default)]
+    pub regions: Vec<QualityRegionWireV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioQualityReportWireV1 {
+    pub contract: String,
+    pub version: u32,
+    pub algorithm: String,
+    pub profile: AnalysisProfileWireV1,
+    pub evaluated_audio_role: String,
+    pub duration: u64,
+    pub planned_gates: Vec<String>,
+    pub outcomes: Vec<QualityGateOutcomeWireV1>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AnalysisDiagnosticsWireV1 {
+    #[serde(default)]
+    pub decoded_audio: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub quantization: Option<QuantizationReportWireV1>,
+    #[serde(default)]
+    pub audio_quality: Option<AudioQualityReportWireV1>,
+    #[serde(default)]
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisProvenanceWireV1 {
     #[serde(default)]
     pub resources: Vec<serde_json::Value>,
@@ -393,6 +537,8 @@ pub struct AnalysisProvenanceWireV1 {
     pub fusion_version: String,
     pub hsmm_version: String,
     pub quantization_version: String,
+    #[serde(default)]
+    pub audio_quality_version: String,
     pub postprocess_version: String,
 }
 
@@ -404,7 +550,7 @@ pub struct AnalysisResultManifestWireV1 {
     pub status: AnalysisStatusWireV1,
     pub artifacts: AnalysisArtifactsWireV1,
     #[serde(default)]
-    pub diagnostics: serde_json::Value,
+    pub diagnostics: AnalysisDiagnosticsWireV1,
     pub provenance: AnalysisProvenanceWireV1,
     pub fingerprint: String,
     #[serde(default)]

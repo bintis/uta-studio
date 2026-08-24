@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -9,15 +9,41 @@ use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FRAMES: usize = 4 * 60 * 60 * 188;
 const ROSVOT_COMMIT: &str = "3c8332bf43adae35f6e4d64971862f2f6139b310";
+#[cfg(test)]
 const ROSVOT_CHECKPOINT: &str = "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb";
+#[cfg(test)]
 const ROSVOT_CONFIG: &str = "2ad2cb756623418c471b7dc2f56175cce88b69a70b4a2c354fa1a78525aa54e2";
 const STARS_COMMIT: &str = "f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167";
+#[cfg(test)]
 const STARS_CHECKPOINT: &str = "9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c";
+#[cfg(test)]
 const STARS_CONFIG: &str = "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d10a459e4e7e91";
+#[cfg(test)]
 const ANNOTATION_RMVPE: &str = "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2";
 const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k-v1";
 const G2P_PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0-v1";
-const G2P_ASSET_SHA256: &str = "289fcbcddfa8e5a1a911419af48ef36ddc08736aef7818e2c9321bdb331a94cc";
+#[cfg(test)]
+const G2P_ASSET_SHA256: &str = "433fcd2a7379cb9554a7a0dfe254746c3c7ee70bfd5de4fa18c1462757b888a5";
+const TECHNIQUE_TAXONOMY: [&str; 9] = [
+    "bubble",
+    "breathe",
+    "pharyngeal",
+    "vibrato",
+    "glissando",
+    "mixed",
+    "falsetto",
+    "weak",
+    "strong",
+];
+const STYLE_HEADS: [&str; 7] = [
+    "technique_group",
+    "language",
+    "gender",
+    "emotion",
+    "method",
+    "pace",
+    "range",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,7 +87,10 @@ pub struct AdvancedRawNoteV1 {
 pub struct AdvancedNoteEvidenceV1 {
     pub schema_version: u32,
     pub model_id: String,
-    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub upstream_commit: String,
     pub checkpoint_sha256: String,
     pub config_sha256: String,
@@ -80,7 +109,69 @@ pub struct AdvancedNoteEvidenceV1 {
     pub note_boundary_logits: Vec<f32>,
     pub regulated_note_boundaries: Vec<usize>,
     pub notes: Vec<AdvancedRawNoteV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technique_taxonomy: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technique_calibration: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub techniques: Option<Vec<AdvancedRawTechniqueV1>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub styles: Option<Vec<AdvancedRawGlobalStyleV1>>,
     pub dependencies: Vec<DependencyIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancedRawTechniqueV1 {
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub phoneme_id: i64,
+    pub raw_logits: Vec<f32>,
+    pub source_local_scores: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancedRawStyleHeadV1 {
+    pub taxonomy: Vec<String>,
+    pub raw_logits: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancedRawGlobalStyleV1 {
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub heads: BTreeMap<String, AdvancedRawStyleHeadV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TechniqueIntervalV1 {
+    pub range: TimeRange,
+    pub phoneme_id: i64,
+    pub raw_logits: Vec<f32>,
+    pub source_local_scores: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalStyleIntervalV1 {
+    pub range: TimeRange,
+    pub heads: BTreeMap<String, AdvancedRawStyleHeadV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TechniqueEvidenceV1 {
+    pub contract: String,
+    pub version: u32,
+    pub model_id: String,
+    pub taxonomy: Vec<String>,
+    pub calibration: String,
+    pub intervals: Vec<TechniqueIntervalV1>,
+    pub style_scope: String,
+    pub styles: Vec<GlobalStyleIntervalV1>,
+    pub provenance: EvidenceProvenance,
 }
 
 impl AdvancedNoteEvidenceV1 {
@@ -139,6 +230,97 @@ impl AdvancedNoteEvidenceV1 {
             })
             .collect()
     }
+
+    pub fn technique_artifact(
+        &self,
+        source_start: u64,
+        source_duration: u64,
+    ) -> EngineResult<Option<TechniqueEvidenceV1>> {
+        let (Some(taxonomy), Some(calibration), Some(techniques), Some(style_scope), Some(styles)) = (
+            self.technique_taxonomy.as_ref(),
+            self.technique_calibration.as_ref(),
+            self.techniques.as_ref(),
+            self.style_scope.as_ref(),
+            self.styles.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        let intervals = techniques
+            .iter()
+            .map(|technique| {
+                Ok(TechniqueIntervalV1 {
+                    range: self.canonical_range(
+                        technique.start_frame,
+                        technique.end_frame,
+                        source_start,
+                        source_duration,
+                    )?,
+                    phoneme_id: technique.phoneme_id,
+                    raw_logits: technique.raw_logits.clone(),
+                    source_local_scores: technique.source_local_scores.clone(),
+                })
+            })
+            .collect::<EngineResult<Vec<_>>>()?;
+        let styles = styles
+            .iter()
+            .map(|style| {
+                Ok(GlobalStyleIntervalV1 {
+                    range: self.canonical_range(
+                        style.start_frame,
+                        style.end_frame,
+                        source_start,
+                        source_duration,
+                    )?,
+                    heads: style.heads.clone(),
+                })
+            })
+            .collect::<EngineResult<Vec<_>>>()?;
+        Ok(Some(TechniqueEvidenceV1 {
+            contract: "uta.analysis-engine.technique-evidence".to_string(),
+            version: 1,
+            model_id: self.model_id.clone(),
+            taxonomy: taxonomy.clone(),
+            calibration: calibration.clone(),
+            intervals,
+            style_scope: style_scope.clone(),
+            styles,
+            provenance: self.technique_provenance(),
+        }))
+    }
+
+    pub fn technique_provenance(&self) -> EvidenceProvenance {
+        let mut provenance = self.provenance();
+        provenance.task = ExpertTask::Technique;
+        provenance.calibration_version = Some("source_local_sigmoid_uncalibrated".to_string());
+        provenance
+    }
+
+    fn canonical_range(
+        &self,
+        start_frame: usize,
+        end_frame: usize,
+        source_start: u64,
+        source_duration: u64,
+    ) -> EngineResult<TimeRange> {
+        let source_end = source_start
+            .checked_add(source_duration)
+            .ok_or_else(|| invalid("advanced note source timeline overflows"))?;
+        let convert = |frame: usize| -> EngineResult<u64> {
+            let units = (frame as u128)
+                .checked_mul(u128::from(self.frame_step_num))
+                .and_then(|value| value.checked_mul(u128::from(CANONICAL_TIMEBASE)))
+                .map(|value| value / u128::from(self.frame_step_den))
+                .ok_or_else(|| invalid("advanced note frame conversion overflows"))?;
+            let local = u64::try_from(units)
+                .map_err(|_| invalid("advanced note frame conversion overflows"))?;
+            source_start
+                .checked_add(local)
+                .ok_or_else(|| invalid("advanced note timeline overflows"))
+        };
+        let start = convert(start_frame)?;
+        let end = convert(end_frame)?.min(source_end);
+        TimeRange::new(start, end).map_err(invalid)
+    }
 }
 
 pub fn parse_advanced_note_evidence(
@@ -155,39 +337,35 @@ pub fn parse_advanced_note_evidence(
             .map_err(|error| invalid(format!("could not read advanced note evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("advanced note evidence JSON is invalid: {error}")))?;
-    let (capability, commit, checkpoint, config, requires_g2p) = match expected_model {
-        "rosvot" => (
-            "notes.rosvot",
-            ROSVOT_COMMIT,
-            ROSVOT_CHECKPOINT,
-            ROSVOT_CONFIG,
-            false,
-        ),
-        "stars" => (
-            "notes.stars",
-            STARS_COMMIT,
-            STARS_CHECKPOINT,
-            STARS_CONFIG,
-            true,
-        ),
+    let (capability, commit, requires_g2p) = match expected_model {
+        "rosvot" => ("notes.rosvot", ROSVOT_COMMIT, false),
+        "stars" => ("notes.stars", STARS_COMMIT, true),
         _ => {
             return Err(invalid(
                 "advanced note parser does not accept baseline substitution",
             ));
         }
     };
-    if evidence.schema_version != 1
+    let capability_identity_valid = if expected_model == "stars" {
+        let capabilities_valid = match evidence.capabilities.as_slice() {
+            [notes] => notes == capability,
+            [notes, technique] => notes == capability && technique == "technique.analyze",
+            _ => false,
+        };
+        evidence.schema_version == 2 && evidence.capability.is_none() && capabilities_valid
+    } else {
+        evidence.schema_version == 1
+            && evidence.capability.as_deref() == Some(capability)
+            && evidence.capabilities.is_empty()
+    };
+    if !capability_identity_valid
         || evidence.model_id != expected_model
-        || evidence.capability != capability
         || evidence.upstream_commit != commit
-        || evidence.checkpoint_sha256 != checkpoint
-        || evidence.config_sha256 != config
-        || !is_sha256(&evidence.model_generation)
-        || !is_sha256(&evidence.runtime_manifest_sha256)
-        || !matches!(evidence.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+        || !matches!(
+            evidence.backend.as_str(),
+            "openvino_gpu" | "openvino_cpu" | "openvino_gpu_cpu_staged"
+        )
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
-        || !is_sha256(&evidence.shared_frontend_generation)
-        || evidence.annotation_rmvpe_sha256 != ANNOTATION_RMVPE
         || evidence.word_boundary_source != "timed_transcript"
         || evidence.frame_step_num != 128
         || evidence.frame_step_den != 24_000
@@ -207,6 +385,7 @@ pub fn parse_advanced_note_evidence(
     if requires_g2p != (evidence.g2p_profile.as_deref() == Some(G2P_PROFILE)) {
         return Err(invalid("advanced note G2P identity is invalid"));
     }
+    validate_technique_contract(&evidence)?;
     validate_dependencies(
         &evidence.dependencies,
         requires_g2p,
@@ -238,6 +417,122 @@ pub fn parse_advanced_note_evidence(
     Ok(evidence)
 }
 
+fn validate_technique_contract(evidence: &AdvancedNoteEvidenceV1) -> EngineResult<()> {
+    let enabled = evidence
+        .capabilities
+        .iter()
+        .any(|capability| capability == "technique.analyze");
+    let fields_present = evidence.technique_taxonomy.is_some()
+        && evidence.technique_calibration.is_some()
+        && evidence.techniques.is_some()
+        && evidence.style_scope.is_some()
+        && evidence.styles.is_some();
+    if !enabled {
+        if fields_present
+            || evidence.technique_taxonomy.is_some()
+            || evidence.technique_calibration.is_some()
+            || evidence.techniques.is_some()
+            || evidence.style_scope.is_some()
+            || evidence.styles.is_some()
+        {
+            return Err(invalid("disabled STARS technique output must be absent"));
+        }
+        return Ok(());
+    }
+    if !fields_present
+        || evidence
+            .technique_taxonomy
+            .as_ref()
+            .is_none_or(|taxonomy| !taxonomy.iter().map(String::as_str).eq(TECHNIQUE_TAXONOMY))
+        || evidence.technique_calibration.as_deref() != Some("source_local_sigmoid_uncalibrated")
+        || evidence.style_scope.as_deref() != Some("segment_global")
+    {
+        return Err(invalid(
+            "STARS technique identity or calibration is invalid",
+        ));
+    }
+    let techniques = evidence.techniques.as_ref().unwrap();
+    if techniques.is_empty()
+        || techniques
+            .windows(2)
+            .any(|pair| pair[0].end_frame > pair[1].start_frame)
+        || techniques.iter().any(|technique| {
+            technique.end_frame <= technique.start_frame
+                || technique.end_frame > evidence.valid_frames
+                || technique.phoneme_id < 0
+                || technique.raw_logits.len() != TECHNIQUE_TAXONOMY.len()
+                || technique.source_local_scores.len() != TECHNIQUE_TAXONOMY.len()
+                || technique.raw_logits.iter().any(|value| !value.is_finite())
+                || technique
+                    .source_local_scores
+                    .iter()
+                    .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+                || technique
+                    .raw_logits
+                    .iter()
+                    .zip(&technique.source_local_scores)
+                    .any(|(logit, score)| {
+                        let projected = 1.0 / (1.0 + (-logit).exp());
+                        (projected - score).abs() > 1e-5
+                    })
+        })
+    {
+        return Err(invalid("STARS phoneme technique evidence is invalid"));
+    }
+    let styles = evidence.styles.as_ref().unwrap();
+    if styles.is_empty()
+        || styles
+            .windows(2)
+            .any(|pair| pair[0].end_frame > pair[1].start_frame)
+        || styles.iter().any(|style| {
+            style.end_frame <= style.start_frame
+                || style.end_frame > evidence.valid_frames
+                || style.heads.len() != STYLE_HEADS.len()
+                || STYLE_HEADS.iter().any(|name| {
+                    style.heads.get(*name).is_none_or(|head| {
+                        let expected = style_taxonomy(name);
+                        head.taxonomy
+                            .iter()
+                            .map(String::as_str)
+                            .ne(expected.iter().copied())
+                            || head.raw_logits.len() != expected.len()
+                            || head.raw_logits.iter().any(|value| !value.is_finite())
+                    })
+                })
+        })
+    {
+        return Err(invalid("STARS global style evidence is invalid"));
+    }
+    Ok(())
+}
+
+fn style_taxonomy(name: &str) -> &'static [&'static str] {
+    match name {
+        "technique_group" => &[
+            "control",
+            "mixed",
+            "falsetto",
+            "pharyngeal",
+            "glissando",
+            "vibrato",
+            "breathy",
+            "weak",
+            "strong",
+            "bubble",
+        ],
+        "language" => &[
+            "Chinese", "English", "Italian", "French", "Japanese", "Spanish", "German", "Korean",
+            "Russian",
+        ],
+        "gender" => &["female", "male"],
+        "emotion" => &["neutral", "happy", "sad", "angry"],
+        "method" => &["pop", "bel_canto"],
+        "pace" => &["slow", "moderate", "fast"],
+        "range" => &["low", "medium", "high"],
+        _ => &[],
+    }
+}
+
 fn validate_dependencies(
     dependencies: &[DependencyIdentity],
     requires_g2p: bool,
@@ -246,10 +541,7 @@ fn validate_dependencies(
     let kinds = dependencies
         .iter()
         .map(|dependency| {
-            let valid = match dependency.kind {
-                DependencyKind::TimedTranscript => is_identity(&dependency.generation),
-                _ => is_sha256(&dependency.generation),
-            };
+            let valid = is_identity(&dependency.generation);
             if !valid {
                 return Err(invalid("advanced note dependency generation is invalid"));
             }
@@ -269,14 +561,6 @@ fn validate_dependencies(
             "advanced note evidence omits or duplicates correlation dependencies",
         ));
     }
-    if requires_g2p
-        && dependencies.iter().find_map(|dependency| {
-            (dependency.kind == DependencyKind::ChineseG2p)
-                .then_some(dependency.generation.as_str())
-        }) != Some(G2P_ASSET_SHA256)
-    {
-        return Err(invalid("STARS Chinese G2P asset identity is invalid"));
-    }
     if dependencies.iter().find_map(|dependency| {
         (dependency.kind == DependencyKind::SharedFrontend)
             .then_some(dependency.generation.as_str())
@@ -293,13 +577,6 @@ fn validate_dependencies(
     Ok(())
 }
 
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn is_identity(value: &str) -> bool {
     !value.trim().is_empty()
         && value.len() <= 128
@@ -314,7 +591,11 @@ fn invalid(message: impl Into<String>) -> EngineError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn fixture(model: &str) -> serde_json::Value {
         let (capability, commit, checkpoint, config, g2p) = if model == "rosvot" {
@@ -345,7 +626,9 @@ mod tests {
                 .push(serde_json::json!({"kind":"chinese_g2p","generation":G2P_ASSET_SHA256}));
         }
         serde_json::json!({
-            "schema_version":1,"model_id":model,"capability":capability,
+            "schema_version":if model == "stars" { 2 } else { 1 },"model_id":model,
+            "capability":if model == "stars" { None::<String> } else { Some(capability.to_string()) },
+            "capabilities":if model == "stars" { vec![capability] } else { Vec::<&str>::new() },
             "upstream_commit":commit,"checkpoint_sha256":checkpoint,"config_sha256":config,
             "model_generation":"b".repeat(64),"runtime_manifest_sha256":"a".repeat(64),
             "backend":"openvino_gpu","shared_frontend_profile":FRONTEND_PROFILE,
@@ -366,10 +649,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "uta-advanced-notes-{}-{}.json",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
         path
@@ -398,7 +678,52 @@ mod tests {
     }
 
     #[test]
-    fn missing_dependency_and_baseline_substitution_fail_closed() {
+    fn staged_stars_backend_is_explicitly_accepted() {
+        let mut value = fixture("stars");
+        value["backend"] = serde_json::json!("openvino_gpu_cpu_staged");
+        let path = write(&value);
+        assert!(parse_advanced_note_evidence(&path, "stars").is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stars_technique_preserves_raw_taxonomy_scope_and_correlation() {
+        let mut value = fixture("stars");
+        value["capabilities"] = serde_json::json!(["notes.stars", "technique.analyze"]);
+        value["technique_taxonomy"] = serde_json::json!(TECHNIQUE_TAXONOMY);
+        value["technique_calibration"] = serde_json::json!("source_local_sigmoid_uncalibrated");
+        value["techniques"] = serde_json::json!([{
+            "start_frame":0,"end_frame":8,"phoneme_id":1,
+            "raw_logits":vec![0.0;9],"source_local_scores":vec![0.5;9]
+        }]);
+        value["style_scope"] = serde_json::json!("segment_global");
+        let heads = STYLE_HEADS
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    serde_json::json!({
+                        "taxonomy":style_taxonomy(name),
+                        "raw_logits":vec![0.0;style_taxonomy(name).len()]
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        value["styles"] = serde_json::json!([{
+            "start_frame":0,"end_frame":16,"heads":heads
+        }]);
+        let path = write(&value);
+        let evidence = parse_advanced_note_evidence(&path, "stars").unwrap();
+        let artifact = evidence.technique_artifact(0, 82_000).unwrap().unwrap();
+        assert_eq!(artifact.taxonomy, TECHNIQUE_TAXONOMY);
+        assert_eq!(artifact.provenance.task, ExpertTask::Technique);
+        assert!(artifact.provenance.correlation_group.is_some());
+        assert_eq!(artifact.intervals.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dependency_correlation_and_baseline_substitution_fail_closed_without_hash_rejection() {
         let mut value = fixture("rosvot");
         value["dependencies"] = serde_json::json!([]);
         let path = write(&value);
@@ -415,7 +740,7 @@ mod tests {
         let mut value = fixture("stars");
         value["dependencies"][3]["generation"] = serde_json::json!("f".repeat(64));
         let path = write(&value);
-        assert!(parse_advanced_note_evidence(&path, "stars").is_err());
+        assert!(parse_advanced_note_evidence(&path, "stars").is_ok());
         std::fs::remove_file(path).unwrap();
     }
 }

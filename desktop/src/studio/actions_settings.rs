@@ -30,8 +30,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             if studio.shell.settings_tab == SettingsTab::Storage {
                 studio.jobs.request_cache_stats_refresh = true;
             }
-            if studio.shell.settings_tab == SettingsTab::Models
-                && studio.jobs.model_settings_job.current.is_none()
+            if matches!(
+                studio.shell.settings_tab,
+                SettingsTab::Analysis | SettingsTab::Models
+            ) && studio.jobs.model_settings_job.current.is_none()
             {
                 studio.jobs.request_model_settings_refresh = true;
             }
@@ -52,8 +54,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.jobs.request_cache_stats_refresh =
                 matches!(studio.shell.settings_tab, SettingsTab::Storage);
             studio.jobs.request_model_settings_refresh =
-                matches!(studio.shell.settings_tab, SettingsTab::Models)
-                    && studio.jobs.model_settings_job.current.is_none();
+                matches!(
+                    studio.shell.settings_tab,
+                    SettingsTab::Analysis | SettingsTab::Models
+                ) && studio.jobs.model_settings_job.current.is_none();
             invalidated.invalidate(if route_changed {
                 UiDirtyRegion::Chrome
             } else {
@@ -231,6 +235,36 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             });
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
+        UiCommand::Settings(SettingsCommand::SetModelBackend(model_id, backend)) => {
+            let valid = backend.as_deref().is_none_or(|backend| {
+                matches!(
+                    backend,
+                    "openvino" | "vulkan" | "native_dsp" | "diagnostic_cpu"
+                )
+            });
+            if !valid {
+                studio.shell.notice = Some("Unsupported model backend selection.".to_string());
+            } else {
+                match backend {
+                    Some(backend) => {
+                        studio
+                            .shell
+                            .config
+                            .model_backend_overrides
+                            .insert(model_id.clone(), backend.clone());
+                    }
+                    None => {
+                        studio.shell.config.model_backend_overrides.remove(model_id);
+                    }
+                }
+                studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
+                    Some(format!(
+                        "Backend preference updated for {model_id}. Existing artifacts are unchanged; the next Plan Preview validates this route."
+                    ))
+                });
+            }
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
         UiCommand::Settings(SettingsCommand::SetAnalysisQuality(quality)) => {
             studio.shell.config.analysis_experience.quality_profile = *quality;
             studio.shell.notice = save_config_error(&studio.shell.config);
@@ -245,14 +279,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.notice = save_config_error(&studio.shell.config);
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
-        UiCommand::Settings(SettingsCommand::ToggleAnalysisAdvanced(section)) => {
-            studio.dialogs.open_analysis_advanced =
-                if studio.dialogs.open_analysis_advanced == Some(*section) {
-                    None
-                } else {
-                    Some(*section)
-                };
-            studio.dialogs.open_settings_select = None;
+        UiCommand::Settings(SettingsCommand::ToggleAnalysisQuantization) => {
+            studio.shell.config.analysis_experience.enable_quantization =
+                !studio.shell.config.enable_quantization();
+            studio.shell.notice = save_config_error(&studio.shell.config);
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::InstallAudioModel(model_id)) => {
@@ -455,54 +485,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-        UiCommand::Settings(SettingsCommand::AdjustSeparatorSegmentSize(delta)) => {
-            studio.shell.config.separator_segment_size = Some(
-                (i64::from(studio.shell.config.separator_segment_size()) + i64::from(*delta))
-                    .clamp(64, 1024) as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustSeparatorOverlap(delta)) => {
-            studio.shell.config.separator_overlap = Some(
-                (i64::from(studio.shell.config.separator_overlap()) + i64::from(*delta))
-                    .clamp(2, 32) as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustSeparatorBatchSize(delta)) => {
-            studio.shell.config.separator_batch_size = Some(
-                (i64::from(studio.shell.config.separator_batch_size()) + i64::from(*delta))
-                    .clamp(1, 8) as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustSeparatorNormalization(delta)) => {
-            studio.shell.config.separator_normalization_pct = Some(
-                (i64::from(studio.shell.config.separator_normalization_pct()) + i64::from(*delta))
-                    .clamp(1, 100) as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustAsrBeamSize(delta)) => {
-            studio.shell.config.beam_size = Some(
-                (i64::from(studio.shell.config.beam_size()) + i64::from(*delta)).clamp(1, 64)
-                    as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustAsrBatchSize(delta)) => {
-            studio.shell.config.batch_size = Some(
-                (i64::from(studio.shell.config.batch_size()) + i64::from(*delta)).clamp(1, 32)
-                    as u32,
-            );
-            studio.shell.notice = save_config_error(&studio.shell.config);
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
         UiCommand::Settings(SettingsCommand::AdjustUiFontScale(delta)) => {
             let current = ui_font_size_percent_to_points(studio.shell.config.font_scale_percent());
             let next = (i64::from(current) + i64::from(*delta) * i64::from(UI_FONT_SIZE_STEP_PX))
@@ -524,15 +506,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         }
         UiCommand::Settings(SettingsCommand::ToggleAutoAnalyze) => {
             studio.shell.config.auto_analyze = Some(!studio.shell.config.auto_analyze());
-            if let Some(error) = save_config_error(&studio.shell.config) {
-                studio.shell.notice = Some(error);
-            }
-            invalidated.invalidate(UiDirtyRegion::Settings);
-        }
-        UiCommand::Settings(SettingsCommand::AdjustVocalThreshold(delta)) => {
-            let current = (studio.shell.config.vocal_detection_threshold_pct() * 100.0).round();
-            let value = (current + f64::from(*delta)).clamp(0.0, 60.0) / 100.0;
-            studio.shell.config.vocal_detection_threshold_pct = Some(value);
             if let Some(error) = save_config_error(&studio.shell.config) {
                 studio.shell.notice = Some(error);
             }

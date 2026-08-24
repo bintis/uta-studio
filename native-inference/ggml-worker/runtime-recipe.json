@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "component": "uta-ggml-worker",
+  "worker_protocol": "native-ggml-vulkan-v1",
+  "ggml": {
+    "repository": "ggerganov/ggml",
+    "commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
+    "backend": "vulkan",
+    "device": 0,
+    "cpu_fallback": false
+  },
+  "roformer_engine": {
+    "source": "native-inference/roformer",
+    "batch_size": 1,
+    "serial_pipeline": true,
+    "vulkan_async": false
+  },
+  "model_format": "gguf",
+  "downloads_on_launch": false
+}

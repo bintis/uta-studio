@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifies the given version string matches every Uta Studio workspace crate.
+# Verifies the given version string matches every Uta! Studio workspace crate.
 #
 # Exits non-zero with a GitHub Actions error annotation on any mismatch.
 #

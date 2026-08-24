@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,6 +30,23 @@ pub enum NativeBackend {
     Vulkan,
     NativeDsp,
     CpuReference,
+}
+
+impl FromStr for NativeBackend {
+    type Err = RuntimeManagerError;
+
+    fn from_str(value: &str) -> RuntimeManagerResult<Self> {
+        match value {
+            "openvino" => Ok(Self::OpenVino),
+            "vulkan" | "ggml_vulkan" => Ok(Self::Vulkan),
+            "native_dsp" => Ok(Self::NativeDsp),
+            "cpu_reference" | "openvino_cpu" => Ok(Self::CpuReference),
+            other => Err(RuntimeManagerError::new(
+                "invalid_backend",
+                format!("unknown native backend: {other}"),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +232,8 @@ impl ResourceCatalog {
         };
         catalog.add_default_runtimes()?;
         catalog.add_default_models()?;
+        catalog.add_openvino_cpu_reference_routes();
+        catalog.add_ggml_roformer_routes()?;
         catalog.add_default_tools_and_bundles()?;
         Ok(catalog)
     }
@@ -276,6 +296,72 @@ impl ResourceCatalog {
             .collect()
     }
 
+    fn add_openvino_cpu_reference_routes(&mut self) {
+        for model in self.models.values_mut().filter(|model| {
+            model
+                .backends
+                .iter()
+                .any(|capability| capability.backend == NativeBackend::OpenVino)
+        }) {
+            if !model
+                .backends
+                .iter()
+                .any(|capability| capability.backend == NativeBackend::CpuReference)
+            {
+                model.backends.push(BackendCapability {
+                    backend: NativeBackend::CpuReference,
+                    validation: ValidationState::Experimental,
+                    evidence_id: Some("validation:openvino-ir-explicit-cpu-reference".to_string()),
+                });
+            }
+        }
+    }
+
+    fn add_ggml_roformer_routes(&mut self) -> RuntimeManagerResult<()> {
+        const ROFORMER_MODELS: [&str; 5] = [
+            "bs_roformer_vocals_ep317",
+            "melband_roformer_inst_v2",
+            "melband_roformer_harmony",
+            "melband_roformer_denoise_aufr33",
+            "melband_roformer_dereverb_anvuew",
+        ];
+        for model_id in ROFORMER_MODELS {
+            let model = self
+                .models
+                .get_mut(model_id)
+                .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing RoFormer model"))?;
+            model.backends.clear();
+            model.backends.push(BackendCapability {
+                backend: NativeBackend::Vulkan,
+                validation: ValidationState::BenchmarkCandidate,
+                evidence_id: Some(
+                    "validation:ggml-roformer-fullsong-serial-2026-08-24".to_string(),
+                ),
+            });
+            model.pinned_backend = Some(NativeBackend::Vulkan);
+            model.dependencies.clear();
+            model
+                .dependencies
+                .push(ResourceRef::runtime("ggml_vulkan_v1")?);
+            model.runtime_recipe_digest = Some(
+                "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a".to_string(),
+            );
+            if model_id == "melband_roformer_harmony"
+                && !model
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "audio.lead_partition")
+            {
+                model.capabilities.push("audio.lead_partition".to_string());
+            }
+            model.acquisition = vec![acquisition(
+                AcquisitionMethod::LocalImport,
+                "explicit import of the exact verified legacy GGUF",
+            )];
+        }
+        Ok(())
+    }
+
     fn add_default_runtimes(&mut self) -> RuntimeManagerResult<()> {
         use NativeBackend::*;
         use ValidationState::*;
@@ -299,11 +385,6 @@ impl ResourceCatalog {
                 "fcpe",
                 "game",
                 "basic_pitch",
-                "bs_roformer_vocals_ep317",
-                "melband_roformer_inst_v2",
-                "melband_roformer_harmony",
-                "melband_roformer_denoise_aufr33",
-                "melband_roformer_dereverb_anvuew",
                 "stars",
                 "rosvot",
             ]
@@ -311,6 +392,36 @@ impl ResourceCatalog {
             .map(str::to_string)
             .collect(),
             recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
+        })?;
+        self.insert_runtime(RuntimeCatalogEntry {
+            id: "ggml_vulkan_v1".to_string(),
+            display_name: "GGML Vulkan Worker".to_string(),
+            purpose: "Explicit GGUF Vulkan inference candidate for non-Qwen models".to_string(),
+            backends: vec![BackendCapability {
+                backend: Vulkan,
+                validation: BenchmarkCandidate,
+                evidence_id: Some(
+                    "validation:ggml-roformer-fullsong-serial-2026-08-24".to_string(),
+                ),
+            }],
+            acquisition: vec![acquisition(
+                AcquisitionMethod::Bundled,
+                "packaged native worker and pinned local runtime",
+            )],
+            executable_component_id: "ggml_vulkan_v1".to_string(),
+            supported_models: [
+                "bs_roformer_vocals_ep317",
+                "melband_roformer_inst_v2",
+                "melband_roformer_harmony",
+                "melband_roformer_denoise_aufr33",
+                "melband_roformer_dereverb_anvuew",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            recipe_digest: Some(
+                "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a".to_string(),
+            ),
         })?;
         self.insert_runtime(RuntimeCatalogEntry {
             id: "qwen_asr_runtime".to_string(),
@@ -390,7 +501,7 @@ impl ResourceCatalog {
             ),
             (
                 "melband_roformer_harmony",
-                "MelBand-RoFormer Lead / Back",
+                "MelBand-RoFormer Lead Isolation",
                 "audio.lead_isolate",
             ),
             (
@@ -648,6 +759,7 @@ impl ResourceCatalog {
                 source_attribution: "FireRedTeam/FireRedASR2S canonical project; selected executable graphs are the community 42ailab/ManySpeech ONNX conversion, not an official FireRedTeam binary".to_string(),
                 source_page: Some("https://huggingface.co/42ailab/FireRedASR2-AED-ONNX/tree/13f950858934f7b6a0d3ce52bae65af0dc022258".to_string()),
             },
+            ValidationState::ProductionPinned,
             "validation:firered-openvino-worker-windowed-v1",
         )?;
         self.insert_model(ModelCatalogEntry {
@@ -734,6 +846,7 @@ impl ResourceCatalog {
                 source_attribution: "CNChTu/FCPE canonical project; selected fcpe.onnx is the explicitly unofficial gzivdo community export".to_string(),
                 source_page: Some("https://huggingface.co/gzivdo/fcpe-onnx/tree/5800a2b1944967f55bb0bfeb9718cb749f809310".to_string()),
             },
+            ValidationState::BenchmarkCandidate,
             "validation:fcpe-windowed-schema3-secondary-f0",
         )?;
         self.insert_model(ModelCatalogEntry {
@@ -768,8 +881,7 @@ impl ResourceCatalog {
                 backend: OpenVino,
                 validation: ProductionPinned,
                 evidence_id: Some(
-                    "validation:native-model-smoke-matrix-2026-08-22#game-production-promotion"
-                        .to_string(),
+                    "validation:game-stitching-repaired-fullsong-2026-08-24".to_string(),
                 ),
             }],
             pinned_backend: Some(OpenVino),
@@ -811,13 +923,14 @@ impl ResourceCatalog {
                 source_attribution: "Spotify Basic Pitch canonical project; selected nmp.onnx is the AEmotionStudio mirror of Spotify ONNX bytes".to_string(),
                 source_page: Some("https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models/tree/327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763".to_string()),
             },
+            ValidationState::BenchmarkCandidate,
             "validation:basic-pitch-reference-overlap-schema3",
         )?;
         self.insert_model(ModelCatalogEntry {
             id: ModelId::new("stars")?,
-            display_name: "STARS Chinese P0".to_string(),
-            purpose: "Optional lyric-conditioned singing note evidence".to_string(),
-            capabilities: vec!["notes.stars".to_string()],
+            display_name: "STARS Chinese P1".to_string(),
+            purpose: "Optional lyric-conditioned note, technique, and style evidence".to_string(),
+            capabilities: vec!["notes.stars".to_string(), "technique.analyze".to_string()],
             source: SourceIdentity {
                 repository: Some("https://huggingface.co/verstar/STARS".to_string()),
                 revision: Some("744a7ad02e1d788452293cd903ea6a933f7862c4".to_string()),
@@ -840,7 +953,7 @@ impl ResourceCatalog {
                     ),
                 ],
                 converted_artifact: Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_conditioned_segmented".to_string(),
+                    format: "openvino_ir_v11_conditioned_segmented_p1".to_string(),
                     manifest_filename: "manifest.json".to_string(),
                     manifest_sha256: STARS_IR_MANIFEST_SHA256.to_string(),
                     conversion_recipe_sha256: STARS_CONVERSION_RECIPE_SHA256.to_string(),
@@ -856,7 +969,7 @@ impl ResourceCatalog {
             },
             acquisition: vec![acquisition(
                 AcquisitionMethod::LocalImport,
-                "explicit import of the pinned conditioned STARS OpenVINO generation",
+                "explicit import of the pinned conditioned STARS P1 OpenVINO generation",
             )],
             dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
             backends: vec![BackendCapability {
@@ -1058,6 +1171,7 @@ impl ResourceCatalog {
         capability: &str,
         source: SourceIdentity,
         license: LicenseInfo,
+        validation: ValidationState,
         evidence_id: &str,
     ) -> RuntimeManagerResult<()> {
         self.insert_model(ModelCatalogEntry {
@@ -1074,7 +1188,7 @@ impl ResourceCatalog {
             dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
             backends: vec![BackendCapability {
                 backend: NativeBackend::OpenVino,
-                validation: ValidationState::BenchmarkCandidate,
+                validation,
                 evidence_id: Some(evidence_id.to_string()),
             }],
             pinned_backend: Some(NativeBackend::OpenVino),
@@ -1366,13 +1480,20 @@ mod tests {
         for (id, sha256) in expected {
             let model = catalog.model(id).unwrap();
             assert_eq!(model.source.sha256.as_deref(), Some(sha256));
-            assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
+            assert_eq!(model.pinned_backend, Some(NativeBackend::Vulkan));
             assert_eq!(
                 model.dependencies,
-                vec![ResourceRef::runtime("openvino_2026_3").unwrap()]
+                [ResourceRef::runtime("ggml_vulkan_v1").unwrap()]
             );
             assert_eq!(model.backends.len(), 1);
-            assert_eq!(model.backends[0].backend, NativeBackend::OpenVino);
+            assert!(model.backends.iter().all(|backend| {
+                backend.backend == NativeBackend::Vulkan
+                    && backend.validation == ValidationState::BenchmarkCandidate
+            }));
+            assert_eq!(
+                model.runtime_recipe_digest.as_deref(),
+                Some("4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a")
+            );
         }
         assert_eq!(
             catalog
@@ -1415,7 +1536,7 @@ mod tests {
                 .iter()
                 .all(|spec| spec.method == AcquisitionMethod::LocalImport)
         );
-        assert_eq!(roformer.pinned_backend, Some(NativeBackend::OpenVino));
+        assert_eq!(roformer.pinned_backend, Some(NativeBackend::Vulkan));
         assert_eq!(
             roformer
                 .source
@@ -1524,13 +1645,11 @@ mod tests {
             ),
         ] {
             let model = catalog.model(id).unwrap();
-            assert_eq!(model.capabilities, [capability]);
-            assert!(
-                model
-                    .capabilities
-                    .iter()
-                    .all(|value| value != "technique.analyze")
-            );
+            if id == "stars" {
+                assert_eq!(model.capabilities, [capability, "technique.analyze"]);
+            } else {
+                assert_eq!(model.capabilities, [capability]);
+            }
             assert!(
                 model
                     .acquisition
@@ -1538,16 +1657,25 @@ mod tests {
                     .all(|spec| spec.method == AcquisitionMethod::LocalImport)
             );
             assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
-            assert!(
-                model
-                    .backends
-                    .iter()
-                    .all(|backend| { backend.validation == ValidationState::BenchmarkCandidate })
-            );
+            assert!(model.backends.iter().any(|backend| {
+                backend.backend == NativeBackend::OpenVino
+                    && backend.validation == ValidationState::BenchmarkCandidate
+            }));
+            assert!(model.backends.iter().any(|backend| {
+                backend.backend == NativeBackend::CpuReference
+                    && backend.validation == ValidationState::Experimental
+            }));
             let converted = model.source.converted_artifact.as_ref().unwrap();
             assert_eq!(converted.manifest_sha256, manifest);
             assert_eq!(converted.conversion_recipe_sha256, recipe);
-            assert_eq!(converted.format, "openvino_ir_v11_conditioned_segmented");
+            assert_eq!(
+                converted.format,
+                if id == "stars" {
+                    "openvino_ir_v11_conditioned_segmented_p1"
+                } else {
+                    "openvino_ir_v11_conditioned_segmented"
+                }
+            );
         }
         let stars = catalog.model("stars").unwrap();
         assert_eq!(
@@ -1575,86 +1703,29 @@ mod tests {
     }
 
     #[test]
-    fn denoise_uses_only_the_pinned_openvino_integration_route() {
+    fn every_roformer_is_ggml_only_and_openvino_cannot_resolve_it() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let model = catalog.model("melband_roformer_denoise_aufr33").unwrap();
-        assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
-        assert_eq!(
-            model.dependencies,
-            vec![ResourceRef::runtime("openvino_2026_3").unwrap()]
-        );
-        assert!(
-            model
-                .acquisition
-                .iter()
-                .any(|spec| spec.method == AcquisitionMethod::LocalImport)
-        );
-        assert_eq!(
-            model.source.revision.as_deref(),
-            Some("4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9")
-        );
-        let converted = model.source.converted_artifact.as_ref().unwrap();
-        assert_eq!(
-            converted.manifest_sha256,
-            ROFORMER_DENOISE_IR_MANIFEST_SHA256
-        );
-        assert_eq!(
-            converted.conversion_recipe_sha256,
-            ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256
-        );
-        assert_eq!(
-            model
-                .backends
-                .iter()
-                .find(|backend| backend.backend == NativeBackend::OpenVino)
-                .unwrap()
-                .validation,
-            ValidationState::BenchmarkCandidate
-        );
-        assert!(
-            catalog
-                .runtime("openvino_2026_3")
-                .unwrap()
-                .supported_models
-                .contains(&model.id.as_str().to_string())
-        );
-    }
-
-    #[test]
-    fn harmony_uses_only_the_pinned_dual_residual_openvino_route() {
-        let catalog = ResourceCatalog::default_catalog().unwrap();
-        let model = catalog.model("melband_roformer_harmony").unwrap();
-        assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
-        assert_eq!(
-            model.dependencies,
-            vec![ResourceRef::runtime("openvino_2026_3").unwrap()]
-        );
-        assert!(
-            model
-                .acquisition
-                .iter()
-                .any(|spec| spec.method == AcquisitionMethod::LocalImport)
-        );
-        let converted = model.source.converted_artifact.as_ref().unwrap();
-        assert_eq!(
-            converted.format,
-            "openvino_ir_v11_explicit_cpu_gpu_islands_dual_residual"
-        );
-        assert_eq!(
-            converted.manifest_sha256,
-            ROFORMER_HARMONY_IR_MANIFEST_SHA256
-        );
-        assert_eq!(
-            converted.conversion_recipe_sha256,
-            ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256
-        );
-        assert!(
-            catalog
-                .runtime("openvino_2026_3")
-                .unwrap()
-                .supported_models
-                .contains(&model.id.as_str().to_string())
-        );
+        let openvino = catalog.runtime("openvino_2026_3").unwrap();
+        for model_id in [
+            "bs_roformer_vocals_ep317",
+            "melband_roformer_inst_v2",
+            "melband_roformer_harmony",
+            "melband_roformer_denoise_aufr33",
+            "melband_roformer_dereverb_anvuew",
+        ] {
+            let model = catalog.model(model_id).unwrap();
+            assert_eq!(model.pinned_backend, Some(NativeBackend::Vulkan));
+            assert_eq!(
+                model.dependencies,
+                [ResourceRef::runtime("ggml_vulkan_v1").unwrap()]
+            );
+            assert_eq!(model.backends.len(), 1);
+            assert!(model.backends.iter().all(|backend| {
+                backend.backend == NativeBackend::Vulkan
+                    && backend.validation == ValidationState::BenchmarkCandidate
+            }));
+            assert!(!openvino.supported_models.contains(&model_id.to_string()));
+        }
     }
 
     #[test]
@@ -1670,6 +1741,7 @@ mod tests {
                 FIRERED_IR_MANIFEST_SHA256,
                 "https://github.com/FireRedTeam/FireRedASR2S",
                 "Apache-2.0",
+                ValidationState::ProductionPinned,
             ),
             (
                 "fcpe",
@@ -1680,6 +1752,7 @@ mod tests {
                 FCPE_IR_MANIFEST_SHA256,
                 "https://github.com/CNChTu/FCPE",
                 "MIT",
+                ValidationState::BenchmarkCandidate,
             ),
             (
                 "basic_pitch",
@@ -1690,6 +1763,7 @@ mod tests {
                 BASIC_PITCH_IR_MANIFEST_SHA256,
                 "https://github.com/spotify/basic-pitch",
                 "Apache-2.0",
+                ValidationState::BenchmarkCandidate,
             ),
         ];
         for (
@@ -1701,6 +1775,7 @@ mod tests {
             manifest_sha256,
             algorithm_repository,
             algorithm_license,
+            expected_validation,
         ) in expected
         {
             let model = catalog.model(id).unwrap();
@@ -1723,9 +1798,19 @@ mod tests {
                     .any(|spec| { spec.method == AcquisitionMethod::LocalImport })
             );
             assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
-            assert!(model.backends.iter().all(|backend| {
-                backend.validation == ValidationState::BenchmarkCandidate
-                    && backend.evidence_id.is_some()
+            assert!(
+                model
+                    .backends
+                    .iter()
+                    .all(|backend| backend.evidence_id.is_some())
+            );
+            assert!(model.backends.iter().any(|backend| {
+                backend.backend == NativeBackend::OpenVino
+                    && backend.validation == expected_validation
+            }));
+            assert!(model.backends.iter().any(|backend| {
+                backend.backend == NativeBackend::CpuReference
+                    && backend.validation == ValidationState::Experimental
             }));
         }
         assert_eq!(
@@ -1740,17 +1825,49 @@ mod tests {
     }
 
     #[test]
-    fn registry_view_preserves_production_pinned_backend_states() {
+    fn every_openvino_ir_model_has_explicit_cpu_only_diagnostics() {
+        let catalog = ResourceCatalog::default_catalog().unwrap();
+        let mut ir_models = 0;
+        for model in catalog.models.values().filter(|model| {
+            model
+                .backends
+                .iter()
+                .any(|backend| backend.backend == NativeBackend::OpenVino)
+        }) {
+            ir_models += 1;
+            assert!(model.backends.iter().any(|backend| {
+                backend.backend == NativeBackend::CpuReference
+                    && backend.validation == ValidationState::Experimental
+            }));
+        }
+        assert_eq!(ir_models, 7);
+        for qwen in ["qwen3_asr_1_7b", "qwen3_forced_aligner_0_6b"] {
+            assert!(
+                catalog
+                    .model(qwen)
+                    .unwrap()
+                    .backends
+                    .iter()
+                    .all(|backend| { backend.backend != NativeBackend::CpuReference })
+            );
+        }
+    }
+
+    #[test]
+    fn registry_view_preserves_current_backend_states() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
         let registry = catalog.native_runtime_registry();
-        for model_id in ["rmvpe", "game"] {
+        let expected = [
+            ("rmvpe", ValidationState::ProductionPinned),
+            ("game", ValidationState::ProductionPinned),
+        ];
+        for (model_id, validation) in expected {
             let model = registry
                 .iter()
                 .find(|model| model.model_id == model_id)
                 .unwrap();
             assert!(model.backends.iter().any(|capability| {
-                capability.backend == NativeBackend::OpenVino
-                    && capability.validation == ValidationState::ProductionPinned
+                capability.backend == NativeBackend::OpenVino && capability.validation == validation
             }));
         }
     }

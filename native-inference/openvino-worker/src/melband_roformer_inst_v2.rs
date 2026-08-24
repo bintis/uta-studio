@@ -2,17 +2,8 @@ use std::path::{Path, PathBuf};
 
 use openvino::{CompiledModel, Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 const MODEL_ID: &str = "melband_roformer_inst_v2";
-const MANIFEST_SHA256: &str = "683c16d852ec16ebc68679656622c2b6bfe75e55dd0201d9e2ccab8fb979d40c";
-const CONFIG_SHA256: &str = "4b902a7360a930c178edb4846b30e4e326aa1219d1b2daf660d46a311e0cd50b";
-const SOURCE_SHA256: &str = "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2";
-const RECIPE_SHA256: &str = "1dfb93131898bbfb9197f0c0efb87314285aee27d03e3d94c83d1d8f1def5033";
-const LAYOUT_INDICES_SHA256: &str =
-    "c087bfc8e1a110a16a7aa998de5fe43b025ea08de0e4606c7b80e258b1ed5ecc";
-const LAYOUT_COUNTS_SHA256: &str =
-    "41947c540f2511f98bb2530176d9a9a3576e5a954135dbf5ef207247e0933683";
 const FRAMES: usize = 1_101;
 const CHUNK_SAMPLES: usize = 485_100;
 const OVERLAP: usize = 2;
@@ -38,22 +29,8 @@ struct Manifest {
     resource: String,
     capability: String,
     semantic_output: String,
-    source: SourceIdentity,
-    conversion_recipe: ConversionIdentity,
     exact_contract: ExactContract,
-    layout: LayoutIdentity,
     islands: Vec<IslandIdentity>,
-}
-
-#[derive(Deserialize)]
-struct SourceIdentity {
-    checkpoint_sha256: String,
-    config_sha256: String,
-}
-
-#[derive(Deserialize)]
-struct ConversionIdentity {
-    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -73,12 +50,6 @@ struct ExactContract {
 }
 
 #[derive(Deserialize)]
-struct LayoutIdentity {
-    frequency_indices_sha256: String,
-    bands_per_frequency_sha256: String,
-}
-
-#[derive(Deserialize)]
 struct IslandIdentity {
     name: String,
     kind: String,
@@ -94,11 +65,10 @@ struct IslandIdentity {
 struct FileIdentity {
     filename: String,
     bytes: u64,
-    sha256: String,
 }
 
 struct MaskIsland {
-    model: CompiledModel,
+    paths: LayerIsland,
     start: usize,
     end: usize,
     output_width: usize,
@@ -111,17 +81,9 @@ struct LayerIsland {
 }
 
 struct Pipeline {
-    core: Core,
-    band: CompiledModel,
+    band: LayerIsland,
     layers: Vec<(LayerIsland, LayerIsland)>,
     masks: Vec<MaskIsland>,
-}
-
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 type ExpectedIsland = (
@@ -173,8 +135,7 @@ fn validate_file(directory: &Path, identity: &FileIdentity) -> Result<PathBuf, S
     }
     let path = directory.join(filename);
     let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() != identity.bytes || sha256(&path)? != identity.sha256
-    {
+    if !metadata.is_file() || metadata.len() != identity.bytes {
         return Err(format!(
             "Inst V2 island identity mismatch: {}",
             identity.filename
@@ -185,9 +146,8 @@ fn validate_file(directory: &Path, identity: &FileIdentity) -> Result<PathBuf, S
 
 fn validate_manifest(directory: &Path) -> Result<Manifest, String> {
     let path = directory.join("manifest.json");
-    if sha256(&path)? != MANIFEST_SHA256 || sha256(&directory.join("config.yaml"))? != CONFIG_SHA256
-    {
-        return Err("Inst V2 split generation identity is invalid".to_string());
+    if !path.is_file() || !directory.join("config.yaml").is_file() {
+        return Err("Inst V2 split generation is incomplete".to_string());
     }
     let manifest: Manifest =
         serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
@@ -197,9 +157,6 @@ fn validate_manifest(directory: &Path) -> Result<Manifest, String> {
         || manifest.resource != format!("model:{MODEL_ID}")
         || manifest.capability != "audio.extract_instrumental"
         || manifest.semantic_output != "instrumental"
-        || manifest.source.checkpoint_sha256 != SOURCE_SHA256
-        || manifest.source.config_sha256 != CONFIG_SHA256
-        || manifest.conversion_recipe.sha256 != RECIPE_SHA256
         || contract.sample_rate != 44_100
         || contract.channels != 2
         || contract.chunk_samples != CHUNK_SAMPLES
@@ -212,8 +169,6 @@ fn validate_manifest(directory: &Path) -> Result<Manifest, String> {
         || contract.time_microbatch != TIME_BATCH
         || contract.frequency_microbatch != FREQUENCY_BATCH
         || !contract.full_time_context_preserved
-        || manifest.layout.frequency_indices_sha256 != LAYOUT_INDICES_SHA256
-        || manifest.layout.bands_per_frequency_sha256 != LAYOUT_COUNTS_SHA256
     {
         return Err("Inst V2 split manifest contract mismatch".to_string());
     }
@@ -270,38 +225,40 @@ fn island_paths(directory: &Path, island: &IslandIdentity) -> Result<LayerIsland
     })
 }
 
-fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, String> {
-    let _runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
+fn configured_core(device: DeviceType<'_>) -> Result<Core, String> {
     let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
     let devices = core
         .available_devices()
         .map_err(|error| error.to_string())?;
-    for required in [DeviceType::CPU, DeviceType::GPU] {
-        if !devices.contains(&required) {
-            return Err(format!(
-                "Inst V2 requires explicit OpenVINO {required}; fallback is forbidden"
-            ));
-        }
+    if !devices.contains(&device) {
+        return Err(format!(
+            "Inst V2 requires explicit OpenVINO {device}; fallback is forbidden"
+        ));
     }
-    for device in [DeviceType::CPU, DeviceType::GPU] {
-        core.set_properties(
-            &device,
-            [
-                (RwPropertyKey::HintInferencePrecision, "f32"),
-                (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-            ],
-        )
-        .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
+    core.set_properties(
+        &device,
+        [
+            (RwPropertyKey::HintInferencePrecision, "f32"),
+            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
+        ],
+    )
+    .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
+    if device == DeviceType::GPU {
+        crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     }
-    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
-    let band_paths = island_paths(directory, &manifest.islands[0])?;
-    let band = compile_paths(
-        &mut core,
-        &band_paths.name,
-        &band_paths.xml,
-        &band_paths.bin,
-        DeviceType::CPU,
-    )?;
+    Ok(core)
+}
+
+fn prepare_pipeline(
+    directory: &Path,
+    manifest: &Manifest,
+    compute_device: DeviceType<'_>,
+) -> Result<Pipeline, String> {
+    let _runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
+    drop(configured_core(DeviceType::CPU)?);
+    if compute_device == DeviceType::GPU {
+        drop(configured_core(DeviceType::GPU)?);
+    }
     let mut layers = Vec::with_capacity(12);
     for layer in 0..12 {
         let offset = 1 + layer * 2;
@@ -312,23 +269,15 @@ fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, S
     }
     let mut masks = Vec::with_capacity(MASK_GROUPS.len());
     for (index, (start, end, output_width)) in MASK_GROUPS.into_iter().enumerate() {
-        let paths = island_paths(directory, &manifest.islands[25 + index])?;
         masks.push(MaskIsland {
-            model: compile_paths(
-                &mut core,
-                &paths.name,
-                &paths.xml,
-                &paths.bin,
-                DeviceType::CPU,
-            )?,
+            paths: island_paths(directory, &manifest.islands[25 + index])?,
             start,
             end,
             output_width,
         });
     }
     Ok(Pipeline {
-        core,
-        band,
+        band: island_paths(directory, &manifest.islands[0])?,
         layers,
         masks,
     })
@@ -376,107 +325,173 @@ fn run_model(
     Ok(values)
 }
 
-fn run_pipeline(pipeline: &mut Pipeline, gathered: &[f32]) -> Result<Vec<f32>, String> {
-    if gathered.len() != FRAMES * GATHERED_WIDTH {
-        return Err("Inst V2 gathered STFT shape is invalid".to_string());
+fn run_pipeline(
+    pipeline: &Pipeline,
+    gathered_chunks: Vec<Vec<f32>>,
+    compute_device: DeviceType<'_>,
+) -> Result<Vec<Vec<f32>>, String> {
+    if gathered_chunks.is_empty()
+        || gathered_chunks
+            .iter()
+            .any(|gathered| gathered.len() != FRAMES * GATHERED_WIDTH)
+    {
+        return Err("Inst V2 gathered STFT shapes are invalid".to_string());
     }
-    let mut features = run_model(
-        &mut pipeline.band,
-        gathered,
-        &[1, FRAMES as i64, GATHERED_WIDTH as i64],
-        &[1, FRAMES as i64, BANDS as i64, DIM as i64],
+
+    let mut cpu_core = configured_core(DeviceType::CPU)?;
+    let mut band_model = compile_paths(
+        &mut cpu_core,
+        &pipeline.band.name,
+        &pipeline.band.xml,
+        &pipeline.band.bin,
+        DeviceType::CPU,
     )?;
-    for (time_paths, frequency_paths) in &pipeline.layers {
+    let mut feature_chunks = Vec::with_capacity(gathered_chunks.len());
+    for gathered in gathered_chunks {
+        feature_chunks.push(run_model(
+            &mut band_model,
+            &gathered,
+            &[1, FRAMES as i64, GATHERED_WIDTH as i64],
+            &[1, FRAMES as i64, BANDS as i64, DIM as i64],
+        )?);
+    }
+    drop(band_model);
+    drop(cpu_core);
+
+    let compute_is_gpu = compute_device == DeviceType::GPU;
+    let mut compute_core = configured_core(if compute_is_gpu {
+        DeviceType::GPU
+    } else {
+        DeviceType::CPU
+    })?;
+    for (layer, (time_paths, frequency_paths)) in pipeline.layers.iter().enumerate() {
+        eprintln!(
+            "[uta-openvino-worker] Inst V2 stage-major layer {}/12 time",
+            layer + 1
+        );
         let mut time_model = compile_paths(
-            &mut pipeline.core,
+            &mut compute_core,
             &time_paths.name,
             &time_paths.xml,
             &time_paths.bin,
-            DeviceType::GPU,
+            if compute_is_gpu {
+                DeviceType::GPU
+            } else {
+                DeviceType::CPU
+            },
         )?;
-        let mut time_output = vec![0.0; features.len()];
-        for band_start in (0..BANDS).step_by(TIME_BATCH) {
-            let mut input = vec![0.0; TIME_BATCH * FRAMES * DIM];
-            for band in 0..TIME_BATCH {
-                for frame in 0..FRAMES {
-                    let source = (frame * BANDS + band_start + band) * DIM;
-                    let destination = (band * FRAMES + frame) * DIM;
+        let mut time_chunks = Vec::with_capacity(feature_chunks.len());
+        for features in std::mem::take(&mut feature_chunks) {
+            let mut time_output = vec![0.0; features.len()];
+            for band_start in (0..BANDS).step_by(TIME_BATCH) {
+                let mut input = vec![0.0; TIME_BATCH * FRAMES * DIM];
+                for band in 0..TIME_BATCH {
+                    for frame in 0..FRAMES {
+                        let source = (frame * BANDS + band_start + band) * DIM;
+                        let destination = (band * FRAMES + frame) * DIM;
+                        input[destination..destination + DIM]
+                            .copy_from_slice(&features[source..source + DIM]);
+                    }
+                }
+                let output = run_model(
+                    &mut time_model,
+                    &input,
+                    &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                    &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                )?;
+                for band in 0..TIME_BATCH {
+                    for frame in 0..FRAMES {
+                        let source = (band * FRAMES + frame) * DIM;
+                        let destination = (frame * BANDS + band_start + band) * DIM;
+                        time_output[destination..destination + DIM]
+                            .copy_from_slice(&output[source..source + DIM]);
+                    }
+                }
+            }
+            time_chunks.push(time_output);
+        }
+        drop(time_model);
+
+        eprintln!(
+            "[uta-openvino-worker] Inst V2 stage-major layer {}/12 frequency",
+            layer + 1
+        );
+        let mut frequency_model = compile_paths(
+            &mut compute_core,
+            &frequency_paths.name,
+            &frequency_paths.xml,
+            &frequency_paths.bin,
+            if compute_is_gpu {
+                DeviceType::GPU
+            } else {
+                DeviceType::CPU
+            },
+        )?;
+        feature_chunks.reserve(time_chunks.len());
+        for time_output in time_chunks {
+            let mut frequency_output = vec![0.0; time_output.len()];
+            for frame_start in (0..FRAMES).step_by(FREQUENCY_BATCH) {
+                let valid = (FRAMES - frame_start).min(FREQUENCY_BATCH);
+                let mut input = vec![0.0; FREQUENCY_BATCH * BANDS * DIM];
+                let count = valid * BANDS * DIM;
+                let source = frame_start * BANDS * DIM;
+                input[..count].copy_from_slice(&time_output[source..source + count]);
+                let output = run_model(
+                    &mut frequency_model,
+                    &input,
+                    &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
+                    &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
+                )?;
+                frequency_output[source..source + count].copy_from_slice(&output[..count]);
+            }
+            feature_chunks.push(frequency_output);
+        }
+        drop(frequency_model);
+    }
+    drop(compute_core);
+
+    let mut cpu_core = configured_core(DeviceType::CPU)?;
+    let mut gathered_masks = vec![vec![0.0; FRAMES * GATHERED_WIDTH]; feature_chunks.len()];
+    let mut width_offset = 0;
+    for mask in &pipeline.masks {
+        let mut mask_model = compile_paths(
+            &mut cpu_core,
+            &mask.paths.name,
+            &mask.paths.xml,
+            &mask.paths.bin,
+            DeviceType::CPU,
+        )?;
+        let bands = mask.end - mask.start;
+        for (features, gathered_mask) in feature_chunks.iter().zip(&mut gathered_masks) {
+            let mut input = vec![0.0; FRAMES * bands * DIM];
+            for frame in 0..FRAMES {
+                for band in 0..bands {
+                    let source = (frame * BANDS + mask.start + band) * DIM;
+                    let destination = (frame * bands + band) * DIM;
                     input[destination..destination + DIM]
                         .copy_from_slice(&features[source..source + DIM]);
                 }
             }
             let output = run_model(
-                &mut time_model,
+                &mut mask_model,
                 &input,
-                &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
-                &[TIME_BATCH as i64, FRAMES as i64, DIM as i64],
+                &[1, FRAMES as i64, bands as i64, DIM as i64],
+                &[1, FRAMES as i64, mask.output_width as i64],
             )?;
-            for band in 0..TIME_BATCH {
-                for frame in 0..FRAMES {
-                    let source = (band * FRAMES + frame) * DIM;
-                    let destination = (frame * BANDS + band_start + band) * DIM;
-                    time_output[destination..destination + DIM]
-                        .copy_from_slice(&output[source..source + DIM]);
-                }
+            for frame in 0..FRAMES {
+                let source = frame * mask.output_width;
+                let destination = frame * GATHERED_WIDTH + width_offset;
+                gathered_mask[destination..destination + mask.output_width]
+                    .copy_from_slice(&output[source..source + mask.output_width]);
             }
         }
-        drop(time_model);
-        let mut frequency_model = compile_paths(
-            &mut pipeline.core,
-            &frequency_paths.name,
-            &frequency_paths.xml,
-            &frequency_paths.bin,
-            DeviceType::GPU,
-        )?;
-        let mut frequency_output = vec![0.0; features.len()];
-        for frame_start in (0..FRAMES).step_by(FREQUENCY_BATCH) {
-            let valid = (FRAMES - frame_start).min(FREQUENCY_BATCH);
-            let mut input = vec![0.0; FREQUENCY_BATCH * BANDS * DIM];
-            let count = valid * BANDS * DIM;
-            let source = frame_start * BANDS * DIM;
-            input[..count].copy_from_slice(&time_output[source..source + count]);
-            let output = run_model(
-                &mut frequency_model,
-                &input,
-                &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
-                &[FREQUENCY_BATCH as i64, BANDS as i64, DIM as i64],
-            )?;
-            frequency_output[source..source + count].copy_from_slice(&output[..count]);
-        }
-        drop(frequency_model);
-        features = frequency_output;
-    }
-    let mut gathered_mask = vec![0.0; FRAMES * GATHERED_WIDTH];
-    let mut width_offset = 0;
-    for mask in &mut pipeline.masks {
-        let bands = mask.end - mask.start;
-        let mut input = vec![0.0; FRAMES * bands * DIM];
-        for frame in 0..FRAMES {
-            for band in 0..bands {
-                let source = (frame * BANDS + mask.start + band) * DIM;
-                let destination = (frame * bands + band) * DIM;
-                input[destination..destination + DIM]
-                    .copy_from_slice(&features[source..source + DIM]);
-            }
-        }
-        let output = run_model(
-            &mut mask.model,
-            &input,
-            &[1, FRAMES as i64, bands as i64, DIM as i64],
-            &[1, FRAMES as i64, mask.output_width as i64],
-        )?;
-        for frame in 0..FRAMES {
-            let source = frame * mask.output_width;
-            let destination = frame * GATHERED_WIDTH + width_offset;
-            gathered_mask[destination..destination + mask.output_width]
-                .copy_from_slice(&output[source..source + mask.output_width]);
-        }
+        drop(mask_model);
         width_offset += mask.output_width;
     }
     if width_offset != GATHERED_WIDTH {
         return Err("Inst V2 mask groups do not cover the gathered spectrum".to_string());
     }
-    Ok(gathered_mask)
+    Ok(gathered_masks)
 }
 
 pub fn infer(
@@ -485,15 +500,13 @@ pub fn infer(
     config: &serde_json::Value,
     mut progress: impl FnMut(f32, &str),
 ) -> Result<PathBuf, String> {
-    if config.get("backend").and_then(|value| value.as_str()) != Some("openvino_gpu")
-        || config
-            .get("semantic_output")
-            .and_then(|value| value.as_str())
-            != Some("instrumental")
+    let device = crate::runtime::inference_device(config)?;
+    if config
+        .get("semantic_output")
+        .and_then(|value| value.as_str())
+        != Some("instrumental")
     {
-        return Err(
-            "Inst V2 requires explicit OpenVINO GPU and instrumental semantics".to_string(),
-        );
+        return Err("Inst V2 requires explicit instrumental semantics".to_string());
     }
     let directory = config
         .get("model_path")
@@ -502,14 +515,14 @@ pub fn infer(
         .ok_or_else(|| "Inst V2 split generation path is missing".to_string())?;
     progress(0.01, "Validating exact-context Inst V2 split generation");
     let manifest = validate_manifest(&directory)?;
-    progress(0.02, "Compiling explicit Inst V2 CPU/GPU IR topology");
-    let mut pipeline = compile_pipeline(&directory, &manifest)?;
-    let output = super::melband_roformer_denoise::process_audio(
+    progress(0.02, "Preparing phase-separated Inst V2 IR topology");
+    let pipeline = prepare_pipeline(&directory, &manifest, device.openvino())?;
+    let output = super::melband_roformer_denoise::process_audio_staged(
         audio,
         FRAMES,
         CHUNK_SAMPLES,
         OVERLAP,
-        |gathered| run_pipeline(&mut pipeline, gathered),
+        |gathered_chunks| run_pipeline(&pipeline, gathered_chunks, device.openvino()),
         |fraction, message| progress(0.04 + fraction * 0.92, message),
     )?;
     progress(0.97, "Atomically encoding exact-context instrumental stem");

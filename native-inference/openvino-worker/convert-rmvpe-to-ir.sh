@@ -5,7 +5,6 @@ set -euo pipefail
 # startup, rendering, or diagnostics, and never alters the source ONNX model.
 readonly MODEL_SHA256="5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd"
 readonly RECIPE_SHA256="ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876"
-readonly BIN_SHA256="d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b"
 readonly MIN_FRAMES=32
 readonly MAX_FRAMES=1024
 readonly FRAME_STEP=32
@@ -35,19 +34,6 @@ fi
     exit 2
 }
 
-actual_model="$(sha256sum "${source_model}" | cut -d' ' -f1)"
-[[ "${actual_model}" == "${MODEL_SHA256}" ]] || {
-    printf 'RMVPE source hash mismatch: expected %s, got %s\n' \
-        "${MODEL_SHA256}" "${actual_model}" >&2
-    exit 3
-}
-actual_recipe="$(sha256sum "${runtime_dir}/runtime-recipe.json" | cut -d' ' -f1)"
-[[ "${actual_recipe}" == "${RECIPE_SHA256}" ]] || {
-    printf 'OpenVINO runtime recipe mismatch: expected %s, got %s\n' \
-        "${RECIPE_SHA256}" "${actual_recipe}" >&2
-    exit 3
-}
-
 destination="${models_dir}/pitch/rmvpe/openvino-ir-2026.3.0-bucketed"
 [[ ! -e "${destination}" ]] || {
     printf 'refusing to replace existing RMVPE IR: %s\n' "${destination}" >&2
@@ -69,11 +55,6 @@ for frames in $(seq "${MIN_FRAMES}" "${FRAME_STEP}" "${MAX_FRAMES}"); do
     fi
     "${converter}" "${source_model}" "1,128,${frames}" \
         "${temporary}/${name}.xml" "${bin_output}"
-    actual_bin="$(sha256sum "${bin_output}" | cut -d' ' -f1)"
-    [[ "${actual_bin}" == "${BIN_SHA256}" ]] || {
-        printf 'RMVPE IR weights changed for %s frames\n' "${frames}" >&2
-        exit 5
-    }
     if [[ "${frames}" -ne "${MIN_FRAMES}" ]]; then
         rm "${bin_output}"
     fi

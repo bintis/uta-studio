@@ -1,6 +1,6 @@
-# Contributing to Uta Studio
+# Contributing to Uta! Studio
 
-Thanks for helping improve Uta Studio.
+Thanks for helping improve Uta! Studio.
 
 ## Workflow
 

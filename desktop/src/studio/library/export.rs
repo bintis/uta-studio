@@ -250,7 +250,7 @@ pub(crate) fn safe_file_stem(value: &str) -> String {
         .collect::<String>();
     let value = value.trim().trim_matches('.');
     if value.is_empty() {
-        "Uta Studio Export".to_string()
+        "Uta! Studio Export".to_string()
     } else {
         value.to_string()
     }

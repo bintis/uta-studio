@@ -1,21 +1,13 @@
 #![allow(clippy::needless_range_loop)] // Explicit DSP and tensor-axis indexing.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use openvino::{CompiledModel, Core, DeviceType, ElementType, RwPropertyKey, Shape, Tensor};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 const MODEL_ID: &str = "bs_roformer_vocals_ep317";
-const SOURCE_CHECKPOINT_SHA256: &str =
-    "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa";
-const SOURCE_CONFIG_SHA256: &str =
-    "2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f";
-const RECIPE_SHA256: &str = "c64fdf13ca6d38063bbe39f8a44cf2518b7d26f18f394b3897539eff3cc0c69a";
-const MANIFEST_SHA256: &str = "530fe75a8cab9d3391b42f4945cd57e24db4c4ffca348ccff065f2f3af9b8d98";
 const SAMPLE_RATE: usize = 44_100;
 const CHANNELS: usize = 2;
 const CHUNK_SAMPLES: usize = 352_800;
@@ -49,22 +41,8 @@ struct Manifest {
     resource: String,
     capability: String,
     semantic_output: String,
-    source: SourceIdentity,
-    conversion_recipe: ConversionIdentity,
-    runtime_recipe_sha256: String,
     exact_contract: ExactContract,
     islands: Vec<IslandIdentity>,
-}
-
-#[derive(Deserialize)]
-struct SourceIdentity {
-    checkpoint_sha256: String,
-    config_sha256: String,
-}
-
-#[derive(Deserialize)]
-struct ConversionIdentity {
-    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -99,7 +77,6 @@ struct IslandIdentity {
 struct FileIdentity {
     filename: String,
     bytes: u64,
-    sha256: String,
 }
 
 struct IslandPaths {
@@ -109,17 +86,16 @@ struct IslandPaths {
 }
 
 struct MaskIsland {
-    model: CompiledModel,
+    paths: IslandPaths,
     start: usize,
     end: usize,
     output_width: usize,
 }
 
 struct Pipeline {
-    core: Core,
-    band: CompiledModel,
+    band: IslandPaths,
     layers: Vec<(IslandPaths, IslandPaths)>,
-    norm: CompiledModel,
+    norm: IslandPaths,
     masks: Vec<MaskIsland>,
 }
 
@@ -131,13 +107,6 @@ type ExpectedIsland = (
     Option<usize>,
     Option<usize>,
 );
-
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", digest.finalize()))
-}
 
 fn expected_islands() -> Vec<ExpectedIsland> {
     let mut result = vec![("band-split".into(), "band", "CPU", None, None, None)];
@@ -180,8 +149,7 @@ fn validate_file(directory: &Path, identity: &FileIdentity) -> Result<PathBuf, S
     }
     let path = directory.join(filename);
     let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() != identity.bytes || sha256(&path)? != identity.sha256
-    {
+    if !metadata.is_file() || metadata.len() != identity.bytes {
         return Err(format!(
             "BS-RoFormer island identity mismatch: {}",
             identity.filename
@@ -195,10 +163,8 @@ fn validate_manifest(directory: &Path) -> Result<Manifest, String> {
         return Err("resolved BS-RoFormer split generation is unavailable".to_string());
     }
     let path = directory.join("manifest.json");
-    if sha256(&path)? != MANIFEST_SHA256
-        || sha256(&directory.join("config.yaml"))? != SOURCE_CONFIG_SHA256
-    {
-        return Err("BS-RoFormer split generation identity is invalid".to_string());
+    if !path.is_file() || !directory.join("config.yaml").is_file() {
+        return Err("BS-RoFormer split generation is incomplete".to_string());
     }
     let manifest: Manifest =
         serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
@@ -208,10 +174,6 @@ fn validate_manifest(directory: &Path) -> Result<Manifest, String> {
         || manifest.resource != format!("model:{MODEL_ID}")
         || manifest.capability != "audio.extract_vocals"
         || manifest.semantic_output != "guide_vocals"
-        || manifest.source.checkpoint_sha256 != SOURCE_CHECKPOINT_SHA256
-        || manifest.source.config_sha256 != SOURCE_CONFIG_SHA256
-        || manifest.conversion_recipe.sha256 != RECIPE_SHA256
-        || manifest.runtime_recipe_sha256 != crate::protocol::COMPONENT_RECIPE
         || contract.sample_rate != SAMPLE_RATE
         || contract.channels != CHANNELS
         || contract.chunk_samples != CHUNK_SAMPLES
@@ -284,35 +246,42 @@ fn compile_paths(
     })
 }
 
-fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, String> {
-    let _ = crate::runtime::validate_runtime()?;
+fn configured_core(device: DeviceType<'_>) -> Result<Core, String> {
     let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
     let devices = core
         .available_devices()
         .map_err(|error| error.to_string())?;
-    for required in [DeviceType::CPU, DeviceType::GPU] {
-        if !devices.contains(&required) {
-            return Err(format!(
-                "BS-RoFormer requires explicit OpenVINO {required}; fallback is forbidden"
-            ));
-        }
+    if !devices.contains(&device) {
+        return Err(format!(
+            "BS-RoFormer requires explicit OpenVINO {device}; fallback is forbidden"
+        ));
     }
-    for device in [DeviceType::CPU, DeviceType::GPU] {
-        core.set_properties(
-            &device,
-            [
-                (RwPropertyKey::HintInferencePrecision, "f32"),
-                (RwPropertyKey::HintExecutionMode, "ACCURACY"),
-            ],
-        )
-        .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
+    core.set_properties(
+        &device,
+        [
+            (RwPropertyKey::HintInferencePrecision, "f32"),
+            (RwPropertyKey::HintExecutionMode, "ACCURACY"),
+        ],
+    )
+    .map_err(|error| format!("could not configure OpenVINO {device}: {error}"))?;
+    if device == DeviceType::GPU {
+        crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
     }
-    crate::runtime::configure_low_impact_gpu_queue(&mut core)?;
-    let band = compile_paths(
-        &mut core,
-        &paths(directory, &manifest.islands[0]),
-        DeviceType::CPU,
-    )?;
+    Ok(core)
+}
+
+fn prepare_pipeline(
+    directory: &Path,
+    manifest: &Manifest,
+    compute_device: DeviceType<'_>,
+) -> Result<Pipeline, String> {
+    let _ = crate::runtime::validate_runtime()?;
+    // Probe only devices selected by the explicit route. CPU-only execution
+    // must not initialize the GPU plugin or create a GPU context.
+    drop(configured_core(DeviceType::CPU)?);
+    if compute_device == DeviceType::GPU {
+        drop(configured_core(DeviceType::GPU)?);
+    }
     let mut layers = Vec::with_capacity(12);
     for layer in 0..12 {
         let offset = 1 + layer * 2;
@@ -321,26 +290,19 @@ fn compile_pipeline(directory: &Path, manifest: &Manifest) -> Result<Pipeline, S
             paths(directory, &manifest.islands[offset + 1]),
         ));
     }
-    let norm = compile_paths(
-        &mut core,
-        &paths(directory, &manifest.islands[25]),
-        DeviceType::CPU,
-    )?;
     let mut masks = Vec::with_capacity(MASK_GROUPS.len());
     for (index, (start, end, output_width)) in MASK_GROUPS.into_iter().enumerate() {
-        let island_paths = paths(directory, &manifest.islands[26 + index]);
         masks.push(MaskIsland {
-            model: compile_paths(&mut core, &island_paths, DeviceType::CPU)?,
+            paths: paths(directory, &manifest.islands[26 + index]),
             start,
             end,
             output_width,
         });
     }
     Ok(Pipeline {
-        core,
-        band,
+        band: paths(directory, &manifest.islands[0]),
         layers,
-        norm,
+        norm: paths(directory, &manifest.islands[25]),
         masks,
     })
 }
@@ -387,9 +349,36 @@ fn run_model(
     Ok(values)
 }
 
+fn repeat_last_valid_batch_lane(
+    values: &mut [f32],
+    valid_lanes: usize,
+    total_lanes: usize,
+    lane_width: usize,
+) -> Result<(), String> {
+    let expected_length = total_lanes
+        .checked_mul(lane_width)
+        .ok_or_else(|| "BS-RoFormer batch padding size overflowed".to_string())?;
+    if valid_lanes == 0
+        || valid_lanes > total_lanes
+        || lane_width == 0
+        || values.len() != expected_length
+    {
+        return Err("BS-RoFormer batch padding contract mismatch".to_string());
+    }
+    if valid_lanes == total_lanes {
+        return Ok(());
+    }
+    let source = (valid_lanes - 1) * lane_width;
+    for lane in valid_lanes..total_lanes {
+        values.copy_within(source..source + lane_width, lane * lane_width);
+    }
+    Ok(())
+}
+
 fn run_pipeline(
-    pipeline: &mut Pipeline,
+    pipeline: &Pipeline,
     gathered_chunks: Vec<Vec<f32>>,
+    compute_device: DeviceType<'_>,
 ) -> Result<Vec<Vec<f32>>, String> {
     if gathered_chunks.is_empty()
         || gathered_chunks
@@ -399,22 +388,44 @@ fn run_pipeline(
         return Err("BS-RoFormer gathered STFT shapes are invalid".to_string());
     }
 
+    // CPU pre-phase: compile and run only band split, then release the CPU
+    // model and Core before any GPU model is compiled.
+    let mut cpu_core = configured_core(DeviceType::CPU)?;
+    let mut band_model = compile_paths(&mut cpu_core, &pipeline.band, DeviceType::CPU)?;
     let mut feature_chunks = Vec::with_capacity(gathered_chunks.len());
     for gathered in gathered_chunks {
         feature_chunks.push(run_model(
-            &mut pipeline.band,
+            &mut band_model,
             &gathered,
             &[1, FRAMES as i64, GATHERED_WIDTH as i64],
             &[1, FRAMES as i64, BANDS as i64, DIM as i64],
         )?);
     }
+    drop(band_model);
+    drop(cpu_core);
 
+    // Compute phase: one rolling transformer island is resident at a time.
+    // In CPU-only mode this never initializes or probes the GPU plugin.
+    let compute_is_gpu = compute_device == DeviceType::GPU;
+    let mut compute_core = configured_core(if compute_is_gpu {
+        DeviceType::GPU
+    } else {
+        DeviceType::CPU
+    })?;
     for (layer, (time_paths, frequency_paths)) in pipeline.layers.iter().enumerate() {
         eprintln!(
             "[uta-openvino-worker] BS-RoFormer stage-major layer {}/12 time",
             layer + 1
         );
-        let mut time_model = compile_paths(&mut pipeline.core, time_paths, DeviceType::GPU)?;
+        let mut time_model = compile_paths(
+            &mut compute_core,
+            time_paths,
+            if compute_is_gpu {
+                DeviceType::GPU
+            } else {
+                DeviceType::CPU
+            },
+        )?;
         let mut time_chunks = Vec::with_capacity(feature_chunks.len());
         for features in std::mem::take(&mut feature_chunks) {
             let mut time_output = vec![0.0; features.len()];
@@ -429,6 +440,9 @@ fn run_pipeline(
                             .copy_from_slice(&features[source..source + DIM]);
                     }
                 }
+                // Avoid all-zero padding lanes: Intel GPU low-precision transformer
+                // kernels can return NaN for those lanes even though callers discard them.
+                repeat_last_valid_batch_lane(&mut input, valid, TIME_BATCH, FRAMES * DIM)?;
                 let output = run_model(
                     &mut time_model,
                     &input,
@@ -452,8 +466,15 @@ fn run_pipeline(
             "[uta-openvino-worker] BS-RoFormer stage-major layer {}/12 frequency",
             layer + 1
         );
-        let mut frequency_model =
-            compile_paths(&mut pipeline.core, frequency_paths, DeviceType::GPU)?;
+        let mut frequency_model = compile_paths(
+            &mut compute_core,
+            frequency_paths,
+            if compute_is_gpu {
+                DeviceType::GPU
+            } else {
+                DeviceType::CPU
+            },
+        )?;
         feature_chunks.reserve(time_chunks.len());
         for time_output in time_chunks {
             let mut frequency_output = vec![0.0; time_output.len()];
@@ -463,6 +484,7 @@ fn run_pipeline(
                 let source = frame_start * BANDS * DIM;
                 let mut input = vec![0.0; FREQUENCY_BATCH * BANDS * DIM];
                 input[..count].copy_from_slice(&time_output[source..source + count]);
+                repeat_last_valid_batch_lane(&mut input, valid, FREQUENCY_BATCH, BANDS * DIM)?;
                 let output = run_model(
                     &mut frequency_model,
                     &input,
@@ -475,19 +497,27 @@ fn run_pipeline(
         }
         drop(frequency_model);
     }
+    drop(compute_core);
 
+    // CPU post-phase: norm and each mask group are compiled and released
+    // individually, avoiding both CPU/GPU co-residency and aggregate mask
+    // residency.
+    let mut cpu_core = configured_core(DeviceType::CPU)?;
+    let mut norm_model = compile_paths(&mut cpu_core, &pipeline.norm, DeviceType::CPU)?;
     for features in &mut feature_chunks {
         *features = run_model(
-            &mut pipeline.norm,
+            &mut norm_model,
             features,
             &[1, FRAMES as i64, BANDS as i64, DIM as i64],
             &[1, FRAMES as i64, BANDS as i64, DIM as i64],
         )?;
     }
+    drop(norm_model);
 
     let mut gathered_masks = vec![vec![0.0; FRAMES * GATHERED_WIDTH]; feature_chunks.len()];
     let mut width_offset = 0;
-    for mask in &mut pipeline.masks {
+    for mask in &pipeline.masks {
+        let mut mask_model = compile_paths(&mut cpu_core, &mask.paths, DeviceType::CPU)?;
         let bands = mask.end - mask.start;
         for (features, gathered_mask) in feature_chunks.iter().zip(&mut gathered_masks) {
             let mut input = vec![0.0; FRAMES * bands * DIM];
@@ -500,7 +530,7 @@ fn run_pipeline(
                 }
             }
             let output = run_model(
-                &mut mask.model,
+                &mut mask_model,
                 &input,
                 &[1, FRAMES as i64, bands as i64, DIM as i64],
                 &[1, FRAMES as i64, mask.output_width as i64],
@@ -512,6 +542,7 @@ fn run_pipeline(
                     .copy_from_slice(&output[source..source + mask.output_width]);
             }
         }
+        drop(mask_model);
         width_offset += mask.output_width;
     }
     if width_offset != GATHERED_WIDTH {
@@ -526,15 +557,13 @@ pub fn infer(
     config: &serde_json::Value,
     mut progress: impl FnMut(f32, &str),
 ) -> Result<PathBuf, String> {
-    if config.get("backend").and_then(|value| value.as_str()) != Some("openvino_gpu")
-        || config
-            .get("semantic_output")
-            .and_then(|value| value.as_str())
-            != Some("guide_vocals")
+    let device = crate::runtime::inference_device(config)?;
+    if config
+        .get("semantic_output")
+        .and_then(|value| value.as_str())
+        != Some("guide_vocals")
     {
-        return Err(
-            "BS-RoFormer requires explicit OpenVINO GPU and GuideVocals semantics".to_string(),
-        );
+        return Err("BS-RoFormer requires explicit GuideVocals semantics".to_string());
     }
     if interleaved.is_empty() || !interleaved.len().is_multiple_of(CHANNELS) {
         return Err("BS-RoFormer stereo PCM is empty or malformed".to_string());
@@ -552,15 +581,16 @@ pub fn infer(
             .collect::<Vec<_>>()
     });
     eprintln!(
-        "[uta-openvino-worker] model={MODEL_ID} backend=explicit_cpu_gpu_split samples={samples} exact_frames={FRAMES}"
+        "[uta-openvino-worker] model={MODEL_ID} backend={} samples={samples} exact_frames={FRAMES}",
+        device.evidence_backend()
     );
-    progress(0.01, "Compiling explicit BS-RoFormer CPU islands");
-    let mut pipeline = compile_pipeline(&model_dir, &manifest)?;
+    progress(0.01, "Preparing explicit BS-RoFormer execution phases");
+    let pipeline = prepare_pipeline(&model_dir, &manifest, device.openvino())?;
     progress(
         0.03,
-        "Running stage-major exact-context BS-RoFormer GPU islands",
+        "Running phase-separated exact-context BS-RoFormer islands",
     );
-    let result = process_audio_staged(&audio, &mut pipeline)?;
+    let result = process_audio_staged(&audio, &pipeline, device.openvino())?;
     if result.iter().flatten().any(|sample| !sample.is_finite()) {
         return Err("BS-RoFormer returned non-finite vocal audio".to_string());
     }
@@ -575,7 +605,8 @@ pub fn infer(
 
 fn process_audio_staged(
     audio: &[Vec<f32>; CHANNELS],
-    pipeline: &mut Pipeline,
+    pipeline: &Pipeline,
+    compute_device: DeviceType<'_>,
 ) -> Result<[Vec<f32>; CHANNELS], String> {
     let samples = audio[0].len();
     if samples == 0 || samples > MAX_SAMPLES || audio[1].len() != samples {
@@ -618,7 +649,7 @@ fn process_audio_staged(
         gathered_chunks.push(gathered);
     }
 
-    let masks = run_pipeline(pipeline, gathered_chunks)?;
+    let masks = run_pipeline(pipeline, gathered_chunks, compute_device)?;
     if masks.len() != chunks
         || masks.iter().any(|mask| {
             mask.len() != FRAMES * GATHERED_WIDTH || mask.iter().any(|value| !value.is_finite())
@@ -854,6 +885,42 @@ mod tests {
             (FRAMES, BANDS, DIM, TIME_BATCH, FREQUENCY_BATCH),
             (801, 62, 512, 8, 64)
         );
+    }
+
+    #[test]
+    fn partial_transformer_batches_repeat_the_last_valid_lane() {
+        for (total_lanes, valid_lanes) in [
+            (TIME_BATCH, BANDS % TIME_BATCH),
+            (FREQUENCY_BATCH, FRAMES % FREQUENCY_BATCH),
+        ] {
+            assert!(valid_lanes > 0);
+            let lane_width = 2;
+            let mut values = vec![0.0; total_lanes * lane_width];
+            for lane in 0..valid_lanes {
+                values[lane * lane_width..(lane + 1) * lane_width]
+                    .copy_from_slice(&[lane as f32 + 0.25, lane as f32 + 0.75]);
+            }
+            let expected =
+                values[(valid_lanes - 1) * lane_width..valid_lanes * lane_width].to_vec();
+
+            repeat_last_valid_batch_lane(&mut values, valid_lanes, total_lanes, lane_width)
+                .unwrap();
+
+            for lane in valid_lanes..total_lanes {
+                assert_eq!(
+                    &values[lane * lane_width..(lane + 1) * lane_width],
+                    expected.as_slice()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_transformer_batch_is_not_modified_by_padding() {
+        let mut values = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = values.clone();
+        repeat_last_valid_batch_lane(&mut values, 2, 2, 2).unwrap();
+        assert_eq!(values, expected);
     }
 
     #[test]

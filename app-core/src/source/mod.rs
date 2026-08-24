@@ -1,4 +1,4 @@
-//! Local-folder library source used by Uta Studio.
+//! Local-folder library source used by Uta! Studio.
 
 use std::path::PathBuf;
 

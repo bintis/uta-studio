@@ -1,5 +1,5 @@
 //! Parser for Standard LRC (line-level timestamps) and Enhanced LRC
-//! (word-level timestamps) into Uta Studio's editable transcript shape.
+//! (word-level timestamps) into Uta! Studio's editable transcript shape.
 //!
 //! Standard:  `[00:12.00]First line of lyrics`
 //! Enhanced:  `[00:12.00]<00:12.00>I <00:12.30>see <00:12.60>trees`

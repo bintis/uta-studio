@@ -36,7 +36,7 @@ for long audio.
 | Canonical catalog identity | UVR catalog “BS-Roformer-Viperx-1297”; exact checkpoint `model_bs_roformer_ep_317_sdr_12.9755.ckpt` [R1][R2]. “EP317” is the filename epoch marker; the catalog display value includes the reported SDR. |
 | Author/owner | Checkpoint catalog credits Viperx; hosted by TRvlvr's UVR public catalog [R1][R2]. A separate author-owned immutable model repository was not found. |
 | Release/revision | Release tag `all_public_uvr_models`; exact immutable checkpoint commit/revision is **MISSING** because the release asset is mutable independently of the Git tag [R1]. |
-| Source size/hash | GitHub asset size 639,331,213 bytes. GitHub publishes no digest. Uta Studio records local/source SHA-256 `5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa`; that is repository evidence, not a hash published by source [R1]. |
+| Source size/hash | GitHub asset size 639,331,213 bytes. GitHub publishes no digest. Uta! Studio records local/source SHA-256 `5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa`; that is repository evidence, not a hash published by source [R1]. |
 | License | **MISSING.** `TRvlvr/model_repo` has no detected license and the release body supplies none. Redistribution/commercial use therefore cannot be approved from authoritative material. Runtime MIT does not cure this. |
 | Architecture | BS-RoFormer, dim 512, depth 12, one target stem, stereo, 159.8M-class parameter graph in local conversion evidence [R2]. |
 | Input/preprocessing | 44.1 kHz stereo; chunk 352,800 samples (~8 s); FFT/window 2,048; hop 441; reflect-centered STFT; target config's low-level silence threshold `0.001` [R2][R3]. |

@@ -24,7 +24,7 @@ mod node_context_action_tests {
     }
 
     #[test]
-    fn bgm_and_vocal_children_truthfully_advertise_the_shared_stem_executor() {
+    fn stem_children_do_not_offer_unrepresentable_legacy_node_execution() {
         for node_id in [
             "stems.instrumental",
             "instrumental.denoise",
@@ -34,22 +34,8 @@ mod node_context_action_tests {
             "vocals.dereverb",
         ] {
             let context = menu(node_id);
-            let retry = context.retry_action.expect("stem rerun action");
-            assert_eq!(retry.label, "Re-run configured stem pipeline");
-            assert!(matches!(
-                retry.action.0,
-                UiCommand::Analysis(AnalysisCommand::RunAnalysisNodeOnly(ref hash, ref id))
-                    if hash == "fixture-song" && id == node_id
-            ));
-            assert_eq!(
-                context
-                    .run_downstream_action
-                    .as_ref()
-                    .map(|action| action.label),
-                Some("Run stem route and downstream")
-            );
-            assert!(context.open_configure_dialog_action.is_none());
-            assert!(context.bypass_node_action.is_none());
+            assert!(context.retry_action.is_none(), "{node_id}");
+            assert!(context.run_downstream_action.is_none(), "{node_id}");
             assert!(context.view_logs_action.is_some());
         }
     }
@@ -67,10 +53,9 @@ mod node_context_action_tests {
         let transcribe = menu("lyrics.transcribe");
         assert_eq!(
             transcribe.retry_action.as_ref().map(|action| action.label),
-            Some("Retranscribe and align")
+            Some("Retranscribe")
         );
         assert!(transcribe.force_transcribe_action.is_some());
-        assert!(transcribe.open_configure_dialog_action.is_some());
         assert!(transcribe.refetch_align_action.is_none());
 
         let align = menu("lyrics.align");
@@ -79,7 +64,6 @@ mod node_context_action_tests {
             Some("Realign existing lyrics")
         );
         assert!(align.refetch_align_action.is_some());
-        assert!(align.open_configure_dialog_action.is_some());
         assert!(align.force_transcribe_action.is_none());
     }
 
@@ -97,14 +81,7 @@ mod node_context_action_tests {
 
         let preprocess = menu("lyrics.preprocess");
         assert!(preprocess.retry_action.is_none());
-        assert_eq!(
-            preprocess
-                .run_downstream_action
-                .as_ref()
-                .map(|action| action.label),
-            Some("Run preprocessing and lyrics route")
-        );
-        assert!(preprocess.capture_intermediate_action.is_some());
+        assert!(preprocess.run_downstream_action.is_none());
     }
 
     #[test]
@@ -124,39 +101,12 @@ mod node_context_action_tests {
     #[test]
     fn every_compute_node_has_only_actions_its_executor_can_honor() {
         let retry_nodes = [
-            "music.analysis",
-            "music.key",
-            "music.rhythm",
-            "music.descriptors",
-            "stems.separate",
-            "stems.vocals",
-            "vocals.denoise",
-            "vocals.dereverb",
-            "stems.instrumental",
-            "instrumental.denoise",
-            "instrumental.dereverb",
-            "stems.karaoke",
-            "stems.multistem",
-            "stems.bind_analysis_outputs",
             "pitch.extract",
             "lyrics.transcribe",
             "lyrics.align",
             "chart.build_candidate",
         ];
-        let downstream_nodes = [
-            "preflight",
-            "stems.separate",
-            "stems.vocals",
-            "vocals.denoise",
-            "vocals.dereverb",
-            "stems.instrumental",
-            "instrumental.denoise",
-            "instrumental.dereverb",
-            "stems.karaoke",
-            "stems.multistem",
-            "stems.bind_analysis_outputs",
-            "lyrics.preprocess",
-        ];
+        let downstream_nodes = ["preflight"];
         for spec in app_core::baseline_graph_spec().nodes {
             let id = spec.id.as_str();
             let context = menu(id);
@@ -168,21 +118,6 @@ mod node_context_action_tests {
             assert_eq!(
                 context.run_downstream_action.is_some(),
                 downstream_nodes.contains(&id),
-                "{id}"
-            );
-            assert_eq!(
-                context.disable_node_action.is_some(),
-                app_core::node_can_be_disabled_for_run(id),
-                "{id}"
-            );
-            assert_eq!(
-                context.open_configure_dialog_action.is_some(),
-                app_core::node_can_be_configured_for_run(id),
-                "{id}"
-            );
-            assert_eq!(
-                context.bypass_node_action.is_some(),
-                id == "stems.separate",
                 "{id}"
             );
             assert!(context.compare_node_action.is_some(), "{id}");
@@ -370,11 +305,9 @@ mod graph_view_polish_tests {
     use super::{
         ANALYSIS_GRAPH_ZOOM_DEFAULT, analysis_graph_center_target, analysis_graph_fit_zoom,
         analysis_graph_focus_target, clamp_analysis_graph_zoom,
-        estimated_analysis_graph_center_scroll, format_epoch_ms, selected_stage_parameter,
-        zoomed_box,
+        estimated_analysis_graph_center_scroll, format_epoch_ms, zoomed_box,
     };
     use crate::studio::LayoutRect;
-    use app_core::AnalysisProfileSnapshot;
 
     #[test]
     fn zoom_clamps_to_the_documented_range() {
@@ -457,39 +390,6 @@ mod graph_view_polish_tests {
     }
 
     #[test]
-    fn selected_stage_parameter_covers_the_remaining_profile_controlled_nodes() {
-        let profile = AnalysisProfileSnapshot {
-            separator: "native_workflow".to_string(),
-            alignment_backend: "qwen3_forced_aligner".to_string(),
-            asr_engine: "transcript_fusion".to_string(),
-            requested_device: "auto".to_string(),
-            language_override: None,
-            analysis_experience: app_core::AnalysisExperienceOverride::default(),
-        };
-        assert_eq!(
-            selected_stage_parameter("lyrics.transcribe", &profile),
-            Some(("ASR ENGINE", "transcript_fusion".to_string()))
-        );
-        assert_eq!(
-            selected_stage_parameter("lyrics.align", &profile),
-            Some(("ALIGNMENT BACKEND", "qwen3_forced_aligner".to_string()))
-        );
-    }
-
-    #[test]
-    fn selected_stage_parameter_is_none_for_nodes_without_a_profile_knob() {
-        let profile = AnalysisProfileSnapshot::default();
-        for node in [
-            "preflight",
-            "music.analysis",
-            "stems.separate",
-            "chart.build_candidate",
-        ] {
-            assert_eq!(selected_stage_parameter(node, &profile), None);
-        }
-    }
-
-    #[test]
     fn format_epoch_ms_renders_a_known_instant() {
         // 2024-01-15 12:34:00 UTC, computed independently against a known
         // epoch-seconds value for that timestamp.
@@ -541,14 +441,8 @@ mod artifact_playable_tests {
 
 #[cfg(test)]
 mod node_config_field_tests {
-    //! Phase 8 "Configure for this run"/"Save as song profile" gating, and
-    //! the §8.4 three-tier PARAMETER SOURCE resolution -- fixture-based, no
-    //! DB/IO, matching `failed_node_overlay_tests`'s style below.
-    use super::{
-        node_can_force_transcribe, node_can_refetch_and_align, node_config_profile_field,
-        node_parameter_source_copy,
-    };
-    use app_core::{AnalysisProfileSnapshot, ProfileField};
+    //! Exact Engine-compatible lyrics actions exposed by node context menus.
+    use super::{node_can_force_transcribe, node_can_refetch_and_align};
 
     #[test]
     fn only_lyrics_transcribe_can_force_transcribe() {
@@ -589,72 +483,6 @@ mod node_config_field_tests {
             );
         }
     }
-
-    #[test]
-    fn only_lyrics_model_nodes_map_to_a_legacy_profile_field() {
-        assert_eq!(
-            node_config_profile_field("lyrics.transcribe"),
-            Some(ProfileField::AsrEngine)
-        );
-        assert_eq!(
-            node_config_profile_field("lyrics.align"),
-            Some(ProfileField::AlignmentBackend)
-        );
-        for id in [
-            "stems.separate",
-            "pitch.extract",
-            "lyrics.preprocess",
-            "lyrics.import_timed",
-            "music.analysis",
-            "preflight",
-            "chart.build_candidate",
-        ] {
-            assert_eq!(
-                node_config_profile_field(id),
-                None,
-                "{id} should map to nothing"
-            );
-        }
-    }
-
-    #[test]
-    fn parameter_source_prefers_run_override_over_song_over_global() {
-        let global = AnalysisProfileSnapshot {
-            separator: "karaoke".to_string(),
-            ..AnalysisProfileSnapshot::default()
-        };
-        let song = AnalysisProfileSnapshot {
-            separator: "native_workflow".to_string(),
-            ..AnalysisProfileSnapshot::default()
-        };
-
-        assert_eq!(
-            node_parameter_source_copy(Some(ProfileField::Separator), &global, None, None),
-            "Global default"
-        );
-        assert_eq!(
-            node_parameter_source_copy(Some(ProfileField::Separator), &global, Some(&song), None),
-            "Song profile"
-        );
-        assert_eq!(
-            node_parameter_source_copy(
-                Some(ProfileField::Separator),
-                &global,
-                Some(&song),
-                Some("original_mix")
-            ),
-            "Run override (queued)"
-        );
-    }
-
-    #[test]
-    fn parameter_source_falls_back_to_global_default_when_the_node_has_no_field() {
-        let global = AnalysisProfileSnapshot::default();
-        assert_eq!(
-            node_parameter_source_copy(None, &global, None, Some("irrelevant")),
-            "Global default"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -662,8 +490,9 @@ mod plan_preview_tests {
     //! Legacy plan bucketing remains fixture-tested while the dialog renders
     //! the exact Engine preview supplied by app-core.
     use super::{
-        PlanPreviewDraft, artifact_product_label, capability_product_label, plan_preview_groups,
-        preview_quality_source, preview_target_source,
+        PlanPreviewDraft, artifact_product_label, capability_product_label,
+        exact_preview_allows_queue, plan_preview_groups, preview_quality_source,
+        preview_target_source,
     };
     use app_core::{AnalysisNodeId, AnalysisPlan, AnalysisProfileSnapshot, NodeState, PlannedNode};
     use std::collections::BTreeSet;
@@ -688,6 +517,15 @@ mod plan_preview_tests {
             workflow_execution: None,
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn exact_backend_blocker_keeps_the_queue_action_disabled() {
+        let blockers = vec!["model:game is unavailable".to_string()];
+        assert!(!exact_preview_allows_queue(false, &blockers, false));
+        assert!(!exact_preview_allows_queue(true, &blockers, false));
+        assert!(!exact_preview_allows_queue(true, &[], true));
+        assert!(exact_preview_allows_queue(true, &[], false));
     }
 
     #[test]

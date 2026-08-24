@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::backend_cli::{
     AnalysisCliClient, NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1,
-    RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1, ValidationStateWireV1,
+    RuntimeResourceDetailsWireV1, RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1,
+    ValidationStateWireV1,
 };
 use crate::cache::{
     CachePaths, normalized_target_path, relocate_directory_contents, songs_cache_dir,
@@ -195,6 +196,99 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
     analysis_runtime_status().models
 }
 
+const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 5] = [
+    (
+        "vocal_extraction",
+        "Vocal extraction",
+        "bs_roformer_vocals_ep317",
+        "audio.extract_vocals",
+    ),
+    (
+        "instrumental_extraction",
+        "Instrumental extraction",
+        "melband_roformer_inst_v2",
+        "audio.extract_instrumental",
+    ),
+    (
+        "lead_isolation",
+        "Lead isolation",
+        "melband_roformer_harmony",
+        "audio.lead_isolate",
+    ),
+    ("pitch", "Continuous pitch", "rmvpe", "pitch.track"),
+    ("note_boundaries", "Note boundaries", "game", "notes.game"),
+];
+
+pub(super) fn strategy_resource_statuses_from_details(
+    details: &[RuntimeResourceDetailsWireV1],
+) -> Vec<AnalysisStrategyResourceStatus> {
+    ANALYSIS_STRATEGY_RESOURCES
+        .into_iter()
+        .map(|(strategy_id, label, model_id, capability)| {
+            let resource = format!("model:{model_id}");
+            let detail = details.iter().find(|detail| detail.resource.0 == resource);
+            let capability_reported = detail.is_some_and(|detail| {
+                detail
+                    .metadata
+                    .capabilities
+                    .iter()
+                    .any(|reported| reported == capability)
+            });
+            let mut reasons = detail
+                .map(|detail| {
+                    detail
+                        .status
+                        .reasons
+                        .iter()
+                        .map(|reason| format!("{reason:?}").to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["status_unavailable".to_string()]);
+            if detail.is_some() && !capability_reported {
+                reasons.push("capability_missing".to_string());
+            }
+            AnalysisStrategyResourceStatus {
+                strategy_id: strategy_id.to_string(),
+                label: label.to_string(),
+                model_id: model_id.to_string(),
+                capability: capability.to_string(),
+                available: detail.is_some_and(|detail| detail.status.usable) && capability_reported,
+                backend: detail
+                    .and_then(|detail| detail.status.selected_backend)
+                    .map(backend_label)
+                    .unwrap_or("unresolved")
+                    .to_string(),
+                validation: detail
+                    .map(|detail| validation_label(detail.status.validation_state))
+                    .unwrap_or("unsupported")
+                    .to_string(),
+                reasons,
+            }
+        })
+        .collect()
+}
+
+pub(super) fn analysis_strategy_resource_statuses_with_client(
+    client: &RuntimeCliClient,
+) -> Result<Vec<AnalysisStrategyResourceStatus>, String> {
+    let details = ANALYSIS_STRATEGY_RESOURCES
+        .iter()
+        .map(|(_, _, model_id, _)| {
+            let resource = RuntimeResourceRefWireV1::model(model_id)?;
+            client.show(&resource).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(strategy_resource_statuses_from_details(&details))
+}
+
+/// Read exact model/capability readiness from Runtime Manager. This query is
+/// read-only and intentionally does not consult or reinterpret the aggregate
+/// RoFormer bundle.
+pub fn analysis_strategy_resource_statuses() -> Result<Vec<AnalysisStrategyResourceStatus>, String>
+{
+    analysis_strategy_resource_statuses_with_client(&runtime_client()?)
+}
+
 pub struct ModelAvailabilityParams<'a> {
     pub _profile: &'a crate::analysis_profile::AnalysisProfileSnapshot,
 }
@@ -274,6 +368,7 @@ pub(super) fn analysis_runtime_status_with_clients(
         ffmpeg_available,
         native_analyzer_available: runtime_executable_ready("native_analyzer"),
         openvino_runtime_available: runtime_executable_ready("openvino_2026_3"),
+        ggml_vulkan_runtime_available: runtime_executable_ready("ggml_vulkan_v1"),
         qwen_asr_runtime_available: runtime_executable_ready("qwen_asr_runtime"),
         qwen_align_runtime_available: runtime_executable_ready("qwen_align_runtime"),
         runtime_lock_valid,

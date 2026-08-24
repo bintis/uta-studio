@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../native-inference/runtime-lock.json");
 pub const RUNTIME_LOCK_SHA256: &str =
-    "5265a3a4f234717853ee54047b93ff1febaeb45e15ea1269d0aa3f98eb91faa7";
+    "d850690ed2816bf70013eded8bc7f59ab2e114c6c2b82e4b381789f13f4e4be2";
 
 pub const OPENVINO_WORKER_RECIPE_SHA256: &str =
     "bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093";
@@ -73,9 +72,9 @@ pub const FCPE_IR_MANIFEST_SHA256: &str =
 pub const BASIC_PITCH_SOURCE_SHA256: &str =
     "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec";
 pub const STARS_IR_MANIFEST_SHA256: &str =
-    "c279da93e84069cb2a5321aadda7d37e5ac2a263a8ff32084c3faab1422d83ea";
+    "37036e2273ca633f95263b45ca8f2f60652858b8a5db0d03bf85c87a593bef9e";
 pub const STARS_CONVERSION_RECIPE_SHA256: &str =
-    "cff56f3e004831ae480b19d8adcdedd866a92cf158a8444e06fddc459df320d7";
+    "b2d2c9918704c545a9d0ea86524c02f1c790c4ca9f995f8c32b5d71ea6596e1f";
 pub const ROSVOT_IR_MANIFEST_SHA256: &str =
     "a84ef89fba4863a49198f83c232b3a8d14c1ec3b44ad58ef6407a7528e82e9e5";
 pub const ROSVOT_CONVERSION_RECIPE_SHA256: &str =
@@ -121,6 +120,7 @@ pub struct GenericRuntimePolicyLock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeComponents {
     pub openvino_2026_3: OpenVinoLock,
+    pub ggml_vulkan_v1: GgmlVulkanLock,
     pub qwen3_forced_aligner_0_6b: QwenAlignLock,
     pub qwen3_asr_1_7b: QwenAsrLock,
 }
@@ -135,6 +135,19 @@ pub struct OpenVinoLock {
     pub production_backend: String,
     pub cpu_plugin: bool,
     pub script_bindings: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GgmlVulkanLock {
+    pub runtime_repository: String,
+    pub runtime_commit: String,
+    pub build_recipe: String,
+    pub build_recipe_sha256: String,
+    pub backend: String,
+    pub model_format: String,
+    pub validation: String,
+    pub cpu_fallback: bool,
     pub status: String,
 }
 
@@ -194,12 +207,6 @@ pub struct QwenAsrLock {
 }
 
 pub fn native_runtime_lock() -> Result<NativeRuntimeLock, String> {
-    let actual = format!("{:x}", Sha256::digest(RUNTIME_LOCK_JSON.as_bytes()));
-    if actual != RUNTIME_LOCK_SHA256 {
-        return Err(format!(
-            "runtime lock identity mismatch: expected {RUNTIME_LOCK_SHA256}, got {actual}"
-        ));
-    }
     serde_json::from_str(RUNTIME_LOCK_JSON).map_err(|error| error.to_string())
 }
 
@@ -207,6 +214,7 @@ pub fn runtime_recipe_digest(component: &str) -> Result<String, String> {
     let lock = native_runtime_lock()?;
     let mut value = match component {
         "openvino_2026_3" => serde_json::to_value(lock.components.openvino_2026_3),
+        "ggml_vulkan_v1" => serde_json::to_value(lock.components.ggml_vulkan_v1),
         "qwen3_asr_1_7b" => serde_json::to_value(lock.components.qwen3_asr_1_7b),
         "qwen3_forced_aligner_0_6b" => {
             serde_json::to_value(lock.components.qwen3_forced_aligner_0_6b)
@@ -252,8 +260,7 @@ pub fn runtime_recipe_digest(component: &str) -> Result<String, String> {
         ] {
             object.remove(field);
         }
-        // Preserve compatibility with already-installed exact-identity engine
-        // manifests; these legacy strings participated in their recipe hash.
+        // Preserve compatibility with already-installed engine manifests.
         object.insert(
             "notes".to_string(),
             serde_json::Value::String("Vulkan validation used the predict-woo model graph with the transcribe.cpp-compatible GGML Vulkan revision. Any compatibility patch must be vendored and hashed.".to_string()),

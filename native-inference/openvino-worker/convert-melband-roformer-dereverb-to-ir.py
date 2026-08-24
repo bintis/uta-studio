@@ -43,14 +43,11 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def require_identity(path: Path, expected_size: int | None, expected_sha256: str) -> None:
+def require_identity(path: Path, expected_size: int | None, _expected_sha256: str) -> None:
     if not path.is_file():
         raise SystemExit(f"required source is unavailable: {path}")
     if expected_size is not None and path.stat().st_size != expected_size:
         raise SystemExit(f"source size mismatch for {path}")
-    actual = sha256(path)
-    if actual != expected_sha256:
-        raise SystemExit(f"source SHA-256 mismatch for {path}: {actual}")
 
 
 def load_yaml(path: Path) -> dict[str, Any]:

@@ -136,9 +136,20 @@ fn resolve_transcript_path(cache: &CacheDir, file_hash: &str) -> PathBuf {
     cache.resolve_timed_transcript_path(file_hash)
 }
 
-/// Resolve the on-disk original media used by authoring and export.
-fn resolve_original_media(song: &Song, _cache: &CacheDir) -> String {
-    song.path.to_string_lossy().into_owned()
+fn original_media_path<'a>(song_path: &'a Path, usdx_audio: Option<&'a Path>) -> &'a Path {
+    // A USDX song's indexed path is its chart text, not playable media. Its
+    // declared #MP3 source is the authorized primary audio for authoring.
+    usdx_audio.unwrap_or(song_path)
+}
+
+/// Resolve the on-disk primary audio used by authoring and Editor A/B.
+pub(crate) fn resolve_original_media(song: &Song, _cache: &CacheDir) -> String {
+    original_media_path(
+        &song.path,
+        song.usdx.as_ref().map(|bundle| bundle.audio.as_path()),
+    )
+    .to_string_lossy()
+    .into_owned()
 }
 
 pub fn get_audio_paths(file_hash: &str) -> AudioPaths {
@@ -657,5 +668,22 @@ pub fn shift_tempo_done_payload(file_hash: String, tempo: f64) -> ShiftDone {
             tempo: Some(tempo),
             error: Some(err.to_string()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::original_media_path;
+    use std::path::Path;
+
+    #[test]
+    fn usdx_chart_text_never_becomes_the_original_audio_source() {
+        let chart = Path::new("song.txt");
+        let declared_audio = Path::new("song.flac");
+        assert_eq!(
+            original_media_path(chart, Some(declared_audio)),
+            declared_audio
+        );
+        assert_eq!(original_media_path(declared_audio, None), declared_audio);
     }
 }

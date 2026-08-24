@@ -1,4 +1,4 @@
-//! `.utz` export boundary for Uta Studio.
+//! `.utz` export boundary for Uta! Studio.
 //!
 //! The analyzer cache remains an implementation detail. Export resolves the
 //! current key/tempo variants, transforms chart timing through the authoring
@@ -134,7 +134,7 @@ where
     let output = output.as_ref();
     if output.extension().and_then(|extension| extension.to_str()) != Some("utz") {
         return Err(UtaStudioError::Other(
-            "Uta Studio exports must use the .utz extension".into(),
+            "Uta! Studio exports must use the .utz extension".into(),
         ));
     }
     if output.exists() {
@@ -216,7 +216,7 @@ where
             artist_sort: None,
             genre: None,
             year: None,
-            creator: Some(format!("Uta Studio {}", env!("CARGO_PKG_VERSION"))),
+            creator: Some(format!("Uta! Studio {}", env!("CARGO_PKG_VERSION"))),
             composer: song.composer,
             country: song.country,
             tags: Vec::new(),

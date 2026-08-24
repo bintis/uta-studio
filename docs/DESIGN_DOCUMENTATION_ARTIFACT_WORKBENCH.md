@@ -1,9 +1,9 @@
-# Uta Studio — Documentation Center & Artifact Workbench Design
+# Uta! Studio — Documentation Center & Artifact Workbench Design
 
-**Target baseline:** Uta Studio 0.5.x working tree after the Documentation Center / Artifact Workbench import  
+**Target baseline:** Uta! Studio 0.5.x working tree after the Documentation Center / Artifact Workbench import
 **Design revision:** 2026-08-18  
-**Status:** partial production implementation — not release-complete  
-**Handoff status:** `docs/UTA_STUDIO_REMAINING_DEVELOPMENT_AGENT_GUIDE.md` §0.1 is the source of truth for phase completion
+**Status:** implemented; final repository/Nix release acceptance remains separate
+**Handoff status:** `tasks/remaining-models/STATE.md` is the source of truth for current closure state
 
 ## 1. Goals
 

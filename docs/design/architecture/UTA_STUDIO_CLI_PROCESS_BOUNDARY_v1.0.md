@@ -1,21 +1,21 @@
-# Uta Studio — CLI Process Boundary Contract v1.0
+# Uta! Studio — CLI Process Boundary Contract v1.0
 
 **Status:** mandatory architecture contract
 **Date:** 2026-08-22
-**Applies to:** Uta Studio integration with `uta-analyze` and `uta-runtime`
+**Applies to:** Uta! Studio integration with `uta-analyze` and `uta-runtime`
 
 ---
 
 # 1. Purpose
 
-Uta Studio integrates Analysis Engine and Runtime Manager through **process boundaries**, not Rust crate dependencies.
+Uta! Studio integrates Analysis Engine and Runtime Manager through **process boundaries**, not Rust crate dependencies.
 
 The final architecture is:
 
 ```text
                          packaged local processes
 
-Uta Studio / app-core
+Uta! Studio / app-core
         |
         | JSON / NDJSON only
         |
@@ -477,7 +477,7 @@ Fixtures may be used for UI tests, but final contract compatibility is proven ag
 
 # 18. Packaging contract
 
-The final Uta Studio package must include or resolve:
+The final Uta! Studio package must include or resolve:
 
 ```text
 uta-studio

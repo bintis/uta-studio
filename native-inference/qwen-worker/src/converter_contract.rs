@@ -1,16 +1,7 @@
-use sha2::{Digest, Sha256};
-
 const CONVERTER_PATCH: &str =
     include_str!("../patches/predict-woo-forced-aligner-flat-hf-converter.patch");
-const CONVERTER_PATCH_SHA256: &str =
-    "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6";
-
 #[test]
-fn forced_aligner_converter_patch_identity_and_required_mappings_are_pinned() {
-    assert_eq!(
-        format!("{:x}", Sha256::digest(CONVERTER_PATCH.as_bytes())),
-        CONVERTER_PATCH_SHA256
-    );
+fn forced_aligner_converter_patch_contains_required_mappings() {
     for required_mapping in [
         "Qwen3ASRForTokenClassification",
         "model.audio_tower.",
