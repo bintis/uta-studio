@@ -474,8 +474,14 @@ pub fn run_fusion_agent_for_pool(
             match stdin_rx.try_recv() {
                 Ok(Ok(())) => request_sent = true,
                 Ok(Err(())) => {
-                    terminate(&mut child);
-                    return Err(worker_failed("could not send fusion agent request"));
+                    // The provider closed (or never opened) its stdin read
+                    // end before the writer finished, so the write failed
+                    // with a broken pipe. That is not proof the provider
+                    // failed: a provider is free to decide its answer
+                    // without draining the whole candidate pool. Keep
+                    // waiting for its real exit status and response instead
+                    // of failing the invocation on a transport detail.
+                    request_sent = true;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     terminate(&mut child);
@@ -524,7 +530,10 @@ pub fn run_fusion_agent_for_pool(
     while !request_sent {
         match stdin_rx.try_recv() {
             Ok(Ok(())) => request_sent = true,
-            Ok(Err(())) => return Err(worker_failed("could not send fusion agent request")),
+            // See the matching comment above: the provider already exited
+            // successfully, so a broken-pipe write failure here is not a
+            // transport failure worth reporting.
+            Ok(Err(())) => request_sent = true,
             Err(mpsc::TryRecvError::Disconnected) => {
                 return Err(worker_failed(
                     "fusion agent closed before the bounded request was sent",
