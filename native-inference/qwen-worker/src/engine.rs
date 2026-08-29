@@ -1795,7 +1795,7 @@ mod tests {
     // only understands "-o <path>", copying the next canned response file
     // from its own control directory (one response per call, in order).
     //
-    // The fake engine is a `#!/usr/bin/env bash` script, so everything from
+    // The fake engine is a `#!/bin/sh` script, so everything from
     // here to the end of this module is Unix-only; the pure-function
     // seam/split-budget tests above already cover the same orchestration
     // logic (including the platform-portable `ProcessTreeGuard` machinery in
@@ -1830,7 +1830,7 @@ mod tests {
     fn write_fake_engine(script_path: &Path, control: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\ncontrol={control:?}\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncount_file=\"$control/count\"\nn=0\nif [ -f \"$count_file\" ]; then n=$(cat \"$count_file\"); fi\necho $((n+1)) > \"$count_file\"\nif [ -f \"$control/truncate-$n\" ]; then\n  echo '[warn] qwen3_asr run: output truncated at 1024 tokens \u{2014} decode reached the generation budget before end-of-stream; the transcript may be incomplete.' >&2\n  exit 1\nfi\ncp \"$control/response-$n\" \"$out\"\n",
+            "#!/bin/sh\nset -euo pipefail\ncontrol={control:?}\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncount_file=\"$control/count\"\nn=0\nif [ -f \"$count_file\" ]; then n=$(cat \"$count_file\"); fi\necho $((n+1)) > \"$count_file\"\nif [ -f \"$control/truncate-$n\" ]; then\n  echo '[warn] qwen3_asr run: output truncated at 1024 tokens \u{2014} decode reached the generation budget before end-of-stream; the transcript may be incomplete.' >&2\n  exit 1\nfi\ncp \"$control/response-$n\" \"$out\"\n",
         );
         std::fs::write(script_path, script).unwrap();
         let mut permissions = std::fs::metadata(script_path).unwrap().permissions();
