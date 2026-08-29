@@ -1,6 +1,50 @@
 use super::*;
 use crate::studio::*;
 
+pub(crate) fn spawn_settings_header_toolbar(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+) {
+    if matches!(
+        session.settings_tab,
+        SettingsTab::Models | SettingsTab::Analysis
+    ) && let Some(file_hash) = session.selected_song.as_ref()
+    {
+        spawn_compact_action_button(
+            parent,
+            font.clone(),
+            theme,
+            "Return to model selection",
+            UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
+        );
+    }
+    if session.settings_tab == SettingsTab::Models {
+        spawn_compact_action_button(
+            parent,
+            font.clone(),
+            theme,
+            "Model downloads",
+            UiAction::from(SettingsCommand::OpenModelDownloads),
+        );
+    }
+    spawn_compact_action_button(
+        parent,
+        font.clone(),
+        theme,
+        "Documentation",
+        UiAction::from(AppCommand::Documentation),
+    );
+    spawn_compact_action_button(
+        parent,
+        font,
+        theme,
+        "About Uta! Studio",
+        UiAction::from(AppCommand::OpenAbout),
+    );
+}
+
 pub(crate) fn spawn_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -27,7 +71,7 @@ pub(crate) fn spawn_settings(
                         height: percent(100),
                         flex_shrink: 0.0,
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::axes(px(24), px(28)),
+                        padding: UiRect::axes(px(24), px(16)),
                         row_gap: px(4),
                         border: UiRect::right(px(1)),
                         ..default()
@@ -36,41 +80,8 @@ pub(crate) fn spawn_settings(
                     BorderColor::all(theme.border.with_alpha(0.26)),
                 ))
                 .with_children(|nav| {
-                    spawn_text(nav, font.clone(), "UTA! STUDIO", 8.0, theme.primary);
-                    spawn_text(nav, font.clone(), "Settings", 20.0, theme.foreground);
-                    spawn_wrapped_text(
-                        nav,
-                        font.clone(),
-                        "Workspace, library, and generation.",
-                        10.0,
-                        theme.muted_foreground,
-                    );
-                    spawn_text_button(
-                        nav,
-                        font.clone(),
-                        theme,
-                        "← Back to library",
-                        10.0,
-                        UiAction::from(AppCommand::Home),
-                    );
-                    if matches!(
-                        session.settings_tab,
-                        SettingsTab::Models | SettingsTab::Analysis
-                    ) && let Some(file_hash) = session.selected_song.as_ref()
-                    {
-                        spawn_text_button(
-                            nav,
-                            font.clone(),
-                            theme,
-                            "Return to model selection",
-                            9.0,
-                            UiAction::from(AnalysisCommand::OpenSongModelSelection(
-                                file_hash.clone(),
-                            )),
-                        );
-                    }
                     nav.spawn(Node {
-                        height: px(18),
+                        height: px(6),
                         ..default()
                     });
                     for (tab, icon, label) in [
@@ -95,22 +106,6 @@ pub(crate) fn spawn_settings(
                         flex_grow: 1.0,
                         ..default()
                     });
-                    spawn_text_button(
-                        nav,
-                        font.clone(),
-                        theme,
-                        "Documentation",
-                        10.0,
-                        UiAction::from(AppCommand::Documentation),
-                    );
-                    spawn_text_button(
-                        nav,
-                        font.clone(),
-                        theme,
-                        "About Uta! Studio",
-                        10.0,
-                        UiAction::from(AppCommand::OpenAbout),
-                    );
                 });
 
             settings
@@ -200,6 +195,16 @@ pub(crate) fn spawn_settings(
                             }
                         });
                 });
+            if session.model_downloads_open {
+                spawn_model_downloads_dialog(
+                    settings,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    session,
+                    native_setup,
+                );
+            }
             if let Some(request) = session.pending_setup {
                 spawn_setup_confirmation(settings, font.clone(), theme, request);
             }

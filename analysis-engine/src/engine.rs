@@ -6,19 +6,21 @@ use uta_runtime_manager::{RuntimeManager, StorePaths};
 
 use crate::artifact::{
     AdvancedNoteEvidenceV1, AlignmentArtifactV1, BasicPitchEvidenceV3, DependencyKind,
-    PitchEvidenceV03, SingingAnalysisV1, TranscriptArtifactV1, TranscriptAuthorityV1,
-    TranscriptTokenV1, artifact_ref_for_existing, finalize_candidate_vocal_chart,
-    parse_advanced_note_evidence, parse_game_evidence, parse_qwen_alignment, parse_qwen_transcript,
-    parse_rmvpe_pitch, write_json_artifact,
+    PitchEvidenceV03, SingingAnalysisV1, TechniqueEvidenceV1, artifact_ref_for_existing,
+    finalize_candidate_vocal_chart, parse_advanced_note_evidence, parse_game_evidence,
+    parse_qwen_alignment, parse_qwen_transcript, parse_rmvpe_pitch, write_json_artifact,
 };
 use crate::audio::{
     CleanupComparison, QualityEvaluationInput, analyze_acoustic_evidence, decode_audio,
-    decode_audio_with_cancellation, enforce_required_quality, evaluate_audio_quality,
-    quality_degraded_reasons,
+    decode_audio_with_cancellation, enforce_required_quality, estimate_instrumental_quality,
+    estimate_vocal_topology, evaluate_audio_quality, quality_degraded_reasons,
+    topology_review_regions,
 };
 use crate::candidate_pipeline::{
-    SingingStagesOutput, build_baseline_review_regions, execute_candidate_graph_stage,
-    execute_singing_fusion_stage, fuse_alignment_stage, fuse_transcript_stage,
+    CandidatePathDecisionV1, FusionDecisionModeV1, SingingStagesOutput,
+    build_baseline_review_regions, build_transcript_disagreement_regions,
+    execute_candidate_graph_stage, execute_singing_fusion_stage, fuse_alignment_stage,
+    fuse_transcript_stage,
 };
 use crate::conditional_scheduler::{
     ConditionalScheduleRecordV1, ConditionalScheduleRequest, ScheduleSkipReason,
@@ -27,10 +29,13 @@ use crate::conditional_scheduler::{
 };
 use crate::contract::{
     ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AnalysisArtifactsV1, AnalysisDiagnosticsV1,
-    AnalysisProvenanceV1, AnalysisResultManifestV1, AnalysisStatus, AnalyzeRequestV1,
-    BoundaryAuthority, CapabilityDescriptor, DecodedAudioFactsV1, EngineError, EngineErrorCode,
-    EngineRequirementsV1, EngineResult, ExportRequestV1, LyricsMode, StemArtifactRefV1,
+    AnalysisProvenanceV1, AnalysisResultManifestV1, AnalysisReusePolicyV1, AnalysisStatus,
+    AnalyzeRequestV1, BoundaryAuthority, CapabilityDescriptor, DecodedAudioFactsV1, EngineError,
+    EngineErrorCode, EngineRequirementsV1, EngineResult, ExportRequestV1,
+    FUSION_AGENT_ADAPTER_RESOURCE, FUSION_AGENT_PROTOCOL, FusionDecisionProvenanceV1,
+    HSMM_VITERBI_SELECTOR, LyricsMode, StemArtifactRefV1,
 };
+use crate::events::{EngineEventSink, begin_node, emit_degraded, emit_warning, with_event_sink};
 use crate::execution::{
     CancellationToken, NativeTask, NativeTaskOutput, SupervisedWorker, WorkerExpectation,
 };
@@ -39,18 +44,20 @@ use crate::fingerprint::{
     FINALIZE_VOCAL_CHART_VERSION, FUSION_VERSION, FingerprintResource, HSMM_VERSION,
     POSTPROCESS_VERSION, QUANTIZATION_VERSION, deterministic_fingerprint,
 };
-use crate::fusion::{SingingReviewReason, TimeRange};
+use crate::fusion::{SingingReviewReason, TimeRange, merge_regions};
 use crate::planner::{EnginePlan, Planner};
 use crate::quantization::quantize_singing_track;
 use crate::separation::SeparationOutput;
-use crate::workflow::{WorkflowExecutionPolicyV1, WorkflowExecutionV1};
+use crate::workflow::{FusionModeV1, WorkflowExecutionPolicyV1, WorkflowExecutionV1};
 use crate::workflow_executor::{CompiledWorkflowExecutionPlanV1, WorkflowNodeExecutionStateV1};
 
+mod output_guard;
 mod runtime_route;
 mod workflow_execution;
+use output_guard::OutputRunGuard;
 use runtime_route::{
-    execution_device, normalized_transcript, openvino_backend, resource_provenance,
-    roformer_backend, roformer_component,
+    caller_transcript, cancelled, execution_device, fingerprint_request, openvino_backend,
+    request_lyrics_text, resource_provenance, roformer_backend, roformer_component,
 };
 use workflow_execution::*;
 
@@ -58,10 +65,9 @@ const TRANSCRIPT_MEDIA_TYPE: &str = "application/vnd.uta.transcript+json;version
 const ALIGNMENT_MEDIA_TYPE: &str = "application/vnd.uta.alignment+json;version=1";
 const PITCH_MEDIA_TYPE: &str = "application/vnd.uta.pitch-evidence+json;version=0.3";
 const TECHNIQUE_MEDIA_TYPE: &str = "application/vnd.uta.technique-evidence+json;version=1";
-const ACOUSTIC_MEDIA_TYPE: &str = "application/vnd.uta.acoustic-evidence+json;version=1";
+const ACOUSTIC_MEDIA_TYPE: &str = "application/vnd.uta.acoustic-evidence+json;version=2";
 const SINGING_ANALYSIS_MEDIA_TYPE: &str = "application/vnd.uta.singing-analysis+json;version=0.3";
 const VOCAL_CHART_MEDIA_TYPE: &str = "application/vnd.uta.vocal-chart+json;version=0.3";
-
 const PITCH_DISAGREEMENT_REASONS: &[SingingReviewReason] = &[
     SingingReviewReason::PitchDisagreement,
     SingingReviewReason::LowPitchCoverage,
@@ -201,6 +207,25 @@ impl AnalysisEngine {
         self.analyze_with_cancellation(request, output_dir, &CancellationToken::default())
     }
 
+    pub fn analyze_with_events(
+        &self,
+        request: &AnalyzeRequestV1,
+        output_dir: impl AsRef<Path>,
+        cancellation: &CancellationToken,
+        sink: EngineEventSink,
+    ) -> EngineResult<AnalysisResultManifestV1> {
+        let workflow = WorkflowExecutionV1::from_request(request)?;
+        let plan_nodes = self
+            .plan(request)?
+            .execution_nodes
+            .into_iter()
+            .map(|node| (node.id, node.capability.to_string()))
+            .collect();
+        with_event_sink(&request.request_id, workflow, plan_nodes, sink, || {
+            self.analyze_with_cancellation(request, output_dir, cancellation)
+        })
+    }
+
     pub fn analyze_with_cancellation(
         &self,
         request: &AnalyzeRequestV1,
@@ -216,15 +241,37 @@ impl AnalysisEngine {
         let plan = self.plan(request)?;
         Planner::ensure_required_capabilities(&plan)?;
         let workflow = WorkflowExecutionV1::from_request(request)?;
+        let fusion_policy = workflow
+            .as_ref()
+            .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
+            .unwrap_or_default();
+        let fusion_pitch_owner = fusion_policy.continuous_f0.model_id().to_string();
+        let fusion_mode = workflow
+            .as_ref()
+            .map(WorkflowExecutionV1::fusion_mode)
+            .unwrap_or_default();
+        let fusion_adapter = if fusion_mode == FusionModeV1::AiJudgment {
+            Some(
+                self.runtime_manager
+                    .resolve_tool(
+                        uta_runtime_manager::FUSION_AGENT_ADAPTER_ID,
+                        request.execution_policy.runtime_policy,
+                    )
+                    .map_err(EngineError::from)?,
+            )
+        } else {
+            None
+        };
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
 
-        // Keep every resolved model generation and aggregate compatibility lease alive.
         let (resolved, mut degraded_reasons) = self.resolve_execution_resources(request, &plan)?;
         let mut conditional_schedule = Vec::new();
         let _lease = self.runtime_manager.lease_resolved_models(&resolved);
+        let decode_lifecycle = begin_node("decode", "audio.decode", None, "ffmpeg");
         let decoded_sources = self.decode_validated_audio(request, cancellation)?;
+        decode_lifecycle.complete();
 
         let primary = request.primary_source()?;
         let source_start = primary.timeline.source_start;
@@ -263,6 +310,9 @@ impl AnalysisEngine {
             })?;
         let mut analysis_input = primary.path.clone();
         let mut analysis_role = primary.role.as_str();
+        let mut guide_vocal_profile = None;
+        let mut instrumental_audio = None;
+        let mut isolation_profiles = None;
         let mut workflow_audio = BTreeMap::new();
         record_workflow_audio(
             plan.workflow_execution.as_ref(),
@@ -272,43 +322,119 @@ impl AnalysisEngine {
             &analysis_input,
             analysis_role,
         );
+        let ep317_residual = workflow_uses_ep317_residual(plan.workflow_execution.as_ref());
+        let mut ep317_residual_executed = false;
         if has_capability(&plan, "audio.extract_vocals") {
             let model = resolved_model(&resolved, "bs_roformer_vocals_ep317")?;
-            let output = run_openvino_vocals(
-                &DenoiseTask {
-                    model_path: &model.model_path,
-                    executable: &model.runtime_executable,
-                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                    backend: roformer_backend(model)?,
-                    ffmpeg: &ffmpeg,
-                    input: &primary.path,
-                    output_root: &output_root,
-                    source_duration,
-                    task_id: &format!("{}-extract-vocals", request.request_id),
-                },
-                cancellation,
-            )?;
-            analysis_input = output_root.join(&output.artifact.path);
-            analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
-            record_workflow_audio(
-                plan.workflow_execution.as_ref(),
-                "audio.extract_vocals",
-                "vocal",
-                &mut workflow_audio,
-                &analysis_input,
-                analysis_role,
-            );
-            if request
-                .requested_artifacts
-                .stems
-                .contains(&crate::contract::AudioRole::GuideVocals)
-            {
-                artifacts.stems.push(StemArtifactRefV1 {
-                    role: output.role,
-                    artifact: output.artifact,
-                });
+            if ep317_residual {
+                let output = run_ep317_vocal_residual(
+                    &DenoiseTask {
+                        model_path: &model.model_path,
+                        executable: &model.runtime_executable,
+                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                        backend: roformer_backend(model)?,
+                        ffmpeg: &ffmpeg,
+                        input: &primary.path,
+                        output_root: &output_root,
+                        source_duration,
+                        task_id: &format!("{}-ep317-vocal-residual", request.request_id),
+                    },
+                    plan.workflow_execution
+                        .as_ref()
+                        .and_then(|workflow| workflow.node_for_capability("audio.extract_vocals"))
+                        .and_then(|node| node.execution_invocations.first())
+                        .map(|invocation| invocation.invocation_id.as_str()),
+                    cancellation,
+                )?;
+                analysis_input = output_root.join(&output.vocal.artifact.path);
+                guide_vocal_profile = Some(output.vocal_profile);
+                instrumental_audio = Some(output.instrumental_audio);
+                ep317_residual_executed = true;
+                analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
+                record_workflow_audio(
+                    plan.workflow_execution.as_ref(),
+                    "audio.extract_vocals",
+                    "vocal",
+                    &mut workflow_audio,
+                    &analysis_input,
+                    analysis_role,
+                );
+                let instrumental_path = output_root.join(&output.instrumental.artifact.path);
+                record_workflow_audio(
+                    plan.workflow_execution.as_ref(),
+                    "audio.extract_instrumental",
+                    "instrumental",
+                    &mut workflow_audio,
+                    &instrumental_path,
+                    crate::contract::AudioRole::Instrumental.as_str(),
+                );
+                if request
+                    .requested_artifacts
+                    .stems
+                    .contains(&crate::contract::AudioRole::GuideVocals)
+                {
+                    artifacts.stems.push(StemArtifactRefV1 {
+                        role: output.vocal.role,
+                        artifact: output.vocal.artifact,
+                    });
+                }
+                if request
+                    .requested_artifacts
+                    .stems
+                    .contains(&crate::contract::AudioRole::Instrumental)
+                {
+                    artifacts.stems.push(StemArtifactRefV1 {
+                        role: output.instrumental.role,
+                        artifact: output.instrumental.artifact,
+                    });
+                }
+            } else {
+                let output = run_openvino_vocals(
+                    &DenoiseTask {
+                        model_path: &model.model_path,
+                        executable: &model.runtime_executable,
+                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                        backend: roformer_backend(model)?,
+                        ffmpeg: &ffmpeg,
+                        input: &primary.path,
+                        output_root: &output_root,
+                        source_duration,
+                        task_id: &format!("{}-extract-vocals", request.request_id),
+                    },
+                    cancellation,
+                )?;
+                analysis_input = output_root.join(&output.artifact.path);
+                guide_vocal_profile =
+                    Some(decode_audio(&ffmpeg, "guide_vocals", &analysis_input)?.profile);
+                analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
+                record_workflow_audio(
+                    plan.workflow_execution.as_ref(),
+                    "audio.extract_vocals",
+                    "vocal",
+                    &mut workflow_audio,
+                    &analysis_input,
+                    analysis_role,
+                );
+                if request
+                    .requested_artifacts
+                    .stems
+                    .contains(&crate::contract::AudioRole::GuideVocals)
+                {
+                    artifacts.stems.push(StemArtifactRefV1 {
+                        role: output.role,
+                        artifact: output.artifact,
+                    });
+                }
             }
         }
+        materialize_requested_semantic_lead_stem(
+            request,
+            primary,
+            &ffmpeg,
+            &output_root,
+            &mut artifacts,
+            cancellation,
+        )?;
         if has_capability(&plan, "audio.lead_isolate") {
             let model = resolved_model(&resolved, "melband_roformer_harmony")?;
             let output = run_openvino_harmony(
@@ -325,56 +451,105 @@ impl AnalysisEngine {
                 },
                 cancellation,
             )?;
-            analysis_input = output_root.join(&output.artifact.path);
-            analysis_role = crate::contract::AudioRole::LeadVocal.as_str();
+            let lead_input = output_root.join(&output.stem.artifact.path);
+            isolation_profiles = Some((output.lead_profile, output.residual_profile));
             record_workflow_audio(
                 plan.workflow_execution.as_ref(),
                 "audio.lead_isolate",
                 "lead",
                 &mut workflow_audio,
-                &analysis_input,
-                analysis_role,
+                &lead_input,
+                crate::contract::AudioRole::LeadVocal.as_str(),
             );
+            if plan
+                .source_route
+                .preparation
+                .iter()
+                .any(|capability| capability.as_str() == "audio.lead_isolate")
+            {
+                analysis_input = lead_input;
+                analysis_role = crate::contract::AudioRole::LeadVocal.as_str();
+            }
             if request
                 .requested_artifacts
                 .stems
                 .contains(&crate::contract::AudioRole::LeadVocal)
             {
                 artifacts.stems.push(StemArtifactRefV1 {
+                    role: output.stem.role,
+                    artifact: output.stem.artifact,
+                });
+            }
+        }
+        if has_capability(&plan, "audio.extract_instrumental") && !ep317_residual_executed {
+            if ep317_residual {
+                let model = resolved_model(&resolved, "bs_roformer_vocals_ep317")?;
+                let output = run_ep317_vocal_residual(
+                    &DenoiseTask {
+                        model_path: &model.model_path,
+                        executable: &model.runtime_executable,
+                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                        backend: roformer_backend(model)?,
+                        ffmpeg: &ffmpeg,
+                        input: &primary.path,
+                        output_root: &output_root,
+                        source_duration,
+                        task_id: &format!("{}-ep317-vocal-residual", request.request_id),
+                    },
+                    plan.workflow_execution
+                        .as_ref()
+                        .and_then(|workflow| {
+                            workflow.node_for_capability("audio.extract_instrumental")
+                        })
+                        .and_then(|node| node.execution_invocations.first())
+                        .map(|invocation| invocation.invocation_id.as_str()),
+                    cancellation,
+                )?;
+                let path = output_root.join(&output.instrumental.artifact.path);
+                instrumental_audio = Some(output.instrumental_audio);
+                record_workflow_audio(
+                    plan.workflow_execution.as_ref(),
+                    "audio.extract_instrumental",
+                    "instrumental",
+                    &mut workflow_audio,
+                    &path,
+                    crate::contract::AudioRole::Instrumental.as_str(),
+                );
+                artifacts.stems.push(StemArtifactRefV1 {
+                    role: output.instrumental.role,
+                    artifact: output.instrumental.artifact,
+                });
+            } else {
+                let model = resolved_model(&resolved, "melband_roformer_inst_v2")?;
+                let output = run_openvino_instrumental(
+                    &DenoiseTask {
+                        model_path: &model.model_path,
+                        executable: &model.runtime_executable,
+                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                        backend: roformer_backend(model)?,
+                        ffmpeg: &ffmpeg,
+                        input: &primary.path,
+                        output_root: &output_root,
+                        source_duration,
+                        task_id: &format!("{}-instrumental", request.request_id),
+                    },
+                    cancellation,
+                )?;
+                let path = output_root.join(&output.artifact.path);
+                instrumental_audio = Some(decode_audio(&ffmpeg, "instrumental", &path)?);
+                record_workflow_audio(
+                    plan.workflow_execution.as_ref(),
+                    "audio.extract_instrumental",
+                    "instrumental",
+                    &mut workflow_audio,
+                    &path,
+                    crate::contract::AudioRole::Instrumental.as_str(),
+                );
+                artifacts.stems.push(StemArtifactRefV1 {
                     role: output.role,
                     artifact: output.artifact,
                 });
             }
-        }
-        if has_capability(&plan, "audio.extract_instrumental") {
-            let model = resolved_model(&resolved, "melband_roformer_inst_v2")?;
-            let output = run_openvino_instrumental(
-                &DenoiseTask {
-                    model_path: &model.model_path,
-                    executable: &model.runtime_executable,
-                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                    backend: roformer_backend(model)?,
-                    ffmpeg: &ffmpeg,
-                    input: &primary.path,
-                    output_root: &output_root,
-                    source_duration,
-                    task_id: &format!("{}-instrumental", request.request_id),
-                },
-                cancellation,
-            )?;
-            let path = output_root.join(&output.artifact.path);
-            record_workflow_audio(
-                plan.workflow_execution.as_ref(),
-                "audio.extract_instrumental",
-                "instrumental",
-                &mut workflow_audio,
-                &path,
-                crate::contract::AudioRole::Instrumental.as_str(),
-            );
-            artifacts.stems.push(StemArtifactRefV1 {
-                role: output.role,
-                artifact: output.artifact,
-            });
         }
         let raw_cleanup_input = analysis_input.clone();
         let raw_cleanup_role = analysis_role.to_string();
@@ -434,7 +609,10 @@ impl AnalysisEngine {
                             (output_path.clone(), step_role.clone()),
                         );
                     }
-                    if matches!(step_role.as_str(), "vocal" | "lead_vocal") {
+                    if matches!(
+                        step_role.as_str(),
+                        "vocal" | "guide_vocals" | "vocal_stem" | "lead_vocal"
+                    ) {
                         analysis_input = output_path;
                         analysis_role = crate::contract::AudioRole::CleanLeadVocal.as_str();
                         cleanup_output = Some(output);
@@ -460,6 +638,9 @@ impl AnalysisEngine {
                 clean.metrics,
             );
             if comparison.damage_suspected() {
+                emit_warning(
+                    "cleanup consistency evidence indicated possible damage; using the raw vocal input",
+                );
                 analysis_input = raw_cleanup_input.clone();
                 analysis_role = raw_cleanup_role.as_str();
                 cleanup_output = None;
@@ -483,6 +664,22 @@ impl AnalysisEngine {
                 artifact: output.artifact,
             });
         }
+        let vocal_topology = estimate_vocal_topology(
+            source_start,
+            source_duration,
+            isolation_profiles.as_ref().map(|profiles| &profiles.0),
+            isolation_profiles.as_ref().map(|profiles| &profiles.1),
+        )?;
+        let topology_reviews = topology_review_regions(&vocal_topology);
+        let instrumental_quality = instrumental_audio.as_ref().map(|instrumental| {
+            estimate_instrumental_quality(
+                source_start,
+                source_duration,
+                instrumental.metrics,
+                &instrumental.profile,
+                guide_vocal_profile.as_ref(),
+            )
+        });
         let (acoustic_evidence, acoustic_artifact) =
             if has_capability(&plan, "analysis.acoustic_dsp") {
                 let (input, role) = workflow_bound_audio(
@@ -492,6 +689,12 @@ impl AnalysisEngine {
                     &analysis_input,
                     analysis_role,
                 )?;
+                let lifecycle = begin_node(
+                    "acoustic-dsp",
+                    "analysis.acoustic_dsp",
+                    None,
+                    ACOUSTIC_DSP_VERSION,
+                );
                 let evidence = analyze_acoustic_evidence(
                     &ffmpeg,
                     &input,
@@ -506,6 +709,8 @@ impl AnalysisEngine {
                     ACOUSTIC_MEDIA_TYPE,
                     &evidence,
                 )?;
+                lifecycle.artifact("acoustic_evidence");
+                lifecycle.complete();
                 (Some(evidence), Some(artifact))
             } else {
                 (None, None)
@@ -530,9 +735,6 @@ impl AnalysisEngine {
                 "speech.transcribe",
                 &input,
                 &directory,
-                // Qwen ASR language contract v1 is runtime-detected only. The
-                // caller language remains reference metadata and is never sent
-                // as an inference hint.
                 serde_json::json!({"model_path": model.model_path}),
                 cancellation,
             )?;
@@ -545,6 +747,19 @@ impl AnalysisEngine {
         } else {
             None
         };
+        let reference_lyrics =
+            (request.lyrics.mode == LyricsMode::Reference).then(|| request_lyrics_text(request));
+        let transcript_disagreement_regions = transcript_evidence
+            .as_ref()
+            .map(|transcript| {
+                build_transcript_disagreement_regions(
+                    transcript,
+                    reference_lyrics.as_deref(),
+                    request.lyrics.language.as_deref(),
+                    source_range,
+                )
+            })
+            .unwrap_or_default();
         let firered_evidence = if has_capability(&plan, "speech.transcribe.challenger") {
             let model = resolved
                 .iter()
@@ -566,11 +781,17 @@ impl AnalysisEngine {
                 policy,
                 profile: request.analysis.profile,
                 source_range,
-                review_regions: &[],
-                relevant_reasons: &[],
+                review_regions: &transcript_disagreement_regions,
+                relevant_reasons: &[
+                    SingingReviewReason::TranscriptLowConfidence,
+                    SingingReviewReason::TranscriptReferenceMismatch,
+                    SingingReviewReason::TranscriptLanguageMismatch,
+                    SingingReviewReason::TranscriptCoverageMismatch,
+                ],
                 optional_usable: model.is_some(),
                 required: false,
                 supports_windowed_input: false,
+                full_input_on_disagreement: true,
             })?;
             conditional_schedule.push(ConditionalScheduleRecordV1::new(
                 "speech.transcribe.challenger",
@@ -600,27 +821,21 @@ impl AnalysisEngine {
             None
         };
         let (transcript, canonical_lyrics) = if has_capability(&plan, "fusion.transcript") {
+            let lifecycle = begin_node("transcript", "fusion.transcript", None, FUSION_VERSION);
             let primary = transcript_evidence.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
                     "fusion.transcript requires canonical or baseline-generated evidence",
                 )
             })?;
-            let reference = (request.lyrics.mode == LyricsMode::Reference)
-                .then(|| request_lyrics_text(request));
-            let (mut artifact, mut canonical) =
-                fuse_transcript_stage(std::slice::from_ref(primary), reference.as_deref())?;
-            // FireRed remains an alternative and never replaces caller/Qwen canonical lyrics.
-            if let Some(challenger) = firered_evidence.as_ref()
-                && normalized_transcript(&challenger.text) != normalized_transcript(&artifact.text)
-            {
-                if !artifact.alternatives.contains(&challenger.text) {
-                    artifact.alternatives.push(challenger.text.clone());
-                }
-                if !canonical.alternatives.contains(&challenger.text) {
-                    canonical.alternatives.push(challenger.text.clone());
-                }
+            let mut transcript_candidates = vec![primary.clone()];
+            if let Some(challenger) = firered_evidence.as_ref() {
+                transcript_candidates.push(challenger.clone());
             }
+            let (artifact, canonical) =
+                fuse_transcript_stage(&transcript_candidates, reference_lyrics.as_deref())?;
+            lifecycle.artifact("canonical_transcript");
+            lifecycle.complete();
             (Some(artifact), Some(canonical))
         } else {
             (None, None)
@@ -679,6 +894,7 @@ impl AnalysisEngine {
             None
         };
         let (alignment, canonical_words) = if has_capability(&plan, "fusion.alignment") {
+            let lifecycle = begin_node("alignment", "fusion.alignment", None, FUSION_VERSION);
             let transcript = canonical_lyrics.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
@@ -697,6 +913,8 @@ impl AnalysisEngine {
                 source_start,
                 source_duration,
             )?;
+            lifecycle.artifact("canonical_alignment");
+            lifecycle.complete();
             (Some(artifact), Some(words))
         } else {
             (None, None)
@@ -715,7 +933,9 @@ impl AnalysisEngine {
             )?);
         }
 
-        let pitch_evidence = if needs_pitch {
+        let mut pitch_evidence: Option<PitchEvidenceV03> = None;
+        let mut fcpe_evidence: Option<PitchEvidenceV03> = None;
+        if needs_pitch {
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
                 "pitch.track",
@@ -723,40 +943,76 @@ impl AnalysisEngine {
                 &analysis_input,
                 analysis_role,
             )?;
-            let model = resolved_model(&resolved, "rmvpe")?;
-            let directory = create_task_dir(&output_root, "worker/rmvpe")?;
-            let outputs = run_native_task(
-                model,
-                "uta-openvino-worker",
-                "task-rmvpe",
-                "pitch.track",
-                &input,
-                &directory,
-                serde_json::json!({
-                    "model_path": model.model_path,
-                    "backend": openvino_backend(model)?
-                }),
-                cancellation,
-            )?;
-            let pitch = parse_rmvpe_pitch(
-                typed_worker_output(&outputs, "pitch_evidence")?,
-                source_start,
-                source_duration,
-            )?;
-            if request.requested_artifacts.pitch_evidence {
-                artifacts.pitch_evidence = Some(write_json_artifact(
+            if fusion_pitch_owner == "fcpe" {
+                let model = resolved_model(&resolved, "fcpe")?;
+                fcpe_evidence = run_fcpe_schedule(
+                    model,
+                    &ffmpeg,
+                    &input,
                     &output_root,
-                    Path::new("pitch/pitch-evidence.json"),
-                    PITCH_MEDIA_TYPE,
-                    &pitch,
-                )?);
+                    source_range,
+                    &ScheduledExecution::FullInput,
+                    cancellation,
+                )?;
+                let pitch = fcpe_evidence.as_ref().ok_or_else(|| {
+                    EngineError::new(
+                        EngineErrorCode::OutputValidationFailed,
+                        "FCPE was selected as the primary F0 expert but produced no evidence",
+                    )
+                })?;
+                if request.requested_artifacts.pitch_evidence {
+                    artifacts.pitch_evidence = Some(write_json_artifact(
+                        &output_root,
+                        Path::new("pitch/pitch-evidence.json"),
+                        PITCH_MEDIA_TYPE,
+                        pitch,
+                    )?);
+                }
+            } else {
+                let model = resolved_model(&resolved, "rmvpe")?;
+                let directory = create_task_dir(&output_root, "worker/rmvpe")?;
+                let outputs = run_native_task(
+                    model,
+                    "uta-openvino-worker",
+                    "task-rmvpe",
+                    "pitch.track",
+                    &input,
+                    &directory,
+                    serde_json::json!({
+                        "model_path": model.model_path,
+                        "backend": openvino_backend(model)?
+                    }),
+                    cancellation,
+                )?;
+                let pitch = parse_rmvpe_pitch(
+                    typed_worker_output(&outputs, "pitch_evidence")?,
+                    source_start,
+                    source_duration,
+                )?;
+                if request.requested_artifacts.pitch_evidence {
+                    artifacts.pitch_evidence = Some(write_json_artifact(
+                        &output_root,
+                        Path::new("pitch/pitch-evidence.json"),
+                        PITCH_MEDIA_TYPE,
+                        &pitch,
+                    )?);
+                }
+                pitch_evidence = Some(pitch);
             }
-            Some(pitch)
-        } else {
-            None
-        };
-        let mut fcpe_evidence: Option<PitchEvidenceV03> = None;
+        }
         let mut basic_pitch_evidence: Option<BasicPitchEvidenceV3> = None;
+        let source_end = source_start.saturating_add(source_duration);
+        let mut game_known_boundaries_us = canonical_words
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|word| [word.range.start, word.range.end])
+            .filter(|boundary| *boundary > source_start && *boundary < source_end)
+            .map(|boundary| boundary - source_start)
+            .collect::<Vec<_>>();
+        game_known_boundaries_us.sort_unstable();
+        game_known_boundaries_us.dedup();
+        let game_conditioned_boundary_count = game_known_boundaries_us.len();
         let game_evidence = if has_capability(&plan, "notes.game") {
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
@@ -777,6 +1033,7 @@ impl AnalysisEngine {
                 serde_json::json!({
                     "model_path": model.model_path,
                     "language": request.lyrics.language,
+                    "known_boundaries_us": game_known_boundaries_us,
                     "backend": openvino_backend(model)?
                 }),
                 cancellation,
@@ -811,22 +1068,45 @@ impl AnalysisEngine {
                 alignment,
                 words,
                 pitch_evidence.as_ref(),
+                fcpe_evidence.as_ref(),
                 game,
                 acoustic,
                 source_start,
                 source_duration,
+                &fusion_pitch_owner,
             )?,
             _ => Vec::new(),
         };
-        if has_capability(&plan, "pitch.secondary") {
-            let model = resolved.iter().find(|model| model.model_id == "fcpe");
-            let policy = execution_policy_for(
+        let mut baseline_review_regions = baseline_review_regions;
+        baseline_review_regions.extend(
+            topology_reviews
+                .iter()
+                .filter(|region| {
+                    !region
+                        .reasons
+                        .contains(&SingingReviewReason::VocalTopologyUnknown)
+                })
+                .cloned(),
+        );
+        let baseline_review_regions = merge_regions(baseline_review_regions);
+        let secondary_pitch = if has_capability(&plan, "pitch.secondary.rmvpe") {
+            Some(("rmvpe", "pitch.secondary.rmvpe", false))
+        } else if has_capability(&plan, "pitch.secondary.fcpe") {
+            Some(("fcpe", "pitch.secondary.fcpe", true))
+        } else {
+            None
+        };
+        if let Some((secondary_model_id, capability, supports_windowed_input)) = secondary_pitch {
+            let model = resolved
+                .iter()
+                .find(|model| model.model_id == secondary_model_id);
+            let policy = execution_policy_for_model(
                 workflow.as_ref(),
-                "pitch.secondary",
+                secondary_model_id,
                 WorkflowExecutionPolicyV1::DisagreementWindows,
             );
             let scheduled = schedule(ConditionalScheduleRequest {
-                capability: "pitch.secondary",
+                capability,
                 policy,
                 profile: request.analysis.profile,
                 source_range,
@@ -834,41 +1114,70 @@ impl AnalysisEngine {
                 relevant_reasons: PITCH_DISAGREEMENT_REASONS,
                 optional_usable: model.is_some(),
                 required: false,
-                supports_windowed_input: true,
+                supports_windowed_input,
+                full_input_on_disagreement: false,
             })
             .map_err(|error| error.for_request(&request.request_id))?;
             conditional_schedule.push(ConditionalScheduleRecordV1::new(
-                "pitch.secondary",
-                policy,
-                &scheduled,
+                capability, policy, &scheduled,
             ));
             if let ScheduledExecution::Skip(reason) = scheduled {
-                record_schedule_skip(&mut degraded_reasons, "pitch.secondary", reason);
+                record_schedule_skip(&mut degraded_reasons, capability, reason);
             } else if let Some(model) = model {
                 let (input, _) = workflow_bound_audio(
                     plan.workflow_execution.as_ref(),
-                    "pitch.secondary",
+                    capability,
                     &workflow_audio,
                     &analysis_input,
                     analysis_role,
                 )?;
-                match run_fcpe_schedule(
-                    model,
-                    &ffmpeg,
-                    &input,
-                    &output_root,
-                    source_range,
-                    &scheduled,
-                    cancellation,
-                ) {
-                    Ok(evidence) => fcpe_evidence = evidence,
+                let result = if secondary_model_id == "fcpe" {
+                    run_fcpe_schedule(
+                        model,
+                        &ffmpeg,
+                        &input,
+                        &output_root,
+                        source_range,
+                        &scheduled,
+                        cancellation,
+                    )
+                } else {
+                    let directory = create_task_dir(&output_root, "worker/rmvpe-secondary")?;
+                    let outputs = run_native_task(
+                        model,
+                        "uta-openvino-worker",
+                        "task-rmvpe",
+                        capability,
+                        &input,
+                        &directory,
+                        serde_json::json!({
+                            "model_path": model.model_path,
+                            "backend": openvino_backend(model)?
+                        }),
+                        cancellation,
+                    );
+                    outputs.and_then(|outputs| {
+                        parse_rmvpe_pitch(
+                            typed_worker_output(&outputs, "pitch_evidence")?,
+                            source_start,
+                            source_duration,
+                        )
+                        .map(Some)
+                    })
+                };
+                match result {
+                    Ok(evidence) if secondary_model_id == "fcpe" => fcpe_evidence = evidence,
+                    Ok(evidence) => pitch_evidence = evidence,
                     Err(error) if error.code == EngineErrorCode::Cancelled => return Err(error),
                     Err(error) => {
-                        let _ = std::fs::remove_dir_all(output_root.join("worker/fcpe"));
-                        let _ =
-                            std::fs::remove_dir_all(output_root.join("worker/conditional/fcpe"));
+                        let _ = std::fs::remove_dir_all(
+                            output_root.join(format!("worker/{secondary_model_id}")),
+                        );
+                        let _ = std::fs::remove_dir_all(
+                            output_root.join(format!("worker/conditional/{secondary_model_id}")),
+                        );
                         degraded_reasons.push(format!(
-                            "optional capability pitch.secondary failed: {}",
+                            "optional capability {capability} failed: {}",
                             error.message
                         ));
                     }
@@ -876,6 +1185,9 @@ impl AnalysisEngine {
             }
         }
         if has_capability(&plan, "notes.basic_pitch") {
+            let basic_pitch_required = workflow.as_ref().is_some_and(|workflow| {
+                workflow.policy_for_model("basic_pitch") == Some(WorkflowExecutionPolicyV1::Always)
+            });
             let model = resolved
                 .iter()
                 .find(|model| model.model_id == "basic_pitch");
@@ -892,8 +1204,9 @@ impl AnalysisEngine {
                 review_regions: &baseline_review_regions,
                 relevant_reasons: NOTE_DISAGREEMENT_REASONS,
                 optional_usable: model.is_some(),
-                required: false,
+                required: basic_pitch_required,
                 supports_windowed_input: true,
+                full_input_on_disagreement: false,
             })
             .map_err(|error| error.for_request(&request.request_id))?;
             conditional_schedule.push(ConditionalScheduleRecordV1::new(
@@ -921,7 +1234,11 @@ impl AnalysisEngine {
                     cancellation,
                 ) {
                     Ok(evidence) => basic_pitch_evidence = evidence,
-                    Err(error) if error.code == EngineErrorCode::Cancelled => return Err(error),
+                    Err(error)
+                        if error.code == EngineErrorCode::Cancelled || basic_pitch_required =>
+                    {
+                        return Err(error);
+                    }
                     Err(error) => {
                         let _ = std::fs::remove_dir_all(output_root.join("worker/basic-pitch"));
                         let _ = std::fs::remove_dir_all(
@@ -936,49 +1253,97 @@ impl AnalysisEngine {
             }
         }
         let mut advanced_note_evidence = Vec::new();
+        let mut technique_evidence = Vec::<TechniqueEvidenceV1>::new();
         for model_id in ["rosvot", "stars"] {
             let Some(model) = resolved.iter().find(|model| model.model_id == model_id) else {
                 continue;
             };
+            let notes_capability = format!("notes.{model_id}");
+            let include_notes = has_capability(&plan, &notes_capability);
             let include_technique =
                 model_id == "stars" && has_capability(&plan, "technique.analyze");
-            let notes_capability = format!("notes.{model_id}");
-            if !include_technique && !has_capability(&plan, &notes_capability) {
+            if !include_notes && !include_technique {
                 continue;
             }
-            let capability = if include_technique {
-                "technique.analyze".to_string()
+
+            let notes_runs = if include_notes {
+                let policy = execution_policy_for(
+                    workflow.as_ref(),
+                    &notes_capability,
+                    WorkflowExecutionPolicyV1::MaximumOnly,
+                );
+                let scheduled = schedule(ConditionalScheduleRequest {
+                    capability: &notes_capability,
+                    policy,
+                    profile: request.analysis.profile,
+                    source_range,
+                    review_regions: &baseline_review_regions,
+                    relevant_reasons: NOTE_DISAGREEMENT_REASONS,
+                    optional_usable: true,
+                    required: false,
+                    supports_windowed_input: false,
+                    full_input_on_disagreement: false,
+                })?;
+                conditional_schedule.push(ConditionalScheduleRecordV1::new(
+                    &notes_capability,
+                    policy,
+                    &scheduled,
+                ));
+                match scheduled {
+                    ScheduledExecution::Skip(reason) => {
+                        record_schedule_skip(&mut degraded_reasons, &notes_capability, reason);
+                        false
+                    }
+                    ScheduledExecution::FullInput | ScheduledExecution::Windows(_) => true,
+                }
             } else {
-                notes_capability
+                false
             };
-            let policy = execution_policy_for(
-                workflow.as_ref(),
-                &capability,
-                WorkflowExecutionPolicyV1::MaximumOnly,
-            );
-            let scheduled = schedule(ConditionalScheduleRequest {
-                capability: &capability,
-                policy,
-                profile: request.analysis.profile,
-                source_range,
-                review_regions: &baseline_review_regions,
-                relevant_reasons: NOTE_DISAGREEMENT_REASONS,
-                optional_usable: true,
-                required: false,
-                supports_windowed_input: false,
-            })?;
-            conditional_schedule.push(ConditionalScheduleRecordV1::new(
-                &capability,
-                policy,
-                &scheduled,
-            ));
-            if let ScheduledExecution::Skip(reason) = scheduled {
-                record_schedule_skip(&mut degraded_reasons, &capability, reason);
+
+            let technique_runs = if include_technique {
+                let capability = "technique.analyze";
+                let policy = execution_policy_for(
+                    workflow.as_ref(),
+                    capability,
+                    WorkflowExecutionPolicyV1::MaximumOnly,
+                );
+                let scheduled = schedule(ConditionalScheduleRequest {
+                    capability,
+                    policy,
+                    profile: request.analysis.profile,
+                    source_range,
+                    review_regions: &baseline_review_regions,
+                    relevant_reasons: NOTE_DISAGREEMENT_REASONS,
+                    optional_usable: true,
+                    required: false,
+                    supports_windowed_input: false,
+                    full_input_on_disagreement: false,
+                })?;
+                conditional_schedule.push(ConditionalScheduleRecordV1::new(
+                    capability, policy, &scheduled,
+                ));
+                match scheduled {
+                    ScheduledExecution::Skip(reason) => {
+                        record_schedule_skip(&mut degraded_reasons, capability, reason);
+                        false
+                    }
+                    ScheduledExecution::FullInput | ScheduledExecution::Windows(_) => true,
+                }
+            } else {
+                false
+            };
+
+            if !notes_runs && !technique_runs {
                 continue;
             }
+            let route_capability = if notes_runs {
+                notes_capability.as_str()
+            } else {
+                "technique.analyze"
+            };
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
-                &capability,
+                route_capability,
                 &workflow_audio,
                 &analysis_input,
                 analysis_role,
@@ -995,34 +1360,49 @@ impl AnalysisEngine {
                 })?,
                 source_start,
                 source_duration,
-                include_technique,
+                technique_runs,
                 cancellation,
             );
             match result {
                 Ok(evidence) => {
-                    if include_technique {
-                        let technique = evidence
-                            .technique_artifact(source_start, source_duration)?
-                            .ok_or_else(|| {
-                                EngineError::new(
-                                    EngineErrorCode::OutputValidationFailed,
-                                    "STARS technique execution returned no technique evidence",
-                                )
-                            })?;
-                        artifacts.technique_evidence = Some(write_json_artifact(
-                            &output_root,
-                            Path::new("analysis/technique-evidence.json"),
-                            TECHNIQUE_MEDIA_TYPE,
-                            &technique,
-                        )?);
+                    if technique_runs {
+                        match evidence.technique_artifact(source_start, source_duration) {
+                            Ok(Some(technique)) => {
+                                artifacts.technique_evidence = Some(write_json_artifact(
+                                    &output_root,
+                                    Path::new("analysis/technique-evidence.json"),
+                                    TECHNIQUE_MEDIA_TYPE,
+                                    &technique,
+                                )?);
+                                technique_evidence.push(technique);
+                            }
+                            Ok(None) => degraded_reasons.push(
+                                "optional capability technique.analyze produced no technique evidence"
+                                    .to_string(),
+                            ),
+                            Err(error) => degraded_reasons.push(format!(
+                                "optional capability technique.analyze produced invalid evidence: {}",
+                                error.message
+                            )),
+                        }
                     }
-                    advanced_note_evidence.push(evidence);
+                    if notes_runs {
+                        advanced_note_evidence.push(evidence);
+                    }
                 }
                 Err(error) if error.code == EngineErrorCode::Cancelled => return Err(error),
                 Err(error) => {
                     let _ = std::fs::remove_dir_all(output_root.join(format!("worker/{model_id}")));
+                    let requested_routes = [
+                        notes_runs.then_some(notes_capability.as_str()),
+                        technique_runs.then_some("technique.analyze"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" + ");
                     degraded_reasons.push(format!(
-                        "optional capability {capability} failed: {}",
+                        "optional capability {requested_routes} failed: {}",
                         error.message
                     ));
                 }
@@ -1032,7 +1412,8 @@ impl AnalysisEngine {
             return Err(cancelled(request));
         }
         let singing_fusion = if has_capability(&plan, "fusion.singing") {
-            Some(execute_singing_fusion_stage(
+            let lifecycle = begin_node("singing-fusion", "fusion.singing", None, FUSION_VERSION);
+            let output = execute_singing_fusion_stage(
                 transcript.as_ref().ok_or_else(|| {
                     EngineError::new(
                         EngineErrorCode::MissingRequiredInput,
@@ -1054,27 +1435,38 @@ impl AnalysisEngine {
                 pitch_evidence.as_ref(),
                 fcpe_evidence.as_ref(),
                 basic_pitch_evidence.as_ref(),
-                game_evidence.as_ref().ok_or_else(|| {
-                    EngineError::new(
-                        EngineErrorCode::MissingRequiredInput,
-                        "fusion.singing requires GAME evidence",
-                    )
-                })?,
-                acoustic_evidence.as_ref().ok_or_else(|| {
-                    EngineError::new(
-                        EngineErrorCode::MissingRequiredInput,
-                        "fusion.singing requires acoustic DSP evidence",
-                    )
-                })?,
+                game_evidence.as_ref(),
+                acoustic_evidence.as_ref(),
                 &advanced_note_evidence,
+                &technique_evidence,
+                &request.boundary_constraints,
                 source_start,
                 source_duration,
-            )?)
+                &fusion_pitch_owner,
+            )?;
+            lifecycle.artifact("singing_fusion_evidence");
+            lifecycle.complete();
+            Some(output)
         } else {
             None
         };
         let singing = if has_capability(&plan, "fusion.candidate_graph") {
-            Some(execute_candidate_graph_stage(
+            let decision_implementation = match fusion_mode {
+                FusionModeV1::Algorithm => HSMM_VERSION.to_string(),
+                FusionModeV1::AiJudgment => {
+                    let adapter = fusion_adapter
+                        .as_ref()
+                        .expect("AI mode resolved its required adapter");
+                    format!("{}@{}", adapter.identity, adapter.version)
+                }
+            };
+            let lifecycle = begin_node(
+                "candidate-graph",
+                "fusion.candidate_graph",
+                None,
+                decision_implementation,
+            );
+            let mut output = execute_candidate_graph_stage(
                 canonical_lyrics.clone().ok_or_else(|| {
                     EngineError::new(
                         EngineErrorCode::MissingRequiredInput,
@@ -1093,11 +1485,33 @@ impl AnalysisEngine {
                         "fusion.candidate_graph requires singing candidates",
                     )
                 })?,
-            )?)
+                match fusion_mode {
+                    FusionModeV1::Algorithm => FusionDecisionModeV1::Algorithm,
+                    FusionModeV1::AiJudgment => FusionDecisionModeV1::AiJudgment {
+                        executable: &fusion_adapter
+                            .as_ref()
+                            .expect("AI mode resolved its required adapter")
+                            .executable,
+                        timeout: Duration::from_secs(600),
+                        cancellation,
+                    },
+                },
+            )?;
+            output.review_regions.extend(topology_reviews.clone());
+            output.review_regions = merge_regions(output.review_regions);
+            lifecycle.artifact("candidate_graph");
+            lifecycle.complete();
+            Some(output)
         } else {
             None
         };
         let quantized_candidate = if has_capability(&plan, "rhythm.quantize") {
+            let lifecycle = begin_node(
+                "rhythm-quantize",
+                "rhythm.quantize",
+                None,
+                QUANTIZATION_VERSION,
+            );
             let singing = singing.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
@@ -1140,6 +1554,8 @@ impl AnalysisEngine {
                 source_range,
                 &hard_boundaries,
             )?;
+            lifecycle.artifact("quantized_candidate_graph");
+            lifecycle.complete();
             Some((track, report))
         } else {
             None
@@ -1152,16 +1568,14 @@ impl AnalysisEngine {
             profile: request.analysis.profile,
             planned_gates: &plan.quality_gates,
             evaluated_audio_role: analysis_role,
+            source_start,
             expected_duration: source_duration,
             actual_duration: analyzed_audio.facts.duration,
             source: primary_decoded.metrics,
             analyzed: analyzed_audio.metrics,
             cleanup: cleanup_comparison,
-            foreground_evidence_available: singing.is_some(),
-            review_regions: singing
-                .as_ref()
-                .map(|output| output.review_regions.as_slice())
-                .unwrap_or_default(),
+            vocal_topology: Some(&vocal_topology),
+            instrumental: instrumental_quality.as_ref(),
         })
         .map_err(|error| error.for_request(&request.request_id))?;
         enforce_required_quality(&audio_quality)
@@ -1179,12 +1593,55 @@ impl AnalysisEngine {
                 "firered_asr2_aed" => firered_evidence.is_some(),
                 "melband_roformer_denoise_aufr33" => denoise_participated,
                 "melband_roformer_dereverb_anvuew" => dereverb_participated,
-                "stars" | "rosvot" => advanced_note_evidence
-                    .iter()
-                    .any(|evidence| evidence.model_id == resource.model_id),
+                "stars" | "rosvot" => {
+                    advanced_note_evidence
+                        .iter()
+                        .any(|evidence| evidence.model_id == resource.model_id)
+                        || technique_evidence
+                            .iter()
+                            .any(|evidence| evidence.model_id == resource.model_id)
+                }
                 _ => true,
             })
             .collect::<Vec<_>>();
+        let fusion_decision = singing
+            .as_ref()
+            .map(|output| match &output.decision {
+                CandidatePathDecisionV1::Algorithm {
+                    candidate_set_digest,
+                    selected_candidate_ids,
+                } => Ok::<_, EngineError>(FusionDecisionProvenanceV1::Algorithm {
+                    selector: HSMM_VITERBI_SELECTOR.to_string(),
+                    selector_version: HSMM_VERSION.to_string(),
+                    candidate_set_digest: candidate_set_digest.clone(),
+                    selected_candidate_ids: selected_candidate_ids.clone(),
+                    reuse_policy: AnalysisReusePolicyV1::Deterministic,
+                }),
+                CandidatePathDecisionV1::AiJudgment {
+                    candidate_set_digest,
+                    selected_candidate_ids,
+                    response_digest,
+                } => {
+                    let adapter = fusion_adapter.as_ref().ok_or_else(|| {
+                        EngineError::new(
+                            EngineErrorCode::InternalError,
+                            "AI fusion decision lost its resolved adapter identity",
+                        )
+                    })?;
+                    Ok(FusionDecisionProvenanceV1::AiJudgment {
+                        adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
+                        adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
+                        adapter_protocol_version: adapter.protocol_version,
+                        adapter_identity: adapter.identity.clone(),
+                        adapter_version: adapter.version.clone(),
+                        candidate_set_digest: candidate_set_digest.clone(),
+                        selected_candidate_ids: selected_candidate_ids.clone(),
+                        response_digest: response_digest.clone(),
+                        reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+                    })
+                }
+            })
+            .transpose()?;
         let fingerprint = deterministic_fingerprint(&ExecutionIdentity {
             request: fingerprint_request(request)?,
             resources: participating_resources
@@ -1207,22 +1664,35 @@ impl AnalysisEngine {
             calibration_version: CALIBRATION_VERSION,
             finalize_vocal_chart_version: FINALIZE_VOCAL_CHART_VERSION,
             fusion_version: FUSION_VERSION,
-            hsmm_version: HSMM_VERSION,
+            fusion_decision: fusion_decision.as_ref(),
             quantization_version: QUANTIZATION_VERSION,
             postprocess_version: POSTPROCESS_VERSION,
         })?;
+        let finalization_lifecycle = has_capability(&plan, "finalize.vocal_chart").then(|| {
+            begin_node(
+                "vocal-chart",
+                "finalize.vocal_chart",
+                None,
+                FINALIZE_VOCAL_CHART_VERSION,
+            )
+        });
         publish_candidate_artifacts(
             &output_root,
             request.requested_artifacts.singing_analysis,
             has_capability(&plan, "finalize.vocal_chart"),
             request.analysis.preserve_continuous_pitch,
             &fingerprint,
+            fusion_decision.as_ref(),
             singing.as_ref(),
             quantized_candidate.as_ref().map(|(track, _)| track),
             quantized_candidate.as_ref().map(|(_, report)| report),
             &mut artifacts,
             cancellation,
         )?;
+        if let Some(lifecycle) = finalization_lifecycle {
+            lifecycle.artifact("candidate_vocal_chart");
+            lifecycle.complete();
+        }
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
@@ -1241,6 +1711,9 @@ impl AnalysisEngine {
             ));
         }
 
+        for reason in &degraded_reasons {
+            emit_degraded(reason.clone());
+        }
         let singing_candidate_count = singing
             .as_ref()
             .map(|output| output.fusion.candidates.len());
@@ -1253,7 +1726,7 @@ impl AnalysisEngine {
                 .collect(),
             calibration_version: CALIBRATION_VERSION.to_string(),
             fusion_version: FUSION_VERSION.to_string(),
-            hsmm_version: HSMM_VERSION.to_string(),
+            fusion_decision,
             quantization_version: QUANTIZATION_VERSION.to_string(),
             audio_quality_version: AUDIO_QUALITY_VERSION.to_string(),
             postprocess_version: POSTPROCESS_VERSION.to_string(),
@@ -1282,11 +1755,16 @@ impl AnalysisEngine {
                     "acoustic": acoustic_artifact,
                     "acoustic_algorithm": ACOUSTIC_DSP_VERSION,
                     "game_note_count": game_evidence.as_ref().map(|evidence| evidence.notes.len()),
+                    "game_conditioned_boundary_count": game_conditioned_boundary_count,
                     "fcpe_frame_count": fcpe_evidence.as_ref().map(|evidence| evidence.frequency_hz.len()),
                     "advanced_note_counts": advanced_note_evidence.iter().map(|evidence| {
                         (evidence.model_id.clone(), evidence.notes.len())
                     }).collect::<std::collections::BTreeMap<_, _>>(),
+                    "technique_experts": technique_evidence.iter().map(|evidence| {
+                        evidence.model_id.clone()
+                    }).collect::<Vec<_>>(),
                     "conditional_schedule": conditional_schedule,
+                    "transcript_disagreement_regions": transcript_disagreement_regions,
                     "singing_candidate_count": singing_candidate_count,
                     "singing_analysis_emitted": singing_analysis_emitted,
                     "candidate_vocal_chart_emitted": candidate_vocal_chart_emitted
@@ -1374,202 +1852,6 @@ impl AnalysisEngine {
     }
 }
 
-struct DenoiseTask<'a> {
-    model_path: &'a Path,
-    executable: &'a Path,
-    runtime_recipe_digest: Option<&'a str>,
-    backend: &'a str,
-    ffmpeg: &'a Path,
-    input: &'a Path,
-    output_root: &'a Path,
-    source_duration: u64,
-    task_id: &'a str,
-}
-
-struct CleanupSpec<'a> {
-    model_id: &'a str,
-    role: crate::contract::AudioRole,
-    node_id: &'a str,
-    semantic_output: &'a str,
-    artifact: &'a str,
-    worker_directory: &'a str,
-    destination: &'a str,
-}
-
-fn run_openvino_vocals(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "bs_roformer_vocals_ep317",
-            role: crate::contract::AudioRole::GuideVocals,
-            node_id: "audio.extract_vocals",
-            semantic_output: "guide_vocals",
-            artifact: "guide_vocals",
-            worker_directory: "worker/guide-vocals",
-            destination: "stems/guide_vocals.flac",
-        },
-        cancellation,
-    )
-}
-
-fn run_openvino_harmony(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    let directory = create_task_dir(task.output_root, "worker/lead-isolate")?;
-    let outputs = SupervisedWorker::run(
-        task.executable,
-        &WorkerExpectation {
-            component: roformer_component(task.backend).to_string(),
-            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
-        },
-        &NativeTask {
-            task_id: task.task_id.to_string(),
-            node_id: "audio.lead_isolate".to_string(),
-            model_id: "melband_roformer_harmony".to_string(),
-            input_artifacts: vec![task.input.to_path_buf()],
-            output_dir: directory.clone(),
-            config: serde_json::json!({
-                "model_path": task.model_path,
-                "backend": task.backend,
-                "input_semantics": "all_vocals",
-                "semantic_output": "lead_vocal+backing_vocal_residual"
-            }),
-            timeout: Duration::from_secs(4 * 60 * 60),
-        },
-        cancellation,
-        |_| {},
-    )?;
-    if outputs.len() != 2 {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "Karaoke worker must publish exactly lead_vocal and vocal_residual",
-        ));
-    }
-    let lead = typed_worker_output(&outputs, "lead_vocal")?.to_path_buf();
-    let residual = typed_worker_output(&outputs, "vocal_residual")?.to_path_buf();
-    for (artifact, path) in [("lead_vocal", &lead), ("vocal_residual", &residual)] {
-        if outputs
-            .iter()
-            .find(|output| output.artifact == artifact)
-            .is_none_or(|output| output.media_type != "audio/flac")
-        {
-            return Err(EngineError::new(
-                EngineErrorCode::OutputValidationFailed,
-                format!("Karaoke worker output {artifact} is not lossless FLAC"),
-            ));
-        }
-        let facts = decode_audio(task.ffmpeg, artifact, path)?.facts;
-        if facts.sample_rate != 44_100
-            || facts.channels != 2
-            || facts.frame_count == 0
-            || facts.duration.abs_diff(task.source_duration) > 2_000
-        {
-            return Err(EngineError::new(
-                EngineErrorCode::TimelineInvalid,
-                format!("Karaoke {artifact} did not preserve the vocal input timeline"),
-            ));
-        }
-    }
-    if cancellation.is_cancelled() {
-        return Err(EngineError::new(
-            EngineErrorCode::Cancelled,
-            "lead-isolation publication was cancelled",
-        ));
-    }
-    let relative = PathBuf::from("stems/lead_vocal.flac");
-    let destination = task.output_root.join(&relative);
-    let parent = destination.parent().expect("lead stem has parent");
-    std::fs::create_dir_all(parent).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not create lead stem directory: {error}"),
-        )
-    })?;
-    if destination.exists() {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "lead stem target already exists",
-        ));
-    }
-    std::fs::rename(&lead, &destination).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not atomically publish lead stem: {error}"),
-        )
-    })?;
-    std::fs::remove_dir_all(&directory).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not clean Karaoke worker directory: {error}"),
-        )
-    })?;
-    Ok(SeparationOutput {
-        role: crate::contract::AudioRole::LeadVocal,
-        artifact: artifact_ref_for_existing(task.output_root, &relative, "audio/flac")?,
-    })
-}
-
-fn run_openvino_denoise(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "melband_roformer_denoise_aufr33",
-            role: crate::contract::AudioRole::CleanLeadVocal,
-            node_id: "audio.denoise",
-            semantic_output: "dry",
-            artifact: "clean_lead_vocal",
-            worker_directory: "worker/denoise",
-            destination: "stems/clean_lead_vocal.flac",
-        },
-        cancellation,
-    )
-}
-
-fn run_openvino_dereverb(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "melband_roformer_dereverb_anvuew",
-            role: crate::contract::AudioRole::CleanLeadVocal,
-            node_id: "audio.dereverb",
-            semantic_output: "noreverb",
-            artifact: "dereverbed_vocal",
-            worker_directory: "worker/dereverb",
-            destination: "stems/dereverbed_clean_lead_vocal.flac",
-        },
-        cancellation,
-    )
-}
-
-fn run_openvino_instrumental(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "melband_roformer_inst_v2",
-            role: crate::contract::AudioRole::Instrumental,
-            node_id: "audio.extract_instrumental",
-            semantic_output: "instrumental",
-            artifact: "instrumental",
-            worker_directory: "worker/instrumental",
-            destination: "stems/instrumental.flac",
-        },
-        cancellation,
-    )
-}
-
 fn run_openvino_cleanup(
     task: &DenoiseTask<'_>,
     spec: &CleanupSpec<'_>,
@@ -1585,6 +1867,7 @@ fn run_openvino_cleanup(
         &NativeTask {
             task_id: task.task_id.to_string(),
             node_id: spec.node_id.to_string(),
+            presentation_node_id: spec.presentation_node_id.map(str::to_string),
             model_id: spec.model_id.to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
@@ -1673,6 +1956,7 @@ fn run_native_task(
         &NativeTask {
             task_id: task_id.to_string(),
             node_id: node_id.to_string(),
+            presentation_node_id: None,
             model_id: model.model_id.clone(),
             input_artifacts: vec![input.to_path_buf()],
             output_dir: output_dir.to_path_buf(),
@@ -1704,200 +1988,5 @@ fn typed_worker_output<'a>(
     Ok(&output.path)
 }
 
-fn create_task_dir(root: &Path, relative: &str) -> EngineResult<PathBuf> {
-    let relative = Path::new(relative);
-    if relative
-        .components()
-        .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "worker task directory is invalid",
-        ));
-    }
-    let directory = root.join(relative);
-    let parent = directory.parent().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "worker task directory has no parent",
-        )
-    })?;
-    std::fs::create_dir_all(parent).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not create worker parent directory: {error}"),
-        )
-    })?;
-    std::fs::create_dir(&directory).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("worker task directory already exists or cannot be created: {error}"),
-        )
-    })?;
-    directory.canonicalize().map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not authorize worker task directory: {error}"),
-        )
-    })
-}
-
-fn caller_transcript(request: &AnalyzeRequestV1) -> EngineResult<TranscriptArtifactV1> {
-    let text = request_lyrics_text(request);
-    if text.is_empty() {
-        return Err(EngineError::new(
-            EngineErrorCode::MissingRequiredInput,
-            "canonical lyrics contain no text",
-        ));
-    }
-    let artifact = TranscriptArtifactV1 {
-        contract: "uta.analysis-engine.transcript".to_string(),
-        version: 1,
-        authority: TranscriptAuthorityV1::CallerCanonical,
-        language: request.lyrics.language.clone(),
-        text,
-        tokens: request
-            .lyrics
-            .tokens
-            .iter()
-            .map(|token| TranscriptTokenV1 {
-                id: token.id.clone(),
-                text: token.text.clone(),
-                confidence: None,
-            })
-            .collect(),
-        // Caller authority is categorical request authority, not probability.
-        confidence: None,
-        source_experts: vec!["caller.canonical_lyrics".to_string()],
-        alternatives: Vec::new(),
-        model_sha256: None,
-        runtime_manifest_sha256: None,
-        backend: "caller".to_string(),
-    };
-    artifact.validate()?;
-    Ok(artifact)
-}
-
-fn request_lyrics_text(request: &AnalyzeRequestV1) -> String {
-    let separator = match request.lyrics.language.as_deref() {
-        Some(language)
-            if language.starts_with("zh")
-                || language.starts_with("ja")
-                || language.starts_with("ko") =>
-        {
-            ""
-        }
-        _ => " ",
-    };
-    request
-        .lyrics
-        .tokens
-        .iter()
-        .map(|token| token.text.as_str())
-        .collect::<Vec<_>>()
-        .join(separator)
-}
-
-fn cancelled(request: &AnalyzeRequestV1) -> EngineError {
-    EngineError::new(EngineErrorCode::Cancelled, "analysis request was cancelled")
-        .for_request(&request.request_id)
-}
-
-fn fingerprint_request(request: &AnalyzeRequestV1) -> EngineResult<serde_json::Value> {
-    let mut value = serde_json::to_value(request).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            format!("could not serialize request fingerprint identity: {error}"),
-        )
-    })?;
-    if let Some(sources) = value
-        .get_mut("audio_sources")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for source in sources {
-            if let Some(source) = source.as_object_mut() {
-                source.remove("path");
-            }
-        }
-    }
-    Ok(value)
-}
-
-struct OutputRunGuard {
-    root: PathBuf,
-    committed: bool,
-}
-
-impl OutputRunGuard {
-    fn new(path: &Path) -> EngineResult<Self> {
-        let root = authorize_output_root(path)?;
-        let mut entries = std::fs::read_dir(&root).map_err(|error| {
-            EngineError::new(
-                EngineErrorCode::OutputValidationFailed,
-                format!("could not inspect authorized output directory: {error}"),
-            )
-        })?;
-        if entries.next().is_some() {
-            return Err(EngineError::new(
-                EngineErrorCode::OutputValidationFailed,
-                "authorized analysis output directory must be empty",
-            ));
-        }
-        Ok(Self {
-            root,
-            committed: false,
-        })
-    }
-
-    fn root(&self) -> &Path {
-        &self.root
-    }
-
-    fn commit(&mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for OutputRunGuard {
-    fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-                let _ = std::fs::remove_dir_all(path);
-            } else {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-}
-
-fn authorize_output_root(path: &Path) -> EngineResult<PathBuf> {
-    if !path.is_dir() {
-        return Err(EngineError::new(
-            EngineErrorCode::MissingRequiredInput,
-            format!(
-                "authorized output directory is unavailable: {}",
-                path.display()
-            ),
-        ));
-    }
-    path.canonicalize().map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not authorize output directory: {error}"),
-        )
-    })
-}
-
 #[cfg(test)]
-#[path = "engine/tests.rs"]
 mod tests;

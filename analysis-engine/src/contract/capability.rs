@@ -60,6 +60,8 @@ pub fn capability_registry() -> Vec<CapabilityDescriptor> {
         ("speech.align", true, true),
         ("pitch.track", true, true),
         ("pitch.secondary", false, true),
+        ("pitch.secondary.rmvpe", false, true),
+        ("pitch.secondary.fcpe", false, true),
         ("notes.game", true, true),
         ("notes.basic_pitch", false, true),
         ("notes.rosvot", false, true),
@@ -124,7 +126,9 @@ fn capability_outputs(id: &str) -> Vec<String> {
         "audio.denoise" | "audio.dereverb" => &["clean_lead_vocal"],
         "speech.transcribe" | "speech.transcribe.challenger" => &["transcript_evidence"],
         "speech.align" => &["alignment_evidence"],
-        "pitch.track" | "pitch.secondary" => &["pitch_evidence"],
+        "pitch.track" | "pitch.secondary" | "pitch.secondary.rmvpe" | "pitch.secondary.fcpe" => {
+            &["pitch_evidence"]
+        }
         "notes.game" | "notes.basic_pitch" | "notes.rosvot" | "notes.stars" => {
             &["note_candidate_evidence"]
         }

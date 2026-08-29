@@ -31,7 +31,7 @@ pub(crate) const ANALYSIS_GRAPH_ZOOM_DEFAULT: f32 = 1.0;
 pub(crate) const ANALYSIS_GRAPH_FIT_PADDING: f32 = 20.0;
 /// Keeps the DAG and its legend inside the real client area even when native
 /// Wayland decorations reduce it relative to an internal app screenshot.
-pub(crate) const ANALYSIS_GRAPH_VIEWPORT_VH: f32 = 76.0;
+pub(crate) const ANALYSIS_GRAPH_VIEWPORT_VH: f32 = 72.0;
 
 pub(crate) fn clamp_analysis_graph_zoom(zoom: f32) -> f32 {
     zoom.clamp(ANALYSIS_GRAPH_ZOOM_MIN, ANALYSIS_GRAPH_ZOOM_MAX)
@@ -72,10 +72,7 @@ pub(crate) fn zoomed_box(rect: LayoutRect, zoom: f32) -> AnalysisGraphBox {
     )
 }
 
-/// Scroll offset (left edge minus a small margin, clamped to non-negative)
-/// and inspector stage id to jump to for a "Focus" button, or `None` if the
-/// node isn't part of this pass's layout at all (e.g. a compound child
-/// that's currently collapsed).
+/// Scroll offset and exact workflow node id for a Focus action.
 #[cfg(test)]
 pub(crate) fn analysis_graph_focus_target(
     layout: Option<&GraphLayout>,
@@ -85,11 +82,7 @@ pub(crate) fn analysis_graph_focus_target(
     analysis_graph_center_target(layout, id, zoom, 960.0)
 }
 
-/// Scroll offset that places `id`'s box in the horizontal center of a
-/// viewport of `viewport_width`, plus the inspector stage id. Used both by
-/// the Focus buttons and by live follow, which recenters the running node
-/// as analysis walks the DAG. Falls back to a left-aligned jump when the
-/// viewport width is not yet known (first frame).
+/// Scroll offset that centers an exact workflow node in the viewport.
 #[cfg(test)]
 pub(crate) fn analysis_graph_center_target(
     layout: Option<&GraphLayout>,
@@ -98,43 +91,66 @@ pub(crate) fn analysis_graph_center_target(
     viewport_width: f32,
 ) -> Option<(i32, String)> {
     let rect = layout?.rect(id)?;
-    let bucket = analysis_node_stage_index(id.as_str()).unwrap_or(0);
     let node_center = (rect.x + rect.width / 2.0) * zoom;
     let scroll = if viewport_width > 1.0 {
         (node_center - viewport_width / 2.0).max(0.0)
     } else {
         (rect.x * zoom - 60.0).max(0.0)
     };
-    Some((scroll.round() as i32, bucket_stage_id(bucket).to_string()))
+    Some((scroll.round() as i32, id.to_string()))
 }
 
-/// Horizontal scroll that keeps a live node near the middle of the canvas
-/// when the full layout is not in hand yet (refresh tick before the next
-/// rebuild). Rank is the same 7-bucket index the inspector already uses.
+/// Computes a focus offset from exact Workflow topology when a render-frame
+/// layout is not available yet. It never estimates rank from a node id.
 pub(crate) fn estimated_analysis_graph_center_scroll(
+    workflow: Option<&app_core::WorkflowExecutionWireV1>,
     node_id: &str,
     zoom: f32,
     viewport_width: f32,
 ) -> f32 {
-    let spacing = LayoutSpacing::canvas();
-    let rank = analysis_node_stage_index(node_id).unwrap_or(0) as f32;
-    let center = (spacing.margin
-        + rank * (spacing.node_width + spacing.column_gap)
-        + spacing.node_width / 2.0)
-        * zoom;
+    let Some(workflow) = workflow else {
+        return 0.0;
+    };
+    let render = build_workflow_render_graph(workflow, None, None, false);
+    let specs = render
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(order, node)| {
+            LayoutNodeSpec::from_text(
+                node.id.clone(),
+                LayoutNodeVisualKind::Compute,
+                &node.label,
+                &node.detail,
+                order,
+            )
+        })
+        .collect::<Vec<_>>();
+    let edges = render.edge_pairs();
+    let Some(layout) = cached_canvas_routed_layout_with_specs(&specs, &edges) else {
+        return 0.0;
+    };
+    let Some(rect) = layout.layout.rect(&app_core::AnalysisNodeId::new(node_id)) else {
+        return 0.0;
+    };
     let width = if viewport_width > 1.0 {
         viewport_width
     } else {
         960.0
     };
-    (center - width / 2.0).max(0.0)
+    ((rect.x + rect.width / 2.0) * zoom - width / 2.0).max(0.0)
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum AnalysisGraphStageState {
+pub(crate) enum WorkflowNodeVisualState {
     Waiting,
-    Running(usize),
+    Running(Option<usize>),
     Complete,
+    Disabled,
+    Failed,
+    Deferred,
+    ProfileSkipped,
+    NotRequested,
 }
 
 pub(crate) fn spawn_activity_center(
@@ -246,7 +262,7 @@ pub(crate) fn spawn_activity_center(
                     });
             } else {
                 for task in session.analysis_tasks.iter().take(10) {
-                    let (status, progress, failed) = analysis_status_copy(&task.status);
+                    let (status, progress, failed) = analysis_status_copy(task);
                     panel
                         .spawn((
                             Node {
@@ -306,12 +322,25 @@ pub(crate) fn spawn_activity_center(
                                         theme.primary
                                     },
                                 );
-                                // Phase 6 `cancel_analysis_run`: only offered
-                                // while still Queued -- a running job can't
-                                // be safely cancelled mid-node yet, so no
-                                // button is shown for it (not a disabled one
-                                // that would just error).
-                                if matches!(task.status, app_core::QueuedStatus::Queued) {
+                                // Staged requests wait for an explicit start.
+                                // They and worker-queued requests may still be
+                                // cancelled before execution begins.
+                                if matches!(task.status, app_core::QueuedStatus::Staged) {
+                                    spawn_text_button(
+                                        row,
+                                        font.clone(),
+                                        theme,
+                                        "Start",
+                                        9.0,
+                                        UiAction::from(AnalysisCommand::StartQueuedAnalysis(
+                                            task.file_hash.clone(),
+                                        )),
+                                    );
+                                }
+                                if matches!(
+                                    task.status,
+                                    app_core::QueuedStatus::Staged | app_core::QueuedStatus::Queued
+                                ) {
                                     spawn_text_button(
                                         row,
                                         font.clone(),
@@ -325,10 +354,21 @@ pub(crate) fn spawn_activity_center(
                                 }
                             });
                             if let Some(live) = task.live.as_ref() {
+                                let measured = live
+                                    .node_id
+                                    .as_deref()
+                                    .and_then(|node_id| {
+                                        find_matching_route(&live.stage_routes, node_id)
+                                    })
+                                    .and_then(super::nodes::measured_work_unit_progress);
                                 spawn_text(
                                     card,
                                     font.clone(),
-                                    format!("{} · {}%", live.operation, live.stage_progress),
+                                    measured
+                                        .map(|(percent, _)| {
+                                            format!("{} · {percent}%", live.operation)
+                                        })
+                                        .unwrap_or_else(|| format!("{} · Running", live.operation)),
                                     9.0,
                                     theme.primary,
                                 );
@@ -385,11 +425,19 @@ pub(crate) fn spawn_activity_center(
         });
 }
 
-pub(crate) fn analysis_status_copy(
-    status: &app_core::QueuedStatus,
-) -> (String, Option<usize>, bool) {
-    match status {
+pub(crate) fn analysis_status_copy(task: &app_core::AnalysisTask) -> (String, Option<usize>, bool) {
+    match &task.status {
+        app_core::QueuedStatus::Staged => ("Waiting to start".to_string(), None, false),
         app_core::QueuedStatus::Queued => ("Queued".to_string(), None, false),
+        app_core::QueuedStatus::Analyzing(_)
+            if task.live.as_ref().is_some_and(|live| live.engine.is_some()) =>
+        {
+            (
+                "Analyzing · overall work units unavailable".to_string(),
+                None,
+                false,
+            )
+        }
         app_core::QueuedStatus::Analyzing(progress) => {
             (format!("Analyzing · {progress}%"), Some(*progress), false)
         }
@@ -401,101 +449,6 @@ pub(crate) fn analysis_status_copy(
             },
             None,
             true,
-        ),
-    }
-}
-
-pub(crate) fn analysis_stage_index(stage: &str) -> usize {
-    match stage {
-        "preparing" | "key_detection" => 0,
-        "separation" => 1,
-        "pitch" => 2,
-        "audio_preprocessing" => 3,
-        "transcription" => 4,
-        "alignment" => 5,
-        "finalizing" | "complete" => 6,
-        _ => 0,
-    }
-}
-
-/// Maps a Phase 1 `AnalysisNodeId` (analysis DAG redesign,
-/// docs/analysis-dag-redesign.md) onto today's 7-bucket UI stage index.
-/// This is the additive bridge described in that doc's Phase 7 status
-/// note: the graph is not yet UI-driven, but live progress now carries an
-/// explicit `node_id` (Phase 3) that this prefers over regexing `stage`
-/// text whenever the emitting pipeline call site has migrated to
-/// `progress_node`. Unmigrated call sites (still common; see the doc's
-/// Phase 3 gaps) fall back to `analysis_stage_index` unchanged.
-pub(crate) fn analysis_node_stage_index(node_id: &str) -> Option<usize> {
-    match node_id {
-        "preflight" | "music.analysis" | "music.key" | "music.rhythm" | "music.descriptors" => {
-            Some(0)
-        }
-        "stems.separate"
-        | "stems.vocals"
-        | "vocals.denoise"
-        | "vocals.dereverb"
-        | "stems.instrumental"
-        | "instrumental.denoise"
-        | "instrumental.dereverb"
-        | "stems.karaoke"
-        | "stems.multistem"
-        | "stems.bind_analysis_outputs" => Some(1),
-        "pitch.extract" => Some(2),
-        "lyrics.preprocess" => Some(3),
-        "lyrics.transcribe" => Some(4),
-        "lyrics.align" | "lyrics.import_timed" => Some(5),
-        "chart.build_candidate" => Some(6),
-        _ => None,
-    }
-}
-
-/// Resolves the UI stage index for a live snapshot, preferring the
-/// structured `node_id` when the emitting event set one and falling back to
-/// the Legacy Adapter text classification otherwise.
-pub(crate) fn resolve_live_stage_index(stage: &str, node_id: Option<&str>) -> usize {
-    node_id
-        .and_then(analysis_node_stage_index)
-        .unwrap_or_else(|| analysis_stage_index(stage))
-}
-
-/// Picks one representative Phase 1 `AnalysisNodeId` and, where a real
-/// cached-file check exists, `ArtifactKind` for each of the 7 UI stage
-/// buckets, so the node inspector (docs/analysis-dag-redesign.md §7's
-/// Phase 7 "node inspector" item) can ground its selected-stage panel in
-/// the real domain model instead of only the static per-stage copy in
-/// `analysis_stage_details`. A bucket can hold several graph nodes (e.g.
-/// stage 0 covers `music.analysis`/`music.key`/`music.rhythm`/
-/// `music.descriptors`); this picks the one whose plan state is most
-/// representative of the bucket rather than showing all of them. `None`
-/// for the artifact kind means no single cached file stands in for that
-/// bucket today (`cached_artifact_presence_for_song` only tracks the kinds
-/// that already have one physical file per song). `lyrics.preprocess`
-/// stays `None` -- `PreprocessedAudio` still has no persisted file
-/// (unrelated to the §4.4 split). `lyrics.transcribe` gained a real check
-/// once §4.4 split `RecognizedText`/`AsrSegments` out into their own files.
-pub(crate) fn stage_primary_node_and_artifact(
-    stage_index: usize,
-) -> (&'static str, Option<app_core::ArtifactKind>) {
-    match stage_index {
-        0 => (
-            "music.analysis",
-            Some(app_core::ArtifactKind::MusicAnalysis),
-        ),
-        1 => ("stems.separate", Some(app_core::ArtifactKind::VocalStem)),
-        2 => ("pitch.extract", Some(app_core::ArtifactKind::PitchTrack)),
-        3 => ("lyrics.preprocess", None),
-        4 => (
-            "lyrics.transcribe",
-            Some(app_core::ArtifactKind::RecognizedText),
-        ),
-        5 => (
-            "lyrics.align",
-            Some(app_core::ArtifactKind::TimedTranscript),
-        ),
-        _ => (
-            "chart.build_candidate",
-            Some(app_core::ArtifactKind::AuthoredChart),
         ),
     }
 }
@@ -524,69 +477,6 @@ pub(crate) fn format_epoch_ms(ms: i64) -> String {
     let year = if month <= 2 { y + 1 } else { y };
 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
-}
-
-/// §7.5 "Compare with previous attempt": renders
-/// `app_core::compare_node_attempt_with_previous_run`'s result as readable
-/// copy for `session.notice` -- a real diff, not just a confirmation that
-/// the action ran. `attempt_a` is the current run's attempt, `attempt_b`
-/// the previous run's (see that function's doc comment), so changed fields
-/// are shown as "previous → current".
-/// §7.6 "Inspect provenance": every field here already exists on
-/// `ArtifactRevision` (Phase 2's Artifact Inventory) -- this is purely a
-/// display concern, no new data. Kept as a `session.notice` string (same
-/// as `format_node_attempt_comparison`) rather than a dedicated modal,
-/// since there's no interactive follow-up action provenance itself needs
-/// (unlike the Delete/Invalidate confirmations, which gate a real
-/// mutation).
-pub(crate) fn format_artifact_provenance(revision: &app_core::ArtifactRevision) -> String {
-    let input_summary = if revision.input_revisions.is_empty() {
-        "none recorded".to_string()
-    } else {
-        revision.input_revisions.join(", ")
-    };
-    format!(
-        "{:?} · produced by {} · algorithm v{} · config {} · content {} · inputs: {} · {}",
-        revision.kind,
-        revision.producer_node,
-        revision.algorithm_version,
-        revision.config_hash.chars().take(12).collect::<String>(),
-        revision.content_hash.chars().take(12).collect::<String>(),
-        input_summary,
-        format_epoch_ms(revision.created_at_ms),
-    )
-}
-
-/// §7.6 "Compare revisions": renders
-/// `app_core::compare_artifact_revisions`'s result as readable copy, same
-/// "session.notice, not a new diff panel" choice as
-/// `format_node_attempt_comparison`.
-#[cfg(test)]
-pub(crate) fn format_artifact_revision_comparison(
-    comparison: &app_core::ArtifactRevisionComparison,
-) -> String {
-    if comparison.same_content {
-        return format!(
-            "{:?} revisions are byte-identical (same content_hash) despite {}.",
-            comparison.revision_a.kind,
-            if comparison.changed_fields.is_empty() {
-                "matching everything else too".to_string()
-            } else {
-                format!("differing in {}", comparison.changed_fields.join(", "))
-            }
-        );
-    }
-    if comparison.changed_fields.is_empty() {
-        return format!(
-            "{:?} revisions have different content but no other tracked field differs.",
-            comparison.revision_a.kind
-        );
-    }
-    format!(
-        "{:?} revisions differ in: {}",
-        comparison.revision_a.kind,
-        comparison.changed_fields.join(", ")
-    )
 }
 
 pub(crate) fn format_node_attempt_comparison(
@@ -664,152 +554,35 @@ pub(crate) fn node_duration_copy(route: Option<&app_core::AnalysisStageRoute>) -
     }
 }
 
-pub(crate) fn node_state_copy(state: app_core::NodeState) -> &'static str {
-    match state {
-        app_core::NodeState::Missing => "Missing",
-        app_core::NodeState::Ready => "Ready to run",
-        app_core::NodeState::Queued => "Queued",
-        app_core::NodeState::Running => "Running",
-        app_core::NodeState::Cached => "Reusing cached output",
-        app_core::NodeState::Succeeded => "Succeeded",
-        app_core::NodeState::SucceededWithWarnings => "Succeeded with warnings",
-        app_core::NodeState::Failed => "Failed",
-        app_core::NodeState::Stale => "Stale",
-        app_core::NodeState::Frozen => "Frozen",
-        app_core::NodeState::Disabled => "Disabled",
-        app_core::NodeState::Blocked => "Blocked",
-        app_core::NodeState::NotApplicable => "Not applicable to this run",
-        app_core::NodeState::Cancelled => "Cancelled",
-        app_core::NodeState::Bypassed => "Bypassed with an alternate input",
-    }
-}
-
-/// The canonical bucket-string id `analysis_stage_details`/
-/// `analysis_stage_matches` and graph-node actions already key
-/// selection and copy off of. Exact inverse of `analysis_stage_index`'s
-/// primary (non-alias) branch for each bucket.
-pub(crate) fn bucket_stage_id(bucket: usize) -> &'static str {
-    match bucket {
-        0 => "preparing",
-        1 => "separation",
-        2 => "pitch",
-        3 => "audio_preprocessing",
-        4 => "transcription",
-        5 => "alignment",
-        _ => "finalizing",
-    }
-}
-
-/// Bridges a `GraphViewModel` node's blended plan+run-time state onto the
-/// existing 3-state `AnalysisGraphStageState` widget
-/// (`spawn_analysis_stage_node`) without changing that widget's tested
-/// color/layout logic. States the widget has no visual language for
-/// (`Frozen`/`Disabled`/`Blocked`/`NotApplicable`) render with the
-/// `Waiting` visual treatment but carry a distinct status string the
-/// caller should show in place of the node's normal route/model text --
-/// real information the old 7-bucket-only UI had nowhere to put, since it
-/// never modeled Phase 1 plan states at all.
-pub(crate) fn graph_node_state_to_stage_state(
+/// Maps exact compiled-workflow state onto the compact node widget.
+pub(crate) fn graph_node_visual_state(
     state: GraphNodeState,
-    running_progress: usize,
-) -> (AnalysisGraphStageState, Option<&'static str>) {
+    running_progress: Option<usize>,
+) -> (WorkflowNodeVisualState, Option<&'static str>) {
     match state {
-        GraphNodeState::Running => (AnalysisGraphStageState::Running(running_progress), None),
-        GraphNodeState::Complete => (AnalysisGraphStageState::Complete, None),
-        GraphNodeState::Waiting => (AnalysisGraphStageState::Waiting, None),
-        GraphNodeState::Frozen => (
-            AnalysisGraphStageState::Waiting,
-            Some("Frozen · protected artifact"),
-        ),
+        GraphNodeState::Running => (WorkflowNodeVisualState::Running(running_progress), None),
+        GraphNodeState::Complete => (WorkflowNodeVisualState::Complete, None),
+        GraphNodeState::Waiting => (WorkflowNodeVisualState::Waiting, None),
         GraphNodeState::Disabled => (
-            AnalysisGraphStageState::Waiting,
-            Some("Disabled for this run"),
+            WorkflowNodeVisualState::Disabled,
+            Some("Disabled in Processing Studio"),
         ),
-        GraphNodeState::Blocked => (AnalysisGraphStageState::Waiting, Some("Missing input")),
-        GraphNodeState::NotApplicable => (AnalysisGraphStageState::Waiting, Some("Optional · Off")),
         GraphNodeState::Failed => (
-            AnalysisGraphStageState::Waiting,
+            WorkflowNodeVisualState::Failed,
             Some("Failed · inspect details"),
         ),
-        GraphNodeState::Stale => (
-            AnalysisGraphStageState::Complete,
-            Some("Stale · newer candidate"),
+        GraphNodeState::Deferred => (
+            WorkflowNodeVisualState::Deferred,
+            Some("Deferred · conditional expert"),
         ),
-        GraphNodeState::Bypassed => (
-            AnalysisGraphStageState::Waiting,
-            Some("Bypassed · original mix"),
+        GraphNodeState::ProfileSkipped => (
+            WorkflowNodeVisualState::ProfileSkipped,
+            Some("Skipped by quality profile"),
         ),
+        GraphNodeState::NotRequested => {
+            (WorkflowNodeVisualState::NotRequested, Some("Not requested"))
+        }
     }
-}
-
-/// Loads the same plan evidence for every DAG-facing surface. Keeping the
-/// failed-attempt and stale-chart overlays here prevents the canvas, quick
-/// model panel, and inspector from inventing different node states for the
-/// same run.
-pub(crate) fn analysis_graph_plan_preview(
-    file_hash: &str,
-    history_id: Option<i64>,
-) -> Option<app_core::AnalysisPlan> {
-    app_core::preview_full_analysis_plan(file_hash)
-        .ok()
-        .map(|plan| {
-            let attempts = history_id
-                .map(app_core::load_analysis_node_attempts)
-                .unwrap_or_default();
-            overlay_failed_node_attempts(plan, &attempts)
-        })
-        .map(|plan| {
-            let candidate_status = app_core::candidate_chart_status(file_hash);
-            overlay_stale_candidate_chart(plan, &candidate_status)
-        })
-}
-
-/// Builds the authoritative compute-node state projection shared by the DAG
-/// canvas and adjacent controls. Structured node events override the legacy
-/// bucket compatibility projection after the plan has established whether a
-/// node is disabled, blocked, frozen, or out of scope.
-pub(crate) fn analysis_graph_view_for_run(
-    plan: Option<&app_core::AnalysisPlan>,
-    live: Option<&app_core::AnalysisProgressSnapshot>,
-    overall_progress: usize,
-    expanded_compound_nodes: &std::collections::BTreeSet<app_core::AnalysisNodeId>,
-    mini_view: bool,
-) -> GraphViewModel {
-    let stage = live.map(|live| live.stage.as_str()).unwrap_or("preparing");
-    let live_node_id = live.and_then(|live| live.node_id.as_deref());
-    let stage_index = resolve_live_stage_index(stage, live_node_id);
-    let active_stage_progress = live
-        .map(|live| live.stage_progress.clamp(0, 100))
-        .unwrap_or(0);
-    let stage_complete = |index: usize| {
-        index < stage_index
-            || (index == stage_index && active_stage_progress >= 100)
-            || overall_progress >= 100
-    };
-    let graph_spec = app_core::baseline_graph_spec();
-    let no_expanded = std::collections::BTreeSet::new();
-    let mut full_expanded = expanded_compound_nodes.clone();
-    // Stem children are the real selected pipeline; always show them in
-    // Full view instead of the stems.separate compatibility shell.
-    full_expanded.insert(app_core::AnalysisNodeId::new("stems.separate"));
-    let expanded = if mini_view {
-        &no_expanded
-    } else {
-        &full_expanded
-    };
-    let mut view = build_graph_view_model(
-        &graph_spec,
-        plan,
-        live_node_id,
-        stage_index,
-        expanded,
-        &analysis_node_stage_index,
-        &stage_complete,
-    );
-    if let Some(live) = live {
-        overlay_runtime_node_event_states(&mut view, &live.stage_routes);
-    }
-    view
 }
 
 pub(crate) fn graph_node_panel_status(
@@ -820,49 +593,24 @@ pub(crate) fn graph_node_panel_status(
         Some(GraphNodeState::Complete) => "COMPLETE",
         Some(GraphNodeState::Running) => "RUNNING",
         Some(GraphNodeState::Failed) => "FAILED",
-        Some(GraphNodeState::Stale) => "STALE",
-        Some(GraphNodeState::Bypassed) => "BYPASSED",
-        Some(GraphNodeState::Frozen) => "FROZEN",
         Some(GraphNodeState::Disabled) => "DISABLED",
-        Some(GraphNodeState::NotApplicable) => "OFF",
-        Some(GraphNodeState::Blocked | GraphNodeState::Waiting) => "WAITING",
+        Some(GraphNodeState::ProfileSkipped) => "OFF",
+        Some(GraphNodeState::NotRequested) => "NOT REQUESTED",
+        Some(GraphNodeState::Deferred) => "DEFERRED",
+        Some(GraphNodeState::Waiting) => "WAITING",
         None => fallback,
     }
 }
 
-pub(crate) fn analysis_stage_matches(route_stage: &str, selected_stage: &str) -> bool {
-    route_stage == selected_stage
-        || (selected_stage == "preparing" && route_stage == "key_detection")
-        || (selected_stage == "finalizing" && route_stage == "complete")
-}
-
-/// The one route recorded for a node, preferring an exact real-node-id
-/// match (Phase 3's wire-protocol fix: `AnalysisStageRoute.node_id`) over
-/// the legacy coarse-bucket text match. Falls back to bucket matching
-/// whenever no route carries a matching `node_id` -- either because the
-/// emitting call site hasn't migrated to `progress_node` yet, or (for a
-/// compound node's own parent id) because only its children's routes were
-/// ever recorded. Shared by the inspector's `selected_route` and the
-/// canvas node boxes' `analysis_graph_route_summary`, so both read the same
-/// route for the same node.
+/// Returns the exact runtime event for one compiled workflow node.
 pub(crate) fn find_matching_route<'a>(
     routes: &'a [app_core::AnalysisStageRoute],
     node_id: &str,
-    stage_id: &str,
 ) -> Option<&'a app_core::AnalysisStageRoute> {
     routes
         .iter()
         .rev()
         .find(|route| route.node_id.as_deref() == Some(node_id))
-        .or_else(|| {
-            if routes.iter().any(|route| route.node_id.is_some()) {
-                return None;
-            }
-            routes
-                .iter()
-                .rev()
-                .find(|route| analysis_stage_matches(&route.stage, stage_id))
-        })
 }
 
 /// Keeps the canvas, inspector, and quick panel on one status source. The
@@ -875,7 +623,7 @@ pub(crate) fn selected_progress_and_status(
     route_status: &'static str,
 ) -> (usize, &'static str) {
     match render_state {
-        Some(GraphNodeState::Complete | GraphNodeState::Stale) => {
+        Some(GraphNodeState::Complete) => {
             (100, graph_node_panel_status(render_state, route_status))
         }
         Some(GraphNodeState::Running | GraphNodeState::Failed) => (
@@ -884,60 +632,5 @@ pub(crate) fn selected_progress_and_status(
         ),
         Some(_) => (0, graph_node_panel_status(render_state, route_status)),
         None => (route_progress, route_status),
-    }
-}
-
-pub(crate) fn analysis_stage_details(
-    stage: &str,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    match stage {
-        "preparing" => (
-            "Prepare",
-            "Validates the source, resolves analysis settings, and detects musical context before model execution.",
-            "Authorized source media and analysis profile",
-            "Validated audio, runtime plan, tempo and key context",
-        ),
-        "separation" => (
-            "Separate",
-            "Extracts a vocal-focused stem while preserving the original source unchanged.",
-            "Validated source audio",
-            "Lossless vocal and instrumental analysis stems",
-        ),
-        "pitch" => (
-            "Pitch",
-            "Tracks the sung fundamental frequency and converts the contour into editable note guidance.",
-            "Separated vocal stem",
-            "Pitch contour and note candidates",
-        ),
-        "audio_preprocessing" => (
-            "Preprocess",
-            "Normalizes the analysis signal and prepares model-specific audio windows without rewriting source media.",
-            "Vocal analysis stem",
-            "Model-ready audio windows and vocal regions",
-        ),
-        "transcription" => (
-            "Transcribe",
-            "Recognizes lyric text and produces the timing evidence supported by the selected speech model.",
-            "Preprocessed vocal regions and language preference",
-            "Recognized lyric tokens and provisional timestamps",
-        ),
-        "alignment" => (
-            "Align",
-            "Refines recognized or supplied lyrics against the audio into editor-ready character and word timing.",
-            "Lyrics, provisional timestamps, and vocal audio",
-            "Character and word-level aligned lyrics",
-        ),
-        "finalizing" => (
-            "Finalize",
-            "Validates and commits generated analysis assets before the song becomes available for authoring.",
-            "Aligned lyrics, pitch data, metadata, and stems",
-            "Cached chart analysis and library metadata",
-        ),
-        _ => (
-            "Analysis step",
-            "Executes one stage of the configured analysis pipeline.",
-            "Previous stage output",
-            "Next stage input",
-        ),
     }
 }

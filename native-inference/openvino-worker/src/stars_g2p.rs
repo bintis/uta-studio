@@ -215,7 +215,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_asset_handles_phrase_polyphony_without_python() {
+    fn native_asset_handles_phrase_polyphony() {
         let asset = ChineseG2pAsset::load_embedded().unwrap();
         let result = asset
             .phonemize_words(&["你好".to_string(), "重庆".to_string()])

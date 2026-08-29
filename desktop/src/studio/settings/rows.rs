@@ -19,10 +19,7 @@ pub(crate) fn spawn_select_setting_row(
     let description = description.into();
     let current = settings_select_value(kind, session.config);
     let open = session.open_settings_select == Some(kind);
-    let options = settings_select_options(
-        kind,
-        session.config.compute_backend.as_deref() == Some("intel"),
-    );
+    let options = settings_select_options(kind);
     parent
         .spawn((
             Node {
@@ -217,8 +214,8 @@ pub(crate) fn spawn_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(260),
-                flex_basis: px(360),
+                min_width: px(180),
+                flex_basis: px(220),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -236,10 +233,10 @@ pub(crate) fn spawn_setting_row(
             });
             if let Some((label, action)) = action {
                 row.spawn(Node {
-                    min_width: px(180),
+                    min_width: px(160),
                     max_width: px(SETTINGS_CONTROL_WIDTH),
-                    flex_basis: px(SETTINGS_CONTROL_WIDTH),
-                    flex_grow: 1.0,
+                    flex_basis: px(180),
+                    flex_grow: 0.0,
                     margin: UiRect::top(px(2)),
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
@@ -279,8 +276,8 @@ pub(crate) fn spawn_setting_row_with_actions(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(260),
-                flex_basis: px(360),
+                min_width: px(180),
+                flex_basis: px(220),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
@@ -308,10 +305,10 @@ pub(crate) fn spawn_setting_actions(
 ) {
     parent
         .spawn(Node {
-            min_width: px(180),
+            min_width: px(160),
             max_width: px(SETTINGS_CONTROL_WIDTH),
-            flex_basis: px(SETTINGS_CONTROL_WIDTH),
-            flex_grow: 1.0,
+            flex_basis: px(180),
+            flex_grow: 0.0,
             margin: UiRect::top(px(2)),
             justify_content: JustifyContent::FlexEnd,
             flex_wrap: FlexWrap::Wrap,
@@ -388,68 +385,4 @@ pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {
         .save()
         .err()
         .map(|error| format!("Could not save settings: {error}"))
-}
-
-#[cfg(any())]
-pub(crate) fn sync_numeric_settings(
-    mut inputs: Query<(&mut EditableText, &NumericSetting)>,
-    mut shell: ResMut<ShellState>,
-) {
-    for (mut input, setting) in &mut inputs {
-        // `Changed<EditableText>` also fires the instant the component is
-        // spawned, which would wrongly treat this field respawning (e.g. the
-        // settings panel switching tabs) as the user having retyped it.
-        if input.is_added() || !input.is_changed() {
-            continue;
-        }
-        let raw = input.value().to_string();
-        let Ok(parsed) = raw.trim().parse::<u32>() else {
-            continue;
-        };
-        let (minimum, maximum) = match setting {
-            NumericSetting::VocalThreshold => (0, 60),
-            NumericSetting::SeparatorSegmentSize => (64, 1024),
-            NumericSetting::SeparatorOverlap => (2, 32),
-            NumericSetting::SeparatorBatchSize => (1, 8),
-            NumericSetting::SeparatorNormalization => (1, 100),
-            NumericSetting::AsrBeamSize => (1, 64),
-            NumericSetting::AsrBatchSize => (1, 32),
-        };
-        let clamped = parsed.clamp(minimum, maximum);
-        if clamped != parsed {
-            input.editor_mut().set_text(&clamped.to_string());
-        }
-        let current = match setting {
-            NumericSetting::VocalThreshold => {
-                (shell.config.vocal_detection_threshold_pct() * 100.0).round() as u32
-            }
-            NumericSetting::SeparatorSegmentSize => shell.config.separator_segment_size(),
-            NumericSetting::SeparatorOverlap => shell.config.separator_overlap(),
-            NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size(),
-            NumericSetting::SeparatorNormalization => shell.config.separator_normalization_pct(),
-            NumericSetting::AsrBeamSize => shell.config.beam_size(),
-            NumericSetting::AsrBatchSize => shell.config.batch_size(),
-        };
-        if clamped == current {
-            continue;
-        }
-        match setting {
-            NumericSetting::VocalThreshold => {
-                shell.config.vocal_detection_threshold_pct = Some(f64::from(clamped) / 100.0)
-            }
-            NumericSetting::SeparatorSegmentSize => {
-                shell.config.separator_segment_size = Some(clamped)
-            }
-            NumericSetting::SeparatorOverlap => shell.config.separator_overlap = Some(clamped),
-            NumericSetting::SeparatorBatchSize => shell.config.separator_batch_size = Some(clamped),
-            NumericSetting::SeparatorNormalization => {
-                shell.config.separator_normalization_pct = Some(clamped)
-            }
-            NumericSetting::AsrBeamSize => shell.config.beam_size = Some(clamped),
-            NumericSetting::AsrBatchSize => shell.config.batch_size = Some(clamped),
-        }
-        if let Some(error) = save_config_error(&shell.config) {
-            shell.notice = Some(error);
-        }
-    }
 }

@@ -67,11 +67,11 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let runtime_status = app_core::analysis_runtime_status();
-        let runtime_registry = app_core::native_runtime_registry();
-        let (strategy_resources, strategy_resources_error) =
-            match app_core::analysis_strategy_resource_statuses() {
-                Ok(statuses) => (statuses, None),
-                Err(error) => (Vec::new(), Some(error)),
+        let runtime_models = app_core::runtime_model_presentations();
+        let (fusion_agent_adapter, fusion_agent_adapter_error) =
+            match app_core::fusion_agent_adapter_status() {
+                Ok(status) => (Some(status), None),
+                Err(error) => (None, Some(error)),
             };
         let (audio_catalog, audio_catalog_error) = match app_core::list_audio_models() {
             Ok(catalog) => (catalog, None),
@@ -86,9 +86,9 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
         };
         let _ = sender.send(Ok(ModelSettingsSnapshot {
             runtime_status,
-            runtime_registry,
-            strategy_resources,
-            strategy_resources_error,
+            runtime_models,
+            fusion_agent_adapter,
+            fusion_agent_adapter_error,
             audio_catalog,
             audio_catalog_error,
         }));
@@ -96,14 +96,22 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
     job.receiver = Some(Mutex::new(receiver));
 }
 
+fn claim_model_settings_refresh(refresh_requested: &mut bool, job_active: bool) -> bool {
+    if !*refresh_requested || job_active {
+        return false;
+    }
+    *refresh_requested = false;
+    true
+}
+
 pub(crate) fn handle_model_settings_request(
     mut jobs: ResMut<AsyncJobs>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if !jobs.request_model_settings_refresh {
+    let job_active = jobs.model_settings_job.receiver.is_some();
+    if !claim_model_settings_refresh(&mut jobs.request_model_settings_refresh, job_active) {
         return;
     }
-    jobs.request_model_settings_refresh = false;
     start_model_settings_job(&mut jobs.model_settings_job);
     invalidated.invalidate(UiDirtyRegion::Settings);
 }
@@ -182,8 +190,8 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
         data_path: None,
         cache_paths: config.cache_paths.clone(),
         compute_backend: match config.compute_backend.as_deref() {
-            Some("openvino" | "intel") => app_core::ComputeBackend::OpenVino,
-            Some("vulkan" | "cuda") => app_core::ComputeBackend::Vulkan,
+            Some("openvino") => app_core::ComputeBackend::OpenVino,
+            Some("vulkan") => app_core::ComputeBackend::Vulkan,
             Some("diagnostic_cpu") => app_core::ComputeBackend::DiagnosticCpu,
             _ => app_core::ComputeBackend::Auto,
         },
@@ -398,11 +406,23 @@ pub(crate) fn handle_settings_scroll(
 
 #[cfg(test)]
 mod tests {
-    use super::settings_scroll_max;
+    use super::{claim_model_settings_refresh, settings_scroll_max};
+
+    #[test]
+    fn model_settings_refresh_is_coalesced_while_a_status_job_is_active() {
+        let mut requested = true;
+        assert!(!claim_model_settings_refresh(&mut requested, true));
+        assert!(
+            requested,
+            "an in-flight job must not consume a newer refresh"
+        );
+        assert!(claim_model_settings_refresh(&mut requested, false));
+        assert!(!requested);
+    }
 
     #[test]
     fn scroll_extent_uses_measured_page_when_reported_content_is_stale() {
-        assert_eq!(settings_scroll_max(800.0, 0.0, 1_200.0), 468.0);
+        assert_eq!(settings_scroll_max(800.0, 0.0, 1_200.0), 448.0);
     }
 
     #[test]

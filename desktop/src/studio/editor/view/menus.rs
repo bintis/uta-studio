@@ -193,6 +193,28 @@ pub(crate) fn spawn_editor_lyrics(
                                 TextLayout::no_wrap(),
                                 Pickable::IGNORE,
                             ));
+                            // Furigana-style reading, purely for scanning the
+                            // whole line at a glance — display only, no
+                            // interaction. Positioned above the word inside
+                            // its own box rather than growing the shared
+                            // per-lane row height, so a dense stack of lanes
+                            // can very occasionally clip it; that's an
+                            // accepted tradeoff for a read-only hint.
+                            if let Some(reading) = lyric.reading.as_deref() {
+                                lyric_node.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: px(7),
+                                        top: px(-8),
+                                        ..default()
+                                    },
+                                    Text::new(reading),
+                                    ui_text_font(font.clone(), 6.5),
+                                    TextColor(theme.muted_foreground),
+                                    TextLayout::no_wrap(),
+                                    Pickable::IGNORE,
+                                ));
+                            }
                         }
                         if selected {
                             for (edge, left, right) in [

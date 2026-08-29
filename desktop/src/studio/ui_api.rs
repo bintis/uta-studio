@@ -80,6 +80,7 @@ const LIBRARY_COMMANDS: &[&str] = &[
     "ui.library.confirm_remove_folder",
     "ui.library.open_song",
     "ui.library.analyze_song",
+    "ui.library.choose_editor_file",
     "ui.library.open_editor",
     "ui.library.export_utz",
     "ui.library.export_ultra_star",
@@ -87,7 +88,6 @@ const LIBRARY_COMMANDS: &[&str] = &[
     "ui.library.reveal_source",
     "ui.library.dismiss_song_context",
     "ui.library.play_library_song",
-    "ui.library.play_artifact_revision",
     "ui.library.toggle_library_playback",
     "ui.library.seek_library_relative",
     "ui.library.previous_library_song",
@@ -96,15 +96,20 @@ const LIBRARY_COMMANDS: &[&str] = &[
     "ui.library.cycle_library_repeat",
     "ui.library.adjust_library_volume",
     "ui.library.toggle_library_mute",
+    "ui.library.toggle_library_audio_source_menu",
+    "ui.library.select_library_audio_source",
     "ui.library.toggle_library_queue",
 ];
 
 const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.settings_tab",
     "ui.settings.refresh_runtime_status",
+    "ui.settings.open_model_downloads",
+    "ui.settings.close_model_downloads",
     "ui.settings.open_settings_select",
     "ui.settings.select_settings_value",
     "ui.settings.set_model_backend",
+    "ui.settings.set_model_device",
     "ui.settings.set_analysis_quality",
     "ui.settings.request_setup",
     "ui.settings.install_audio_model",
@@ -120,37 +125,31 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.request_clear_cache",
     "ui.settings.cancel_clear_cache",
     "ui.settings.confirm_clear_cache",
+    "ui.settings.choose_fusion_agent_adapter",
+    "ui.settings.clear_fusion_agent_adapter",
 ];
 
 const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.start_analysis",
-    "ui.analysis.stop_analysis",
-    "ui.analysis.select_artifact_inspector_tab",
-    "ui.analysis.toggle_artifact_pinned",
-    "ui.analysis.open_artifact_compatible_editor",
-    "ui.analysis.merge_candidate_chart",
+    "ui.analysis.start_queued_analysis",
     "ui.analysis.merge_selected_candidate_phrase",
     "ui.analysis.merge_selected_candidate_range",
     "ui.analysis.keep_authored_chart",
-    "ui.analysis.show_artifact_lineage",
-    "ui.analysis.show_artifact_impact",
-    "ui.analysis.set_artifact_lineage_scope",
-    "ui.analysis.select_artifact_lineage_revision",
-    "ui.analysis.close_artifact_lineage",
-    "ui.analysis.close_artifact_impact",
-    "ui.analysis.confirm_artifact_impact",
-    "ui.analysis.dismiss_analysis_artifact_context",
-    "ui.analysis.toggle_analysis_lineage_mode",
-    "ui.analysis.dismiss_analysis_export_context",
-    "ui.analysis.validate_export_node",
-    "ui.analysis.reveal_last_export",
     "ui.analysis.select_analysis_history",
     "ui.analysis.open_song_analysis",
     "ui.analysis.open_song_model_selection",
     "ui.analysis.open_processing_studio",
+    "ui.analysis.analyze_now",
+    "ui.analysis.open_empty_processing_studio",
     "ui.analysis.select_workflow_node",
     "ui.analysis.move_workflow_node",
     "ui.analysis.duplicate_workflow_node",
+    "ui.analysis.remove_workflow_node",
+    "ui.analysis.set_workflow_node_model",
+    "ui.analysis.set_workflow_separation_strategy",
+    "ui.analysis.add_workflow_processor",
+    "ui.analysis.add_optional_workflow_card",
+    "ui.analysis.set_workflow_parameter",
     "ui.analysis.set_workflow_policy",
     "ui.analysis.adjust_workflow_priority",
     "ui.analysis.rebind_workflow_analyzer",
@@ -162,55 +161,30 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.toggle_analysis_mini_view",
     "ui.analysis.toggle_analysis_model_panel",
     "ui.analysis.close_analysis_model_panel",
-    "ui.analysis.set_analysis_model_category",
     "ui.analysis.fit_analysis_graph",
-    "ui.analysis.focus_analysis_graph_node",
     "ui.analysis.dismiss_analysis_node_context",
     "ui.analysis.request_clear_analysis_history",
     "ui.analysis.cancel_clear_analysis_history",
     "ui.analysis.confirm_clear_analysis_history",
-    "ui.analysis.realign_song",
-    "ui.analysis.reanalyze_transcript",
-    "ui.analysis.force_transcribe",
-    "ui.analysis.reanalyze_pitch",
-    "ui.analysis.reanalyze_full",
     "ui.analysis.compare_node_attempt_with_previous",
-    "ui.analysis.open_plan_preview",
     "ui.analysis.close_plan_preview",
     "ui.analysis.queue_exact_preview",
-    "ui.analysis.set_plan_preview_target",
-    "ui.analysis.reset_plan_preview_target",
+    "ui.analysis.toggle_plan_preview_output",
+    "ui.analysis.reset_plan_preview_outputs",
     "ui.analysis.set_plan_preview_quality",
     "ui.analysis.reset_plan_preview_quality",
-    "ui.analysis.set_song_analysis_quality",
-    "ui.analysis.set_song_analysis_target",
     "ui.analysis.open_analysis_log_viewer",
     "ui.analysis.close_analysis_log_viewer",
-    "ui.analysis.open_analysis_log_file",
-    "ui.analysis.toggle_analysis_compound_node",
     "ui.analysis.request_delete_song_cache",
     "ui.analysis.cancel_analysis_run",
     "ui.analysis.cancel_delete_song_cache",
     "ui.analysis.confirm_delete_song_cache",
+    "ui.analysis.request_delete_authored_chart",
+    "ui.analysis.cancel_delete_authored_chart",
+    "ui.analysis.confirm_delete_authored_chart",
     "ui.analysis.request_replace_authored_chart",
     "ui.analysis.cancel_replace_authored_chart",
     "ui.analysis.confirm_replace_authored_chart",
-    "ui.analysis.sync_artifact_revisions",
-    "ui.analysis.set_active_artifact_revision",
-    "ui.analysis.cancel_set_active_artifact_revision",
-    "ui.analysis.confirm_set_active_artifact_revision",
-    "ui.analysis.open_artifact_revision",
-    "ui.analysis.preview_artifact_revision",
-    "ui.analysis.reveal_artifact_revision",
-    "ui.analysis.request_delete_artifact_revision",
-    "ui.analysis.cancel_delete_artifact_revision",
-    "ui.analysis.confirm_delete_artifact_revision",
-    "ui.analysis.request_invalidate_artifact_revision",
-    "ui.analysis.cancel_invalidate_artifact_revision",
-    "ui.analysis.confirm_invalidate_artifact_revision",
-    "ui.analysis.inspect_artifact_provenance",
-    "ui.analysis.compare_artifact_revisions",
-    "ui.analysis.close_artifact_diff",
 ];
 
 const EDITOR_COMMANDS: &[&str] = &[
@@ -219,6 +193,7 @@ const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.toggle_lyrics_input_mode",
     "ui.editor.toggle_lyrics_separate_stems",
     "ui.editor.search_lrclib_lyrics",
+    "ui.editor.extract_lyrics",
     "ui.editor.previous_lrclib_candidate",
     "ui.editor.next_lrclib_candidate",
     "ui.editor.use_lrclib_plain",
@@ -256,6 +231,9 @@ const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.dismiss_lyric_context",
     "ui.editor.dismiss_note_context",
     "ui.editor.select_waveform_source",
+    "ui.editor.select_artifact_audition",
+    "ui.editor.activate_artifact_audition",
+    "ui.editor.select_artifact_waveform",
     "ui.editor.select_waveform_style",
     "ui.editor.dismiss_waveform_context",
     "ui.editor.toggle_evidence",
@@ -279,10 +257,6 @@ const POINTER_COMMANDS: &[&str] = &[
     "ui.pointer.analysis_node.primary",
     "ui.pointer.analysis_node.secondary",
     "ui.pointer.analysis_edge.primary",
-    "ui.pointer.analysis_artifact.primary",
-    "ui.pointer.analysis_artifact.secondary",
-    "ui.pointer.analysis_export.primary",
-    "ui.pointer.analysis_export.secondary",
     "ui.pointer.song.primary",
     "ui.pointer.song.secondary",
     "ui.pointer.folder_entry.primary",
@@ -328,7 +302,6 @@ fn classified_access(command: &str) -> &'static str {
         || command.contains("reveal_")
         || command.contains("open_source")
         || command.contains("open_log")
-        || command.contains("open_analysis_log_file")
         || command.contains("search_lrclib")
         || command.contains("request_setup")
         || command.contains("confirm_setup")
@@ -336,6 +309,7 @@ fn classified_access(command: &str) -> &'static str {
     {
         "external"
     } else if command.ends_with(".start_analysis")
+        || command.ends_with(".select_library_audio_source")
         || command.contains("preview")
         || command.contains("audition")
         || command.contains("play_")
@@ -644,7 +618,7 @@ mod tests {
         let studio_source = [
             include_str!("analysis_render/nodes.rs"),
             include_str!("analysis_render/overview.rs"),
-            include_str!("artifact_workbench_ui.rs"),
+            include_str!("analysis_edge_selection.rs"),
             include_str!("library/browse.rs"),
             include_str!("folders.rs"),
             include_str!("editor/view/menus.rs"),
@@ -666,19 +640,7 @@ mod tests {
     fn opening_run_analysis_is_temporary_and_exact_queueing_is_a_mutation() {
         assert_eq!(classified_access("ui.analysis.start_analysis"), "temporary");
         assert_eq!(
-            classified_access("ui.analysis.open_plan_preview"),
-            "temporary"
-        );
-        assert_eq!(
             classified_access("ui.analysis.queue_exact_preview"),
-            "mutation"
-        );
-        assert_eq!(
-            classified_access("ui.analysis.set_song_analysis_quality"),
-            "mutation"
-        );
-        assert_eq!(
-            classified_access("ui.analysis.set_song_analysis_target"),
             "mutation"
         );
     }
@@ -688,10 +650,7 @@ mod tests {
         for command in [
             "ui.settings.toggle_analysis_quantization",
             "ui.analysis.set_workflow_policy",
-            "ui.analysis.open_artifact_compatible_editor",
-            "ui.analysis.merge_candidate_chart",
             "ui.analysis.merge_selected_candidate_phrase",
-            "ui.library.play_artifact_revision",
             "ui.editor.select_waveform_source",
             "ui.editor.select_editor_track",
             "ui.editor.toggle_evidence",
@@ -710,14 +669,18 @@ mod tests {
         assert!(analysis_settings.contains("Quantize candidate notes"));
         assert!(analysis_settings.contains("never to continuous PitchEvidence"));
 
-        let plan_preview = include_str!("analysis_preview.rs");
-        for identity_field in [
-            "workflow_id",
-            "workflow_revision",
-            "workflow_schema_version",
-            "definition_digest",
-        ] {
+        let plan_preview_source = include_str!("analysis_preview.rs");
+        let plan_preview = plan_preview_source
+            .split_once("\n#[cfg(test)]")
+            .map_or(plan_preview_source, |(production, _)| production);
+        for identity_field in ["workflow_id", "workflow_revision"] {
             assert!(plan_preview.contains(identity_field));
+        }
+        for implementation_detail in ["workflow_schema_version", "definition_digest"] {
+            assert!(
+                !plan_preview.contains(implementation_detail),
+                "run confirmation should not expose {implementation_detail}"
+            );
         }
 
         let technique_timeline = include_str!("editor/view/timeline.rs");

@@ -1,0 +1,61 @@
+{
+  "format": "uta.song",
+  "format_version": "0.3.0",
+  "package_id": "org.example.demo.reserved-metadata",
+  "revision": 1,
+  "song": {
+    "title": "Metadata Demo",
+    "artist": "Example",
+    "language": "ja",
+    "bpm": 128,
+    "key": "Am",
+    "metadata": {
+      "album": "Example Album",
+      "credits": {
+        "composer": [
+          "A. Writer"
+        ],
+        "arranger": [
+          "B. Arranger"
+        ]
+      },
+      "org.musicbrainz": {
+        "recording_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "com.example.catalog": {
+        "catalog_id": "ABC-123"
+      },
+      "arbitrary_value": [
+        1,
+        true,
+        null,
+        {
+          "nested": "ok"
+        }
+      ],
+      "title": "must not shadow the core title"
+    },
+    "duration": 30000000
+  },
+  "audio": {
+    "assets": {
+      "instrumental": {
+        "path": "audio/instrumental.ogg",
+        "media_type": "audio/ogg",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": 1024
+      }
+    }
+  },
+  "charts": {
+    "vocal": {
+      "path": "charts/vocal.json",
+      "media_type": "application/vnd.uta.vocal-chart+json;version=0.3",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "bytes": 512
+    }
+  },
+  "required_features": [
+    "vocal-chart/0.3"
+  ]
+}

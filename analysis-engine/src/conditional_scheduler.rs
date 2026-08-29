@@ -73,6 +73,9 @@ pub struct ConditionalScheduleRequest<'a> {
     pub optional_usable: bool,
     pub required: bool,
     pub supports_windowed_input: bool,
+    /// An expert with an explicit whole-source contract may run the full input
+    /// when disagreement exists but bounded windows are not supported.
+    pub full_input_on_disagreement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -163,12 +166,14 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
                 Ok(ScheduledExecution::Skip(
                     ScheduleSkipReason::NoRelevantDisagreement,
                 ))
-            } else if !request.supports_windowed_input {
+            } else if request.supports_windowed_input {
+                Ok(ScheduledExecution::Windows(ranges))
+            } else if request.full_input_on_disagreement {
+                Ok(ScheduledExecution::FullInput)
+            } else {
                 Ok(ScheduledExecution::Skip(
                     ScheduleSkipReason::WindowedInputUnsupported,
                 ))
-            } else {
-                Ok(ScheduledExecution::Windows(ranges))
             }
         }
     }
@@ -493,6 +498,7 @@ fn run_native_task(
         &NativeTask {
             task_id: task_id.to_string(),
             node_id: node_id.to_string(),
+            presentation_node_id: None,
             model_id: model.model_id.clone(),
             input_artifacts: vec![input.to_path_buf()],
             output_dir: output_dir.to_path_buf(),
@@ -815,6 +821,7 @@ mod tests {
             optional_usable: true,
             required: false,
             supports_windowed_input: true,
+            full_input_on_disagreement: false,
         }
     }
 
@@ -1002,6 +1009,12 @@ mod tests {
         assert_eq!(
             schedule(value).unwrap(),
             ScheduledExecution::Skip(ScheduleSkipReason::WindowedInputUnsupported)
+        );
+        value.full_input_on_disagreement = true;
+        assert_eq!(
+            schedule(value).unwrap(),
+            ScheduledExecution::FullInput,
+            "whole-source fallback requires an explicit expert contract"
         );
     }
 

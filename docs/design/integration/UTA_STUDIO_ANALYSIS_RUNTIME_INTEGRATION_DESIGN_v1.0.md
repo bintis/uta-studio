@@ -77,14 +77,12 @@ The repository already contains the following foundations.
 - `AnalyzeRequestV1` with local-file audio sources;
 - requirements and policy-aware planning;
 - deterministic execution fingerprint infrastructure;
-- SHA-256 source verification;
+- authorized local-source validation without hash verification;
 - FFmpeg streaming decode and canonical integer timeline facts;
-- bounded NDJSON worker protocol;
-- `uta-analysis-engine` / `uta-analyze` binaries;
-- a compatibility worker for the old `uta-native-analyzer` command shape;
-- migrated singing calibration/fusion/HSMM core.
+- bounded NDJSON worker protocol through the single Studio-facing `uta-analyze` binary;
+- Engine-owned singing calibration/fusion/candidate core; Algorithm/HSMM remains the deterministic Stage-4 default, while the explicit AI-judgment alternative is governed by `UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md`.
 
-The complete execution path is still fail-closed until all mandatory native capabilities, especially real GAME execution, are implemented and production-validated.
+All current packaged model resources now expose their effective non-CPU route as `ProductionPinned` under the repository owner's explicit release policy. Normal Studio analysis still uses `RuntimePolicy::Production`; installation, runtime availability, structural validation, exact capability requirements, and worker/output checks remain fail-closed.
 
 ## 3.2 Runtime Manager
 
@@ -95,28 +93,27 @@ The complete execution path is still fail-closed until all mandatory native capa
 - production vs benchmark policy;
 - catalog-backed status/resolve/doctor APIs;
 - managed-store / generation foundations;
+- external `tool:<id>` executable ownership, including persistent configure/status/resolve for `tool:fusion_agent_adapter` under the AI-judgment design.
 - immutable generation leases;
 - deterministic resource identities used by Engine fingerprints;
 - mutation API foundations.
 
-Studio read APIs already partially delegate to Runtime Manager.
+Studio obtains Runtime status and lifecycle truth through `uta-runtime`.
 
 ## 3.3 Studio
 
-Studio still contains a substantial legacy orchestration layer:
+Studio retains only app-owned product and presentation responsibilities:
 
-- `app-core/src/analysis_graph.rs`;
-- `app-core/src/analysis_plan.rs`;
-- `app-core/src/analyzer/*` queue/control/server/run logic;
-- the old native-analyzer protocol adapter;
-- Studio-owned analysis history and per-node attempts;
+- product Workflow authoring and compilation into request intent;
+- exact Engine request/plan preview persistence and queue control;
+- analysis history and per-node attempt presentation;
 - immutable Artifact Store and revision lineage;
-- Artifact Workbench;
+- Artifact Workbench authoring projections;
 - Processing Studio product workflows;
-- Analysis graph UI;
-- Models & runtime UI.
+- Analysis graph UI driven by Workflow plus exact Engine run data;
+- Models & runtime UI driven by Runtime protocol responses.
 
-These Studio features are not to be discarded. Their ownership must be clarified and their execution truth must move to the new Engine/Runtime Manager boundaries.
+The former local Analysis Planner, native-worker adapter, compatibility server, fusion/singing algorithms, and Runtime policy/router implementations have been removed.
 
 ---
 
@@ -146,27 +143,11 @@ TrueSource is:
 
 Studio may create derived local files, but those are generated artifacts and must never be confused with TrueSource.
 
-## 4.2 Library identity vs Engine source identity
+## 4.2 Library and protocol source identity
 
-These are intentionally different concepts.
+`Song.file_hash` remains Studio's application/library identity and cache/database key.
 
-Current Studio song identity:
-
-```text
-Song.file_hash
-= BLAKE3-derived 32-hex application/library identity
-```
-
-Engine source identity:
-
-```text
-AudioSourceV1.sha256
-= full 64-hex SHA-256 of the exact local file bytes
-```
-
-**Never copy `Song.file_hash` into `AudioSourceV1.sha256`.**
-
-Studio keeps using `Song.file_hash` as the library/cache/database key. The Engine request compiler computes a real SHA-256 for the authorized local source.
+The v1 protocol field named `AudioSourceV1.sha256` is retained for wire compatibility, but Studio carries its persisted library identity there as metadata. Neither Studio nor Engine computes or verifies a source hash as an execution gate. Authorization, canonical path confinement, regular-file checks, and exact persisted request identity protect this boundary.
 
 ## 4.3 Engine run root
 
@@ -193,7 +174,7 @@ The existing editor/revision workflow remains authoritative for human edits.
 The integration must achieve all of the following.
 
 1. Studio compiles product/user intent into the canonical Engine request contract.
-2. Studio uses the real local TrueSource path and a real SHA-256.
+2. Studio uses the real authorized local TrueSource path and persisted library identity.
 3. Studio preview and execution use the same exact request payload.
 4. Analysis Engine is the only authority for analysis requirements and execution-plan semantics.
 5. Runtime Manager is the only authority for resource install/readiness/policy usability.
@@ -206,7 +187,7 @@ The integration must achieve all of the following.
 12. No production Python, HTTP or network-service inference path is introduced.
 13. Existing source media remains read-only.
 14. Existing Authored charts remain preserved across re-analysis.
-15. The old compatibility wrapper is removed only after the new path is proven end to end.
+15. No old analyzer compatibility wrapper remains in source or packaging.
 
 ---
 
@@ -413,9 +394,7 @@ canonicalize/validate local file
   ↓
 verify non-empty regular file
   ↓
-verify current Studio library identity has not silently changed
-  ↓
-compute full SHA-256
+retain the persisted Studio library identity
   ↓
 construct Engine AudioSourceV1
 ```
@@ -428,7 +407,7 @@ The resolver must not:
 - mutate the Song path;
 - silently re-key a changed song during a run.
 
-If the file bytes no longer match the library's current `Song.file_hash`, fail with a source-identity-changed error and ask the caller to rescan/reindex. Do not analyze one set of bytes while attaching the result to another song identity.
+Do not recompute or verify a content hash at analysis time. The exact persisted song identity and canonical authorized path are frozen into the confirmed request.
 
 ---
 
@@ -441,7 +420,7 @@ For a normal Studio song analysis:
   "id": "true_source",
   "kind": "local_file",
   "path": "/absolute/authorized/song.flac",
-  "sha256": "<real 64-hex SHA-256>",
+  "sha256": "<persisted Studio library identity; metadata only>",
   "role": "original_mix",
   "primary": true,
   "timeline": {
@@ -465,7 +444,7 @@ Studio may only provide additional sources when:
 
 - they are exact immutable Artifact Store revisions;
 - their semantic role is known;
-- their SHA-256 is verified;
+- their persisted revision identity is known;
 - their source timeline is known;
 - the Engine contract and planner explicitly consume that role.
 
@@ -643,13 +622,14 @@ docs/design/integration/UTA_STUDIO_ANALYSIS_SETTINGS_MODEL_SELECTION_EXECUTION_U
 That specification is authoritative for the Studio UX seam. In particular:
 
 - `Fast / Balanced / Maximum` is the top-level quality choice;
-- target model choice is represented as `Automatic` or, once a versioned Engine preference contract exists, an explicit stable provider/resource preference; never a checkpoint filename/path;
-- under current Engine v1, only preference semantics the request can actually encode may affect execution; do not expose an active explicit-provider selector yet;
-- once the versioned contract exists, explicit provider preference is sticky and blocks rather than silently falling back when unavailable;
+- target model choice is represented as `Automatic` or an explicit stable provider/resource preference; never a checkpoint filename/path;
+- the versioned Processing Studio `WorkflowExecutionV1` extension may carry Engine-recognized provider intent per capability card; standalone Settings/Song/Run preferences remain limited to semantics represented by their request contract;
+- explicit provider intent is sticky and blocks rather than silently falling back when unavailable;
 - `Automatic` may resolve another production-approved provider only when Engine policy permits it and the preview shows the actual resolution;
 - Runtime Manager Production policy is a veto, not another preference tier;
 - Global defaults, Song Profile and Run Override resolve independently per field as `Run > Song > Global`;
-- Processing Studio may reorder safe product-semantic audio transformations but cannot violate Engine dependency order;
+- Processing Studio supports pointer drag and Earlier/Later for same-branch role-preserving transformations, with immediate order refresh after validated dataflow rewrites; it cannot violate Engine dependency order;
+- optional stage 01–03 cards may be added/restored/deleted only through product-approved typed graph edits; Engine-owned fusion/decode/finalization remains a fixed stage 04 policy card;
 - Plan Preview shows the exact request, resolved provider/backend and request-specific blockers before queueing;
 - `Settings > Models & runtime` remains lifecycle-only and never rewrites Analysis preferences.
 
@@ -936,7 +916,7 @@ component == uta-analysis-engine
 required request/result contract versions are supported
 ```
 
-The old `runtime_recipe_digest` handshake comparison belongs to the compatibility worker and must not be copied into the new Engine protocol as a substitute for per-resource provenance.
+The retired loose protocol's `runtime_recipe_digest` handshake comparison is not part of the Engine protocol and must not be reintroduced as a substitute for per-resource provenance.
 
 Resource/runtime recipe identities belong in Runtime Manager resolution and the Engine result fingerprint/provenance.
 
@@ -1000,7 +980,7 @@ Do not relabel killing an unrelated shared process as fine-grained cancellation.
 
 Studio should consume typed Engine lifecycle events, not infer model progress from strings.
 
-The target event vocabulary from the Engine guide includes:
+The implemented event vocabulary includes:
 
 ```text
 ready
@@ -1011,6 +991,7 @@ analysis_started
 node_started
 node_progress
 node_completed
+node_failed
 artifact
 warning
 degraded
@@ -1021,7 +1002,7 @@ cancelled
 
 Every run/node event that refers to a request must carry the exact `request_id`.
 
-Node events should expose stable Engine node ID and capability ID.
+Node events expose stable raw Engine node ID, optional Processing Studio presentation-node ID, capability ID, stable model/resource ID, implementation, and Engine event timestamp. `node_progress` carries a percentage only when a native worker supplied a measured fraction/work-unit count.
 
 Do not make model filenames the event identity.
 
@@ -1037,7 +1018,7 @@ AnalysisStageRoute
 analysis_node_attempts
 ```
 
-Extend them with optional Engine fields where needed:
+They carry optional Engine fields for backward-compatible history:
 
 ```text
 engine_node_id
@@ -1121,7 +1102,6 @@ artifact path confinement after canonicalization
 no symlink escape
 artifact file exists
 byte size matches
-SHA-256 matches
 media type is expected for semantic type
 no duplicate semantic role where prohibited
 ```
@@ -1151,26 +1131,11 @@ Do not label lossy bytes as FLAC.
 
 ---
 
-# 39. Preserve both artifact hashes
+# 39. Preserve artifact identity and provenance
 
-Existing Studio `ArtifactRevision.content_hash` uses the Studio BLAKE3-derived convention.
+Existing Studio `ArtifactRevision.content_hash` remains the Studio revision/content identity convention. Engine `ArtifactRefV1.sha256`, where present in the v1 wire shape, is provenance metadata only and is not verified.
 
-Engine `ArtifactRefV1.sha256` is full SHA-256.
-
-Preserve both.
-
-Do not replace existing revision IDs with Engine SHA-256 during this migration.
-
-Add explicit Engine artifact metadata, either as nullable artifact columns or a normalized metadata table, including at minimum:
-
-```text
-revision_id
-engine_sha256
-media_type
-semantic_type
-request_id
-engine_fingerprint
-```
+Do not replace existing revision IDs with Engine metadata. Persist media type, semantic type, request identity, and Engine fingerprint without creating a hash-verification gate.
 
 ---
 
@@ -1384,13 +1349,11 @@ Blocked node details should state the actual capability/resource reason returned
 
 ---
 
-# 49. GAME blocked behavior
+# 49. Request-specific required-resource failure
 
-While GAME is not production-usable:
+The current release has Production-admitted effective routes for GAME and every other packaged model. There is therefore no standing model-validation blocker for Candidate analysis.
 
-A request that needs note evidence / Candidate VocalChart remains blocked/fail-closed.
-
-However:
+If a required resource later becomes unavailable because it is not installed, its runtime is unavailable, structural validation fails, or a future catalog changes its policy state, only requests that require that capability block/fail closed.
 
 ```text
 stem-only
@@ -1399,15 +1362,7 @@ alignment-only where representable
 pitch-evidence-only
 ```
 
-must be evaluated from their own Engine requirements and must not inherit a synthetic GAME dependency.
-
-The UI should explain:
-
-```text
-Candidate chart unavailable: notes.game is not production-usable
-```
-
-rather than claiming the entire native runtime is missing.
+must continue to be evaluated from their own Engine requirements and must not inherit a synthetic GAME dependency. UI copy names the exact capability/resource reason rather than claiming the entire native runtime is missing.
 
 ---
 
@@ -1437,14 +1392,12 @@ Engine v1 interprets an `original_mix` primary according to its own semantic rou
 
 Therefore this bypass is not currently equivalent and must not be implemented by falsely labeling Original Mix as `lead_vocal` or `clean_lead_vocal`.
 
-## 50.4 Migration rule
+## 50.4 Current rule
 
-For the first Engine-backed integration:
-
-- support actions that compile truthfully to Engine v1;
-- disable unsupported granular controls with an explicit explanation;
-- do not silently fall back to the legacy analyzer;
-- restore full reuse controls only through a future versioned Engine input-artifact/routing contract.
+- expose only actions that compile truthfully to Engine v1;
+- do not expose backend-owned granular controls in Studio;
+- no alternate analyzer fallback exists;
+- add reuse controls only through a future versioned Engine input-artifact/routing contract.
 
 ---
 
@@ -1622,13 +1575,11 @@ uta-runtime
 required packaged native worker executables
 ```
 
-A `uta-analysis-engine` alias/component binary may remain packaged if independently useful, but Studio's canonical process boundary is `uta-analyze` + `uta-runtime`.
+Only `uta-analyze` is packaged as the Studio-facing Analysis CLI; no duplicate Engine alias or legacy analyzer wrapper is shipped.
 
 The wrapped Studio application receives exact packaged CLI paths and does not depend on PATH discovery.
 
 Linux package remains Wayland-only.
-
-During the compatibility period `uta-native-analyzer` may remain packaged, but it is removed after the new Studio worker path and standalone Engine gates pass.
 
 ---
 
@@ -1649,28 +1600,9 @@ Do not add direct Studio environment variables for individual model files once R
 
 ---
 
-# 61. Legacy analyzer retirement criteria
+# 61. Legacy analyzer retirement
 
-Do not remove `uta-native-analyzer` compatibility support until all are true:
-
-```text
-[ ] Studio preview compiles exact AnalyzeRequestV1
-[ ] Studio uses `uta-analyze worker --stdio-json` directly
-[ ] Studio runtime/model lifecycle calls use `uta-runtime --output json/ndjson`
-[ ] app-core has no `uta-analysis-engine` or `uta-runtime-manager` Cargo dependency
-[ ] app-core/desktop contain no `uta_analysis_engine::` or `uta_runtime_manager::` imports
-[ ] source SHA-256 validation works end to end
-[ ] request-specific Runtime Manager readiness works
-[ ] real Engine artifacts commit to Artifact Store
-[ ] Candidate/Authored preservation tests pass
-[ ] history + node attempts persist Engine runs
-[ ] cancellation works
-[ ] crash/output-validation tests pass
-[ ] packaged Linux Studio smoke uses the new Engine path
-[ ] no production call site still depends on old loose protocol
-```
-
-After those pass, remove the wrapper from Studio routing first, then from packaging/source in a separate cleanup change.
+The legacy analyzer wrapper and loose protocol are retired. Studio calls only `uta-analyze` and `uta-runtime`; `app-core` and `desktop` have no backend implementation-crate dependency or import. Historical database rows remain backward-readable, but no production execution path routes through the retired analyzer.
 
 ---
 
@@ -1703,8 +1635,8 @@ Cover:
 local TrueSource
 missing TrueSource
 empty file
-source changed since library identity
-real SHA-256 distinct from Studio file_hash
+canonical authorized source path
+persisted Studio identity in the exact request
 GeneratedLyrics mapping
 KnownLyrics mapping
 reference lyrics mapping
@@ -1754,8 +1686,6 @@ valid confined artifact
 ../ escape
 absolute path
 symlink escape
-wrong bytes
-wrong SHA-256
 wrong byte count
 wrong media type
 wrong request_id
@@ -1774,8 +1704,8 @@ one bad artifact => no Active switches
 candidate becomes Active Candidate
 Authored chart unchanged
 same bytes deduplicate safely
-Engine SHA-256 metadata preserved
-Studio BLAKE3 revision identity preserved
+Engine provenance metadata preserved without verification
+Studio revision identity preserved
 history result/fingerprint persisted
 ```
 
@@ -1882,7 +1812,7 @@ artifact content identity/provenance
 Any future `AnalyzeRequestV2` design must preserve:
 
 - local-file confinement;
-- exact hashes;
+- exact persisted identities;
 - semantic roles;
 - immutable provenance;
 - fail-closed behavior.
@@ -1897,10 +1827,9 @@ Do not add ad-hoc v1 extension fields that silently change planner semantics.
 User selects Analyze
         |
         v
-Studio resolves local TrueSource
+Studio resolves the canonical authorized local TrueSource
         |
-        +-- verifies library identity
-        +-- computes SHA-256
+        +-- freezes the persisted library identity and path
         |
         v
 Studio compiles exact AnalyzeRequestV1 JSON
@@ -1953,7 +1882,7 @@ Review / Editor / Export
 The finished integration must satisfy all of these statements.
 
 1. **TrueSource is always a local file and is read-only.**
-2. **Studio `file_hash` is not Engine SHA-256.**
+2. **Studio does not compute or verify source hashes at the Engine boundary.**
 3. **Preview and execution use the exact same serialized Engine request.**
 4. **Engine decides what capabilities/resources the analysis needs.**
 5. **Runtime Manager decides what resources are usable.**
@@ -1967,7 +1896,7 @@ The finished integration must satisfy all of these statements.
 13. **Missing GAME blocks note/Candidate requests, not unrelated partial analysis.**
 14. **No read path downloads models.**
 15. **No HTTP or Python production fallback exists.**
-16. **The legacy native-analyzer wrapper disappears only after the new path is proven.**
+16. **No legacy native-analyzer wrapper or loose protocol remains.**
 17. **Studio links neither `uta-analysis-engine` nor `uta-runtime-manager`.**
 18. **Studio obtains Analysis truth only from the `uta-analyze` machine protocol.**
 19. **Studio obtains Runtime Manager lifecycle truth only from the `uta-runtime` machine protocol.**

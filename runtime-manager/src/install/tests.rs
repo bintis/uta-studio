@@ -38,6 +38,44 @@ fn import_is_confirmed_and_atomically_published_without_hash_rejection() {
 }
 
 #[test]
+fn roformer_gguf_directory_import_uses_current_vulkan_artifact_identity() {
+    let fixture = Fixture::new();
+    let manager = fixture.manager();
+    let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
+    let source = fixture.root.join("roformer-import");
+    std::fs::create_dir(&source).unwrap();
+    fixture.write("roformer-import/model-fp16.gguf", b"roformer gguf fixture");
+
+    manager
+        .import_resource(&resource, &source, &confirmed())
+        .unwrap();
+
+    let pointer = read_current_pointer(
+        &fixture
+            .root
+            .join("models/bs_roformer_vocals_ep317/current.json"),
+    )
+    .unwrap();
+    let manifest = read_install_manifest(
+        &fixture
+            .root
+            .join("models/bs_roformer_vocals_ep317/generations")
+            .join(pointer.generation),
+    )
+    .unwrap();
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.files[0].path, Path::new("model-fp16.gguf"));
+    assert_eq!(
+        manifest.source_sha256.as_deref(),
+        Some("8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de")
+    );
+    assert_eq!(
+        manifest.runtime_recipe_digest.as_deref(),
+        Some("4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a")
+    );
+}
+
+#[test]
 fn qwen_aligner_local_import_receipt_separates_source_and_converted_identity() {
     let fixture = Fixture::new();
     let mut catalog = ResourceCatalog::default_catalog().unwrap();

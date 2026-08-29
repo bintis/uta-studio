@@ -37,6 +37,7 @@ pub fn run() {
         .insert_resource(NativeLibraryAudio(native_library_audio))
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
+        .insert_resource(ProcessingStudioPointerCapture::default())
         .insert_resource(EditorViewportRebuildThrottle::default())
         .insert_resource(UiInvalidated::default())
         .insert_resource(UiRebuildMetrics::default())
@@ -48,6 +49,10 @@ pub fn run() {
         )))
         .insert_resource(AnalysisRefreshTimer(Timer::from_seconds(
             0.75,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(AnalysisLogRefreshTimer(Timer::from_seconds(
+            0.2,
             TimerMode::Repeating,
         )))
         .insert_resource(EditorAudioSyncTimer(Timer::from_seconds(
@@ -97,6 +102,10 @@ pub fn run() {
         )
         .add_systems(
             Update,
+            handle_processing_studio_pointer_capture.before(handle_actions),
+        )
+        .add_systems(
+            Update,
             (
                 register_navigation_targets,
                 handle_accessible_navigation,
@@ -112,7 +121,11 @@ pub fn run() {
         .add_systems(Update, sync_documentation_search)
         .add_systems(Update, refresh_library_while_scanning)
         .add_systems(Update, refresh_analysis_activity)
-        .add_systems(Update, handle_analysis_model_panel_scroll)
+        .add_systems(Update, refresh_analysis_log_viewer.before(rebuild_ui))
+        .add_systems(
+            Update,
+            handle_analysis_model_panel_scroll.run_if(analysis_log_viewer_closed),
+        )
         .add_systems(
             Update,
             follow_live_analysis_node.after(refresh_analysis_activity),
@@ -133,8 +146,15 @@ pub fn run() {
         .add_systems(Update, finish_inline_lyric_edit)
         .add_systems(Update, handle_library_search_keyboard)
         .add_systems(Update, handle_plan_preview_keyboard)
-        .add_systems(Update, handle_plan_preview_scroll)
+        .add_systems(
+            Update,
+            handle_plan_preview_scroll.run_if(analysis_log_viewer_closed),
+        )
         .add_systems(Update, handle_analysis_log_viewer_scroll)
+        .add_systems(
+            Update,
+            follow_analysis_log_viewer_tail.after(handle_analysis_log_viewer_scroll),
+        )
         .add_systems(
             Update,
             refresh_editor_problems_cache
@@ -164,17 +184,50 @@ pub fn run() {
             Update,
             (handle_editor_wheel, flush_editor_viewport_rebuild)
                 .chain()
-                .before(rebuild_ui),
+                .before(rebuild_ui)
+                .run_if(analysis_log_viewer_closed),
         )
         .add_systems(Update, handle_editor_pointer_capture)
-        .add_systems(Update, handle_folder_scroll)
-        .add_systems(Update, handle_problems_panel_scroll)
-        .add_systems(Update, handle_shortcuts_panel_scroll)
-        .add_systems(Update, handle_analysis_graph_scroll)
-        .add_systems(Update, handle_analysis_inspect_scroll)
-        .add_systems(Update, handle_library_scroll)
-        .add_systems(Update, handle_song_detail_scroll)
-        .add_systems(Update, handle_settings_scroll.before(rebuild_ui))
+        .add_systems(
+            Update,
+            handle_folder_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_problems_panel_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_shortcuts_panel_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_analysis_graph_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_analysis_inspect_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_library_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_song_detail_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_settings_scroll
+                .before(rebuild_ui)
+                .run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_processing_studio_scroll
+                .before(handle_actions)
+                .run_if(analysis_log_viewer_closed),
+        )
         .add_systems(Update, fit_analysis_graph_to_viewport.after(rebuild_ui))
         .add_systems(Update, sync_editor_audio)
         .add_systems(Update, sync_library_audio)
@@ -290,8 +343,8 @@ pub(crate) fn asset_root() -> String {
 /// pass (§9.3 "窄窗口无严重重叠"). Forces windowed mode at that exact size,
 /// taking priority over the other debug env vars' fullscreen branch, since
 /// there is no way to interactively resize a Wayland-native window in this
-/// sandbox without input synthesis -- see the ydotool note in
-/// docs/analysis-dag-redesign.md.
+/// sandbox without input synthesis. The headless Wayland smoke script drives
+/// this override directly.
 pub(crate) fn debug_window_size() -> Option<(u32, u32)> {
     let value = std::env::var("UTA_STUDIO_DEBUG_WINDOW_SIZE").ok()?;
     let (width, height) = value.split_once('x')?;
@@ -828,6 +881,24 @@ fn spawn_overlay_region(
             },
         ))
         .with_children(|overlay| {
+            if let Some(draft) = session.plan_preview_draft.as_ref() {
+                spawn_plan_preview_dialog(
+                    overlay,
+                    font.clone(),
+                    theme,
+                    draft,
+                    session.notice.as_deref(),
+                );
+            }
+            if let Some(state) = session.analysis_log_viewer.as_ref() {
+                spawn_analysis_log_viewer(
+                    overlay,
+                    font.clone(),
+                    theme,
+                    state,
+                    session.selected_analysis_history,
+                );
+            }
             if let Some(context) = session.analysis_node_context.as_ref() {
                 spawn_analysis_node_context_menu(overlay, font.clone(), theme, context);
             }
@@ -874,26 +945,11 @@ fn spawn_overlay_region(
             if session.activity_open {
                 spawn_activity_center(overlay, font.clone(), icons, session, theme);
             }
-            if let Some(revision) = session.pending_artifact_delete.as_ref() {
-                spawn_artifact_delete_confirmation(overlay, font.clone(), theme, revision);
-            }
-            if let Some(revision) = session.pending_artifact_invalidate.as_ref() {
-                spawn_artifact_invalidate_confirmation(overlay, font.clone(), theme, revision);
-            }
-            if let Some(revision) = session.pending_artifact_active.as_ref() {
-                spawn_artifact_active_confirmation(overlay, font.clone(), theme, revision);
+            if let Some(file_hash) = session.pending_chart_delete.as_deref() {
+                spawn_chart_delete_confirmation(overlay, font.clone(), theme, file_hash);
             }
             if let Some(file_hash) = session.pending_chart_replace.as_deref() {
                 spawn_chart_replace_confirmation(overlay, font.clone(), theme, file_hash);
-            }
-            if let Some(diff) = session.artifact_diff.as_ref() {
-                spawn_artifact_diff_panel(overlay, font.clone(), theme, diff);
-            }
-            if let Some(lineage) = session.artifact_lineage.as_ref() {
-                spawn_artifact_lineage_panel(overlay, font.clone(), theme, lineage);
-            }
-            if let Some(impact) = session.artifact_impact.as_ref() {
-                spawn_artifact_impact_panel(overlay, font.clone(), theme, impact);
             }
             if session.about_open {
                 spawn_about_dialog(
@@ -907,7 +963,7 @@ fn spawn_overlay_region(
             if let Some(panel) = session.song_settings.as_ref() {
                 spawn_song_settings_panel(overlay, font.clone(), theme, panel);
             }
-            if let Some(destination) = session.pending_leave {
+            if let Some(destination) = session.pending_leave.clone() {
                 spawn_leave_confirmation(overlay, font, theme, session, destination);
             }
         });
@@ -923,9 +979,13 @@ pub(crate) fn spawn_leave_confirmation(
     let dirty = session.editor.as_ref().is_some_and(|editor| editor.dirty);
     let (title, action) = match destination {
         PendingLeave::Exit => ("Close Uta! Studio?", "Close"),
-        PendingLeave::Back | PendingLeave::Home | PendingLeave::Documentation => {
-            ("Leave the editor?", "Leave")
-        }
+        PendingLeave::Back
+        | PendingLeave::Home
+        | PendingLeave::Documentation
+        | PendingLeave::Library(_)
+        | PendingLeave::OpenSongAnalysis(_)
+        | PendingLeave::OpenSongModelSelection(_)
+        | PendingLeave::OpenProcessingStudio(_) => ("Leave the editor?", "Leave"),
     };
     let description = if dirty {
         "This chart has unsaved edits. Leaving now discards those edits. Source media is never changed."

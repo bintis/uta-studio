@@ -48,3 +48,7 @@ RELEASING.md
 /TUF-GAMING-B650M-PLUS-ASUS-3886.zip
 /uta-studio-*-fixes-*.zip
 /CLI_TESTING_GUIDE.md
+
+# Local review/acceptance evidence (real-song runs, stems, screenshots) is
+# scratch material for a review session, not source or release content.
+/test-artifacts/

@@ -18,6 +18,14 @@ pub(crate) const UI_FONT_SIZE_MAX_PX: u32 = 18;
 
 pub(crate) const UI_FONT_SIZE_STEP_PX: u32 = 1;
 
+pub(crate) const WORKSPACE_TOP_BAR_MIN_HEIGHT: f32 = 72.0;
+pub(crate) const STUDIO_CARD_RADIUS: f32 = 6.0;
+pub(crate) const STUDIO_CARD_BACKGROUND_ALPHA: f32 = 0.32;
+pub(crate) const STUDIO_CARD_BORDER_ALPHA: f32 = 0.55;
+pub(crate) const STUDIO_CONTROL_HEIGHT: f32 = 32.0;
+pub(crate) const STUDIO_CONTROL_BACKGROUND_ALPHA: f32 = 0.38;
+pub(crate) const STUDIO_CONTROL_BORDER_ALPHA: f32 = 0.44;
+
 pub(crate) static GLOBAL_UI_FONT_SCALE_BITS: AtomicU32 = AtomicU32::new(f32::to_bits(1.0));
 
 #[derive(Clone, Copy, Debug)]
@@ -58,19 +66,15 @@ pub(crate) enum UiIcon {
     Close = 34,
     Music = 35,
     Repair = 36,
-    Warning = 37,
     Check = 38,
     Previous = 40,
     Next = 41,
     Shuffle = 42,
     Repeat = 43,
     Volume = 44,
-    Analyze = 45,
     Fit = 46,
     MiniView = 47,
-    Plan = 48,
     ModelTune = 49,
-    Focus = 50,
 }
 
 impl UiIcon {
@@ -93,6 +97,21 @@ pub(crate) struct LocalImages {
 /// feedback from flattening every button to the same transparent background.
 #[derive(Component, Clone, Copy)]
 pub(crate) struct RestingButtonBackground(pub(crate) Color);
+
+#[derive(Component, Clone, Copy)]
+pub(crate) struct RestingButtonBorder(pub(crate) BorderColor);
+
+pub(crate) fn studio_card_background(theme: &StudioTheme) -> BackgroundColor {
+    BackgroundColor(theme.card.with_alpha(STUDIO_CARD_BACKGROUND_ALPHA))
+}
+
+pub(crate) fn studio_card_border(theme: &StudioTheme) -> BorderColor {
+    BorderColor::all(theme.border.with_alpha(STUDIO_CARD_BORDER_ALPHA))
+}
+
+pub(crate) fn studio_card_radius() -> BorderRadius {
+    BorderRadius::all(px(STUDIO_CARD_RADIUS))
+}
 
 pub(crate) fn spawn_icon(
     parent: &mut ChildSpawnerCommands,
@@ -143,7 +162,7 @@ pub(crate) fn spawn_icon_button(
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_card_radius(),
                 ..default()
             },
             BackgroundColor(if active {
@@ -232,17 +251,17 @@ pub(crate) fn spawn_toolbar_button(
             Button,
             action,
             Node {
-                height: px(32),
+                height: px(STUDIO_CONTROL_HEIGHT),
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
                 padding: UiRect::horizontal(px(9)),
                 column_gap: px(6),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_card_radius(),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(0.38)),
-            BorderColor::all(theme.border.with_alpha(0.44)),
+            BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+            BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         ))
         .with_children(|button| {
             spawn_icon(button, atlas, icon, 14.0, color);
@@ -281,22 +300,26 @@ pub(crate) fn spawn_compact_action_button(
         action,
         Node {
             min_width: px(0),
-            height: px(34),
-            flex_shrink: 0.0,
+            max_width: percent(100),
+            min_height: px(STUDIO_CONTROL_HEIGHT),
+            flex_shrink: 1.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::horizontal(px(11)),
+            padding: UiRect::axes(px(11), px(7)),
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
+            border_radius: studio_card_radius(),
             ..default()
         },
-        BackgroundColor(theme.background.with_alpha(0.52)),
-        BorderColor::all(theme.border.with_alpha(0.66)),
+        BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+        BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         children![(
             Text::new(label),
             ui_text_font(font, 9.0),
             TextColor(theme.foreground),
-            TextLayout::no_wrap(),
+            TextLayout {
+                linebreak: bevy::text::LineBreak::WordOrCharacter,
+                justify: Justify::Center,
+            },
         )],
     ));
 }
@@ -313,22 +336,26 @@ pub(crate) fn spawn_action_button(
         action,
         Node {
             min_width: px(136),
-            height: px(34),
-            flex_shrink: 0.0,
+            max_width: percent(100),
+            min_height: px(STUDIO_CONTROL_HEIGHT),
+            flex_shrink: 1.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::horizontal(px(12)),
+            padding: UiRect::axes(px(12), px(7)),
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
+            border_radius: studio_card_radius(),
             ..default()
         },
-        BackgroundColor(theme.background.with_alpha(0.52)),
-        BorderColor::all(theme.border.with_alpha(0.66)),
+        BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+        BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         children![(
             Text::new(label),
             ui_text_font(font, 10.0),
             TextColor(theme.foreground),
-            TextLayout::no_wrap(),
+            TextLayout {
+                linebreak: bevy::text::LineBreak::WordOrCharacter,
+                justify: Justify::Center,
+            },
         )],
     ));
 }
@@ -344,7 +371,10 @@ pub(crate) fn spawn_wrapped_text(
         Text::new(text),
         ui_text_font(font, size),
         TextColor(color),
-        TextLayout::default(),
+        TextLayout {
+            linebreak: bevy::text::LineBreak::WordOrCharacter,
+            ..default()
+        },
     ));
 }
 
@@ -369,10 +399,6 @@ pub(crate) fn spawn_bounded_wrapped_text(
             ..default()
         },
     ));
-}
-
-pub(crate) fn availability(available: bool) -> &'static str {
-    if available { "available" } else { "missing" }
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {
@@ -504,9 +530,11 @@ type ActionButtons<'w, 's> = Query<
     (
         Entity,
         &'static Interaction,
-        &'static UiAction,
+        Option<&'static UiAction>,
         &'static mut BackgroundColor,
         Option<&'static RestingButtonBackground>,
+        Option<&'static mut BorderColor>,
+        Option<&'static RestingButtonBorder>,
     ),
     Or<(Added<Button>, Changed<Interaction>)>,
 >;
@@ -516,20 +544,58 @@ pub(crate) fn update_button_visuals(
     theme: Res<StudioTheme>,
     mut buttons: ActionButtons,
 ) {
-    for (entity, interaction, action, mut background, resting) in &mut buttons {
-        let has_recorded_background = resting.is_some();
-        let resting = resting.map_or(background.0, |resting| resting.0);
+    for (entity, interaction, action, mut background, resting_background, border, resting_border) in
+        &mut buttons
+    {
+        let has_recorded_background = resting_background.is_some();
+        let resting_background = resting_background.map_or(background.0, |resting| resting.0);
         if !has_recorded_background {
             commands
                 .entity(entity)
-                .try_insert(RestingButtonBackground(resting));
+                .try_insert(RestingButtonBackground(resting_background));
         }
-        background.0 = button_background(action, *interaction, resting, &theme);
+        background.0 = button_background_for_target(
+            action.is_none_or(action_is_navigation_target),
+            *interaction,
+            resting_background,
+            &theme,
+        );
+
+        if let Some(mut border) = border {
+            let has_recorded_border = resting_border.is_some();
+            let resting_border = resting_border.map_or(*border, |resting| resting.0);
+            if !has_recorded_border {
+                commands
+                    .entity(entity)
+                    .try_insert(RestingButtonBorder(resting_border));
+            }
+            *border = button_border_for_target(
+                action.is_none_or(action_is_navigation_target),
+                *interaction,
+                resting_border,
+                &theme,
+            );
+        }
     }
 }
 
+#[cfg(test)]
 pub(crate) fn button_background(
     action: &UiAction,
+    interaction: Interaction,
+    resting: Color,
+    theme: &StudioTheme,
+) -> Color {
+    button_background_for_target(
+        action_is_navigation_target(action),
+        interaction,
+        resting,
+        theme,
+    )
+}
+
+fn button_background_for_target(
+    interactive: bool,
     interaction: Interaction,
     resting: Color,
     theme: &StudioTheme,
@@ -540,7 +606,7 @@ pub(crate) fn button_background(
     // subtle accent under the cursor: since the pointer is always somewhere
     // on screen, it's an immediate solid tint over everything the moment the
     // backdrop exists.
-    if !action_is_navigation_target(action) {
+    if !interactive {
         return resting;
     }
     match interaction {
@@ -549,6 +615,43 @@ pub(crate) fn button_background(
         Interaction::Pressed if resting == Color::NONE => theme.sidebar_accent.with_alpha(0.72),
         Interaction::Hovered => resting.mix(&theme.foreground, 0.06),
         Interaction::Pressed => resting.mix(&theme.foreground, 0.12),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn button_border(
+    action: &UiAction,
+    interaction: Interaction,
+    resting: BorderColor,
+    theme: &StudioTheme,
+) -> BorderColor {
+    button_border_for_target(
+        action_is_navigation_target(action),
+        interaction,
+        resting,
+        theme,
+    )
+}
+
+fn button_border_for_target(
+    interactive: bool,
+    interaction: Interaction,
+    resting: BorderColor,
+    theme: &StudioTheme,
+) -> BorderColor {
+    if !interactive {
+        return resting;
+    }
+    let mix = match interaction {
+        Interaction::None => return resting,
+        Interaction::Hovered => 0.14,
+        Interaction::Pressed => 0.28,
+    };
+    BorderColor {
+        top: resting.top.mix(&theme.foreground, mix),
+        right: resting.right.mix(&theme.foreground, mix),
+        bottom: resting.bottom.mix(&theme.foreground, mix),
+        left: resting.left.mix(&theme.foreground, mix),
     }
 }
 

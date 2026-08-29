@@ -30,6 +30,95 @@ pub struct SeparationOutput {
     pub artifact: ArtifactRefV1,
 }
 
+/// Materialize an already-semantic lead source as a lossless result artifact
+/// without running another separation model. The input remains read-only.
+pub fn materialize_semantic_lead_stem(
+    ffmpeg: &Path,
+    input: &Path,
+    output_root: &Path,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    let root = output_root.canonicalize().map_err(|error| {
+        failure(format!(
+            "could not authorize semantic lead output root: {error}"
+        ))
+    })?;
+    if !input.is_file() {
+        return Err(failure("semantic lead source is unavailable"));
+    }
+    let source_facts = decode_audio(ffmpeg, "semantic-lead-source", input)?.facts;
+    let work = root.join("worker/semantic-lead-materialize");
+    if work.exists() {
+        return Err(failure(
+            "semantic lead materialization directory already exists",
+        ));
+    }
+    std::fs::create_dir_all(&work).map_err(|error| {
+        failure(format!(
+            "could not create semantic lead materialization directory: {error}"
+        ))
+    })?;
+    let _temporary = TemporaryDirectory(work.clone());
+    let staged = work.join("lead-vocal.flac");
+    run_command(
+        command(ffmpeg, |command| {
+            command
+                .args(["-v", "error", "-nostdin", "-i"])
+                .arg(input)
+                .args([
+                    "-map",
+                    "0:a:0",
+                    "-map_metadata",
+                    "-1",
+                    "-vn",
+                    "-c:a",
+                    "flac",
+                    "-compression_level",
+                    "5",
+                    "-y",
+                ])
+                .arg(&staged);
+        }),
+        Duration::from_secs(4 * 60 * 60),
+        cancellation,
+        "semantic lead materialization",
+    )?;
+    let output_facts = decode_audio(ffmpeg, "semantic-lead-artifact", &staged)?.facts;
+    if output_facts.frame_count == 0
+        || output_facts.duration.abs_diff(source_facts.duration) > 2_000
+    {
+        return Err(EngineError::new(
+            EngineErrorCode::TimelineInvalid,
+            "semantic lead artifact did not preserve the declared source timeline",
+        ));
+    }
+    if cancellation.is_cancelled() {
+        return Err(EngineError::new(
+            EngineErrorCode::Cancelled,
+            "semantic lead materialization was cancelled",
+        ));
+    }
+    let relative = PathBuf::from("stems/lead_vocal.flac");
+    let destination = root.join(&relative);
+    let parent = destination
+        .parent()
+        .ok_or_else(|| failure("semantic lead artifact target has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| failure(format!("could not create stem directory: {error}")))?;
+    if destination.exists() {
+        return Err(failure("semantic lead stem target already exists"));
+    }
+    std::fs::rename(&staged, &destination).map_err(|error| {
+        failure(format!(
+            "could not atomically publish semantic lead stem: {error}"
+        ))
+    })?;
+    Ok(SeparationOutput {
+        role: AudioRole::LeadVocal,
+        artifact: artifact_ref_for_existing(output_root, &relative, "audio/flac")?,
+    })
+}
+
 pub fn run_separation(
     task: &SeparationTask<'_>,
     cancellation: &CancellationToken,

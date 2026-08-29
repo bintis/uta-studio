@@ -358,8 +358,9 @@ mod tests {
     use super::*;
     use crate::contract::{ContextAuthority, TimeSignatureV1};
     use crate::fusion::{
-        CanonicalLyrics, CanonicalNote, CanonicalNoteEvidence, CanonicalWordBoundary, F0Point,
-        HarmonyMetadata, LyricsAuthority, PitchBendPoint, TechniqueScores, TranscriptTokenEvidence,
+        BoundaryCandidateRole, BoundaryEvidenceKind, CanonicalLyrics, CanonicalNote,
+        CanonicalNoteEvidence, CanonicalWordBoundary, F0Point, HarmonyMetadata, LyricsAuthority,
+        PitchBendPoint, TechniqueScores, TranscriptTokenEvidence,
     };
 
     fn context() -> MusicalContextV1 {
@@ -395,9 +396,14 @@ mod tests {
             word_id: Some(word_id.to_string()),
             evidence: CanonicalNoteEvidence {
                 source_experts: vec!["game".to_string()],
-                game_fractional_midi: 69.0,
-                game_boundary_decision_threshold: 0.2,
-                game_presence_decision_threshold: 0.2,
+                decision_trace: Default::default(),
+                boundary_source: "game".to_string(),
+                boundary_kind: BoundaryEvidenceKind::Game,
+                boundary_role: BoundaryCandidateRole::Primary,
+                boundary_fractional_midi: Some(69.0),
+                boundary_decision_parameter: Some(0.2),
+                presence_decision_parameter: Some(0.2),
+                target_pitch_source: "game".to_string(),
                 rmvpe_center_hz: Some(440.0),
                 rmvpe_confidence: Some(0.9),
                 rmvpe_cents_difference: Some(0.0),
@@ -409,6 +415,10 @@ mod tests {
                 fcpe_cents_from_rmvpe: None,
                 fcpe_supports_rmvpe: None,
                 acoustic: None,
+                basic_pitch: None,
+                boundary_calibrated_confidence: None,
+                boundary_alternatives: Vec::new(),
+                technique_evidence: Vec::new(),
             },
         }
     }

@@ -33,10 +33,13 @@ mod last_successful_run_tests {
                 backend_fallback_reason: None,
                 stage_routes: Vec::new(),
                 node_id: None,
+                engine_node_id: None,
+                capability_id: None,
                 node_event: None,
                 artifact_reused_reason: None,
                 analysis_log_path: None,
                 engine: None,
+                engine_error: None,
             },
         }
     }
@@ -294,16 +297,19 @@ mod view_song_analysis_tests {
                 backend_fallback_reason: None,
                 stage_routes: Vec::new(),
                 node_id: None,
+                engine_node_id: None,
+                capability_id: None,
                 node_event: None,
                 artifact_reused_reason: None,
                 analysis_log_path: None,
                 engine: None,
+                engine_error: None,
             },
         }
     }
 
     #[test]
-    fn song_detail_analysis_button_targets_the_clicked_song() {
+    fn advanced_graph_sidebar_action_targets_the_selected_song() {
         assert_eq!(
             view_song_analysis_action("song-a"),
             UiAction::from(AnalysisCommand::OpenSongAnalysis("song-a".to_string()))
@@ -324,10 +330,7 @@ mod view_song_analysis_tests {
 
     #[test]
     fn clicked_song_does_not_open_an_unrelated_or_failed_analysis() {
-        let history = vec![
-            run(3, "song-a", "failed"),
-            run(2, "song-b", "completed"),
-        ];
+        let history = vec![run(3, "song-a", "failed"), run(2, "song-b", "completed")];
 
         assert_eq!(completed_analysis_run_id(&history, "song-a"), None);
         assert_eq!(completed_analysis_run_id(&history, "missing"), None);

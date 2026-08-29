@@ -26,12 +26,16 @@ fn run_task(
         source,
         output_dir,
         config,
-        |fraction, message| {
-            let _ = emit(WorkerFrame::Progress {
-                task_id,
-                fraction,
-                message,
-            });
+        |fraction, message, work_units| {
+            if let Some((completed, total)) = work_units {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction,
+                    message,
+                    work_units_completed: Some(completed),
+                    work_units_total: Some(total),
+                });
+            }
         },
     )?;
     for output in outputs {

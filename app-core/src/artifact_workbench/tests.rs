@@ -2,9 +2,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::{
-        ArtifactStore, CacheDir, NodeState, record_artifact_revision,
-    };
+    use crate::{ArtifactStore, CacheDir, record_artifact_revision};
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -52,8 +50,8 @@ mod tests {
     ) -> ArtifactRevision {
         let value = serde_json::json!({
             "format": "uta.vocal-chart",
-            "format_version": "1.0.0",
-            "timebase": 1000,
+            "format_version": "0.3.0",
+            "timebase": utz::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,
@@ -94,83 +92,6 @@ mod tests {
     }
 
     #[test]
-    fn downstream_impact_uses_real_graph_closure() {
-        let impact = preview_node_downstream_impact("lyrics.align").unwrap();
-        assert!(
-            impact
-                .affected_nodes
-                .iter()
-                .any(|id| id.as_str() == "chart.build_candidate")
-        );
-        assert!(impact.authored_chart_preserved);
-        assert!(
-            impact
-                .queued_targets
-                .iter()
-                .any(|id| id.as_str() == "lyrics.align")
-        );
-    }
-
-    #[test]
-    fn frozen_impact_groups_match_the_plan_that_confirmation_would_queue() {
-        let impact = preview_frozen_downstream_impact(
-            "impact-song",
-            ImpactTrigger::RunDownstream,
-            Some("lyrics.align"),
-        )
-        .unwrap();
-        let request = analysis_request_from_impact("impact-song", &impact);
-        assert!(queued_request_matches_preview(&impact, &request));
-        let plan =
-            crate::analysis_plan::preview_analysis_plan("impact-song", request.clone()).unwrap();
-        let planned_run = plan
-            .nodes
-            .iter()
-            .filter(|node| node.will_run)
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(impact.will_run, planned_run);
-        let planned_reuse = plan
-            .nodes
-            .iter()
-            .filter(|node| node.state == NodeState::Frozen)
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(impact.will_reuse, planned_reuse);
-        let planned_blocked = plan
-            .nodes
-            .iter()
-            .filter(|node| matches!(node.state, NodeState::Blocked | NodeState::Disabled))
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(impact.will_be_blocked, planned_blocked);
-    }
-
-    #[test]
-    fn freeze_trigger_puts_stem_kinds_on_the_queued_request() {
-        let impact = preview_frozen_downstream_impact(
-            "freeze-impact",
-            ImpactTrigger::Freeze,
-            Some("stems.separate"),
-        )
-        .unwrap();
-        assert!(impact.queued_frozen.contains(&ArtifactKind::VocalStem));
-        assert!(
-            impact
-                .queued_frozen
-                .contains(&ArtifactKind::InstrumentalStem)
-        );
-        let request = analysis_request_from_impact("freeze-impact", &impact);
-        assert!(queued_request_matches_preview(&impact, &request));
-        assert!(
-            impact
-                .will_reuse
-                .iter()
-                .any(|id| id.as_str() == "stems.bind_analysis_outputs")
-        );
-    }
-
-    #[test]
     fn candidate_merge_uses_exact_revisions_and_keeps_authored_track_metadata() {
         let root = test_root("chart-merge");
         let _guard = library_db::reconnect_for_test(&root.join("db"));
@@ -204,8 +125,8 @@ mod tests {
             file_hash: hash.to_string(),
             vocal_chart: crate::VocalChartV1 {
                 format: "uta.vocal-chart".into(),
-                format_version: "1.0.0".into(),
-                timebase: 1000,
+                format_version: utz::VOCAL_CHART_VERSION.into(),
+                timebase: utz::UTZ_TIMEBASE,
                 language: Some("en".into()),
                 tracks: Vec::new(),
             },
@@ -331,8 +252,8 @@ mod tests {
         let hash = "merge-select";
         let candidate_value = serde_json::json!({
             "format": "uta.vocal-chart",
-            "format_version": "1.0.0",
-            "timebase": 1000,
+            "format_version": "0.3.0",
+            "timebase": utz::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,
@@ -357,8 +278,8 @@ mod tests {
         });
         let authored_value = serde_json::json!({
             "format": "uta.vocal-chart",
-            "format_version": "1.0.0",
-            "timebase": 1000,
+            "format_version": "0.3.0",
+            "timebase": utz::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,
@@ -447,13 +368,23 @@ mod tests {
         set_artifact_pinned(&revision_ref(&authored), true).unwrap();
         assert!(authored_chart_is_pinned(hash));
 
+        let newer = chart_revision(&cache, hash, ArtifactKind::AuthoredChart, 62, "new");
+        record_artifact_revision(&newer).unwrap();
+        crate::analysis_artifact::set_active_artifact_revision(
+            &cache.path,
+            hash,
+            ArtifactKind::AuthoredChart,
+            &newer.id,
+        )
+        .unwrap();
+        assert_ne!(newer.id, authored.id);
+        assert!(
+            authored_chart_is_pinned(hash),
+            "an inactive usable revision still blocks all-or-nothing chart deletion"
+        );
+
         drop(_guard);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn unknown_node_is_rejected() {
-        assert!(preview_node_downstream_impact("does.not.exist").is_err());
     }
 
     #[test]
@@ -555,44 +486,6 @@ mod tests {
         assert!(summary.contains("1 moved"));
         assert!(summary.contains("1 transposed"));
         assert_eq!(details.len(), 2);
-    }
-
-    #[test]
-    fn intermediate_capture_request_persists_mode_and_can_be_disabled() {
-        let root = test_root("capture-request");
-        std::fs::create_dir_all(&root).unwrap();
-        let _guard = crate::library_db::reconnect_for_test(&root);
-        let mut request = CaptureIntermediateRequest {
-            file_hash: "capture-song".to_string(),
-            node_id: AnalysisNodeId::new("lyrics.preprocess"),
-            kind: ArtifactKind::PreprocessedAudio,
-            enabled: true,
-            persistent: false,
-        };
-        set_intermediate_capture_request(&request).unwrap();
-        assert_eq!(
-            intermediate_capture_request("capture-song").unwrap(),
-            Some(request.clone())
-        );
-
-        request.persistent = true;
-        set_intermediate_capture_request(&request).unwrap();
-        assert!(
-            intermediate_capture_request("capture-song")
-                .unwrap()
-                .unwrap()
-                .persistent
-        );
-
-        request.enabled = false;
-        set_intermediate_capture_request(&request).unwrap();
-        assert!(
-            intermediate_capture_request("capture-song")
-                .unwrap()
-                .is_none()
-        );
-        drop(_guard);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

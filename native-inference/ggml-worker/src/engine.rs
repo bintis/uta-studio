@@ -1,3 +1,4 @@
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -42,7 +43,15 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
         .get("semantic_output")
         .and_then(serde_json::Value::as_str);
     let expected = match model_id {
-        "bs_roformer_vocals_ep317" => "guide_vocals",
+        "bs_roformer_vocals_ep317" => {
+            if matches!(
+                semantic,
+                Some("guide_vocals" | "guide_vocals+instrumental_residual")
+            ) {
+                return Ok(());
+            }
+            "guide_vocals"
+        }
         "melband_roformer_inst_v2" => "instrumental",
         "melband_roformer_denoise_aufr33" => "dry",
         "melband_roformer_dereverb_anvuew" => "noreverb",
@@ -108,12 +117,12 @@ pub fn run(
     source: &Path,
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &'static str),
+    mut progress: impl FnMut(f32, &'static str, Option<(u64, u64)>),
 ) -> Result<Vec<PublishedOutput>, String> {
     validate_semantics(model_id, config)?;
-    progress(0.02, "Validating pinned GGML Vulkan runtime");
+    progress(0.02, "Validating pinned GGML Vulkan runtime", None);
     let validated_runtime = runtime::validate_runtime()?;
-    progress(0.05, "Validating exact GGUF model identity");
+    progress(0.05, "Validating exact GGUF model identity", None);
     let model = runtime::validate_model(model_id, &model_path(config)?)?;
     let input = audio::decode_stereo_wav(source, output_dir, task_id)?;
     let engine_output = output_dir.join(format!("{task_id}-ggml-engine.wav"));
@@ -121,7 +130,7 @@ pub fn run(
         let _ = std::fs::remove_file(&input);
         return Err("GGML engine output target already exists".to_string());
     }
-    progress(0.1, "Running GGML model on explicit Vulkan device");
+    progress(0.1, "Running GGML model on explicit Vulkan device", None);
     let mut command = Command::new(&validated_runtime.engine);
     command
         .arg(&model)
@@ -131,14 +140,15 @@ pub fn run(
         .arg("--vulkan-device")
         .arg(vulkan_device(config)?.to_string())
         .args(&FIXED_SAFE_EXECUTION_ARGS[2..])
+        .arg("--machine-progress")
         .env(
             "UTA_STUDIO_GGML_RUNTIME_MANIFEST_SHA256",
             validated_runtime.manifest_sha256,
         )
         .stdin(Stdio::null())
-        // The legacy engine prints a progress bar. Never accumulate unbounded
-        // child output inside the long-lived protocol worker.
-        .stdout(Stdio::null())
+        // Machine stdout carries bounded, exact overlap-add chunk records.
+        // Human diagnostics remain unparsed and are discarded line by line.
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(target_os = "linux")]
     prepend_library_path(
@@ -148,23 +158,48 @@ pub fn run(
     )?;
     #[cfg(target_os = "windows")]
     prepend_library_path(&mut command, "PATH", &validated_runtime.library_dir)?;
-    let output = command
-        .status()
-        .map_err(|error| format!("could not start GGML RoFormer engine: {error}"));
-    match output {
-        Ok(status) if status.success() && engine_output.is_file() => {}
-        Ok(status) => {
-            let _ = std::fs::remove_file(&input);
-            let _ = std::fs::remove_file(&engine_output);
-            return Err(format!("GGML RoFormer engine failed with {status}"));
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not start GGML RoFormer engine: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "GGML RoFormer machine-progress stdout is unavailable".to_string())?;
+    let mut last_units = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|error| format!("could not read GGML progress: {error}"))?;
+        let Some((completed, total)) = parse_work_units(&line)? else {
+            continue;
+        };
+        if last_units.is_some_and(|(previous, previous_total)| {
+            total != previous_total || completed <= previous
+        }) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("GGML RoFormer work units changed identity or regressed".to_string());
         }
-        Err(error) => {
-            let _ = std::fs::remove_file(&input);
-            return Err(error);
-        }
+        last_units = Some((completed, total));
+        progress(
+            completed as f32 / total as f32,
+            "Running measured GGML overlap-add chunk",
+            Some((completed, total)),
+        );
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not wait for GGML RoFormer engine: {error}"))?;
+    if !status.success() || !engine_output.is_file() {
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&engine_output);
+        return Err(format!("GGML RoFormer engine failed with {status}"));
+    }
+    if last_units.is_none_or(|(completed, total)| completed != total) {
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&engine_output);
+        return Err("GGML RoFormer did not complete its measured chunk route".to_string());
     }
 
-    progress(0.92, "Atomically encoding lossless GGML output");
+    progress(0.92, "Atomically encoding lossless GGML output", None);
     let destination = output_dir.join(output_name(model_id));
     let result = (|| {
         audio::encode_flac(&engine_output, &destination)?;
@@ -179,6 +214,23 @@ pub fn run(
                 artifact: "vocal_residual",
                 path: residual,
             });
+        } else if model_id == "bs_roformer_vocals_ep317"
+            && config
+                .get("semantic_output")
+                .and_then(serde_json::Value::as_str)
+                == Some("guide_vocals+instrumental_residual")
+        {
+            let residual = output_dir.join("instrumental.flac");
+            audio::encode_residual_flac(
+                &input,
+                &engine_output,
+                &residual,
+                "EP317 Instrumental residual encode",
+            )?;
+            published.push(PublishedOutput {
+                artifact: "instrumental",
+                path: residual,
+            });
         }
         Ok(published)
     })();
@@ -187,9 +239,29 @@ pub fn run(
     if result.is_err() {
         let _ = std::fs::remove_file(&destination);
         let _ = std::fs::remove_file(output_dir.join("vocal-residual.flac"));
+        let _ = std::fs::remove_file(output_dir.join("instrumental.flac"));
     }
-    progress(1.0, "GGML Vulkan inference complete");
+    progress(1.0, "GGML Vulkan inference complete", None);
     result
+}
+
+fn parse_work_units(line: &str) -> Result<Option<(u64, u64)>, String> {
+    let Some(values) = line.strip_prefix("UTA_WORK_UNITS v1 ") else {
+        return Ok(None);
+    };
+    let mut values = values.split_ascii_whitespace();
+    let completed = values
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "GGML RoFormer completed chunk count is invalid".to_string())?;
+    let total = values
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "GGML RoFormer total chunk count is invalid".to_string())?;
+    if values.next().is_some() || total == 0 || completed == 0 || completed > total {
+        return Err("GGML RoFormer work-unit record is invalid".to_string());
+    }
+    Ok(Some((completed, total)))
 }
 
 #[cfg(test)]
@@ -233,6 +305,16 @@ mod tests {
         );
         assert!(
             validate_semantics(
+                "bs_roformer_vocals_ep317",
+                &serde_json::json!({
+                    "backend":"ggml_vulkan",
+                    "semantic_output":"guide_vocals+instrumental_residual"
+                })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_semantics(
                 "rmvpe",
                 &serde_json::json!({
                     "backend":"ggml_vulkan",
@@ -263,5 +345,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn machine_progress_parser_accepts_only_real_bounded_chunks() {
+        assert_eq!(parse_work_units("human log").unwrap(), None);
+        assert_eq!(
+            parse_work_units("UTA_WORK_UNITS v1 3 10").unwrap(),
+            Some((3, 10))
+        );
+        for invalid in [
+            "UTA_WORK_UNITS v1 0 10",
+            "UTA_WORK_UNITS v1 11 10",
+            "UTA_WORK_UNITS v1 1 0",
+            "UTA_WORK_UNITS v1 1 10 extra",
+        ] {
+            assert!(parse_work_units(invalid).is_err(), "{invalid}");
+        }
     }
 }

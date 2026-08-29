@@ -57,11 +57,11 @@ pub(crate) fn spawn_settings_stage_header(
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
+                border_radius: studio_card_radius(),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(0.28)),
-            BorderColor::all(theme.border.with_alpha(0.58)),
+            studio_card_background(theme),
+            studio_card_border(theme),
         ))
         .with_children(|header| {
             header

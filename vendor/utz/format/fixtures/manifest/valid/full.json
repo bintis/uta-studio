@@ -1,0 +1,83 @@
+{
+  "format": "uta.song",
+  "format_version": "0.2.1",
+  "package_id": "org.example.demo.full",
+  "revision": 3,
+  "song": {
+    "title": "満漢全席",
+    "artist": "例楽団",
+    "album": "宴",
+    "language": "ja",
+    "duration_seconds": 245.5,
+    "bpm": 128,
+    "key": "Am",
+    "title_sort": "まんかんぜんせき",
+    "artist_sort": "れいがくだん",
+    "genre": "pop",
+    "year": 2024,
+    "creator": "charter-name",
+    "tags": ["duet", "anime"],
+    "preview_start_seconds": 58.2
+  },
+  "audio": {
+    "instrumental": {
+      "path": "audio/instrumental.ogg",
+      "media_type": "audio/ogg",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "bytes": 4194304
+    },
+    "guide_vocals": {
+      "path": "audio/guide.ogg",
+      "media_type": "audio/ogg",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "bytes": 2097152
+    },
+    "loudness": {
+      "instrumental_lufs": -14.2,
+      "guide_vocals_lufs": -16.0
+    }
+  },
+  "charts": {
+    "vocal": {
+      "path": "charts/vocal.json",
+      "media_type": "application/vnd.uta.vocal-chart+json;version=1",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "bytes": 65536
+    }
+  },
+  "analysis": {
+    "pitch_evidence": {
+      "path": "analysis/pitch.json",
+      "media_type": "application/vnd.uta.pitch-evidence+json;version=1",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "bytes": 131072
+    }
+  },
+  "visuals": {
+    "cover": {
+      "path": "visuals/cover.webp",
+      "media_type": "image/webp",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "bytes": 262144
+    },
+    "video": {
+      "path": "visuals/background.mp4",
+      "media_type": "video/mp4",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "bytes": 33554432
+    },
+    "video_offset_seconds": -1.5
+  },
+  "scoring": {
+    "engine": "uta.vocal",
+    "version": 1,
+    "octave_tolerance": true
+  },
+  "required_features": ["vocal-chart/1"],
+  "optional_features": ["pitch-evidence/1"],
+  "provenance": {
+    "generator": "uta-studio 0.2",
+    "source": "licensed master",
+    "rights": "distribution restricted to owner"
+  }
+}

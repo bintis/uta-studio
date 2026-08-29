@@ -19,7 +19,28 @@ struct EmbeddedGuideBundle {
 
 #[derive(serde::Deserialize)]
 struct EmbeddedGuideLocale {
-    source: String,
+    pages: Vec<EmbeddedPage>,
+    headings: Vec<EmbeddedHeading>,
+}
+
+/// One of the 15 canonical guide pages, already bounded to its own body by
+/// `cargo xtask docs build` (see `xtask/src/docs.rs::parse_pages`) — the
+/// runtime must not re-derive page boundaries from raw markdown.
+#[derive(serde::Deserialize)]
+struct EmbeddedPage {
+    id: String,
+    heading: String,
+    anchor: String,
+    body: String,
+}
+
+/// Every heading in the guide (all levels), mapping its anchor back to the
+/// page that contains it. Lets `resolve_page` answer "heading:<slug>"
+/// navigation targets in O(1) instead of re-scanning raw source text.
+#[derive(serde::Deserialize)]
+struct EmbeddedHeading {
+    anchor: String,
+    page_id: String,
 }
 
 fn guide_bundle() -> &'static EmbeddedGuideBundle {
@@ -142,18 +163,168 @@ enum MarkdownBlock {
     },
 }
 
-fn source_for(locale: UiLocale) -> &'static str {
-    let key = match locale {
+fn locale_key(locale: UiLocale) -> &'static str {
+    match locale {
         UiLocale::English => "en",
         UiLocale::SimplifiedChinese => "zh-CN",
         UiLocale::Japanese => "ja",
-    };
-    guide_bundle()
-        .locales
-        .get(key)
-        .or_else(|| guide_bundle().locales.get("en"))
-        .map(|locale| locale.source.as_str())
+    }
+}
+
+/// A single searchable unit within a page: one rendered markdown block, plus
+/// the nearest heading above it (or the page's own heading, if the block
+/// comes before the first subheading) so a hit can navigate straight there.
+struct SearchBlock {
+    heading: String,
+    heading_lower: String,
+    anchor: String,
+    text: String,
+    text_lower: String,
+    is_heading: bool,
+}
+
+struct PageIndex {
+    id: String,
+    label: String,
+    blocks: Vec<MarkdownBlock>,
+    search_blocks: Vec<SearchBlock>,
+}
+
+struct LocaleIndex {
+    pages: Vec<PageIndex>,
+    heading_to_page: HashMap<String, String>,
+}
+
+/// Strips the canonical "N. " numeric prefix the guide's H3 titles carry
+/// (e.g. "6. Analysis pipeline") for a clean navigation label.
+fn page_label(heading: &str) -> String {
+    heading
+        .split_once(". ")
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_else(|| heading.to_string())
+}
+
+fn build_search_blocks(
+    page: &EmbeddedPage,
+    label: &str,
+    blocks: &[MarkdownBlock],
+) -> Vec<SearchBlock> {
+    let mut heading = label.to_string();
+    let mut anchor = page.anchor.clone();
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let (text, is_heading) = match block {
+            MarkdownBlock::Heading {
+                text, anchor: id, ..
+            } => {
+                heading = text.clone();
+                anchor = id.clone();
+                (text.clone(), true)
+            }
+            MarkdownBlock::Paragraph(text) | MarkdownBlock::Callout { text, .. } => {
+                (text.clone(), false)
+            }
+            MarkdownBlock::UnorderedList(items) | MarkdownBlock::OrderedList(items) => {
+                (items.join(" "), false)
+            }
+            MarkdownBlock::Code { text, .. } => (text.clone(), false),
+            MarkdownBlock::Table(rows) => (
+                rows.iter().flatten().cloned().collect::<Vec<_>>().join(" "),
+                false,
+            ),
+        };
+        out.push(SearchBlock {
+            heading: heading.clone(),
+            heading_lower: heading.to_lowercase(),
+            anchor: anchor.clone(),
+            text_lower: text.to_lowercase(),
+            text,
+            is_heading,
+        });
+    }
+    out
+}
+
+fn build_locale_index(locale: &EmbeddedGuideLocale) -> LocaleIndex {
+    let mut pages = Vec::with_capacity(locale.pages.len());
+    for page in &locale.pages {
+        let blocks = parse_markdown(&page.body);
+        let label = page_label(&page.heading);
+        let search_blocks = build_search_blocks(page, &label, &blocks);
+        pages.push(PageIndex {
+            id: page.id.clone(),
+            label,
+            blocks,
+            search_blocks,
+        });
+    }
+    let heading_to_page = locale
+        .headings
+        .iter()
+        .map(|heading| (heading.anchor.clone(), heading.page_id.clone()))
+        .collect();
+    LocaleIndex {
+        pages,
+        heading_to_page,
+    }
+}
+
+/// Every page and heading, parsed once and cached for the process lifetime
+/// instead of re-parsing raw markdown on every render/keystroke.
+fn locale_index(locale: UiLocale) -> &'static LocaleIndex {
+    static INDEXES: OnceLock<HashMap<&'static str, LocaleIndex>> = OnceLock::new();
+    let indexes = INDEXES.get_or_init(|| {
+        let bundle = guide_bundle();
+        ["en", "zh-CN", "ja"]
+            .into_iter()
+            .filter_map(|key| {
+                bundle
+                    .locales
+                    .get(key)
+                    .map(|locale| (key, build_locale_index(locale)))
+            })
+            .collect()
+    });
+    indexes
+        .get(locale_key(locale))
+        .or_else(|| indexes.get("en"))
         .expect("generated documentation bundle must contain English")
+}
+
+/// Resolves a navigation target (a page id like "guide:analysis", a
+/// "heading:<slug>" search/outline hit, or nothing) to the page that must be
+/// rendered. Page bodies are already correctly bounded by the doc pipeline,
+/// so this never leaks content from later sections the way scanning raw
+/// source for a heading marker used to.
+fn resolve_page<'a>(index: &'a LocaleIndex, anchor: Option<&str>) -> &'a PageIndex {
+    let fallback = index
+        .pages
+        .first()
+        .expect("generated documentation bundle always has pages");
+    let Some(anchor) = anchor else {
+        return fallback;
+    };
+    if let Some(page) = index.pages.iter().find(|page| page.id == anchor) {
+        return page;
+    }
+    if let Some(slug) = anchor.strip_prefix("heading:")
+        && let Some(page_id) = index.heading_to_page.get(slug)
+        && let Some(page) = index.pages.iter().find(|page| &page.id == page_id)
+    {
+        return page;
+    }
+    fallback
+}
+
+fn search_snippet(text: &str) -> String {
+    const MAX_CHARS: usize = 90;
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        trimmed.to_string()
+    } else {
+        let truncated = trimmed.chars().take(MAX_CHARS).collect::<String>();
+        format!("{truncated}\u{2026}")
+    }
 }
 
 pub(crate) fn documentation_anchor_for_node(node_id: &str) -> &'static str {
@@ -379,41 +550,40 @@ fn ordered_item(line: &str) -> Option<&str> {
 }
 
 pub(crate) fn search_documentation(locale: UiLocale, query: &str) -> Vec<DocumentationSearchHit> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
+    let tokens = query
+        .trim()
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
         return Vec::new();
     }
-    let mut heading = String::new();
-    let mut anchor = String::new();
+    let index = locale_index(locale);
     let mut hits = Vec::new();
-    for block in parse_markdown(source_for(locale)) {
-        let (line, is_heading) = match block {
-            MarkdownBlock::Heading {
-                text, anchor: id, ..
-            } => {
-                heading = text.clone();
-                anchor = id;
-                (text, true)
+    for page in &index.pages {
+        for block in &page.search_blocks {
+            let heading_hit = tokens
+                .iter()
+                .all(|token| block.heading_lower.contains(token.as_str()));
+            let matches = heading_hit
+                || tokens.iter().all(|token| {
+                    block.text_lower.contains(token.as_str())
+                        || block.heading_lower.contains(token.as_str())
+                });
+            if !matches {
+                continue;
             }
-            MarkdownBlock::Paragraph(text) | MarkdownBlock::Callout { text, .. } => (text, false),
-            MarkdownBlock::UnorderedList(items) | MarkdownBlock::OrderedList(items) => {
-                (items.join(" "), false)
-            }
-            MarkdownBlock::Code { text, .. } => (text, false),
-            MarkdownBlock::Table(rows) => (
-                rows.into_iter().flatten().collect::<Vec<_>>().join(" "),
-                false,
-            ),
-        };
-        let line_lower = line.to_lowercase();
-        let heading_lower = heading.to_lowercase();
-        if line_lower.contains(&query) || heading_lower.contains(&query) {
-            let heading_bonus = usize::from(is_heading || heading_lower.contains(&query)) * 100;
+            let heading_bonus = usize::from(block.is_heading || heading_hit) * 100;
+            let query_len = tokens
+                .iter()
+                .map(|token| token.chars().count())
+                .sum::<usize>();
             hits.push(DocumentationSearchHit {
-                heading: heading.clone(),
-                line,
-                anchor: anchor.clone(),
-                score: heading_bonus + query.chars().count(),
+                heading: block.heading.clone(),
+                line: block.text.clone(),
+                anchor: block.anchor.clone(),
+                score: heading_bonus + query_len,
             });
         }
     }
@@ -499,48 +669,6 @@ fn render_markdown_block(
     ));
 }
 
-fn section_number_for_anchor(anchor: &str) -> Option<&'static str> {
-    match anchor {
-        "guide:getting-started" => Some("### 3."),
-        "guide:analysis" => Some("### 6."),
-        "guide:lyrics" => Some("### 7."),
-        "guide:editor" => Some("### 8."),
-        "guide:export" => Some("### 9."),
-        "guide:troubleshooting" => Some("### 12."),
-        "guide:documentation" => Some("### 14."),
-        "guide:artifacts" => Some("### 15."),
-        _ => None,
-    }
-}
-
-fn visible_source<'a>(source: &'a str, anchor: Option<&str>) -> &'a str {
-    let Some(anchor) = anchor else {
-        return source;
-    };
-    if let Some(prefix) = section_number_for_anchor(anchor)
-        && let Some(index) = source.find(prefix)
-    {
-        return &source[index..];
-    }
-    if let Some(slugged) = anchor.strip_prefix("heading:") {
-        let mut offset = 0usize;
-        for line in source.lines() {
-            let line_with_newline = source[offset..]
-                .find('\n')
-                .map(|end| &source[offset..offset + end + 1])
-                .unwrap_or(&source[offset..]);
-            if line.trim_start().starts_with('#') {
-                let heading = line.trim_start_matches('#').trim();
-                if slug(heading) == slugged {
-                    return &source[offset..];
-                }
-            }
-            offset += line_with_newline.len();
-        }
-    }
-    source
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(test)]
 enum DocumentationLayout {
@@ -557,6 +685,24 @@ fn documentation_layout_for_width(width: f32) -> DocumentationLayout {
     }
 }
 
+pub(crate) fn spawn_documentation_header_actions(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+) {
+    if !session.documentation.forward_stack.is_empty() {
+        spawn_text_button(
+            parent,
+            font.clone(),
+            theme,
+            "Forward",
+            10.0,
+            UiAction::from(AppCommand::DocumentationForward),
+        );
+    }
+}
+
 pub(crate) fn spawn_documentation(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -564,9 +710,11 @@ pub(crate) fn spawn_documentation(
     theme: &StudioTheme,
 ) {
     let locale = effective_ui_locale(session.config);
-    let source = source_for(locale);
-    let visible_source = visible_source(source, session.documentation.anchor.as_deref());
-    let hits = search_documentation(locale, &session.documentation.query);
+    let index = locale_index(locale);
+    let page = resolve_page(index, session.documentation.anchor.as_deref());
+    let query = session.documentation.query.as_str();
+    let searching = !query.trim().is_empty();
+    let hits = search_documentation(locale, query);
 
     parent
         .spawn(Node {
@@ -578,85 +726,6 @@ pub(crate) fn spawn_documentation(
             ..default()
         })
         .with_children(|root| {
-            root.spawn((
-                Node {
-                    width: percent(100),
-                    min_height: px(76),
-                    align_items: AlignItems::Center,
-                    column_gap: px(12),
-                    padding: UiRect::axes(px(26), px(16)),
-                    border: UiRect::bottom(px(1)),
-                    ..default()
-                },
-                BackgroundColor(theme.card.with_alpha(0.55)),
-                BorderColor::all(theme.border.with_alpha(0.55)),
-            ))
-            .with_children(|header| {
-                spawn_text_button(
-                    header,
-                    font.clone(),
-                    theme,
-                    "Back",
-                    10.0,
-                    UiAction::from(AppCommand::DocumentationBack),
-                );
-                if !session.documentation.forward_stack.is_empty() {
-                    spawn_text_button(
-                        header,
-                        font.clone(),
-                        theme,
-                        "Forward",
-                        10.0,
-                        UiAction::from(AppCommand::DocumentationForward),
-                    );
-                }
-                header
-                    .spawn(Node {
-                        min_width: px(0),
-                        flex_grow: 1.0,
-                        flex_direction: FlexDirection::Column,
-                        ..default()
-                    })
-                    .with_children(|copy| {
-                        spawn_text(copy, font.clone(), "Documentation", 21.0, theme.foreground);
-                        spawn_text(
-                            copy,
-                            font.clone(),
-                            match locale {
-                                UiLocale::English => "Offline user guide · English",
-                                UiLocale::SimplifiedChinese => "离线使用说明 · 简体中文",
-                                UiLocale::Japanese => "オフラインユーザーガイド · 日本語",
-                            },
-                            9.0,
-                            theme.muted_foreground,
-                        );
-                    });
-                header.spawn((
-                    DocumentationSearchInput,
-                    EditableText {
-                        visible_width: Some(30.0),
-                        max_characters: Some(120),
-                        ..EditableText::new(session.documentation.query.as_str())
-                    },
-                    Node {
-                        width: px(280),
-                        min_height: px(34),
-                        padding: UiRect::axes(px(10), px(7)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(5)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.background.with_alpha(0.72)),
-                    BorderColor::all(theme.border),
-                    ui_text_font(font.clone(), 10.0),
-                    TextColor(theme.foreground),
-                    TextCursorStyle {
-                        color: theme.primary,
-                        ..default()
-                    },
-                ));
-            });
-
             root.spawn(Node {
                 min_width: px(0),
                 min_height: px(0),
@@ -683,43 +752,56 @@ pub(crate) fn spawn_documentation(
                     BorderColor::all(theme.border.with_alpha(0.45)),
                 ))
                 .with_children(|toc| {
-                    spawn_text(toc, font.clone(), "CONTENTS", 8.0, theme.primary);
-                    for (label, anchor) in [
-                        ("Getting started", "guide:getting-started"),
-                        ("Analysis pipeline", "guide:analysis"),
-                        ("Lyrics & language", "guide:lyrics"),
-                        ("Chart editor", "guide:editor"),
-                        ("Export", "guide:export"),
-                        ("Documentation Center", "guide:documentation"),
-                        ("Analysis artifacts", "guide:artifacts"),
-                        ("Troubleshooting", "guide:troubleshooting"),
-                    ] {
-                        spawn_text_button(
+                    if searching {
+                        spawn_text(
                             toc,
                             font.clone(),
-                            theme,
-                            label,
-                            9.0,
-                            UiAction::from(AppCommand::OpenDocumentation(Some(anchor.to_string()))),
+                            format!("SEARCH RESULTS \u{b7} {}", hits.len()),
+                            8.0,
+                            theme.primary,
                         );
-                    }
-                    if !hits.is_empty() {
-                        toc.spawn(Node {
-                            height: px(9),
-                            ..default()
-                        });
-                        spawn_text(toc, font.clone(), "SEARCH RESULTS", 8.0, theme.primary);
-                        for hit in &hits {
+                        if hits.is_empty() {
+                            spawn_text(
+                                toc,
+                                font.clone(),
+                                format!("No matches for \u{201c}{}\u{201d}", query.trim()),
+                                9.0,
+                                theme.muted_foreground,
+                            );
+                        } else {
+                            for hit in &hits {
+                                spawn_text_button(
+                                    toc,
+                                    font.clone(),
+                                    theme,
+                                    &hit.heading,
+                                    9.0,
+                                    UiAction::from(AppCommand::OpenDocumentation(Some(format!(
+                                        "heading:{}",
+                                        hit.anchor
+                                    )))),
+                                );
+                                spawn_text(
+                                    toc,
+                                    font.clone(),
+                                    search_snippet(&hit.line),
+                                    8.0,
+                                    theme.muted_foreground,
+                                );
+                            }
+                        }
+                    } else {
+                        spawn_text(toc, font.clone(), "CONTENTS", 8.0, theme.primary);
+                        for entry in &index.pages {
                             spawn_text_button(
                                 toc,
                                 font.clone(),
                                 theme,
-                                &hit.heading,
+                                &entry.label,
                                 9.0,
-                                UiAction::from(AppCommand::OpenDocumentation(Some(format!(
-                                    "heading:{}",
-                                    hit.anchor
-                                )))),
+                                UiAction::from(AppCommand::OpenDocumentation(Some(
+                                    entry.id.clone(),
+                                ))),
                             );
                         }
                     }
@@ -748,24 +830,22 @@ pub(crate) fn spawn_documentation(
                             padding: UiRect::axes(px(38), px(30)),
                             ..default()
                         })
-                        .with_children(|page| {
-                            if let Some(anchor) = session.documentation.anchor.as_deref() {
-                                page.spawn((
-                                    NoRuntimeLocalization,
-                                    Text::new(format!("Context: {anchor}")),
-                                    ui_text_font(font.clone(), 8.0),
-                                    TextColor(theme.primary),
-                                ));
-                                page.spawn((
-                                    NoRuntimeLocalization,
-                                    Node {
-                                        height: px(8),
-                                        ..default()
-                                    },
-                                ));
-                            }
-                            for block in parse_markdown(visible_source) {
-                                render_markdown_block(page, font.clone(), theme, &block);
+                        .with_children(|page_ui| {
+                            page_ui.spawn((
+                                NoRuntimeLocalization,
+                                Text::new(page.label.clone()),
+                                ui_text_font(font.clone(), 24.0),
+                                TextColor(theme.foreground),
+                            ));
+                            page_ui.spawn((
+                                NoRuntimeLocalization,
+                                Node {
+                                    height: px(10),
+                                    ..default()
+                                },
+                            ));
+                            for block in &page.blocks {
+                                render_markdown_block(page_ui, font.clone(), theme, block);
                             }
                         });
                 });
@@ -788,7 +868,7 @@ pub(crate) fn spawn_documentation(
                 ))
                 .with_children(|outline| {
                     spawn_text(outline, font.clone(), "ON THIS PAGE", 8.0, theme.primary);
-                    for block in parse_markdown(visible_source) {
+                    for block in &page.blocks {
                         let MarkdownBlock::Heading {
                             level,
                             text,
@@ -797,12 +877,12 @@ pub(crate) fn spawn_documentation(
                         else {
                             continue;
                         };
-                        if level >= 3 {
+                        if *level >= 3 {
                             spawn_text_button(
                                 outline,
                                 font.clone(),
                                 theme,
-                                &text,
+                                text.as_str(),
                                 8.0,
                                 UiAction::from(AppCommand::OpenDocumentation(Some(format!(
                                     "heading:{anchor}"
@@ -824,8 +904,9 @@ pub(crate) fn sync_documentation_search(
     if shell.route != StudioRoute::Documentation {
         return;
     }
-    let Ok(input) = inputs.single() else { return };
-    if input.value() != shell.documentation.query.as_str() {
+    if let Ok(input) = inputs.single()
+        && input.value() != shell.documentation.query.as_str()
+    {
         shell.documentation.query = input.value().to_string();
         invalidated.invalidate(UiDirtyRegion::Documentation);
     }
@@ -850,12 +931,9 @@ pub(crate) fn handle_documentation_shortcuts(
 ) {
     if keys.just_pressed(KeyCode::F1) {
         let anchor = analysis
-            .selected_analysis_stage
+            .selected_analysis_node
             .as_deref()
-            .map(|stage| {
-                let (node, _) = stage_primary_node_and_artifact(analysis_stage_index(stage));
-                documentation_anchor_for_node(node).to_string()
-            })
+            .map(|node| documentation_anchor_for_node(node).to_string())
             .or_else(|| match shell.route {
                 StudioRoute::Editor => Some("guide:editor".to_string()),
                 StudioRoute::SongDetail => Some("guide:lyrics".to_string()),
@@ -957,5 +1035,99 @@ mod tests {
         assert_eq!(state.anchor.as_deref(), Some("guide:analysis"));
         assert!(state.go_forward());
         assert_eq!(state.anchor.as_deref(), Some("guide:lyrics"));
+    }
+
+    #[test]
+    fn search_matches_tokens_regardless_of_order() {
+        // "folders music" is not a literal substring anywhere in the guide (the
+        // real text reads "Add music folders"); a naive substring search would
+        // miss it. Tokenized AND matching must still find it.
+        assert!(!search_documentation(UiLocale::English, "folders music").is_empty());
+        assert!(
+            search_documentation(UiLocale::English, "folders music")
+                .iter()
+                .all(|hit| hit.line.to_lowercase().contains("music")
+                    || hit.heading.to_lowercase().contains("music"))
+        );
+    }
+
+    #[test]
+    fn unmatched_query_returns_no_hits() {
+        assert!(search_documentation(UiLocale::English, "zzzznotarealword12345").is_empty());
+    }
+
+    #[test]
+    fn resolved_page_never_leaks_into_later_sections() {
+        // Regression for the old `visible_source`, which sliced from a matched
+        // heading to the *end of the entire guide* instead of stopping at the
+        // next top-level section. A page's blocks must never contain another
+        // page's own heading.
+        let index = locale_index(UiLocale::English);
+        let page = resolve_page(index, Some("guide:getting-started"));
+        assert_eq!(page.id, "guide:getting-started");
+        let leaks_next_page = page.blocks.iter().any(|block| {
+            matches!(
+                block,
+                MarkdownBlock::Heading { anchor, .. } if anchor == "4-quick-start-workflow"
+            )
+        });
+        assert!(
+            !leaks_next_page,
+            "getting-started page must not include the next section's heading"
+        );
+    }
+
+    #[test]
+    fn all_fifteen_guide_pages_are_reachable() {
+        let index = locale_index(UiLocale::English);
+        assert_eq!(index.pages.len(), 15);
+        let expected = [
+            "guide:about",
+            "guide:installation",
+            "guide:getting-started",
+            "guide:quick-start",
+            "guide:library",
+            "guide:analysis",
+            "guide:lyrics",
+            "guide:editor",
+            "guide:export",
+            "guide:storage",
+            "guide:diagnostics",
+            "guide:troubleshooting",
+            "guide:privacy",
+            "guide:documentation",
+            "guide:artifacts",
+        ];
+        for id in expected {
+            assert!(
+                index.pages.iter().any(|page| page.id == id),
+                "missing page {id}"
+            );
+            assert_eq!(
+                resolve_page(index, Some(id)).id,
+                id,
+                "resolve_page must reach {id} directly"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_page_follows_heading_anchors_to_their_owning_page() {
+        let index = locale_index(UiLocale::English);
+        // A subheading inside the analysis page must resolve back to that page,
+        // not fall through to the default page.
+        let heading_anchor = index
+            .pages
+            .iter()
+            .find(|page| page.id == "guide:analysis")
+            .and_then(|page| {
+                page.blocks.iter().find_map(|block| match block {
+                    MarkdownBlock::Heading { anchor, .. } => Some(anchor.clone()),
+                    _ => None,
+                })
+            })
+            .expect("analysis page has at least one subheading");
+        let target = format!("heading:{heading_anchor}");
+        assert_eq!(resolve_page(index, Some(&target)).id, "guide:analysis");
     }
 }

@@ -256,7 +256,7 @@ pub fn align(
     })
 }
 
-fn python_round_average(left: usize, right: usize) -> usize {
+fn round_half_to_even_average(left: usize, right: usize) -> usize {
     let sum = left + right;
     let floor = sum / 2;
     if sum.is_multiple_of(2) || floor.is_multiple_of(2) {
@@ -266,9 +266,9 @@ fn python_round_average(left: usize, right: usize) -> usize {
     }
 }
 
-/// Reproduce the pinned upstream note-boundary peak regulator without its
-/// Python/CPU tensor hops. Reference-boundary correction is intentionally not
-/// included because the Chinese inference path calls this stage with no ref.
+/// Reproduce the pinned upstream note-boundary peak regulator natively.
+/// Reference-boundary correction is intentionally not included because the
+/// Chinese inference path calls this stage with no reference boundaries.
 pub fn regulate_boundaries(
     logits: &[f32],
     threshold: f32,
@@ -312,7 +312,7 @@ pub fn regulate_boundaries(
             && boundary - last < minimum_gap
             && last > 0
         {
-            boundary = python_round_average(boundary, last);
+            boundary = round_half_to_even_average(boundary, last);
             result[last] = 0;
         }
         result[boundary] = 1;

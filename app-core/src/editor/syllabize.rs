@@ -34,15 +34,15 @@ const TRAILING_KANA: &[char] = &[
     'ェ', 'ォ', 'ヮ', 'ッ', 'ー', 'ヵ', 'ヶ', '゛', '゜',
 ];
 
-fn is_kana(character: char) -> bool {
+pub(crate) fn is_kana(character: char) -> bool {
     matches!(character, '\u{3041}'..='\u{309F}' | '\u{30A0}'..='\u{30FF}' | '\u{FF66}'..='\u{FF9D}')
 }
 
-fn is_han(character: char) -> bool {
+pub(crate) fn is_han(character: char) -> bool {
     matches!(character, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}')
 }
 
-fn is_hangul(character: char) -> bool {
+pub(crate) fn is_hangul(character: char) -> bool {
     matches!(character, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}')
 }
 

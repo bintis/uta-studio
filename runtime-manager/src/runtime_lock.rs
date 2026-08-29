@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../native-inference/runtime-lock.json");
-pub const RUNTIME_LOCK_SHA256: &str =
-    "d850690ed2816bf70013eded8bc7f59ab2e114c6c2b82e4b381789f13f4e4be2";
 
 pub const OPENVINO_WORKER_RECIPE_SHA256: &str =
     "bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093";
@@ -172,13 +170,7 @@ pub struct QwenAlignLock {
     pub gguf_size_bytes: u64,
     pub gguf_format: String,
     pub gguf_origin: String,
-    pub converter_repository: String,
-    pub converter_commit: String,
-    pub converter_script: String,
-    pub converter_patch: String,
-    pub converter_patch_sha256: String,
-    pub converter_command: String,
-    pub converter_expected_tensor_count: u32,
+    pub conversion_recipe_digest: String,
     pub text_normalization_profile: String,
     pub language_normalization_profile: String,
     pub supported_language_codes: Vec<String>,
@@ -242,13 +234,7 @@ pub fn runtime_recipe_digest(component: &str) -> Result<String, String> {
             "gguf_size_bytes",
             "gguf_format",
             "gguf_origin",
-            "converter_repository",
-            "converter_commit",
-            "converter_script",
-            "converter_patch",
-            "converter_patch_sha256",
-            "converter_command",
-            "converter_expected_tensor_count",
+            "conversion_recipe_digest",
             "text_normalization_profile",
             "language_normalization_profile",
             "supported_language_codes",
@@ -300,12 +286,30 @@ mod tests {
         assert_eq!(
             lock.components
                 .qwen3_forced_aligner_0_6b
-                .converter_patch_sha256,
+                .conversion_recipe_digest,
             "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6"
         );
         assert_eq!(
             lock.components.openvino_2026_3.build_recipe_sha256,
             OPENVINO_WORKER_RECIPE_SHA256
+        );
+        assert_eq!(
+            lock.components.openvino_2026_3.status,
+            "production_ir_runtime"
+        );
+        assert_eq!(
+            lock.policy.generic_native_models.preferred,
+            "model_pinned_native_backend"
+        );
+        assert_eq!(lock.policy.generic_native_models.fallback, "none");
+        assert_eq!(
+            lock.components.ggml_vulkan_v1.validation,
+            "production_pinned"
+        );
+        assert_eq!(lock.components.ggml_vulkan_v1.status, "production_admitted");
+        assert_eq!(
+            lock.components.qwen3_forced_aligner_0_6b.status,
+            "pinned_runtime_recipe"
         );
         assert_eq!(
             runtime_recipe_digest("qwen3_asr_1_7b").unwrap(),

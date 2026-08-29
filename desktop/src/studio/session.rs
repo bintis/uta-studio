@@ -118,12 +118,16 @@ pub(crate) enum StudioRoute {
     AnalysisInspect,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PendingLeave {
     Exit,
     Back,
     Home,
     Documentation,
+    Library(LibraryView),
+    OpenSongAnalysis(String),
+    OpenSongModelSelection(String),
+    OpenProcessingStudio(Option<String>),
 }
 
 #[derive(Resource)]

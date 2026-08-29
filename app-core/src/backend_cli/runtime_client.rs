@@ -14,7 +14,6 @@ use super::runtime_wire::*;
 pub struct RuntimeCliClient {
     executable: PathBuf,
     store: Option<PathBuf>,
-    legacy_models: Option<PathBuf>,
     policy: RuntimePolicyWireV1,
 }
 
@@ -23,16 +22,14 @@ impl RuntimeCliClient {
         Ok(Self::new(discover_executable(
             "UTA_STUDIO_RUNTIME_CLI_PATH",
             "uta-runtime",
-        )?)
-        .with_legacy_models(crate::cache::models_dir()))
+        )?))
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
             store: None,
-            legacy_models: None,
-            policy: RuntimePolicyWireV1::Experimental,
+            policy: RuntimePolicyWireV1::Production,
         }
     }
 
@@ -40,11 +37,6 @@ impl RuntimeCliClient {
         self.store = Some(store.into());
         self
     }
-    pub fn with_legacy_models(mut self, root: impl Into<PathBuf>) -> Self {
-        self.legacy_models = Some(root.into());
-        self
-    }
-
     pub fn with_policy(mut self, policy: RuntimePolicyWireV1) -> Self {
         self.policy = policy;
         self
@@ -77,6 +69,39 @@ impl RuntimeCliClient {
     ) -> Result<RuntimeResolvedIdentityWireV1, BackendCliError> {
         let resource = RuntimeResourceRefWireV1::model(model_id).map_err(BackendCliError::Io)?;
         self.read("resolve", &[resource.to_string()])
+    }
+
+    pub fn resolve_tool(
+        &self,
+        tool_id: &str,
+    ) -> Result<RuntimeResolvedToolWireV1, BackendCliError> {
+        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+        self.read("resolve", &[resource.to_string()])
+    }
+
+    pub fn configure_tool(
+        &self,
+        tool_id: &str,
+        executable: &Path,
+    ) -> Result<RuntimeResourceStatusWireV1, BackendCliError> {
+        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+        self.read(
+            "configure-tool",
+            &[
+                resource.to_string(),
+                "--path".to_string(),
+                executable.to_string_lossy().into_owned(),
+                "--yes".to_string(),
+            ],
+        )
+    }
+
+    pub fn clear_tool(
+        &self,
+        tool_id: &str,
+    ) -> Result<RuntimeResourceStatusWireV1, BackendCliError> {
+        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+        self.read("clear-tool", &[resource.to_string(), "--yes".to_string()])
     }
 
     pub fn install(
@@ -150,9 +175,6 @@ impl RuntimeCliClient {
         command_process.arg(command).args(arguments);
         if let Some(store) = &self.store {
             command_process.args(["--store", &store.to_string_lossy()]);
-        }
-        if let Some(root) = &self.legacy_models {
-            command_process.args(["--legacy-models", &root.to_string_lossy()]);
         }
         command_process
             .args(["--policy", self.policy.as_str(), "--output", "ndjson"])
@@ -234,6 +256,9 @@ impl RuntimeCliClient {
                         code: error.code,
                         message: error.message,
                         retryable: error.retryable,
+                        request_id: None,
+                        capability: None,
+                        resource: error.resource,
                     });
                 }
                 other => {

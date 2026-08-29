@@ -134,7 +134,7 @@ fn append_structural_filters(
         match q {
             "analysed" => where_parts.push("s.is_analyzed = 1".to_string()),
             "queued" => where_parts.push(
-                "EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status IN ('queued', 'analyzing'))"
+                "EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status IN ('staged', 'queued', 'analyzing'))"
                     .to_string(),
             ),
             "videos" => where_parts.push("s.is_video = 1".to_string()),
@@ -148,7 +148,11 @@ fn append_structural_filters(
                 "s.is_analyzed = 0 AND NOT EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash)"
                     .to_string(),
             ),
-            "queued" | "analyzing" | "failed" => {
+            "queued" => where_parts.push(
+                "EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status IN ('staged', 'queued'))"
+                    .to_string(),
+            ),
+            "analyzing" | "failed" => {
                 where_parts.push(
                     "EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status = ?)"
                         .to_string(),
@@ -338,15 +342,15 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
                 "SELECT
                     (SELECT COUNT(*) FROM songs),
                     (SELECT COUNT(*) FROM songs WHERE is_analyzed = 1),
-                    (SELECT COUNT(*) FROM analysis_queue WHERE status = 'queued'),
+                    (SELECT COUNT(*) FROM analysis_queue WHERE status IN ('staged', 'queued')),
                     (SELECT COUNT(*) FROM analysis_queue WHERE status = 'analyzing'),
                     (SELECT COUNT(*) FROM songs WHERE is_video = 1),
                     (SELECT COUNT(*) FROM songs WHERE is_video = 1 AND is_analyzed = 1),
-                    (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.is_video = 1 AND aq.status = 'queued'),
+                    (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.is_video = 1 AND aq.status IN ('staged', 'queued')),
                     (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.is_video = 1 AND aq.status = 'analyzing'),
                     (SELECT COUNT(*) FROM songs WHERE transcript_source = 'usdx'),
                     (SELECT COUNT(*) FROM songs WHERE transcript_source = 'usdx' AND is_analyzed = 1),
-                    (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.transcript_source = 'usdx' AND aq.status = 'queued'),
+                    (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.transcript_source = 'usdx' AND aq.status IN ('staged', 'queued')),
                     (SELECT COUNT(*) FROM songs s JOIN analysis_queue aq ON aq.file_hash = s.file_hash WHERE s.transcript_source = 'usdx' AND aq.status = 'analyzing')",
                 [],
                 |r| {
@@ -418,7 +422,7 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
         ) = c.query_row(
             "SELECT COUNT(*),
                     COALESCE(SUM(CASE WHEN s.is_analyzed = 1 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN aq.status = 'queued' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN aq.status IN ('staged', 'queued') THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN aq.status = 'analyzing' THEN 1 ELSE 0 END), 0)
              FROM songs s LEFT JOIN analysis_queue aq ON aq.file_hash = s.file_hash
              WHERE s.artist = 'Unknown Artist'",
@@ -434,7 +438,7 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
         ) = c.query_row(
             "SELECT COUNT(*),
                     COALESCE(SUM(CASE WHEN s.is_analyzed = 1 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN aq.status = 'queued' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN aq.status IN ('staged', 'queued') THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN aq.status = 'analyzing' THEN 1 ELSE 0 END), 0)
              FROM songs s LEFT JOIN analysis_queue aq ON aq.file_hash = s.file_hash
              WHERE s.album = 'Unknown Album'",
@@ -464,7 +468,7 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
         let mut stmt = c.prepare(
             "SELECT s.artist, COUNT(*) AS cnt,
                     COALESCE(SUM(CASE WHEN s.is_analyzed = 1 THEN 1 ELSE 0 END), 0) AS analysed,
-                    COALESCE(SUM(CASE WHEN aq.status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+                    COALESCE(SUM(CASE WHEN aq.status IN ('staged', 'queued') THEN 1 ELSE 0 END), 0) AS queued,
                     COALESCE(SUM(CASE WHEN aq.status = 'analyzing' THEN 1 ELSE 0 END), 0) AS analysing
              FROM songs s LEFT JOIN analysis_queue aq ON aq.file_hash = s.file_hash
              GROUP BY s.artist
@@ -491,7 +495,7 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
         let mut stmt = c.prepare(
             "SELECT s.artist, s.album, COUNT(*) AS cnt,
                     COALESCE(SUM(CASE WHEN s.is_analyzed = 1 THEN 1 ELSE 0 END), 0) AS analysed,
-                    COALESCE(SUM(CASE WHEN aq.status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+                    COALESCE(SUM(CASE WHEN aq.status IN ('staged', 'queued') THEN 1 ELSE 0 END), 0) AS queued,
                     COALESCE(SUM(CASE WHEN aq.status = 'analyzing' THEN 1 ELSE 0 END), 0) AS analysing
              FROM songs s LEFT JOIN analysis_queue aq ON aq.file_hash = s.file_hash
              GROUP BY s.artist, s.album
@@ -519,7 +523,7 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
         let mut stmt = c.prepare(
             "SELECT p.id, p.name, COUNT(ps.song_id) AS cnt,
                     COALESCE(SUM(CASE WHEN s.is_analyzed = 1 THEN 1 ELSE 0 END), 0) AS analysed,
-                    COALESCE(SUM(CASE WHEN aq.status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+                    COALESCE(SUM(CASE WHEN aq.status IN ('staged', 'queued') THEN 1 ELSE 0 END), 0) AS queued,
                     COALESCE(SUM(CASE WHEN aq.status = 'analyzing' THEN 1 ELSE 0 END), 0) AS analysing
              FROM playlists p
              JOIN playlist_songs ps ON ps.playlist_id = p.id

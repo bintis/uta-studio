@@ -118,6 +118,21 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.notice = Some("Refreshing local model and runtime status…".to_string());
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
+        UiCommand::Settings(SettingsCommand::OpenModelDownloads) => {
+            studio.dialogs.model_downloads_open = true;
+            studio.dialogs.open_settings_select = None;
+            if studio.jobs.model_settings_job.current.is_none() {
+                studio.jobs.request_model_settings_refresh = true;
+            }
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::CloseModelDownloads) => {
+            studio.dialogs.model_downloads_open = false;
+            studio.dialogs.pending_setup = None;
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
         UiCommand::Settings(SettingsCommand::OpenSettingsSelect(kind)) => {
             studio.dialogs.open_settings_select =
                 if studio.dialogs.open_settings_select == Some(*kind) {
@@ -132,27 +147,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 SettingsSelectKind::UiLanguage => {
                     studio.shell.config.ui_language = (value != "system").then(|| value.clone());
                 }
-                SettingsSelectKind::Separator => {
-                    let mut settings = audio_settings(&studio.shell.config);
-                    settings.vocal_model_id = Some(value.clone());
-                    settings.multistem_model_id = None;
-                    settings.migrated_profile = None;
-                    settings.runtime_policy = "validated_auto".to_string();
-                    studio.shell.config.separator = Some("native_workflow".to_string());
-                    studio.shell.config.audio_processing = Some(settings);
-                }
-                SettingsSelectKind::AsrEngine => {
-                    studio.shell.config.asr_engine = Some(value.clone());
-                }
-                SettingsSelectKind::WhisperModel => {
-                    studio.shell.config.whisper_model = Some(value.clone());
-                }
-                SettingsSelectKind::AlignBackend => {
-                    studio.shell.config.align_backend = Some(value.clone());
-                }
-                SettingsSelectKind::PitchModel => {
-                    studio.shell.config.pitch_model = Some(value.clone());
-                }
                 SettingsSelectKind::AnalysisTarget => {
                     studio.shell.config.analysis_experience.default_target = match value.as_str() {
                         "transcript" => app_core::AnalysisDefaultTarget::Transcript,
@@ -162,65 +156,6 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                         _ => app_core::AnalysisDefaultTarget::FullCandidate,
                     };
                 }
-                SettingsSelectKind::AudioVocalModel => {
-                    let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.migrated_profile = None;
-                    settings.multistem_model_id = None;
-                    settings.vocal_model_id = Some(value.clone());
-                }
-                SettingsSelectKind::AudioAccompanimentModel => {
-                    let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.migrated_profile = None;
-                    settings.multistem_model_id = None;
-                    settings
-                        .vocal_model_id
-                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
-                    settings.accompaniment_model_id = Some(value.clone());
-                }
-                SettingsSelectKind::AudioKaraokeModel => {
-                    audio_settings_mut(&mut studio.shell.config).karaoke_model_id =
-                        (value != "none").then(|| value.clone());
-                }
-                SettingsSelectKind::AudioVocalPostprocess1
-                | SettingsSelectKind::AudioVocalPostprocess2 => {
-                    let current = audio_settings(&studio.shell.config).vocal_cleanup_chain;
-                    let slot =
-                        usize::from(matches!(kind, SettingsSelectKind::AudioVocalPostprocess2));
-                    let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.migrated_profile = None;
-                    settings.multistem_model_id = None;
-                    settings
-                        .vocal_model_id
-                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
-                    settings.vocal_cleanup_chain = rewrite_cleanup_slot(&current, slot, value);
-                }
-                SettingsSelectKind::AudioBgmPostprocess1
-                | SettingsSelectKind::AudioBgmPostprocess2 => {
-                    let current = audio_settings(&studio.shell.config).accompaniment_cleanup_chain;
-                    let slot =
-                        usize::from(matches!(kind, SettingsSelectKind::AudioBgmPostprocess2));
-                    let settings = audio_settings_mut(&mut studio.shell.config);
-                    settings.migrated_profile = None;
-                    settings.multistem_model_id = None;
-                    settings
-                        .vocal_model_id
-                        .get_or_insert_with(|| app_core::DEFAULT_VOCAL_MODEL_ID.to_string());
-                    settings.accompaniment_cleanup_chain =
-                        rewrite_cleanup_slot(&current, slot, value);
-                }
-            }
-            if matches!(
-                kind,
-                SettingsSelectKind::AudioVocalModel
-                    | SettingsSelectKind::AudioAccompanimentModel
-                    | SettingsSelectKind::AudioKaraokeModel
-                    | SettingsSelectKind::AudioVocalPostprocess1
-                    | SettingsSelectKind::AudioVocalPostprocess2
-                    | SettingsSelectKind::AudioBgmPostprocess1
-                    | SettingsSelectKind::AudioBgmPostprocess2
-            ) {
-                let derived = audio_settings(&studio.shell.config).derived_legacy_separator();
-                studio.shell.config.separator = Some(derived.to_string());
             }
             studio.dialogs.open_settings_select = None;
             studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
@@ -234,6 +169,48 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 })
             });
             invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::ChooseFusionAgentAdapter) => {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                studio.shell.notice = Some(match app_core::configure_fusion_agent_adapter(&path) {
+                    Ok(status) if status.usable => {
+                        studio.jobs.request_model_settings_refresh = true;
+                        "Fusion Agent Adapter configured and verified. AI judgment remains an explicit per-workflow choice.".to_string()
+                    }
+                    Ok(status) => {
+                        let reasons = status
+                            .reasons
+                            .iter()
+                            .map(readiness_reason_label)
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "Fusion Agent Adapter is configured but unusable: {}",
+                            if reasons.is_empty() {
+                                "No readiness reason reported"
+                            } else {
+                                &reasons
+                            }
+                        )
+                    }
+                    Err(error) => format!(
+                        "Could not configure Fusion Agent Adapter: {error}. Choose an executable with a valid Uta adapter manifest; plain coding-agent CLIs are not compatible."
+                    ),
+                });
+            }
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Settings(SettingsCommand::ClearFusionAgentAdapter) => {
+            studio.shell.notice = Some(match app_core::clear_fusion_agent_adapter() {
+                Ok(_) => {
+                    studio.jobs.request_model_settings_refresh = true;
+                    "Fusion Agent Adapter configuration cleared. AI workflows now fail closed; Algorithm workflows are unaffected.".to_string()
+                }
+                Err(error) => format!("Could not clear Fusion Agent Adapter: {error}"),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Settings(SettingsCommand::SetModelBackend(model_id, backend)) => {
             let valid = backend.as_deref().is_none_or(|backend| {
@@ -260,6 +237,33 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
                     Some(format!(
                         "Backend preference updated for {model_id}. Existing artifacts are unchanged; the next Plan Preview validates this route."
+                    ))
+                });
+            }
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::SetModelDevice(model_id, device)) => {
+            let valid = device
+                .as_deref()
+                .is_none_or(|device| matches!(device, "cpu" | "gpu" | "integrated_gpu"));
+            if !valid {
+                studio.shell.notice = Some("Unsupported model device selection.".to_string());
+            } else {
+                match device {
+                    Some(device) => {
+                        studio
+                            .shell
+                            .config
+                            .model_device_overrides
+                            .insert(model_id.clone(), device.clone());
+                    }
+                    None => {
+                        studio.shell.config.model_device_overrides.remove(model_id);
+                    }
+                }
+                studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
+                    Some(format!(
+                        "Device preference recorded for {model_id}. This is captured for upcoming multi-device routing; it does not yet change which physical device Runtime Manager selects."
                     ))
                 });
             }
@@ -536,22 +540,14 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                         studio.library.refresh();
                         studio.jobs.request_cache_stats_refresh = true;
                         studio.shell.notice = Some(
-                            "Generated cache cleared. Source media was not changed.".to_string(),
+                            "Generated cache cleared. Source media and installed models were not changed."
+                                .to_string(),
                         );
-                    }
-                    CacheClearScope::Models => {
-                        app_core::clear_models();
-                        studio.jobs.request_cache_stats_refresh = true;
-                        studio.shell.notice = Some(
-                                "Downloaded models cleared. Runtime setup now reports the missing artifacts."
-                                    .to_string(),
-                            );
                     }
                 }
                 invalidated.invalidate(UiDirtyRegion::Settings);
             }
         }
-
         _ => return false,
     }
     true

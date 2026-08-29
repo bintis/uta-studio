@@ -1,18 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use serde::{Deserialize, Serialize};
-use uta_runtime_manager::{ResourceRef, ResourceStatus, RuntimeManager};
-
 use crate::contract::{
     AnalysisProfile, AnalyzeRequestV1, AudioRole, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
     CapabilityDescriptor, CapabilityId, ENERGY_RATIO_GATE, EngineError, EngineErrorCode,
     EngineRequirementResourceV1, EngineRequirementsV1, EngineResult, FINITE_SAMPLES_GATE,
-    LEAD_PURITY_GATE, LyricsMode, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE, VOCAL_TOPOLOGY_GATE,
-    capability_registry,
+    LEAD_PURITY_GATE, LyricsMode, MUSICAL_DAMAGE_GATE, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE,
+    VOCAL_LEAKAGE_GATE, VOCAL_TOPOLOGY_GATE, capability_registry,
 };
-use crate::workflow::{WorkflowExecutionPolicyV1, WorkflowExecutionV1};
+use crate::workflow::{FusionModeV1, WorkflowExecutionPolicyV1, WorkflowExecutionV1};
 use crate::workflow_executor::CompiledWorkflowExecutionPlanV1;
-
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use uta_runtime_manager::{ResourceRef, ResourceStatus, RuntimeManager};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnginePlan {
     pub schema: String,
@@ -31,14 +28,12 @@ pub struct EnginePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_execution: Option<CompiledWorkflowExecutionPlanV1>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRoute {
     pub primary_source_id: String,
     pub input_role: AudioRole,
     pub preparation: Vec<CapabilityId>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionNode {
     pub id: String,
@@ -47,7 +42,6 @@ pub struct ExecutionNode {
     #[serde(default)]
     pub depends_on: Vec<String>,
 }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedResourceStatus {
     pub requirement: EngineRequirementResourceV1,
@@ -56,14 +50,12 @@ pub struct PlannedResourceStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_error: Option<String>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FallbackRule {
     pub capability: CapabilityId,
     pub behavior: String,
     pub fingerprinted: bool,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactDeclaration {
     pub semantic_type: String,
@@ -111,23 +103,72 @@ impl Planner {
         request.validate()?;
         let intent = AnalysisIntent::from_request(request);
         let workflow = WorkflowExecutionV1::from_request(request)?;
+        let fusion_policy = workflow
+            .as_ref()
+            .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
+            .unwrap_or_default();
+        let pitch_owner = fusion_policy.continuous_f0.model_id();
+        let boundary_owner = fusion_policy.note_lengths.parameter_value();
+        let basic_pitch_required = workflow.as_ref().is_some_and(|workflow| {
+            workflow.policy_for_model("basic_pitch") == Some(WorkflowExecutionPolicyV1::Always)
+        });
+        let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
+            workflow.nodes.iter().any(|node| {
+                node.capability_id == "analysis.acoustic_dsp"
+                    && node.execution_policy == WorkflowExecutionPolicyV1::Always
+            })
+        });
+        let primary_role = request.primary_source()?.role;
+        let source_supports_lead_isolation = matches!(
+            primary_role,
+            AudioRole::OriginalMix | AudioRole::VocalStem | AudioRole::GuideVocals
+        );
+        let run_lead_isolate = source_supports_lead_isolation
+            && (intent.requests_lead_stem
+                || workflow_selects(
+                    workflow.as_ref(),
+                    "audio.lead_isolate",
+                    request.analysis.profile,
+                    false,
+                ));
         let mut requirements = RequirementAccumulator::default();
         requirements.add_resource("tool:ffmpeg", true, "audio.decode");
         require_workflow_baseline(workflow.as_ref(), "audio.decode", request)?;
+        if intent.needs_notes
+            && workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.fusion_mode() == FusionModeV1::AiJudgment)
+        {
+            requirements.add_resource(
+                "tool:fusion_agent_adapter",
+                true,
+                "fusion.candidate_graph / ai_judgment",
+            );
+        }
 
-        match request.primary_source()?.role {
+        match primary_role {
             AudioRole::OriginalMix => {
                 if intent.needs_vocal_path {
-                    requirements.add("bs_roformer_vocals_ep317", true, "audio.extract_vocals");
                     require_workflow_baseline(workflow.as_ref(), "audio.extract_vocals", request)?;
+                    let provider = workflow
+                        .as_ref()
+                        .and_then(|workflow| {
+                            workflow.model_for_engine_capability("audio.extract_vocals")
+                        })
+                        .unwrap_or("bs_roformer_vocals_ep317");
+                    requirements.add(provider, true, "audio.extract_vocals");
                 }
-                if intent.needs_analysis_lead || intent.requests_lead_stem {
+                if (intent.needs_vocal_analysis_input || intent.requests_lead_stem)
+                    && run_lead_isolate
+                {
                     requirements.add("melband_roformer_harmony", true, "audio.lead_isolate");
                     require_workflow_baseline(workflow.as_ref(), "audio.lead_isolate", request)?;
                 }
             }
             AudioRole::VocalStem | AudioRole::GuideVocals => {
-                if intent.needs_analysis_lead || intent.requests_lead_stem {
+                if (intent.needs_vocal_analysis_input || intent.requests_lead_stem)
+                    && run_lead_isolate
+                {
                     requirements.add("melband_roformer_harmony", true, "audio.lead_isolate");
                     require_workflow_baseline(workflow.as_ref(), "audio.lead_isolate", request)?;
                 }
@@ -140,11 +181,13 @@ impl Planner {
 
         if intent.requests_instrumental {
             require_workflow_baseline(workflow.as_ref(), "audio.extract_instrumental", request)?;
-            requirements.add(
-                "melband_roformer_inst_v2",
-                true,
-                "audio.extract_instrumental",
-            );
+            let provider = workflow
+                .as_ref()
+                .and_then(|workflow| {
+                    workflow.model_for_engine_capability("audio.extract_instrumental")
+                })
+                .unwrap_or("melband_roformer_inst_v2");
+            requirements.add(provider, true, "audio.extract_instrumental");
         }
         if intent.needs_transcript {
             requirements.add("qwen3_asr_1_7b", true, "speech.transcribe");
@@ -155,23 +198,50 @@ impl Planner {
             require_workflow_baseline(workflow.as_ref(), "speech.align", request)?;
         }
         if intent.needs_pitch {
-            requirements.add("rmvpe", true, "pitch.track");
+            let primary_model = if pitch_owner == "fcpe" {
+                "fcpe"
+            } else {
+                "rmvpe"
+            };
+            requirements.add(primary_model, true, "pitch.track");
             require_workflow_baseline(workflow.as_ref(), "pitch.track", request)?;
         }
-        if intent.needs_notes {
-            requirements.add("game", true, "notes.game");
-            require_workflow_baseline(workflow.as_ref(), "notes.game", request)?;
-        }
-
-        if intent.needs_pitch
+        if intent.needs_notes
+            && matches!(boundary_owner, "automatic" | "game")
             && workflow_selects(
                 workflow.as_ref(),
-                "pitch.secondary",
+                "notes.game",
+                request.analysis.profile,
+                true,
+            )
+        {
+            requirements.add("game", true, "notes.game");
+            require_workflow_baseline(workflow.as_ref(), "notes.game", request)?;
+        } else if intent.needs_notes
+            && workflow_selects(
+                workflow.as_ref(),
+                "notes.game",
+                request.analysis.profile,
+                true,
+            )
+        {
+            requirements.add("game", false, "notes.game");
+        }
+
+        let secondary_pitch_model = if pitch_owner == "fcpe" {
+            "rmvpe"
+        } else {
+            "fcpe"
+        };
+        if intent.needs_pitch
+            && workflow_selects_model(
+                workflow.as_ref(),
+                secondary_pitch_model,
                 request.analysis.profile,
                 request.analysis.profile != AnalysisProfile::Fast,
             )
         {
-            requirements.add("fcpe", false, "pitch.secondary");
+            requirements.add(secondary_pitch_model, false, "pitch.secondary");
         }
         if intent.needs_notes
             && workflow_selects(
@@ -181,7 +251,13 @@ impl Planner {
                 request.analysis.profile != AnalysisProfile::Fast,
             )
         {
-            requirements.add("basic_pitch", false, "notes.basic_pitch");
+            requirements.add("basic_pitch", basic_pitch_required, "notes.basic_pitch");
+            if basic_pitch_required {
+                require_workflow_baseline(workflow.as_ref(), "notes.basic_pitch", request)?;
+            }
+        }
+        if intent.needs_notes && acoustic_required {
+            require_workflow_baseline(workflow.as_ref(), "analysis.acoustic_dsp", request)?;
         }
         if intent.needs_transcript
             && workflow_selects(
@@ -193,22 +269,22 @@ impl Planner {
         {
             requirements.add("firered_asr2_aed", false, "speech.transcribe.challenger");
         }
-        if intent.needs_analysis_lead
+        if intent.needs_vocal_analysis_input
             && workflow_selects(
                 workflow.as_ref(),
                 "audio.denoise",
                 request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
+                false,
             )
         {
             requirements.add("melband_roformer_denoise_aufr33", false, "audio.denoise");
         }
-        if intent.needs_analysis_lead
+        if intent.needs_vocal_analysis_input
             && workflow_selects(
                 workflow.as_ref(),
                 "audio.dereverb",
                 request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
+                false,
             )
         {
             requirements.add("melband_roformer_dereverb_anvuew", false, "audio.dereverb");
@@ -272,6 +348,39 @@ impl Planner {
         let requirements = Self::requirements(request)?;
         let intent = AnalysisIntent::from_request(request);
         let workflow = WorkflowExecutionV1::from_request(request)?;
+        let fusion_policy = workflow
+            .as_ref()
+            .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
+            .unwrap_or_default();
+        let pitch_owner = fusion_policy.continuous_f0.model_id();
+        let boundary_owner = fusion_policy.note_lengths.parameter_value();
+        let basic_pitch_required = workflow.as_ref().is_some_and(|workflow| {
+            workflow.policy_for_model("basic_pitch") == Some(WorkflowExecutionPolicyV1::Always)
+        });
+        let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
+            workflow.nodes.iter().any(|node| {
+                node.capability_id == "analysis.acoustic_dsp"
+                    && node.execution_policy == WorkflowExecutionPolicyV1::Always
+            })
+        });
+        let primary_role = request.primary_source()?.role;
+        let source_supports_lead_isolation = matches!(
+            primary_role,
+            AudioRole::OriginalMix | AudioRole::VocalStem | AudioRole::GuideVocals
+        );
+        let analyze_with_lead_isolate = source_supports_lead_isolation
+            && (workflow_selects(
+                workflow.as_ref(),
+                "audio.lead_isolate",
+                request.analysis.profile,
+                false,
+            ) || (intent.requests_lead_stem
+                && workflow.as_ref().is_some_and(|workflow| {
+                    workflow.policy_for_engine_capability("audio.lead_isolate")
+                        != Some(WorkflowExecutionPolicyV1::Disabled)
+                })));
+        let run_lead_isolate = source_supports_lead_isolation
+            && (intent.requests_lead_stem || analyze_with_lead_isolate);
         if intent.needs_transcript
             || (request.lyrics.mode == LyricsMode::Canonical
                 && (request.requested_artifacts.transcript || intent.needs_alignment))
@@ -279,11 +388,7 @@ impl Planner {
             require_workflow_baseline(workflow.as_ref(), "fusion.transcript", request)?;
         }
         if intent.needs_notes {
-            for capability in [
-                "analysis.acoustic_dsp",
-                "fusion.singing",
-                "fusion.candidate_graph",
-            ] {
+            for capability in ["fusion.singing", "fusion.candidate_graph"] {
                 require_workflow_baseline(workflow.as_ref(), capability, request)?;
             }
             if request.requested_artifacts.vocal_chart {
@@ -297,10 +402,28 @@ impl Planner {
                 .any(|resource| resource.resource == format!("model:{model_id}"))
         };
         let run_firered = has_model("firered_asr2_aed");
-        let run_fcpe = has_model("fcpe");
+        let secondary_pitch_model = if pitch_owner == "fcpe" {
+            "rmvpe"
+        } else {
+            "fcpe"
+        };
+        let run_secondary_pitch = has_model(secondary_pitch_model);
+        let secondary_pitch_capability = if secondary_pitch_model == "rmvpe" {
+            "pitch.secondary.rmvpe"
+        } else {
+            "pitch.secondary.fcpe"
+        };
         let run_basic_pitch = has_model("basic_pitch");
         let run_rosvot = has_model("rosvot");
         let run_stars = has_model("stars");
+        let run_game = has_model("game");
+        let run_acoustic = intent.needs_notes
+            && workflow_selects(
+                workflow.as_ref(),
+                "analysis.acoustic_dsp",
+                request.analysis.profile,
+                true,
+            );
         let run_stars_notes = run_stars
             && workflow_selects(
                 workflow.as_ref(),
@@ -317,10 +440,21 @@ impl Planner {
             );
         let run_denoise = has_model("melband_roformer_denoise_aufr33");
         let run_dereverb = has_model("melband_roformer_dereverb_anvuew");
-        let preparation = preparation_capabilities(request.primary_source()?.role, &intent);
+        let preparation = preparation_capabilities(
+            primary_role,
+            &intent,
+            analyze_with_lead_isolate,
+            run_denoise,
+            run_dereverb,
+        );
         let mut nodes = vec![node("decode", "audio.decode", true, &[])];
-        let mut analysis_parent =
-            append_preparation_nodes(&mut nodes, request.primary_source()?.role, &intent);
+        let mut analysis_parent = append_preparation_nodes(
+            &mut nodes,
+            primary_role,
+            &intent,
+            run_lead_isolate,
+            analyze_with_lead_isolate,
+        );
         if run_denoise {
             nodes.push(node("denoise", "audio.denoise", false, &[&analysis_parent]));
             analysis_parent = "denoise".to_string();
@@ -380,46 +514,57 @@ impl Planner {
         }
         if intent.needs_pitch {
             nodes.push(node("pitch", "pitch.track", true, &[&analysis_parent]));
-            if run_fcpe {
+            if run_secondary_pitch {
                 nodes.push(node(
                     "pitch-secondary",
-                    "pitch.secondary",
+                    secondary_pitch_capability,
                     false,
                     &[&analysis_parent, "pitch"],
                 ));
             }
         }
         if intent.needs_notes {
-            nodes.push(node("game", "notes.game", true, &[&analysis_parent]));
+            if run_game {
+                nodes.push(node(
+                    "game",
+                    "notes.game",
+                    boundary_owner == "game",
+                    &[&analysis_parent],
+                ));
+            }
             if run_basic_pitch {
+                let mut basic_dependencies = vec![analysis_parent.as_str(), "pitch"];
+                if run_game {
+                    basic_dependencies.push("game");
+                }
                 nodes.push(node(
                     "basic-pitch",
                     "notes.basic_pitch",
-                    false,
-                    &[&analysis_parent, "game", "pitch"],
+                    basic_pitch_required,
+                    &basic_dependencies,
                 ));
             }
-            nodes.push(node(
-                "acoustic-dsp",
-                "analysis.acoustic_dsp",
-                true,
-                &[&analysis_parent],
-            ));
-            if run_rosvot {
+            if run_acoustic {
                 nodes.push(node(
-                    "rosvot",
-                    "notes.rosvot",
-                    false,
-                    &[&analysis_parent, "game", "alignment"],
+                    "acoustic-dsp",
+                    "analysis.acoustic_dsp",
+                    acoustic_required,
+                    &[&analysis_parent],
                 ));
+            }
+            if run_rosvot {
+                let mut dependencies = vec![analysis_parent.as_str(), "alignment"];
+                if run_game {
+                    dependencies.push("game");
+                }
+                nodes.push(node("rosvot", "notes.rosvot", false, &dependencies));
             }
             if run_stars_notes {
-                nodes.push(node(
-                    "stars",
-                    "notes.stars",
-                    false,
-                    &[&analysis_parent, "game", "alignment"],
-                ));
+                let mut dependencies = vec![analysis_parent.as_str(), "alignment"];
+                if run_game {
+                    dependencies.push("game");
+                }
+                nodes.push(node("stars", "notes.stars", false, &dependencies));
             }
             if run_stars_technique {
                 nodes.push(node(
@@ -429,14 +574,20 @@ impl Planner {
                     &[&analysis_parent, "alignment"],
                 ));
             }
-            let mut dependencies = vec!["game", "acoustic-dsp"];
+            let mut dependencies = Vec::new();
             if intent.needs_pitch {
                 dependencies.push("pitch");
             }
             if intent.needs_alignment {
                 dependencies.push("alignment");
             }
-            if run_fcpe {
+            if run_game {
+                dependencies.push("game");
+            }
+            if run_acoustic {
+                dependencies.push("acoustic-dsp");
+            }
+            if run_secondary_pitch {
                 dependencies.push("pitch-secondary");
             }
             if run_basic_pitch {
@@ -495,6 +646,7 @@ impl Planner {
                     workflow,
                     request.analysis.profile,
                     Some(&requested_workflow_capabilities),
+                    intent.requests_lead_stem && source_supports_lead_isolation,
                 )
             })
             .transpose()?;
@@ -549,13 +701,14 @@ impl Planner {
             .collect();
 
         let quality_gates = quality_gates(request.analysis.profile, &nodes);
+        let artifact_declarations = artifact_declarations(request, &nodes);
         Ok(EnginePlan {
             schema: "uta.analysis-engine.plan".to_string(),
             schema_version: 1,
             request_id: request.request_id.clone(),
             source_route: SourceRoute {
                 primary_source_id: request.primary_source()?.id.clone(),
-                input_role: request.primary_source()?.role,
+                input_role: primary_role,
                 preparation,
             },
             requested_outputs: requested_outputs(request),
@@ -566,7 +719,7 @@ impl Planner {
             execution_nodes: nodes,
             quality_gates,
             fallback_policy: fallback_policy(),
-            artifact_declarations: artifact_declarations(request),
+            artifact_declarations,
             workflow_execution,
         })
     }
@@ -630,7 +783,17 @@ fn require_workflow_baseline(
     let Some(workflow) = workflow else {
         return Ok(());
     };
-    match workflow.policy_for_engine_capability(capability) {
+    let policy = workflow.policy_for_engine_capability(capability);
+    if capability == "audio.lead_isolate"
+        && request
+            .requested_artifacts
+            .stems
+            .contains(&AudioRole::LeadVocal)
+        && policy.is_some()
+    {
+        return Ok(());
+    }
+    match policy {
         Some(WorkflowExecutionPolicyV1::Always) => Ok(()),
         Some(policy) => Err(EngineError::new(
             EngineErrorCode::MissingCapability,
@@ -653,17 +816,28 @@ fn workflow_selects(
     workflow: Option<&WorkflowExecutionV1>,
     capability: &str,
     profile: AnalysisProfile,
-    legacy_default: bool,
+    default_when_workflow_absent: bool,
 ) -> bool {
-    workflow.map_or(legacy_default, |workflow| {
+    workflow.map_or(default_when_workflow_absent, |workflow| {
         workflow.policy_for_engine_capability(capability).is_some()
             && workflow.should_schedule(capability, profile)
     })
 }
 
+fn workflow_selects_model(
+    workflow: Option<&WorkflowExecutionV1>,
+    model_id: &str,
+    profile: AnalysisProfile,
+    default_when_workflow_absent: bool,
+) -> bool {
+    workflow.map_or(default_when_workflow_absent, |workflow| {
+        workflow.should_schedule_model(model_id, profile)
+    })
+}
+
 #[derive(Debug)]
 struct AnalysisIntent {
-    needs_analysis_lead: bool,
+    needs_vocal_analysis_input: bool,
     needs_vocal_path: bool,
     needs_transcript: bool,
     needs_alignment: bool,
@@ -681,14 +855,15 @@ impl AnalysisIntent {
         let needs_alignment = outputs.alignment || needs_notes;
         let needs_transcript =
             request.lyrics.mode != LyricsMode::Canonical && (outputs.transcript || needs_alignment);
-        let needs_analysis_lead = needs_transcript || needs_alignment || needs_pitch || needs_notes;
+        let needs_vocal_analysis_input =
+            needs_transcript || needs_alignment || needs_pitch || needs_notes;
         let requests_lead_stem = outputs.stems.contains(&AudioRole::LeadVocal);
-        let needs_vocal_path = needs_analysis_lead
+        let needs_vocal_path = needs_vocal_analysis_input
             || requests_lead_stem
             || outputs.stems.contains(&AudioRole::GuideVocals)
             || outputs.stems.contains(&AudioRole::VocalStem);
         Self {
-            needs_analysis_lead,
+            needs_vocal_analysis_input,
             needs_vocal_path,
             needs_transcript,
             needs_alignment,
@@ -700,14 +875,20 @@ impl AnalysisIntent {
     }
 }
 
-fn preparation_capabilities(role: AudioRole, intent: &AnalysisIntent) -> Vec<CapabilityId> {
+fn preparation_capabilities(
+    role: AudioRole,
+    intent: &AnalysisIntent,
+    analyze_with_lead_isolate: bool,
+    run_denoise: bool,
+    run_dereverb: bool,
+) -> Vec<CapabilityId> {
     let mut result = Vec::new();
     match role {
         AudioRole::OriginalMix => {
             if intent.needs_vocal_path {
                 result.push(CapabilityId::from_static("audio.extract_vocals"));
             }
-            if intent.needs_analysis_lead || intent.requests_lead_stem {
+            if intent.needs_vocal_analysis_input && analyze_with_lead_isolate {
                 result.push(CapabilityId::from_static("audio.lead_isolate"));
             }
             if intent.requests_instrumental {
@@ -715,12 +896,18 @@ fn preparation_capabilities(role: AudioRole, intent: &AnalysisIntent) -> Vec<Cap
             }
         }
         AudioRole::VocalStem | AudioRole::GuideVocals => {
-            if intent.needs_analysis_lead || intent.requests_lead_stem {
+            if intent.needs_vocal_analysis_input && analyze_with_lead_isolate {
                 result.push(CapabilityId::from_static("audio.lead_isolate"));
             }
         }
         AudioRole::LeadVocal | AudioRole::CleanLeadVocal => {}
         AudioRole::Instrumental | AudioRole::BackingVocal | AudioRole::HarmonyVocal => {}
+    }
+    if run_denoise {
+        result.push(CapabilityId::from_static("audio.denoise"));
+    }
+    if run_dereverb {
+        result.push(CapabilityId::from_static("audio.dereverb"));
     }
     result
 }
@@ -729,6 +916,8 @@ fn append_preparation_nodes(
     nodes: &mut Vec<ExecutionNode>,
     role: AudioRole,
     intent: &AnalysisIntent,
+    run_lead_isolate: bool,
+    analyze_with_lead_isolate: bool,
 ) -> String {
     let mut analysis_parent = "decode".to_string();
     match role {
@@ -742,14 +931,17 @@ fn append_preparation_nodes(
                 ));
                 analysis_parent = "extract-vocals".to_string();
             }
-            if intent.needs_analysis_lead || intent.requests_lead_stem {
+            if (intent.needs_vocal_analysis_input || intent.requests_lead_stem) && run_lead_isolate
+            {
                 nodes.push(node(
                     "lead-isolate",
                     "audio.lead_isolate",
                     true,
                     &["extract-vocals"],
                 ));
-                analysis_parent = "lead-isolate".to_string();
+                if analyze_with_lead_isolate {
+                    analysis_parent = "lead-isolate".to_string();
+                }
             }
             if intent.requests_instrumental {
                 // Production instrumental extraction is independent from the
@@ -763,14 +955,17 @@ fn append_preparation_nodes(
             }
         }
         AudioRole::VocalStem | AudioRole::GuideVocals => {
-            if intent.needs_analysis_lead || intent.requests_lead_stem {
+            if (intent.needs_vocal_analysis_input || intent.requests_lead_stem) && run_lead_isolate
+            {
                 nodes.push(node(
                     "lead-isolate",
                     "audio.lead_isolate",
                     true,
                     &["decode"],
                 ));
-                analysis_parent = "lead-isolate".to_string();
+                if analyze_with_lead_isolate {
+                    analysis_parent = "lead-isolate".to_string();
+                }
             }
         }
         AudioRole::LeadVocal | AudioRole::CleanLeadVocal => {}
@@ -809,7 +1004,8 @@ fn model_for_capability(capability: &str) -> Option<&'static str> {
         "speech.transcribe.challenger" => Some("firered_asr2_aed"),
         "speech.align" => Some("qwen3_forced_aligner_0_6b"),
         "pitch.track" => Some("rmvpe"),
-        "pitch.secondary" => Some("fcpe"),
+        "pitch.secondary" | "pitch.secondary.fcpe" => Some("fcpe"),
+        "pitch.secondary.rmvpe" => Some("rmvpe"),
         "notes.game" => Some("game"),
         "notes.basic_pitch" => Some("basic_pitch"),
         "notes.rosvot" => Some("rosvot"),
@@ -849,9 +1045,6 @@ fn quality_gates(profile: AnalysisProfile, nodes: &[ExecutionNode]) -> Vec<Strin
         SILENCE_RATIO_GATE.to_string(),
         ENERGY_RATIO_GATE.to_string(),
     ];
-    if profile == AnalysisProfile::Fast {
-        return gates;
-    }
     let has = |capability: &str| {
         nodes
             .iter()
@@ -860,7 +1053,11 @@ fn quality_gates(profile: AnalysisProfile, nodes: &[ExecutionNode]) -> Vec<Strin
     if has("audio.lead_isolate") {
         gates.push(LEAD_PURITY_GATE.to_string());
     }
-    if has("audio.denoise") || has("audio.dereverb") {
+    if has("audio.extract_instrumental") {
+        gates.push(VOCAL_LEAKAGE_GATE.to_string());
+        gates.push(MUSICAL_DAMAGE_GATE.to_string());
+    }
+    if profile != AnalysisProfile::Fast && (has("audio.denoise") || has("audio.dereverb")) {
         gates.push(CLEANUP_CONSISTENCY_GATE.to_string());
     }
     if has("fusion.singing") {
@@ -899,8 +1096,11 @@ fn fallback_policy() -> Vec<FallbackRule> {
     ]
 }
 
-fn artifact_declarations(request: &AnalyzeRequestV1) -> Vec<ArtifactDeclaration> {
-    requested_outputs(request)
+fn artifact_declarations(
+    request: &AnalyzeRequestV1,
+    nodes: &[ExecutionNode],
+) -> Vec<ArtifactDeclaration> {
+    let mut declarations = requested_outputs(request)
         .into_iter()
         .map(|semantic_type| {
             let media_type = match semantic_type.as_str() {
@@ -918,7 +1118,18 @@ fn artifact_declarations(request: &AnalyzeRequestV1) -> Vec<ArtifactDeclaration>
                 media_type: media_type.to_string(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if nodes
+        .iter()
+        .any(|node| node.capability.as_str() == "technique.analyze")
+    {
+        declarations.push(ArtifactDeclaration {
+            semantic_type: "technique_evidence".to_string(),
+            required: false,
+            media_type: "application/vnd.uta.technique-evidence+json;version=1".to_string(),
+        });
+    }
+    declarations
 }
 
 #[cfg(test)]
@@ -934,6 +1145,272 @@ mod tests {
             .collect()
     }
 
+    fn pitch_only_workflow_with_lead_isolation_policy(lead_policy: &str) -> serde_json::Value {
+        let node = |instance: &str,
+                    capability: &str,
+                    provider: Option<&str>,
+                    execution_policy: &str,
+                    priority: i32| {
+            let mut value = serde_json::json!({
+                "instance_id": instance,
+                "capability_id": capability,
+                "execution_policy": execution_policy,
+                "priority": priority,
+                "provider_preferences": {
+                    "primary": provider,
+                    "instrumental": null
+                }
+            });
+            if capability == "audio.separate_vocal_bgm" {
+                value["execution_invocations"] = serde_json::json!([{
+                    "invocation_id": format!("{instance}.vocal"),
+                    "provider_id": provider.expect("separation fixture has a provider"),
+                    "capabilities": ["audio.extract_vocals"],
+                    "output_ports": ["vocal"]
+                }]);
+            }
+            value
+        };
+        serde_json::json!({
+            "contract": crate::workflow::WORKFLOW_EXECUTION_CONTRACT,
+            "version": 1,
+            "workflow_schema_version": 2,
+            "workflow_id": "song:test:workflow",
+            "workflow_revision": 1,
+            "quality_mode": "balanced",
+            "definition_digest": "a".repeat(32),
+            "nodes": [
+                node("source", "audio.source", None, "always", 1000),
+                node("split", "audio.separate_vocal_bgm", Some("bs_roformer_vocals_ep317"), "always", 900),
+                node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), lead_policy, 880),
+                node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 680)
+            ],
+            "bindings": [
+                {
+                    "from_node": "source",
+                    "from_port": "mix",
+                    "to_node": "split",
+                    "to_port": "audio",
+                    "semantic_type": "audio",
+                    "audio_role": "source_mix",
+                    "execution_active": true,
+                    "analyzer_attachment": false
+                },
+                {
+                    "from_node": "split",
+                    "from_port": "vocal",
+                    "to_node": "lead",
+                    "to_port": "audio",
+                    "semantic_type": "audio",
+                    "audio_role": "vocal",
+                    "execution_active": lead_policy != "disabled",
+                    "analyzer_attachment": false
+                },
+                {
+                    "from_node": "split",
+                    "from_port": "vocal",
+                    "to_node": "pitch",
+                    "to_port": "audio",
+                    "semantic_type": "audio",
+                    "audio_role": "vocal",
+                    "execution_active": true,
+                    "analyzer_attachment": true
+                }
+            ],
+            "terminal_outputs": [{
+                "node": "pitch",
+                "port": "pitch",
+                "semantic_type": "pitch_evidence"
+            }]
+        })
+    }
+
+    fn pitch_workflow_with_enabled_cleanup() -> serde_json::Value {
+        let mut workflow = pitch_only_workflow_with_lead_isolation_policy("disabled");
+        workflow["nodes"].as_array_mut().unwrap().extend([
+            serde_json::json!({
+                "instance_id": "denoise",
+                "capability_id": "audio.denoise",
+                "execution_policy": "always",
+                "priority": 860,
+                "provider_preferences": {
+                    "primary": "melband_roformer_denoise_aufr33",
+                    "instrumental": null
+                }
+            }),
+            serde_json::json!({
+                "instance_id": "dereverb",
+                "capability_id": "audio.dereverb",
+                "execution_policy": "always",
+                "priority": 850,
+                "provider_preferences": {
+                    "primary": "melband_roformer_dereverb_anvuew",
+                    "instrumental": null
+                }
+            }),
+        ]);
+        let bindings = workflow["bindings"].as_array_mut().unwrap();
+        bindings.retain(|binding| binding["to_node"] != "pitch");
+        bindings.extend([
+            serde_json::json!({
+                "from_node": "split", "from_port": "vocal",
+                "to_node": "denoise", "to_port": "audio",
+                "semantic_type": "audio", "audio_role": "vocal",
+                "execution_active": true, "analyzer_attachment": false
+            }),
+            serde_json::json!({
+                "from_node": "denoise", "from_port": "audio",
+                "to_node": "dereverb", "to_port": "audio",
+                "semantic_type": "audio", "audio_role": "vocal",
+                "execution_active": true, "analyzer_attachment": false
+            }),
+            serde_json::json!({
+                "from_node": "dereverb", "from_port": "audio",
+                "to_node": "pitch", "to_port": "audio",
+                "semantic_type": "audio", "audio_role": "vocal",
+                "execution_active": true, "analyzer_attachment": true
+            }),
+        ]);
+        workflow
+    }
+
+    #[test]
+    fn disabled_lead_isolation_is_omitted_and_pitch_binds_to_vocal_output() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: true,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: Vec::new(),
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            pitch_only_workflow_with_lead_isolation_policy("disabled"),
+        );
+
+        let requirements = Planner::requirements(&request).unwrap();
+        let resources = resource_ids(&requirements);
+        assert!(resources.contains("model:bs_roformer_vocals_ep317"));
+        assert!(resources.contains("model:rmvpe"));
+        assert!(!resources.contains("model:melband_roformer_harmony"));
+        assert!(!resources.contains("model:game"));
+        assert!(!resources.contains("model:fcpe"));
+
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(has_node(&plan, "audio.extract_vocals"));
+        assert!(has_node(&plan, "pitch.track"));
+        assert!(!has_node(&plan, "audio.lead_isolate"));
+        assert!(!has_node(&plan, "notes.game"));
+    }
+
+    #[test]
+    fn explicit_lead_vocal_output_forces_lead_isolation() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.stems.push(AudioRole::LeadVocal);
+
+        let requirements = Planner::requirements(&request).unwrap();
+        assert!(resource_ids(&requirements).contains("model:melband_roformer_harmony"));
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(has_node(&plan, "audio.extract_vocals"));
+        assert!(has_node(&plan, "audio.lead_isolate"));
+    }
+
+    #[test]
+    fn explicit_lead_vocal_output_forces_a_disabled_isolation_workflow_for_the_stem_branch() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: false,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: vec![AudioRole::LeadVocal],
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            pitch_only_workflow_with_lead_isolation_policy("disabled"),
+        );
+
+        let requirements = Planner::requirements(&request).unwrap();
+        assert!(resource_ids(&requirements).contains("model:melband_roformer_harmony"));
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(has_node(&plan, "audio.lead_isolate"));
+        assert!(
+            !plan
+                .source_route
+                .preparation
+                .iter()
+                .any(|capability| capability.as_str() == "audio.lead_isolate")
+        );
+        let lead = plan
+            .workflow_execution
+            .as_ref()
+            .unwrap()
+            .node_for_capability("audio.lead_isolate")
+            .unwrap();
+        assert_eq!(
+            lead.execution_state,
+            crate::workflow_executor::WorkflowNodeExecutionStateV1::Ready
+        );
+        assert_eq!(
+            lead.execution_policy,
+            crate::workflow::WorkflowExecutionPolicyV1::Disabled
+        );
+    }
+
+    #[test]
+    fn explicit_lead_vocal_output_forces_every_conditional_isolation_policy_ready() {
+        for (wire_policy, expected_policy) in [
+            (
+                "maximum_only",
+                crate::workflow::WorkflowExecutionPolicyV1::MaximumOnly,
+            ),
+            (
+                "on_disagreement",
+                crate::workflow::WorkflowExecutionPolicyV1::OnDisagreement,
+            ),
+            (
+                "disagreement_windows",
+                crate::workflow::WorkflowExecutionPolicyV1::DisagreementWindows,
+            ),
+        ] {
+            let mut request = valid_request(AudioRole::OriginalMix);
+            request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+                vocal_chart: false,
+                pitch_evidence: true,
+                singing_analysis: false,
+                transcript: false,
+                alignment: false,
+                stems: vec![AudioRole::LeadVocal],
+            };
+            request.extensions.insert(
+                crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+                pitch_only_workflow_with_lead_isolation_policy(wire_policy),
+            );
+
+            let plan = Planner::plan(&request, None).unwrap();
+            let lead = plan
+                .workflow_execution
+                .as_ref()
+                .unwrap()
+                .node_for_capability("audio.lead_isolate")
+                .unwrap();
+            assert_eq!(
+                lead.execution_state,
+                crate::workflow_executor::WorkflowNodeExecutionStateV1::Ready
+            );
+            assert_eq!(lead.execution_policy, expected_policy);
+            assert!(
+                plan.source_route
+                    .preparation
+                    .iter()
+                    .any(|capability| capability.as_str() == "audio.lead_isolate")
+            );
+        }
+    }
+
     fn has_node(plan: &EnginePlan, capability: &str) -> bool {
         plan.execution_nodes
             .iter()
@@ -941,14 +1418,70 @@ mod tests {
     }
 
     #[test]
-    fn original_mix_fast_has_baseline_resources() {
+    fn optional_technique_output_is_declared_before_execution() {
+        let request = valid_request(AudioRole::OriginalMix);
+        let declarations = artifact_declarations(
+            &request,
+            &[node("stars-technique", "technique.analyze", false, &[])],
+        );
+        let declaration = declarations
+            .iter()
+            .find(|item| item.semantic_type == "technique_evidence")
+            .unwrap();
+        assert!(!declaration.required);
+        assert_eq!(
+            declaration.media_type,
+            "application/vnd.uta.technique-evidence+json;version=1"
+        );
+    }
+
+    #[test]
+    fn enabled_cleanup_is_part_of_the_exact_analyzer_source_route() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: true,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: Vec::new(),
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            pitch_workflow_with_enabled_cleanup(),
+        );
+
+        let requirements = Planner::requirements(&request).unwrap();
+        let resources = resource_ids(&requirements);
+        assert!(resources.contains("model:melband_roformer_denoise_aufr33"));
+        assert!(resources.contains("model:melband_roformer_dereverb_anvuew"));
+        let plan = Planner::plan(&request, None).unwrap();
+        assert_eq!(
+            plan.source_route
+                .preparation
+                .iter()
+                .map(CapabilityId::as_str)
+                .collect::<Vec<_>>(),
+            ["audio.extract_vocals", "audio.denoise", "audio.dereverb"]
+        );
+        assert_eq!(
+            plan.execution_nodes
+                .iter()
+                .find(|node| node.capability.as_str() == "audio.dereverb")
+                .unwrap()
+                .depends_on,
+            ["denoise"]
+        );
+    }
+
+    #[test]
+    fn original_mix_default_bypasses_optional_preprocessing() {
         let request = valid_request(AudioRole::OriginalMix);
         let requirements = Planner::requirements(&request).unwrap();
         let resources = resource_ids(&requirements);
         for expected in [
             "tool:ffmpeg",
             "model:bs_roformer_vocals_ep317",
-            "model:melband_roformer_harmony",
             "model:qwen3_asr_1_7b",
             "model:qwen3_forced_aligner_0_6b",
             "model:rmvpe",
@@ -956,7 +1489,14 @@ mod tests {
         ] {
             assert!(resources.contains(expected), "{expected}");
         }
-        assert!(!resources.contains("model:melband_roformer_inst_v2"));
+        for bypassed in [
+            "model:melband_roformer_harmony",
+            "model:melband_roformer_denoise_aufr33",
+            "model:melband_roformer_dereverb_anvuew",
+            "model:melband_roformer_inst_v2",
+        ] {
+            assert!(!resources.contains(bypassed), "{bypassed}");
+        }
     }
 
     #[test]
@@ -969,6 +1509,25 @@ mod tests {
                 .iter()
                 .all(|resource| !resource.resource.contains("roformer"))
         );
+    }
+
+    #[test]
+    fn explicit_lead_stem_from_an_already_lead_source_reuses_the_declared_semantics() {
+        for role in [AudioRole::LeadVocal, AudioRole::CleanLeadVocal] {
+            let mut request = valid_request(role);
+            request.requested_artifacts.stems.push(AudioRole::LeadVocal);
+            let requirements = Planner::requirements(&request).unwrap();
+            assert!(!resource_ids(&requirements).contains("model:melband_roformer_harmony"));
+            let plan = Planner::plan(&request, None).unwrap();
+            assert!(!has_node(&plan, "audio.lead_isolate"));
+            assert!(
+                !plan
+                    .source_route
+                    .preparation
+                    .iter()
+                    .any(|capability| capability.as_str() == "audio.lead_isolate")
+            );
+        }
     }
 
     #[test]
@@ -985,6 +1544,60 @@ mod tests {
     }
 
     #[test]
+    fn ep317_residual_workflow_resolves_one_provider_for_both_stem_roles() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: true,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: vec![AudioRole::Instrumental],
+        };
+        let mut workflow = pitch_only_workflow_with_lead_isolation_policy("disabled");
+        workflow["nodes"][1]["provider_preferences"]["instrumental"] =
+            serde_json::json!("bs_roformer_vocals_ep317");
+        workflow["nodes"][1]["execution_invocations"] = serde_json::json!([{
+            "invocation_id": "split",
+            "provider_id": "bs_roformer_vocals_ep317",
+            "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
+            "output_ports": ["vocal", "instrumental"]
+        }]);
+        workflow["terminal_outputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "node": "split",
+                "port": "instrumental",
+                "semantic_type": "audio",
+                "audio_role": "instrumental"
+            }));
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            workflow,
+        );
+
+        let requirements = Planner::requirements(&request).unwrap();
+        let resources = resource_ids(&requirements);
+        assert!(resources.contains("model:bs_roformer_vocals_ep317"));
+        assert!(!resources.contains("model:melband_roformer_inst_v2"));
+        let plan = Planner::plan(&request, None).unwrap();
+        let split = plan
+            .workflow_execution
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == "split")
+            .unwrap();
+        assert_eq!(split.execution_invocations.len(), 1);
+        assert_eq!(
+            split.execution_invocations[0].capabilities,
+            ["audio.extract_vocals", "audio.extract_instrumental"]
+        );
+    }
+
+    #[test]
     fn balanced_challengers_are_optional_and_fast_omits_them() {
         let fast = valid_request(AudioRole::LeadVocal);
         let fast_requirements = Planner::requirements(&fast).unwrap();
@@ -995,7 +1608,7 @@ mod tests {
         balanced.analysis.profile = AnalysisProfile::Balanced;
         let plan = Planner::plan(&balanced, None).unwrap();
         for (model, capability) in [
-            ("model:fcpe", "pitch.secondary"),
+            ("model:fcpe", "pitch.secondary.fcpe"),
             ("model:basic_pitch", "notes.basic_pitch"),
             ("model:firered_asr2_aed", "speech.transcribe.challenger"),
         ] {
@@ -1031,6 +1644,7 @@ mod tests {
                 CLIPPING_GATE,
                 SILENCE_RATIO_GATE,
                 ENERGY_RATIO_GATE,
+                VOCAL_TOPOLOGY_GATE,
             ]
         );
 
@@ -1045,7 +1659,6 @@ mod tests {
                 CLIPPING_GATE,
                 SILENCE_RATIO_GATE,
                 ENERGY_RATIO_GATE,
-                LEAD_PURITY_GATE,
                 VOCAL_TOPOLOGY_GATE,
             ]
         );
@@ -1057,7 +1670,38 @@ mod tests {
         clean_pitch.requested_artifacts.transcript = false;
         clean_pitch.requested_artifacts.alignment = false;
         let clean_plan = Planner::plan(&clean_pitch, None).unwrap();
-        assert_eq!(clean_plan.quality_gates, fast.quality_gates);
+        assert_eq!(
+            clean_plan.quality_gates,
+            [
+                TIMELINE_VALID_GATE,
+                FINITE_SAMPLES_GATE,
+                CLIPPING_GATE,
+                SILENCE_RATIO_GATE,
+                ENERGY_RATIO_GATE,
+            ]
+        );
+
+        let mut instrumental_request = valid_request(AudioRole::OriginalMix);
+        instrumental_request.requested_artifacts.vocal_chart = false;
+        instrumental_request.requested_artifacts.pitch_evidence = false;
+        instrumental_request.requested_artifacts.singing_analysis = false;
+        instrumental_request.requested_artifacts.transcript = false;
+        instrumental_request.requested_artifacts.alignment = false;
+        instrumental_request
+            .requested_artifacts
+            .stems
+            .push(AudioRole::Instrumental);
+        let instrumental = Planner::plan(&instrumental_request, None).unwrap();
+        assert!(
+            instrumental
+                .quality_gates
+                .contains(&VOCAL_LEAKAGE_GATE.to_string())
+        );
+        assert!(
+            instrumental
+                .quality_gates
+                .contains(&MUSICAL_DAMAGE_GATE.to_string())
+        );
     }
 
     #[test]
@@ -1322,7 +1966,14 @@ mod tests {
             .status
             .as_ref()
             .unwrap();
-        assert_eq!(production_fcpe.selected_backend, None);
+        assert_eq!(
+            production_fcpe.selected_backend,
+            Some(uta_runtime_manager::NativeBackend::OpenVino)
+        );
+        assert!(
+            !production_fcpe.usable,
+            "Production admission must not hide a missing installation"
+        );
 
         let mut benchmark = production;
         benchmark.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;

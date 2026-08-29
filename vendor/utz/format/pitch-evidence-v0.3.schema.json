@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bintis/utz/main/format/pitch-evidence-v0.3.schema.json",
+  "title": "Uta pitch evidence 0.3",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "timebase",
+    "start",
+    "hop",
+    "frequency_hz",
+    "confidence"
+  ],
+  "properties": {
+    "format": {
+      "const": "uta.pitch-evidence"
+    },
+    "format_version": {
+      "type": "string",
+      "pattern": "^0\\.3\\.(0|[1-9][0-9]*)$"
+    },
+    "timebase": {
+      "const": 1000000
+    },
+    "start": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "hop": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "frequency_hz": {
+      "type": "array",
+      "items": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "exclusiveMinimum": 0
+      }
+    },
+    "confidence": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "model": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -6,7 +6,10 @@ use super::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
 
 pub const AUDIO_QUALITY_REPORT_CONTRACT: &str = "uta.analysis-engine.audio-quality-report";
 pub const AUDIO_QUALITY_REPORT_VERSION: u32 = 1;
-pub const AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates-v1";
+pub const AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates-v2";
+const LEGACY_AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates-v1";
+pub const VOCAL_TOPOLOGY_ESTIMATE_CONTRACT: &str = "uta.analysis-engine.vocal-topology-estimate";
+pub const VOCAL_TOPOLOGY_ESTIMATE_VERSION: u32 = 1;
 
 pub const TIMELINE_VALID_GATE: &str = "timeline_valid";
 pub const FINITE_SAMPLES_GATE: &str = "finite_samples";
@@ -14,6 +17,8 @@ pub const CLIPPING_GATE: &str = "clipping";
 pub const SILENCE_RATIO_GATE: &str = "silence_ratio";
 pub const ENERGY_RATIO_GATE: &str = "energy_ratio";
 pub const LEAD_PURITY_GATE: &str = "lead_purity";
+pub const VOCAL_LEAKAGE_GATE: &str = "vocal_leakage";
+pub const MUSICAL_DAMAGE_GATE: &str = "musical_damage";
 pub const CLEANUP_CONSISTENCY_GATE: &str = "cleanup_consistency";
 pub const VOCAL_TOPOLOGY_GATE: &str = "vocal_topology";
 
@@ -24,6 +29,8 @@ pub const AUDIO_QUALITY_GATE_ORDER: &[&str] = &[
     SILENCE_RATIO_GATE,
     ENERGY_RATIO_GATE,
     LEAD_PURITY_GATE,
+    VOCAL_LEAKAGE_GATE,
+    MUSICAL_DAMAGE_GATE,
     CLEANUP_CONSISTENCY_GATE,
     VOCAL_TOPOLOGY_GATE,
 ];
@@ -73,6 +80,71 @@ pub struct QualityGateOutcomeV1 {
     pub regions: Vec<QualityRegionV1>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VocalTopologyModeV1 {
+    SingleLead,
+    AlternatingMultiLead,
+    OverlappingMultiLead,
+    LeadWithSupport,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VocalTopologyEstimateV1 {
+    pub contract: String,
+    pub version: u32,
+    pub timebase: u32,
+    pub source_start: u64,
+    pub duration: u64,
+    pub mode: VocalTopologyModeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub overlap_regions: Vec<QualityRegionV1>,
+    #[serde(default)]
+    pub support_regions: Vec<QualityRegionV1>,
+    pub evidence_sources: Vec<String>,
+}
+
+impl VocalTopologyEstimateV1 {
+    pub fn validate(&self) -> EngineResult<()> {
+        if self.contract != VOCAL_TOPOLOGY_ESTIMATE_CONTRACT
+            || self.version != VOCAL_TOPOLOGY_ESTIMATE_VERSION
+            || self.timebase != super::CANONICAL_TIMEBASE
+            || self.duration == 0
+            || self.evidence_sources.is_empty()
+            || self
+                .evidence_sources
+                .iter()
+                .any(|source| source.trim().is_empty())
+            || self
+                .confidence
+                .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+            || !valid_topology_regions(self.source_start, self.duration, &self.overlap_regions)
+            || !valid_topology_regions(self.source_start, self.duration, &self.support_regions)
+        {
+            return Err(invalid(
+                "vocal topology estimate identity or shape is invalid",
+            ));
+        }
+        let mode_shape_valid = match self.mode {
+            VocalTopologyModeV1::SingleLead | VocalTopologyModeV1::Unknown => {
+                self.overlap_regions.is_empty() && self.support_regions.is_empty()
+            }
+            VocalTopologyModeV1::AlternatingMultiLead => self.overlap_regions.is_empty(),
+            VocalTopologyModeV1::OverlappingMultiLead => !self.overlap_regions.is_empty(),
+            VocalTopologyModeV1::LeadWithSupport => !self.support_regions.is_empty(),
+        };
+        if !mode_shape_valid {
+            return Err(invalid(
+                "vocal topology mode conflicts with its typed regions",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioQualityReportV1 {
     pub contract: String,
@@ -83,17 +155,25 @@ pub struct AudioQualityReportV1 {
     pub duration: u64,
     pub planned_gates: Vec<String>,
     pub outcomes: Vec<QualityGateOutcomeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_topology: Option<VocalTopologyEstimateV1>,
 }
 
 impl AudioQualityReportV1 {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != AUDIO_QUALITY_REPORT_CONTRACT
             || self.version != AUDIO_QUALITY_REPORT_VERSION
-            || self.algorithm != AUDIO_QUALITY_ALGORITHM_VERSION
+            || !matches!(
+                self.algorithm.as_str(),
+                AUDIO_QUALITY_ALGORITHM_VERSION | LEGACY_AUDIO_QUALITY_ALGORITHM_VERSION
+            )
             || self.evaluated_audio_role.trim().is_empty()
             || self.duration == 0
             || self.planned_gates.is_empty()
             || self.planned_gates.len() != self.outcomes.len()
+            || self.vocal_topology.as_ref().is_some_and(|topology| {
+                topology.duration != self.duration || topology.validate().is_err()
+            })
         {
             return Err(invalid("audio quality report identity or shape is invalid"));
         }
@@ -128,14 +208,47 @@ impl AudioQualityReportV1 {
                     return Err(invalid("audio quality metric is invalid"));
                 }
             }
-            for region in &outcome.regions {
-                if region.start >= region.end || region.reason.trim().is_empty() {
-                    return Err(invalid("audio quality region is invalid"));
-                }
+            if !valid_quality_region_shapes(&outcome.regions) {
+                return Err(invalid("audio quality region is invalid"));
             }
         }
         Ok(())
     }
+
+    pub fn validate_for_source(&self, source_start: u64) -> EngineResult<()> {
+        self.validate()?;
+        if self
+            .vocal_topology
+            .as_ref()
+            .is_some_and(|topology| topology.source_start != source_start)
+            || self.outcomes.iter().any(|outcome| {
+                !valid_topology_regions(source_start, self.duration, &outcome.regions)
+            })
+        {
+            return Err(invalid(
+                "audio quality regions do not match the source timeline",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn valid_quality_region_shapes(regions: &[QualityRegionV1]) -> bool {
+    regions
+        .iter()
+        .all(|region| region.start < region.end && !region.reason.trim().is_empty())
+}
+
+fn valid_topology_regions(source_start: u64, duration: u64, regions: &[QualityRegionV1]) -> bool {
+    let Some(source_end) = source_start.checked_add(duration) else {
+        return false;
+    };
+    regions.iter().all(|region| {
+        region.start >= source_start
+            && region.end <= source_end
+            && region.start < region.end
+            && !region.reason.trim().is_empty()
+    }) && regions.windows(2).all(|pair| pair[0].end <= pair[1].start)
 }
 
 pub fn gate_requirement(gate: &str) -> QualityGateRequirementV1 {

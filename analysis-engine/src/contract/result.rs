@@ -9,6 +9,10 @@ pub const ANALYSIS_RESULT_CONTRACT: &str = "uta.analysis-engine.result";
 pub const ANALYSIS_RESULT_VERSION: u32 = 1;
 pub const EXPORT_REQUEST_CONTRACT: &str = "uta.analysis-engine.export";
 pub const EXPORT_REQUEST_VERSION: u32 = 1;
+pub const FUSION_AGENT_ADAPTER_RESOURCE: &str = "tool:fusion_agent_adapter";
+pub const FUSION_AGENT_PROTOCOL: &str = "uta.fusion_agent_request/uta.fusion_agent_response";
+pub const FUSION_AGENT_PROTOCOL_VERSION: u32 = 3;
+pub const HSMM_VITERBI_SELECTOR: &str = "hsmm_viterbi";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,13 +108,115 @@ pub struct AnalysisDiagnosticsV1 {
     pub evidence: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisReusePolicyV1 {
+    Deterministic,
+    PreservedRevisionOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision_mode", rename_all = "snake_case")]
+pub enum FusionDecisionProvenanceV1 {
+    Algorithm {
+        selector: String,
+        selector_version: String,
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+        reuse_policy: AnalysisReusePolicyV1,
+    },
+    AiJudgment {
+        adapter_resource: String,
+        adapter_protocol: String,
+        adapter_protocol_version: u32,
+        adapter_identity: String,
+        adapter_version: String,
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+        response_digest: String,
+        reuse_policy: AnalysisReusePolicyV1,
+    },
+}
+
+impl FusionDecisionProvenanceV1 {
+    pub fn validate(&self) -> EngineResult<()> {
+        let (candidate_set_digest, selected_candidate_ids) = match self {
+            Self::Algorithm {
+                selector,
+                selector_version,
+                candidate_set_digest,
+                selected_candidate_ids,
+                reuse_policy,
+            } => {
+                if selector != HSMM_VITERBI_SELECTOR
+                    || selector_version != crate::fingerprint::HSMM_VERSION
+                    || *reuse_policy != AnalysisReusePolicyV1::Deterministic
+                {
+                    return Err(EngineError::new(
+                        EngineErrorCode::OutputValidationFailed,
+                        "algorithmic fusion decision provenance is invalid",
+                    ));
+                }
+                (candidate_set_digest, selected_candidate_ids)
+            }
+            Self::AiJudgment {
+                adapter_resource,
+                adapter_protocol,
+                adapter_protocol_version,
+                adapter_identity,
+                adapter_version,
+                candidate_set_digest,
+                selected_candidate_ids,
+                response_digest,
+                reuse_policy,
+            } => {
+                if adapter_resource != FUSION_AGENT_ADAPTER_RESOURCE
+                    || adapter_protocol != FUSION_AGENT_PROTOCOL
+                    || *adapter_protocol_version != FUSION_AGENT_PROTOCOL_VERSION
+                    || adapter_identity.trim().is_empty()
+                    || adapter_version.trim().is_empty()
+                    || !valid_sha256(response_digest)
+                    || *reuse_policy != AnalysisReusePolicyV1::PreservedRevisionOnly
+                {
+                    return Err(EngineError::new(
+                        EngineErrorCode::OutputValidationFailed,
+                        "AI judgment fusion decision provenance is invalid",
+                    ));
+                }
+                (candidate_set_digest, selected_candidate_ids)
+            }
+        };
+        let mut unique_ids = std::collections::BTreeSet::new();
+        if !valid_sha256(candidate_set_digest)
+            || selected_candidate_ids.is_empty()
+            || selected_candidate_ids
+                .iter()
+                .any(|id| id.trim().is_empty() || !unique_ids.insert(id))
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                "fusion decision candidate identity is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AnalysisProvenanceV1 {
     #[serde(default)]
     pub resources: Vec<ResolvedResourceProvenanceV1>,
     pub calibration_version: String,
     pub fusion_version: String,
-    pub hsmm_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_decision: Option<FusionDecisionProvenanceV1>,
     pub quantization_version: String,
     pub audio_quality_version: String,
     pub postprocess_version: String,
@@ -205,6 +311,18 @@ impl AnalysisResultManifestV1 {
             }
             stem.artifact.validate()?;
         }
+        if let Some(decision) = &self.provenance.fusion_decision {
+            decision.validate()?;
+        }
+        if (self.artifacts.candidate_vocal_chart.is_some()
+            || self.artifacts.singing_analysis.is_some())
+            && self.provenance.fusion_decision.is_none()
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                "singing artifacts require final fusion decision provenance",
+            ));
+        }
         for resource in &self.provenance.resources {
             if resource.resource.trim().is_empty()
                 || resource.generation.trim().is_empty()
@@ -286,7 +404,6 @@ impl AnalysisResultManifestV1 {
                 if [
                     &self.provenance.calibration_version,
                     &self.provenance.fusion_version,
-                    &self.provenance.hsmm_version,
                     &self.provenance.quantization_version,
                     &self.provenance.postprocess_version,
                 ]
@@ -363,6 +480,79 @@ impl ExportRequestV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_result_manifest_serializes_truthful_decision_provenance_without_hsmm() {
+        let manifest = AnalysisResultManifestV1 {
+            contract: ANALYSIS_RESULT_CONTRACT.to_string(),
+            version: ANALYSIS_RESULT_VERSION,
+            request_id: "ai-result-1".to_string(),
+            status: AnalysisStatus::Failed,
+            artifacts: AnalysisArtifactsV1::default(),
+            diagnostics: AnalysisDiagnosticsV1::default(),
+            provenance: AnalysisProvenanceV1 {
+                fusion_decision: Some(FusionDecisionProvenanceV1::AiJudgment {
+                    adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
+                    adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
+                    adapter_protocol_version: FUSION_AGENT_PROTOCOL_VERSION,
+                    adapter_identity: "uta-test-adapter".to_string(),
+                    adapter_version: "1.0.0".to_string(),
+                    candidate_set_digest: "a".repeat(64),
+                    selected_candidate_ids: vec!["candidate-1".to_string()],
+                    response_digest: "b".repeat(64),
+                    reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+                }),
+                ..AnalysisProvenanceV1::default()
+            },
+            fingerprint: "c".repeat(64),
+            degraded_reasons: Vec::new(),
+        };
+        manifest.validate().unwrap();
+        let json = serde_json::to_value(manifest).unwrap();
+        assert_eq!(
+            json["provenance"]["fusion_decision"]["decision_mode"],
+            "ai_judgment"
+        );
+        assert!(json["provenance"].get("hsmm_version").is_none());
+    }
+
+    #[test]
+    fn fusion_decision_provenance_requires_exact_selector_and_adapter_protocol_versions() {
+        let algorithm = |selector_version: &str| FusionDecisionProvenanceV1::Algorithm {
+            selector: HSMM_VITERBI_SELECTOR.to_string(),
+            selector_version: selector_version.to_string(),
+            candidate_set_digest: "a".repeat(64),
+            selected_candidate_ids: vec!["candidate-1".to_string()],
+            reuse_policy: AnalysisReusePolicyV1::Deterministic,
+        };
+        algorithm(crate::fingerprint::HSMM_VERSION)
+            .validate()
+            .unwrap();
+        assert_eq!(
+            algorithm("hsmm-v13").validate().unwrap_err().code,
+            EngineErrorCode::OutputValidationFailed
+        );
+
+        let ai = |version| FusionDecisionProvenanceV1::AiJudgment {
+            adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
+            adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
+            adapter_protocol_version: version,
+            adapter_identity: "uta-test-adapter".to_string(),
+            adapter_version: "1.0.0".to_string(),
+            candidate_set_digest: "a".repeat(64),
+            selected_candidate_ids: vec!["candidate-1".to_string()],
+            response_digest: "b".repeat(64),
+            reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+        };
+        ai(FUSION_AGENT_PROTOCOL_VERSION).validate().unwrap();
+        assert_eq!(
+            ai(FUSION_AGENT_PROTOCOL_VERSION - 1)
+                .validate()
+                .unwrap_err()
+                .code,
+            EngineErrorCode::OutputValidationFailed
+        );
+    }
 
     #[test]
     fn artifact_references_are_confined() {

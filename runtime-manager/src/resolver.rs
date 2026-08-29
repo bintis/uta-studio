@@ -7,6 +7,10 @@ use crate::catalog::{
     ResourceCatalog, SourceIdentity,
 };
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
+use crate::external_tool::{
+    FUSION_AGENT_ADAPTER_ID, clear_tool_path, configure_tool_path, executable_file,
+    fusion_adapter_manifest,
+};
 use crate::lease::ResourceLease;
 use crate::manifest::{
     is_generation_id, read_install_manifest, verify_generation, verify_generation_metadata,
@@ -36,6 +40,16 @@ pub struct ResolvedModel {
     pub runtime_recipe_digest: Option<String>,
     #[serde(skip)]
     pub lease: ResourceLease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTool {
+    pub resource: ResourceRef,
+    pub executable: PathBuf,
+    pub identity: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub origin: ResourceOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +305,85 @@ impl RuntimeManager {
 
     pub fn doctor(&self) -> crate::doctor::DoctorReport {
         crate::doctor::run_doctor(self)
+    }
+
+    pub fn configure_external_tool(
+        &self,
+        resource: &ResourceRef,
+        executable: &std::path::Path,
+    ) -> RuntimeManagerResult<ResourceStatus> {
+        if resource.kind != ResourceKind::Tool || !self.catalog.contains(resource) {
+            return Err(RuntimeManagerError::unknown_resource(resource));
+        }
+        let canonical_executable = std::fs::canonicalize(executable).map_err(|error| {
+            RuntimeManagerError::new(
+                "tool_unusable",
+                format!("could not canonicalize {}: {error}", executable.display()),
+            )
+            .with_resource(resource.clone())
+        })?;
+        if resource.id == FUSION_AGENT_ADAPTER_ID {
+            fusion_adapter_manifest(&canonical_executable)
+                .map_err(|error| error.with_resource(resource.clone()))?;
+        } else if !executable_file(&canonical_executable) {
+            return Err(RuntimeManagerError::new(
+                "tool_unusable",
+                format!(
+                    "tool path is not executable: {}",
+                    canonical_executable.display()
+                ),
+            )
+            .with_resource(resource.clone()));
+        }
+        configure_tool_path(&self.paths, &resource.id, &canonical_executable)?;
+        self.status(resource, RuntimePolicy::Production)
+    }
+
+    pub fn clear_external_tool(
+        &self,
+        resource: &ResourceRef,
+    ) -> RuntimeManagerResult<ResourceStatus> {
+        if resource.kind != ResourceKind::Tool || !self.catalog.contains(resource) {
+            return Err(RuntimeManagerError::unknown_resource(resource));
+        }
+        clear_tool_path(&self.paths, &resource.id)?;
+        self.status(resource, RuntimePolicy::Production)
+    }
+
+    pub fn resolve_tool(
+        &self,
+        tool_id: &str,
+        policy: RuntimePolicy,
+    ) -> RuntimeManagerResult<ResolvedTool> {
+        let resource = ResourceRef::tool(tool_id)?;
+        let status = self.status(&resource, policy)?;
+        if !status.usable {
+            return Err(error_for_unusable(&status));
+        }
+        let executable = self
+            .paths
+            .tool_candidate_path_result(tool_id)?
+            .filter(|path| executable_file(path))
+            .ok_or_else(|| RuntimeManagerError::runtime_missing(&resource))?;
+        if tool_id == FUSION_AGENT_ADAPTER_ID {
+            let manifest = fusion_adapter_manifest(&executable)?;
+            return Ok(ResolvedTool {
+                resource,
+                executable,
+                identity: manifest.adapter_id,
+                version: manifest.adapter_version,
+                protocol_version: manifest.fusion_protocol_version,
+                origin: status.origin,
+            });
+        }
+        Ok(ResolvedTool {
+            resource,
+            executable,
+            identity: tool_id.to_string(),
+            version: "external".to_string(),
+            protocol_version: 0,
+            origin: status.origin,
+        })
     }
 
     pub fn resolve_model(
@@ -584,6 +677,9 @@ impl RuntimeManager {
             selected_backend: selected.map(|capability| capability.backend),
             runtime_resource,
             generation: install.generation,
+            tool_identity: None,
+            tool_version: None,
+            tool_protocol_version: None,
         })
     }
 
@@ -647,12 +743,18 @@ impl RuntimeManager {
             selected_backend: selected.map(|capability| capability.backend),
             runtime_resource: None,
             generation: install.generation,
+            tool_identity: None,
+            tool_version: None,
+            tool_protocol_version: None,
         })
     }
 
     fn tool_status(&self, resource: &ResourceRef) -> RuntimeManagerResult<ResourceStatus> {
         if !self.catalog.tools.contains_key(&resource.id) {
             return Err(RuntimeManagerError::unknown_resource(resource));
+        }
+        if resource.id == FUSION_AGENT_ADAPTER_ID {
+            return self.fusion_adapter_status(resource);
         }
         let install = self.generic_install_state(resource);
         let executable_ready = self.paths.tool_executable(&resource.id).is_some();
@@ -688,6 +790,78 @@ impl RuntimeManager {
             selected_backend: None,
             runtime_resource: None,
             generation: install.generation,
+            tool_identity: None,
+            tool_version: None,
+            tool_protocol_version: None,
+        })
+    }
+
+    fn fusion_adapter_status(
+        &self,
+        resource: &ResourceRef,
+    ) -> RuntimeManagerResult<ResourceStatus> {
+        let candidate = self.paths.tool_candidate_path_result(&resource.id)?;
+        let origin = if self.paths.tool_override_path(&resource.id).is_some() {
+            ResourceOrigin::EnvironmentOverride
+        } else if self
+            .paths
+            .configured_tool_path_result(&resource.id)?
+            .is_some()
+        {
+            ResourceOrigin::ExternalConfiguration
+        } else if self.paths.tool_fallback_path(&resource.id).is_some() {
+            ResourceOrigin::Derived
+        } else {
+            ResourceOrigin::Missing
+        };
+        let executable_ready = candidate.as_deref().is_some_and(executable_file);
+        let manifest_result = candidate
+            .as_deref()
+            .filter(|_| executable_ready)
+            .map(fusion_adapter_manifest)
+            .transpose();
+        let (manifest, protocol_ready) = match manifest_result {
+            Ok(manifest) => (manifest, executable_ready),
+            Err(_) => (None, false),
+        };
+        let mut reasons = Vec::new();
+        if candidate.is_none() {
+            reasons.push(ReadinessReason::Absent);
+        } else if !executable_ready {
+            reasons.push(ReadinessReason::ExecutableMissing);
+        } else if !protocol_ready {
+            reasons.push(ReadinessReason::ProtocolMismatch);
+        }
+        let usable = executable_ready && protocol_ready;
+        Ok(ResourceStatus {
+            resource: resource.clone(),
+            install_state: if candidate.is_none() {
+                InstallState::Absent
+            } else if usable {
+                InstallState::Installed
+            } else {
+                InstallState::Incomplete
+            },
+            origin,
+            integrity_verified: false,
+            runnable: usable,
+            validation_state: ValidationState::ProductionPinned,
+            dependencies_ready: true,
+            executable_ready,
+            usable,
+            reasons,
+            selected_backend: None,
+            runtime_resource: None,
+            generation: None,
+            tool_identity: manifest
+                .as_ref()
+                .map(|manifest| manifest.adapter_id.clone()),
+            tool_version: manifest
+                .as_ref()
+                .map(|manifest| manifest.adapter_version.clone()),
+            tool_protocol_version: manifest
+                .as_ref()
+                .map(|manifest| manifest.fusion_protocol_version),
         })
     }
 
@@ -734,6 +908,9 @@ impl RuntimeManager {
             selected_backend: None,
             runtime_resource: None,
             generation: None,
+            tool_identity: None,
+            tool_version: None,
+            tool_protocol_version: None,
         })
     }
 
@@ -1057,6 +1234,16 @@ fn validation_rank(validation: ValidationState) -> u8 {
 }
 
 fn error_for_unusable(status: &ResourceStatus) -> RuntimeManagerError {
+    if status.reasons.contains(&ReadinessReason::ProtocolMismatch) {
+        return RuntimeManagerError::new(
+            "tool_protocol_mismatch",
+            format!(
+                "external tool protocol is not verified: {}",
+                status.resource
+            ),
+        )
+        .with_resource(status.resource.clone());
+    }
     if status.reasons.contains(&ReadinessReason::Corrupt) {
         return RuntimeManagerError::resource_corrupt(&status.resource);
     }
@@ -1339,7 +1526,7 @@ mod tests {
     }
 
     #[test]
-    fn production_rejects_candidate_even_when_installed_and_runtime_ready() {
+    fn promoted_model_is_production_usable_when_installed_and_runtime_ready() {
         let fixture = Fixture::new();
         let catalog = Fixture::catalog_with_fixture_model("fcpe");
         fixture.write_model_current_with_catalog("fcpe", &catalog);
@@ -1358,11 +1545,11 @@ mod tests {
             .unwrap();
         assert!(status.integrity_verified);
         assert!(status.runnable);
-        assert!(!status.usable);
-        let error = manager
+        assert!(status.usable);
+        let resolved = manager
             .resolve_model("fcpe", RuntimePolicy::Production)
-            .unwrap_err();
-        assert_eq!(error.code, "no_validated_backend");
+            .unwrap();
+        assert_eq!(resolved.backend, NativeBackend::OpenVino);
     }
 
     #[test]

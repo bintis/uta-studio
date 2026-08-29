@@ -306,6 +306,60 @@ fn estimator_bucket(buckets: &[usize], note_count: usize) -> Result<usize, Strin
         })
 }
 
+fn known_boundary_frames(
+    config: &serde_json::Value,
+    total_frames: usize,
+) -> Result<Vec<usize>, String> {
+    let Some(values) = config.get("known_boundaries_us") else {
+        return Ok(Vec::new());
+    };
+    let values = values
+        .as_array()
+        .ok_or_else(|| "GAME known_boundaries_us must be an array".to_string())?;
+    let mut frames = Vec::with_capacity(values.len());
+    let mut previous = None;
+    for value in values {
+        let microseconds = value
+            .as_u64()
+            .ok_or_else(|| "GAME known boundary must be an integer microsecond".to_string())?;
+        let frame_u64 = microseconds
+            .checked_add(5_000)
+            .ok_or_else(|| "GAME known boundary overflows".to_string())?
+            / 10_000;
+        let frame = usize::try_from(frame_u64)
+            .map_err(|_| "GAME known boundary exceeds this platform".to_string())?;
+        if frame == 0 || frame >= total_frames {
+            continue;
+        }
+        if previous.is_some_and(|previous| frame < previous) {
+            return Err("GAME known boundaries must be increasing".to_string());
+        }
+        if previous == Some(frame) {
+            continue;
+        }
+        frames.push(frame);
+        previous = Some(frame);
+    }
+    Ok(frames)
+}
+
+fn chunk_known_boundary_mask(
+    frames: &[usize],
+    chunk_offset_frame: usize,
+    valid_frames: usize,
+) -> Vec<bool> {
+    let mut mask = vec![false; CHUNK_FRAMES];
+    let chunk_end = chunk_offset_frame.saturating_add(valid_frames);
+    for frame in frames
+        .iter()
+        .copied()
+        .filter(|frame| *frame >= chunk_offset_frame && *frame < chunk_end)
+    {
+        mask[frame - chunk_offset_frame] = true;
+    }
+    mask
+}
+
 fn language_id(config: &serde_json::Value) -> i64 {
     match config
         .get("language")
@@ -327,6 +381,7 @@ fn infer_chunk(
     samples: &[f32],
     valid_samples: usize,
     language: i64,
+    known_boundaries: &[bool],
     models: &mut InferenceModels<'_>,
 ) -> Result<Vec<GameNote>, String> {
     let valid_frames = ((valid_samples + 220) / 441).clamp(1, CHUNK_FRAMES);
@@ -379,8 +434,12 @@ fn infer_chunk(
         return Err("GAME encoder output contract mismatch".to_string());
     }
 
-    let known_boundaries = vec![false; CHUNK_FRAMES];
-    let mut boundaries = known_boundaries.clone();
+    if known_boundaries.len() != CHUNK_FRAMES
+        || known_boundaries[valid_frames..].iter().any(|known| *known)
+    {
+        return Err("GAME known-boundary chunk mask is invalid".to_string());
+    }
+    let mut boundaries = known_boundaries.to_vec();
     for step in 0..D3PM_STEPS {
         let mut request = models
             .segmenter
@@ -401,7 +460,7 @@ fn infer_chunk(
         known
             .get_data_mut::<bool>()
             .map_err(|error| error.to_string())?
-            .copy_from_slice(&known_boundaries);
+            .copy_from_slice(known_boundaries);
         let mut previous = tensor(ElementType::Boolean, &[1, CHUNK_FRAMES as i64])?;
         previous
             .get_data_mut::<bool>()
@@ -448,6 +507,9 @@ fn infer_chunk(
             .to_vec();
         if boundaries.len() != CHUNK_FRAMES {
             return Err("GAME segmenter output contract mismatch".to_string());
+        }
+        for (boundary, known) in boundaries.iter_mut().zip(known_boundaries) {
+            *boundary |= *known;
         }
     }
     boundaries.truncate(valid_frames);
@@ -569,11 +631,15 @@ fn infer_chunk(
     Ok(notes)
 }
 
+fn chunk_progress(chunk_index: usize, chunk_count: usize) -> (u64, u64) {
+    ((chunk_index + 1) as u64, chunk_count as u64)
+}
+
 pub fn infer(
     audio: &[f32],
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &'static str),
+    mut progress: impl FnMut(f32, &'static str, Option<(u64, u64)>),
 ) -> Result<PathBuf, String> {
     if audio.is_empty() || audio.iter().any(|sample| !sample.is_finite()) {
         return Err("GAME input audio is empty or non-finite".to_string());
@@ -582,9 +648,9 @@ pub fn infer(
     let files = model_files(config)?;
     let device = runtime::inference_device(config)?;
     let mut core = core(device)?;
-    progress(0.02, "compiling GAME encoder");
+    progress(0.02, "compiling GAME encoder", None);
     let mut encoder = compile(&mut core, &files, device, "encoder")?;
-    progress(0.05, "compiling GAME segmenter");
+    progress(0.05, "compiling GAME segmenter", None);
     let mut segmenter = compile(&mut core, &files, device, "segmenter")?;
     let mut estimators = BTreeMap::new();
     let mut models = InferenceModels {
@@ -597,6 +663,8 @@ pub fn infer(
     };
     let language = language_id(config);
     let step = CHUNK_SAMPLES - OVERLAP_SAMPLES;
+    let total_frames = audio.len().saturating_add(440) / 441;
+    let known_boundary_frames = known_boundary_frames(config, total_frames)?;
     let chunk_count = audio.len().saturating_sub(1) / step + 1;
     let mut notes = Vec::new();
     for chunk_index in 0..chunk_count {
@@ -604,7 +672,10 @@ pub fn infer(
         let valid = (audio.len() - offset).min(CHUNK_SAMPLES);
         let mut samples = vec![0.0_f32; CHUNK_SAMPLES];
         samples[..valid].copy_from_slice(&audio[offset..offset + valid]);
-        let chunk_notes = infer_chunk(&samples, valid, language, &mut models)?;
+        let valid_frames = ((valid + 220) / 441).clamp(1, CHUNK_FRAMES);
+        let known_boundaries =
+            chunk_known_boundary_mask(&known_boundary_frames, offset / 441, valid_frames);
+        let chunk_notes = infer_chunk(&samples, valid, language, &known_boundaries, &mut models)?;
         let offset_seconds = offset as f64 / SAMPLE_RATE as f64;
         let left_cut = if chunk_index == 0 { 0.0 } else { 1.0 };
         let right_cut = if chunk_index + 1 == chunk_count {
@@ -624,6 +695,7 @@ pub fn infer(
         progress(
             0.1 + 0.89 * (chunk_index + 1) as f32 / chunk_count as f32,
             "running GAME note inference",
+            Some(chunk_progress(chunk_index, chunk_count)),
         );
     }
     if notes.is_empty() {
@@ -676,10 +748,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chunk_progress_reports_exact_measured_units() {
+        assert_eq!(chunk_progress(0, 4), (1, 4));
+        assert_eq!(chunk_progress(3, 4), (4, 4));
+    }
+
+    #[test]
     fn language_mapping_is_explicit_and_never_guesses() {
         assert_eq!(language_id(&serde_json::json!({"language":"ja-JP"})), 2);
         assert_eq!(language_id(&serde_json::json!({"language":"yue"})), 3);
         assert_eq!(language_id(&serde_json::json!({"language":"ko"})), 0);
+    }
+
+    #[test]
+    fn forced_alignment_boundaries_map_into_each_overlapping_chunk() {
+        let frames = known_boundary_frames(
+            &serde_json::json!({"known_boundaries_us":[10_000, 28_500_000, 29_000_000]}),
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(frames, [1, 2_850, 2_900]);
+        let first = chunk_known_boundary_mask(&frames, 0, CHUNK_FRAMES);
+        assert!(first[1]);
+        assert!(first[2_850]);
+        assert!(first[2_900]);
+        let second = chunk_known_boundary_mask(&frames, 2_800, 1_200);
+        assert!(second[50]);
+        assert!(second[100]);
+        assert!(!second[1]);
+    }
+
+    #[test]
+    fn malformed_known_boundary_contract_fails_closed() {
+        assert!(
+            known_boundary_frames(&serde_json::json!({"known_boundaries_us":"bad"}), 10).is_err()
+        );
+        assert!(
+            known_boundary_frames(
+                &serde_json::json!({"known_boundaries_us":[30_000, 10_000]}),
+                10
+            )
+            .is_err()
+        );
     }
 
     #[test]

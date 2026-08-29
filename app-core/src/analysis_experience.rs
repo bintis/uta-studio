@@ -84,6 +84,112 @@ impl AnalysisDefaultTarget {
     }
 }
 
+/// Independently selectable product outputs for one analysis run.
+///
+/// This is deliberately an artifact-level run sheet rather than a backend
+/// pipeline selector. The Analysis Engine adds dependencies and resolves the
+/// concrete execution plan for the exact selected set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct AnalysisOutputSelection {
+    pub candidate_chart: bool,
+    pub pitch_evidence: bool,
+    pub transcript: bool,
+    pub alignment: bool,
+    pub instrumental: bool,
+}
+
+impl Default for AnalysisOutputSelection {
+    fn default() -> Self {
+        Self::from_target(AnalysisDefaultTarget::FullCandidate)
+    }
+}
+
+impl AnalysisOutputSelection {
+    pub const fn from_target(target: AnalysisDefaultTarget) -> Self {
+        match target {
+            AnalysisDefaultTarget::FullCandidate => Self {
+                candidate_chart: true,
+                pitch_evidence: true,
+                transcript: true,
+                alignment: true,
+                instrumental: false,
+            },
+            AnalysisDefaultTarget::Transcript => Self {
+                candidate_chart: false,
+                pitch_evidence: false,
+                transcript: true,
+                alignment: false,
+                instrumental: false,
+            },
+            AnalysisDefaultTarget::Alignment => Self {
+                candidate_chart: false,
+                pitch_evidence: false,
+                transcript: false,
+                alignment: true,
+                instrumental: false,
+            },
+            AnalysisDefaultTarget::PitchEvidence => Self {
+                candidate_chart: false,
+                pitch_evidence: true,
+                transcript: false,
+                alignment: false,
+                instrumental: false,
+            },
+            AnalysisDefaultTarget::Instrumental => Self {
+                candidate_chart: false,
+                pitch_evidence: false,
+                transcript: false,
+                alignment: false,
+                instrumental: true,
+            },
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        !self.candidate_chart
+            && !self.pitch_evidence
+            && !self.transcript
+            && !self.alignment
+            && !self.instrumental
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AnalysisOutputKind {
+    CandidateChart,
+    PitchEvidence,
+    Transcript,
+    Alignment,
+    Instrumental,
+}
+
+impl AnalysisOutputSelection {
+    pub fn toggle(&mut self, output: AnalysisOutputKind) {
+        let selected = match output {
+            AnalysisOutputKind::CandidateChart => &mut self.candidate_chart,
+            AnalysisOutputKind::PitchEvidence => &mut self.pitch_evidence,
+            AnalysisOutputKind::Transcript => &mut self.transcript,
+            AnalysisOutputKind::Alignment => &mut self.alignment,
+            AnalysisOutputKind::Instrumental => &mut self.instrumental,
+        };
+        *selected = !*selected;
+    }
+
+    pub const fn contains(self, output: AnalysisOutputKind) -> bool {
+        match output {
+            AnalysisOutputKind::CandidateChart => self.candidate_chart,
+            AnalysisOutputKind::PitchEvidence => self.pitch_evidence,
+            AnalysisOutputKind::Transcript => self.transcript,
+            AnalysisOutputKind::Alignment => self.alignment,
+            AnalysisOutputKind::Instrumental => self.instrumental,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -165,8 +271,6 @@ fn enabled() -> bool {
 
 /// Versioned global defaults for product-level analysis intent.
 ///
-/// Legacy concrete `AppConfig` fields remain readable during migration and
-/// continue to own compatible advanced/cleanup controls for now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(default)]
 #[ts(export)]
@@ -179,7 +283,7 @@ pub struct AnalysisExperienceSettings {
     pub preserve_continuous_pitch: bool,
     /// Enables the Engine-owned symbolic Candidate timing stage. This does not
     /// affect continuous pitch evidence or the Editor's authored-note command.
-    #[serde(default)]
+    #[serde(default = "enabled")]
     pub enable_quantization: bool,
     pub audio: AnalysisAudioPreferences,
     pub lyrics: AnalysisLyricsPreferences,
@@ -193,7 +297,7 @@ impl Default for AnalysisExperienceSettings {
             quality_profile: AnalysisQualityProfile::Balanced,
             default_target: AnalysisDefaultTarget::FullCandidate,
             preserve_continuous_pitch: true,
-            enable_quantization: false,
+            enable_quantization: true,
             audio: AnalysisAudioPreferences::default(),
             lyrics: AnalysisLyricsPreferences::default(),
             singing: AnalysisSingingPreferences::default(),
@@ -301,7 +405,7 @@ mod tests {
         let defaults = AnalysisExperienceSettings::default();
         assert_eq!(defaults.quality_profile, AnalysisQualityProfile::Balanced);
         assert!(defaults.preserve_continuous_pitch);
-        assert!(!defaults.enable_quantization);
+        assert!(defaults.enable_quantization);
     }
 
     #[test]
@@ -340,7 +444,7 @@ mod tests {
             AnalysisDefaultTarget::FullCandidate
         );
         assert!(settings.preserve_continuous_pitch);
-        assert!(!settings.enable_quantization);
+        assert!(settings.enable_quantization);
     }
 
     #[test]

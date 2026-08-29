@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    analysis_artifact::{load_analysis_artifacts, load_artifact_revisions},
-    analysis_graph::baseline_graph_spec,
-};
+use crate::analysis_artifact::{load_analysis_artifacts, load_artifact_revisions};
 
 pub(crate) fn kind_string(kind: ArtifactKind) -> String {
     serde_json::to_string(&kind).unwrap_or_else(|_| format!("{kind:?}"))
@@ -86,7 +83,7 @@ pub fn resolve_artifact_for_run(
     run_id: i64,
     kind: ArtifactKind,
 ) -> Option<ArtifactRevision> {
-    let graph = baseline_graph_spec();
+    let graph = current_workflow_graph(file_hash).ok()?;
     graph
         .nodes
         .iter()
@@ -235,7 +232,7 @@ pub fn inspect_analysis_node_io(
     node_id: &str,
     run_id: Option<i64>,
 ) -> Result<NodeIoInspection, String> {
-    let graph = baseline_graph_spec();
+    let graph = current_workflow_graph(file_hash)?;
     let id = AnalysisNodeId::new(node_id);
     let node = graph
         .node(&id)

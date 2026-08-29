@@ -1,6 +1,6 @@
 //! Artifact Inventory: revisions, content signatures, and legacy import.
 //!
-//! Phase 2 of the analysis DAG redesign (docs/analysis-dag-redesign.md §9).
+//! Phase 2 of the analysis DAG redesign (the immutable artifact contract §9).
 //! Upgrades "the cache file exists" into a queryable, provenance-carrying
 //! `ArtifactRevision` per song/kind, persisted in `library_db`. This module
 //! never deletes or rewrites a source file as a side effect of importing it
@@ -27,7 +27,7 @@ pub struct ArtifactSummary {
 
 /// One concrete production of an artifact: which file, what produced it,
 /// what it was built from, and whether it's the version currently in use.
-/// See docs/analysis-dag-redesign.md §9 for field rationale.
+/// See the immutable artifact contract §9 for field rationale.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ArtifactRevision {
@@ -56,7 +56,7 @@ pub struct ArtifactRevision {
 
 /// Real, file-existence-based artifact presence for a song, independent of
 /// where the pipeline's progress indicator happens to be. This is the fix
-/// for the bug class docs/analysis-dag-redesign.md §2 documented in the
+/// for the bug class the immutable artifact contract §2 documented in the
 /// current desktop UI: "stems_ready"/"pitch_ready"/etc. there are aliases
 /// of `stage_index` comparison, not real checks -- a no-stems LRC song
 /// reads as "stems ready" once progress reaches 100% even though no stem
@@ -279,12 +279,12 @@ impl ArtifactStore {
 }
 
 /// Generalizes the stem-separation signature pattern
-/// (`pipeline.py::_cached_separator_matches`) to every node: identity is the
+/// (`the pre-process-boundary analyzer::_cached_separator_matches`) to every node: identity is the
 /// producing node, its algorithm version, its own normalized parameters,
 /// the content hashes of its actual inputs, and the model in use -- and
 /// nothing else. In particular this never takes a sibling artifact's value
 /// (e.g. detected key/BPM) as an input, which is the property
-/// docs/analysis-dag-redesign.md §8 requires generalized from the stems
+/// the immutable artifact contract §8 requires generalized from the stems
 /// case to every node.
 pub fn compute_config_hash(
     node_id: &AnalysisNodeId,
@@ -379,10 +379,15 @@ pub(crate) fn revision_to_row(revision: &ArtifactRevision) -> library_db::Analys
 /// Does not touch `active` for existing revisions of the same kind -- call
 /// `set_active_artifact_revision` explicitly once the new output is
 /// verified, so a failed/unverified run can never silently replace the
-/// last good Active Revision (docs/analysis-dag-redesign.md §2.5 / phase
+/// last good Active Revision (the immutable artifact contract §2.5 / phase
 /// plan §2.6 test list).
 pub fn record_artifact_revision(revision: &ArtifactRevision) -> Result<(), String> {
     library_db::analysis_artifact_upsert(&revision_to_row(revision)).map_err(|e| e.to_string())
+}
+
+pub fn validate_artifact_revision_file(revision: &ArtifactRevision) -> Result<(), String> {
+    let cache = CacheDir::try_new().ok_or_else(|| "artifact cache is unavailable".to_string())?;
+    ArtifactStore::new(&cache.path)?.validate_revision_file(revision)
 }
 
 pub fn load_analysis_artifacts(file_hash: &str) -> Vec<ArtifactRevision> {
@@ -506,6 +511,77 @@ pub fn compare_artifact_revisions(
 /// resolve inside `cache_root` -- this is the boundary check phase plan
 /// §6.3 requires of every artifact-facing API, applied here at the point
 /// a revision becomes selectable rather than trusting callers everywhere.
+/// Materializes an already validated revision at its compatibility path without
+/// changing Active selection. Engine batch publication uses this after its DB
+/// transaction so legacy readiness code observes the same complete chart.
+pub fn materialize_artifact_revision_compatibility(
+    cache_root: &Path,
+    revision: &ArtifactRevision,
+) -> Result<(), String> {
+    ensure_within_root(cache_root, &revision.path)?;
+    let cache = CacheDir {
+        path: cache_root.to_path_buf(),
+    };
+    let staged = stage_compatibility_materializations(&cache, revision)?;
+    for (temporary, destination) in staged {
+        if let Err(error) = atomic_replace_file(&temporary, &destination) {
+            let _ = std::fs::remove_file(temporary);
+            return Err(format!(
+                "Compatibility file could not be updated after publication: {error}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Repairs Engine publications created before CandidateChart activation was
+/// connected to the song index and compatibility cache. Each song is handled
+/// independently so one damaged historical revision cannot block startup or
+/// hide other valid charts.
+pub(crate) fn reconcile_active_candidate_charts(cache_root: &Path) {
+    let kind = artifact_kind_to_str(ArtifactKind::CandidateChart);
+    let hashes = match crate::library_db::active_artifact_file_hashes(&kind) {
+        Ok(hashes) => hashes,
+        Err(error) => {
+            tracing::warn!("[artifacts] Could not enumerate active candidate charts: {error}");
+            return;
+        }
+    };
+    for file_hash in hashes {
+        let Some(revision) = load_active_artifact(&file_hash, ArtifactKind::CandidateChart) else {
+            continue;
+        };
+        let validation = ArtifactStore::new(cache_root)
+            .and_then(|store| store.validate_revision_file(&revision));
+        if let Err(error) = validation {
+            tracing::warn!(
+                "[artifacts] Active candidate chart {} could not be reconciled: {error}",
+                revision.id
+            );
+            continue;
+        }
+        if let Err(error) = crate::vocal_chart::validate_candidate_chart_path(&revision.path) {
+            tracing::warn!(
+                "[artifacts] Active candidate chart {} is malformed and could not be reconciled: {error}",
+                revision.id
+            );
+            continue;
+        }
+        if let Err(error) = materialize_artifact_revision_compatibility(cache_root, &revision) {
+            tracing::warn!(
+                "[artifacts] Active candidate chart {} is loadable but its compatibility output could not be refreshed: {error}",
+                revision.id
+            );
+        }
+        if let Err(error) = crate::library_db::mark_songs_analyzed(&[file_hash.clone()]) {
+            tracing::warn!(
+                "[artifacts] Active candidate chart {} could not update its song index: {error}",
+                revision.id
+            );
+        }
+    }
+}
+
 pub fn set_active_artifact_revision(
     cache_root: &Path,
     file_hash: &str,
@@ -852,6 +928,57 @@ fn legacy_candidates(cache: &CacheDir, hash: &str) -> Vec<LegacyCandidate> {
     ]
 }
 
+/// Capture one compatibility file into immutable storage and return the row
+/// that the caller must record atomically with removal of the active selection.
+/// Unlike the best-effort startup importer, this is fail-closed: the caller
+/// must not continue if the current bytes cannot be retained for recovery.
+pub(crate) fn capture_compatibility_recovery_revision(
+    cache: &CacheDir,
+    file_hash: &str,
+    kind: ArtifactKind,
+    source_path: &Path,
+) -> Result<Option<ArtifactRevision>, String> {
+    if !source_path.is_file() {
+        return Ok(None);
+    }
+    let store = ArtifactStore::new(&cache.path)?;
+    let (immutable_path, content_hash, byte_size) = store.capture(file_hash, kind, source_path)?;
+    let id = format!("{file_hash}:{}:{content_hash}", artifact_kind_to_str(kind));
+    if let Some(mut existing) = load_artifact_revisions(file_hash, kind)
+        .into_iter()
+        .find(|revision| revision.id == id)
+    {
+        if existing.invalidated {
+            return Err(
+                "the current compatibility bytes match an invalidated artifact revision"
+                    .to_string(),
+            );
+        }
+        existing.path = immutable_path;
+        existing.content_hash = content_hash;
+        existing.byte_size = byte_size;
+        existing.active = false;
+        return Ok(Some(existing));
+    }
+    let revision = ArtifactRevision {
+        id,
+        file_hash: file_hash.to_string(),
+        kind,
+        path: immutable_path,
+        content_hash,
+        producer_node: AnalysisNodeId::new("legacy.preserve"),
+        input_revisions: Vec::new(),
+        config_hash: "legacy_unknown".to_string(),
+        algorithm_version: "legacy_unknown".to_string(),
+        created_at_ms: now_ms(),
+        byte_size,
+        active: false,
+        legacy: true,
+        invalidated: false,
+    };
+    Ok(Some(revision))
+}
+
 /// Scans the current cache layout for `hash` and records a `legacy = true`
 /// revision for every artifact kind that has a file on disk but no DB row
 /// yet. Idempotent (content-hash-keyed ids), read-only toward the
@@ -1061,6 +1188,37 @@ mod tests {
     }
 
     #[test]
+    fn artifact_store_validation_rejects_a_missing_backing_file() {
+        let dir = temp_dir("store-missing-revision");
+        let source = dir.join("audio.flac");
+        std::fs::write(&source, b"lossless-audio").unwrap();
+        let store = ArtifactStore::new(&dir).unwrap();
+        let (path, content_hash, byte_size) = store
+            .capture("songMissing", ArtifactKind::AudioStem, &source)
+            .unwrap();
+        let revision = ArtifactRevision {
+            id: "revision-missing".to_string(),
+            file_hash: "songMissing".to_string(),
+            kind: ArtifactKind::AudioStem,
+            path: path.clone(),
+            content_hash,
+            producer_node: AnalysisNodeId::new("separate"),
+            input_revisions: Vec::new(),
+            config_hash: "config".to_string(),
+            algorithm_version: "v1".to_string(),
+            created_at_ms: 1,
+            byte_size,
+            active: false,
+            legacy: false,
+            invalidated: false,
+        };
+        store.validate_revision_file(&revision).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(store.validate_revision_file(&revision).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn artifact_store_reuses_identical_content_and_rejects_path_escape() {
         let dir = temp_dir("store-deduplicate");
         let canonical = dir.join("timed_transcript.json");
@@ -1171,7 +1329,7 @@ mod tests {
         // put it in the parameters JSON -- proving the caller, not this
         // function, is responsible for keeping key/bpm out of the stem
         // node's normalized_parameters. The real guarantee lives in
-        // pipeline.py never constructing that JSON with key/bpm in it.
+        // the pre-process-boundary analyzer never constructing that JSON with key/bpm in it.
         assert_ne!(
             signature_with_context("Cmaj"),
             signature_with_context("Dmin")

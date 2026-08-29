@@ -1,9 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::atomic::AtomicU32;
-
-use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::cache::CacheDir;
@@ -14,6 +11,9 @@ use crate::library_db;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum QueuedStatus {
+    /// Compiled and persisted, but deliberately waiting for an explicit start.
+    Staged,
+    /// Submitted to the worker and waiting for execution.
     Queued,
     Analyzing(usize),
     Failed(String),
@@ -57,7 +57,7 @@ pub struct AnalysisProgressSnapshot {
     pub backend_fallback_reason: Option<String>,
     pub stage_routes: Vec<AnalysisStageRoute>,
     /// Structured Node event fields (analysis DAG redesign Phase 3,
-    /// docs/analysis-dag-redesign.md). `None` for events the native worker
+    /// the immutable artifact contract). `None` for events the native worker
     /// pipeline hasn't migrated to `progress_node`/`artifact_reused` yet,
     /// and always `None` on history rows persisted before this field
     /// existed -- `#[serde(default)]` is required here, not optional
@@ -66,6 +66,12 @@ pub struct AnalysisProgressSnapshot {
     /// keys must still parse.
     #[serde(default)]
     pub node_id: Option<String>,
+    /// Raw Engine execution identity, kept separately from the persisted
+    /// Processing Studio presentation-node identity above.
+    #[serde(default)]
+    pub engine_node_id: Option<String>,
+    #[serde(default)]
+    pub capability_id: Option<String>,
     #[serde(default)]
     pub node_event: Option<String>,
     #[serde(default)]
@@ -77,6 +83,22 @@ pub struct AnalysisProgressSnapshot {
     /// Exact Engine process-boundary provenance. Legacy runs omit this field.
     #[serde(default)]
     pub engine: Option<EngineRunHistoryProjection>,
+    #[serde(default)]
+    pub engine_error: Option<EngineErrorHistoryProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EngineErrorHistoryProjection {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub resource: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -110,6 +132,10 @@ pub struct AnalysisStageRoute {
     /// overwriting each other.
     #[serde(default)]
     pub node_id: Option<String>,
+    #[serde(default)]
+    pub engine_node_id: Option<String>,
+    #[serde(default)]
+    pub capability_id: Option<String>,
     /// The last structured event kind recorded for this node (one of
     /// `node_started`/`node_progress`/`node_completed`/`node_failed`/
     /// `artifact_reused`), independent of the *run's* overall status --
@@ -144,7 +170,7 @@ pub struct AnalysisStageRoute {
     pub backend_fallback_from: Option<String>,
     pub backend_fallback_reason: Option<String>,
     /// Phase 7 "Duration 检查器字段" gap, closed: real wall-clock timestamps
-    /// from the native analyzer process itself (NDJSON progress frame),
+    /// from the Analysis Engine process itself (NDJSON progress frame),
     /// not something Rust infers from socket receive time. `started_at_ms`
     /// is set once, the first time this route appears; `finished_at_ms`
     /// only by a terminal event (`node_completed`/`node_failed`/
@@ -162,6 +188,9 @@ pub struct AnalysisStageRoute {
     pub work_units_completed: Option<u64>,
     #[serde(default)]
     pub work_units_total: Option<u64>,
+    /// Exact native worker task identity, when this route is worker-backed.
+    #[serde(default)]
+    pub worker_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -275,80 +304,6 @@ pub fn load_analysis_node_attempts(run_id: i64) -> Vec<NodeAttempt> {
             finished_at_ms: row.finished_at_ms,
         })
         .collect()
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg(test)]
-pub(crate) struct HistoricalNodeWeight {
-    node_id: String,
-    implementation: String,
-    actual_device: String,
-    duration_ms: u64,
-}
-
-#[cfg(test)]
-fn median_duration_ms(samples: &mut [u64]) -> u64 {
-    samples.sort_unstable();
-    let upper = samples.len() / 2;
-    if samples.len() % 2 == 1 {
-        samples[upper]
-    } else {
-        let lower_value = samples[upper - 1];
-        lower_value + (samples[upper] - lower_value) / 2
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn historical_progress_weights() -> Vec<HistoricalNodeWeight> {
-    let mut durations = BTreeMap::<(String, String, String), Vec<u64>>::new();
-    for run in load_analysis_history(100)
-        .into_iter()
-        .filter(|run| run.status == "completed")
-    {
-        for attempt in load_analysis_node_attempts(run.id)
-            .into_iter()
-            .filter(|attempt| attempt.status == "succeeded")
-        {
-            let Some(duration) = attempt
-                .finished_at_ms
-                .zip(attempt.started_at_ms)
-                .and_then(|(finished, started)| finished.checked_sub(started))
-                .filter(|duration| *duration > 0)
-            else {
-                continue;
-            };
-            durations
-                .entry((
-                    attempt.node_id,
-                    attempt.implementation,
-                    attempt.actual_device,
-                ))
-                .or_default()
-                .push(duration as u64);
-        }
-    }
-    durations
-        .into_iter()
-        .map(
-            |((node_id, implementation, actual_device), mut samples)| HistoricalNodeWeight {
-                node_id,
-                implementation,
-                actual_device,
-                duration_ms: median_duration_ms(&mut samples).max(1),
-            },
-        )
-        .collect()
-}
-
-#[cfg(test)]
-mod progress_weight_tests {
-    use super::median_duration_ms;
-
-    #[test]
-    fn duration_median_handles_odd_even_and_unsorted_samples() {
-        assert_eq!(median_duration_ms(&mut [90, 10, 30]), 30);
-        assert_eq!(median_duration_ms(&mut [100, 20, 80, 40]), 60);
-    }
 }
 
 /// One node's attempt in each of two compared runs (Phase 6
@@ -553,7 +508,7 @@ pub(crate) fn delete_analysis_logs_in(
 
 /// Which single primary action a song's detail page should surface, per
 /// phase plan §8.1. Backend groundwork for the Phase 8 page restructure
-/// (docs/analysis-dag-redesign.md) -- a pure, disk/queue-driven derivation
+/// (the immutable artifact contract) -- a pure, disk/queue-driven derivation
 /// so the eventual UI has one real function to call instead of
 /// re-deriving this from scattered booleans inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -561,7 +516,7 @@ pub(crate) fn delete_analysis_logs_in(
 pub enum SongAuthoringState {
     /// Never analyzed, or reset back to unanalyzed.
     AnalyzeSong,
-    /// Currently queued or actively analyzing.
+    /// Staged, queued, or actively analyzing.
     InProgress,
     /// The last queued run for this song ended in `QueuedStatus::Failed`.
     RetryFailedNode,
@@ -583,7 +538,7 @@ pub enum SongAuthoringState {
 /// doesn't cover): "有缺失或过期成果物 / Review analysis plan" needs a
 /// staleness signal Phase 5 deliberately deferred (no `candidate_chart`
 /// artifact or evidence-staleness tracking exists yet) -- see
-/// docs/analysis-dag-redesign.md's Phase 5 status note.
+/// the immutable artifact contract's Phase 5 status note.
 pub(crate) fn authoring_state_from_signals(
     queue_status: Option<&QueuedStatus>,
     is_analyzed: bool,
@@ -595,7 +550,7 @@ pub(crate) fn authoring_state_from_signals(
     }
     if matches!(
         queue_status,
-        Some(QueuedStatus::Queued | QueuedStatus::Analyzing(_))
+        Some(QueuedStatus::Staged | QueuedStatus::Queued | QueuedStatus::Analyzing(_))
     ) {
         return SongAuthoringState::InProgress;
     }
@@ -632,6 +587,54 @@ pub fn resolve_song_authoring_state(file_hash: &str) -> Option<SongAuthoringStat
     ))
 }
 
+fn queued_engine_snapshot(
+    intent: library_db::EngineQueueIntent,
+    staged: bool,
+) -> AnalysisProgressSnapshot {
+    AnalysisProgressSnapshot {
+        stage: if staged { "staged" } else { "queued" }.to_string(),
+        overall_progress: 0,
+        stage_progress: 0,
+        operation: if staged {
+            "Waiting for manual start"
+        } else {
+            "Waiting for the native analysis runtime"
+        }
+        .to_string(),
+        detail: if staged {
+            "Exact Engine request staged"
+        } else {
+            "Exact Engine request accepted"
+        }
+        .to_string(),
+        implementation: "Pending".to_string(),
+        model: "Pending".to_string(),
+        device: "Pending".to_string(),
+        requested_device: "Pending".to_string(),
+        fallback_from: None,
+        fallback_reason: None,
+        backend_fallback_from: None,
+        backend_fallback_reason: None,
+        stage_routes: Vec::new(),
+        node_id: None,
+        engine_node_id: None,
+        capability_id: None,
+        node_event: None,
+        artifact_reused_reason: None,
+        analysis_log_path: None,
+        engine_error: None,
+        engine: Some(EngineRunHistoryProjection {
+            request_id: intent.request_id,
+            request_json: intent.request_json,
+            request_digest: intent.request_digest,
+            plan_json: intent.plan_json,
+            result_json: None,
+            fingerprint: None,
+            source_sha256: intent.source_sha256,
+        }),
+    }
+}
+
 pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
     let live = super::control::LIVE_ANALYSIS.lock().unwrap().clone();
     let mut tasks = AnalysisQueue::load()
@@ -639,6 +642,7 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
         .into_iter()
         .map(|(file_hash, status)| {
             let song = library_db::load_song_by_hash(&file_hash).ok().flatten();
+            let staged = matches!(status, QueuedStatus::Staged);
             AnalysisTask {
                 title: song
                     .as_ref()
@@ -648,7 +652,12 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
                     .as_ref()
                     .map(|song| song.artist.clone())
                     .unwrap_or_else(|| "Unknown artist".into()),
-                live: live.get(&file_hash).cloned(),
+                live: live.get(&file_hash).cloned().or_else(|| {
+                    library_db::analysis_queue_engine_intent(&file_hash)
+                        .ok()
+                        .flatten()
+                        .map(|intent| queued_engine_snapshot(intent, staged))
+                }),
                 file_hash,
                 status,
             }
@@ -658,7 +667,8 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
         let rank = |status: &QueuedStatus| match status {
             QueuedStatus::Analyzing(_) => 0,
             QueuedStatus::Queued => 1,
-            QueuedStatus::Failed(_) => 2,
+            QueuedStatus::Staged => 2,
+            QueuedStatus::Failed(_) => 3,
         };
         rank(&left.status)
             .cmp(&rank(&right.status))
@@ -675,6 +685,7 @@ impl AnalysisQueue {
                 rows.into_iter()
                     .map(|(h, st, pct, msg)| {
                         let status = match st.as_str() {
+                            "staged" => QueuedStatus::Staged,
                             "queued" => QueuedStatus::Queued,
                             "analyzing" => QueuedStatus::Analyzing(pct.unwrap_or(0) as usize),
                             "failed" => QueuedStatus::Failed(msg.unwrap_or_default()),
@@ -693,6 +704,7 @@ impl AnalysisQueue {
             .entries
             .iter()
             .map(|(k, v)| match v {
+                QueuedStatus::Staged => (k.clone(), "staged".to_string(), None, None),
                 QueuedStatus::Queued => (k.clone(), "queued".to_string(), None, None),
                 QueuedStatus::Analyzing(p) => {
                     (k.clone(), "analyzing".to_string(), Some(*p as i64), None)
@@ -707,7 +719,30 @@ impl AnalysisQueue {
         let _ = library_db::analysis_queue_clear();
     }
 }
-// ─── Server process ──────────────────────────────────────────────────
 
 #[cfg(test)]
-pub(crate) static SERVER_PID: AtomicU32 = AtomicU32::new(0);
+mod queued_engine_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn queued_task_keeps_the_frozen_engine_request_and_plan() {
+        let snapshot = queued_engine_snapshot(
+            library_db::EngineQueueIntent {
+                file_hash: "song".to_string(),
+                request_id: "request-1".to_string(),
+                request_json: "{\"request\":1}".to_string(),
+                request_digest: "digest".to_string(),
+                plan_json: "{\"plan\":1}".to_string(),
+                source_path: PathBuf::from("/tmp/source.flac"),
+                source_sha256: "provenance".to_string(),
+                queued_at_ms: 1,
+            },
+            false,
+        );
+        let engine = snapshot.engine.expect("queued Engine evidence is retained");
+        assert_eq!(engine.request_id, "request-1");
+        assert_eq!(engine.request_json, "{\"request\":1}");
+        assert_eq!(engine.plan_json, "{\"plan\":1}");
+        assert!(snapshot.node_id.is_none());
+    }
+}

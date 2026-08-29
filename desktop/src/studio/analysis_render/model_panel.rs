@@ -1,4 +1,3 @@
-use super::*;
 use crate::studio::*;
 
 pub(crate) const ANALYSIS_MODEL_PANEL_WIDTH: f32 = 338.0;
@@ -6,275 +5,376 @@ pub(crate) const ANALYSIS_MODEL_PANEL_WIDTH: f32 = 338.0;
 #[derive(Component)]
 pub(crate) struct AnalysisModelPanelScroll;
 
+fn workflow_node_for_presentation<'a>(
+    workflow: &'a app_core::WorkflowExecutionWireV1,
+    node_id: &str,
+) -> Option<(
+    &'a app_core::WorkflowNodeWireV1,
+    Option<&'static str>,
+    Option<&'static str>,
+)> {
+    if let Some(node) = workflow
+        .nodes
+        .iter()
+        .find(|node| node.instance_id == node_id)
+    {
+        return Some((node, None, None));
+    }
+    for (suffix, capability, output_port) in [
+        (".vocal", "audio.extract_vocals", "vocal"),
+        (
+            ".instrumental",
+            "audio.extract_instrumental",
+            "instrumental",
+        ),
+    ] {
+        let Some(base) = node_id.strip_suffix(suffix) else {
+            continue;
+        };
+        if let Some(node) = workflow.nodes.iter().find(|node| {
+            node.instance_id == base && node.capability_id == "audio.separate_vocal_bgm"
+        }) {
+            return Some((node, Some(capability), Some(output_port)));
+        }
+    }
+    None
+}
+
+fn presentation_model(
+    node: &app_core::WorkflowNodeWireV1,
+    concrete_capability: Option<&str>,
+) -> Option<String> {
+    if concrete_capability == Some("audio.extract_instrumental") {
+        return node.provider_preferences.instrumental.clone();
+    }
+    node.provider_preferences.primary.clone()
+}
+
+pub(crate) fn spawn_analysis_header_toolbar(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    session: &StudioSessionView<'_>,
+    file_hash: &str,
+) {
+    for (icon, label, action, selected) in [
+        (
+            UiIcon::Settings,
+            "Processing Studio",
+            UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.to_string())),
+            false,
+        ),
+        (
+            UiIcon::Fit,
+            "Fit graph",
+            UiAction::from(AnalysisCommand::FitAnalysisGraph(0)),
+            false,
+        ),
+        (
+            UiIcon::MiniView,
+            "Mini",
+            UiAction::from(AnalysisCommand::ToggleAnalysisMiniView),
+            session.analysis_mini_view,
+        ),
+        (
+            UiIcon::ModelTune,
+            "Model & workflow",
+            UiAction::from(AnalysisCommand::ToggleAnalysisModelPanel),
+            session.analysis_model_panel_open,
+        ),
+    ] {
+        spawn_toolbar_button(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            icon,
+            label,
+            action,
+            selected,
+        );
+    }
+}
+
+fn snapshot_node_status(
+    snapshot: &app_core::AnalysisProgressSnapshot,
+    node_id: &str,
+    live_running: bool,
+) -> Option<String> {
+    let route = snapshot
+        .stage_routes
+        .iter()
+        .rev()
+        .find(|route| route.node_id.as_deref() == Some(node_id));
+    let route_status = route.and_then(|route| match route.node_event.as_deref() {
+        Some("node_failed" | "failed") => Some("FAILED"),
+        Some("node_completed" | "artifact_reused" | "completed" | "reused") => Some("COMPLETE"),
+        Some("node_cancelled" | "cancelled") => Some("CANCELLED"),
+        Some("node_skipped" | "skipped") => Some("SKIPPED"),
+        Some("node_started" | "node_progress" | "started" | "progress") if live_running => {
+            Some("RUNNING")
+        }
+        _ if route.finished_at_ms.is_some() => Some("COMPLETE"),
+        _ => None,
+    });
+    route_status.map(str::to_string).or_else(|| {
+        (live_running && snapshot.node_id.as_deref() == Some(node_id))
+            .then(|| "RUNNING".to_string())
+    })
+}
+
+fn planned_node_status(
+    engine: &app_core::EngineRunHistoryProjection,
+    node_id: &str,
+    run_completed: bool,
+) -> Option<String> {
+    let (workflow, plan) = exact_workflow_plan_from_engine(engine)?;
+    let (_, concrete_capability, _) = workflow_node_for_presentation(&workflow, node_id)?;
+    let analysis_node = node_id
+        .strip_suffix(".vocal")
+        .or_else(|| node_id.strip_suffix(".instrumental"))
+        .unwrap_or(node_id);
+    let state = plan?
+        .nodes
+        .into_iter()
+        .find(|node| node.analysis_node == analysis_node)?
+        .execution_state;
+    let concrete_not_requested = concrete_capability.is_some_and(|capability| {
+        exact_engine_capabilities_from_engine(engine)
+            .is_some_and(|planned| !planned.contains(capability))
+    });
+    Some(
+        match state {
+            app_core::WorkflowNodeExecutionStateWireV1::Ready if concrete_not_requested => {
+                "NOT REQUESTED"
+            }
+            app_core::WorkflowNodeExecutionStateWireV1::Ready if run_completed => "COMPLETE",
+            app_core::WorkflowNodeExecutionStateWireV1::Ready => "WAITING",
+            app_core::WorkflowNodeExecutionStateWireV1::Deferred => "DEFERRED",
+            app_core::WorkflowNodeExecutionStateWireV1::Disabled => "DISABLED",
+            app_core::WorkflowNodeExecutionStateWireV1::ProfileSkipped => "PROFILE SKIPPED",
+            app_core::WorkflowNodeExecutionStateWireV1::NotRequested => "NOT REQUESTED",
+        }
+        .to_string(),
+    )
+}
+
 pub(crate) fn current_analysis_model_panel_context(
     session: &StudioSessionView<'_>,
 ) -> (String, String) {
+    let workflow = selected_workflow_wire(session);
+    let node_id = session
+        .selected_analysis_node
+        .as_ref()
+        .filter(|node_id| {
+            workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow_node_for_presentation(workflow, node_id).is_some())
+        })
+        .cloned()
+        .or_else(|| {
+            session.selected_analysis_history.and_then(|id| {
+                session.analysis_history.iter().find_map(|history| {
+                    (history.id == id
+                        && session
+                            .selected_song
+                            .as_ref()
+                            .is_none_or(|hash| hash == &history.file_hash))
+                    .then(|| history.snapshot.node_id.clone())
+                    .flatten()
+                })
+            })
+        })
+        .or_else(|| {
+            session.analysis_tasks.iter().find_map(|task| {
+                if !matches!(task.status, app_core::QueuedStatus::Analyzing(_))
+                    || session
+                        .selected_song
+                        .as_ref()
+                        .is_some_and(|hash| hash != &task.file_hash)
+                {
+                    return None;
+                }
+                task.live.as_ref()?.node_id.clone()
+            })
+        })
+        .or_else(|| {
+            workflow
+                .as_ref()
+                .and_then(|workflow| workflow.nodes.first())
+                .map(|node| node.instance_id.clone())
+        })
+        .unwrap_or_else(|| "workflow".to_string());
+    let selected_history = session.selected_analysis_history.and_then(|id| {
+        session.analysis_history.iter().find(|history| {
+            history.id == id
+                && session
+                    .selected_song
+                    .as_ref()
+                    .is_none_or(|hash| hash == &history.file_hash)
+        })
+    });
+    let active_task = selected_history.is_none().then(|| {
+        session
+            .analysis_tasks
+            .iter()
+            .filter(|task| {
+                session
+                    .selected_song
+                    .as_ref()
+                    .is_none_or(|hash| hash == &task.file_hash)
+            })
+            .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+            .or_else(|| {
+                session
+                    .analysis_tasks
+                    .iter()
+                    .filter(|task| {
+                        session
+                            .selected_song
+                            .as_ref()
+                            .is_none_or(|hash| hash == &task.file_hash)
+                    })
+                    .find(|task| {
+                        matches!(
+                            task.status,
+                            app_core::QueuedStatus::Staged | app_core::QueuedStatus::Queued
+                        )
+                    })
+            })
+    });
+    let snapshot = selected_history
+        .map(|history| (&history.snapshot, false, history.status == "completed"))
+        .or_else(|| {
+            active_task.flatten().and_then(|task| {
+                task.live.as_ref().map(|snapshot| {
+                    (
+                        snapshot,
+                        matches!(task.status, app_core::QueuedStatus::Analyzing(_)),
+                        false,
+                    )
+                })
+            })
+        });
+    let status = snapshot
+        .and_then(|(snapshot, live_running, run_completed)| {
+            snapshot_node_status(snapshot, &node_id, live_running).or_else(|| {
+                snapshot
+                    .engine
+                    .as_ref()
+                    .and_then(|engine| planned_node_status(engine, &node_id, run_completed))
+            })
+        })
+        .or_else(|| {
+            workflow.as_ref().and_then(|workflow| {
+                workflow_node_for_presentation(workflow, &node_id)
+                    .map(|(node, _, _)| node.execution_policy.to_ascii_uppercase())
+            })
+        })
+        .unwrap_or_else(|| "UNAVAILABLE".to_string());
+    (node_id, status)
+}
+
+fn has_selected_history_for_song(session: &StudioSessionView<'_>) -> bool {
+    session.selected_analysis_history.is_some_and(|id| {
+        session.analysis_history.iter().any(|history| {
+            history.id == id
+                && session
+                    .selected_song
+                    .as_ref()
+                    .is_none_or(|hash| hash == &history.file_hash)
+        })
+    })
+}
+
+fn selected_workflow_wire(
+    session: &StudioSessionView<'_>,
+) -> Option<app_core::WorkflowExecutionWireV1> {
+    let selected_history = session.selected_analysis_history.and_then(|id| {
+        session.analysis_history.iter().find(|history| {
+            history.id == id
+                && session
+                    .selected_song
+                    .as_ref()
+                    .is_none_or(|hash| hash == &history.file_hash)
+        })
+    });
+    if let Some(history) = selected_history {
+        return history
+            .snapshot
+            .engine
+            .as_ref()
+            .and_then(exact_workflow_plan_from_engine)
+            .map(|(workflow, _)| workflow);
+    }
+
     let active_task = session
         .analysis_tasks
         .iter()
+        .filter(|task| {
+            session
+                .selected_song
+                .as_ref()
+                .is_none_or(|hash| hash == &task.file_hash)
+        })
         .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
         .or_else(|| {
             session
                 .analysis_tasks
                 .iter()
-                .find(|task| matches!(task.status, app_core::QueuedStatus::Queued))
+                .filter(|task| {
+                    session
+                        .selected_song
+                        .as_ref()
+                        .is_none_or(|hash| hash == &task.file_hash)
+                })
+                .find(|task| {
+                    matches!(
+                        task.status,
+                        app_core::QueuedStatus::Staged | app_core::QueuedStatus::Queued
+                    )
+                })
         });
-    let history = session
-        .selected_analysis_history
-        .and_then(|id| {
-            session
-                .analysis_history
-                .iter()
-                .find(|history| history.id == id)
-        })
-        .or_else(|| {
-            active_task
-                .is_none()
-                .then(|| session.analysis_history.first())
-                .flatten()
-        });
-    let live = history
-        .map(|history| &history.snapshot)
-        .or_else(|| active_task.and_then(|task| task.live.as_ref()));
-    let stage = live.map(|live| live.stage.as_str()).unwrap_or("preparing");
-    let selected_stage = session.selected_analysis_stage.as_deref().unwrap_or(stage);
-    let selected_stage_index = analysis_stage_index(selected_stage);
-    let (fallback_node_id, _) = stage_primary_node_and_artifact(selected_stage_index);
-    let selected_node_id = session
-        .selected_analysis_node
-        .as_deref()
-        .filter(|node_id| analysis_node_stage_index(node_id) == Some(selected_stage_index))
-        .unwrap_or(fallback_node_id);
-    let status = if let Some(history) = history {
-        if history.status == "completed" {
-            "DONE"
-        } else if history.status == "failed" {
-            "FAILED"
-        } else {
-            "HISTORY"
-        }
-    } else if let Some(task) = active_task {
-        match task.status {
-            app_core::QueuedStatus::Analyzing(_) => "RUNNING",
-            app_core::QueuedStatus::Queued => "QUEUED",
-            app_core::QueuedStatus::Failed(_) => "FAILED",
-        }
-    } else {
-        "READY"
-    };
-    (selected_node_id.to_string(), status.to_string())
-}
-
-fn category_label(category: AnalysisModelCategory) -> &'static str {
-    match category {
-        AnalysisModelCategory::Bgm => "BGM",
-        AnalysisModelCategory::Vocals => "人声",
-        AnalysisModelCategory::Lyrics => "歌词",
-        AnalysisModelCategory::Pitch => "音高",
+    if let Some(task) = active_task {
+        return task
+            .live
+            .as_ref()
+            .and_then(|snapshot| snapshot.engine.as_ref())
+            .and_then(exact_workflow_plan_from_engine)
+            .map(|(workflow, _)| workflow);
     }
+
+    session
+        .workflow_snapshot
+        .as_ref()
+        .and_then(|snapshot| app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok())
 }
 
-fn spawn_segment_button(
+fn spawn_fact(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    label: impl Into<String>,
-    selected: bool,
-    action: UiAction,
+    label: &str,
+    value: impl Into<String>,
 ) {
-    parent
-        .spawn((
-            Button,
-            action,
-            Node {
-                min_width: px(0),
-                height: px(30),
-                flex_grow: 1.0,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                padding: UiRect::horizontal(px(8)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
-                ..default()
-            },
-            BackgroundColor(if selected {
-                theme.primary.with_alpha(0.78)
-            } else {
-                theme.background.with_alpha(0.52)
-            }),
-            BorderColor::all(if selected {
-                theme.primary.with_alpha(0.86)
-            } else {
-                theme.border.with_alpha(0.45)
-            }),
-        ))
-        .with_children(|button| {
-            spawn_text(
-                button,
-                font,
-                label,
-                9.0,
-                if selected {
-                    theme.background
-                } else {
-                    theme.muted_foreground
-                },
-            );
-        });
-}
-
-fn exact_strategy_for_select(kind: SettingsSelectKind) -> Option<&'static str> {
-    match kind {
-        SettingsSelectKind::AudioVocalModel => Some("vocal_extraction"),
-        SettingsSelectKind::AudioAccompanimentModel => Some("instrumental_extraction"),
-        SettingsSelectKind::AudioKaraokeModel => Some("lead_isolation"),
-        SettingsSelectKind::PitchModel => Some("pitch"),
-        _ => None,
-    }
-}
-
-fn spawn_model_row(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    session: &StudioSessionView<'_>,
-    icon: &'static str,
-    label: &'static str,
-    kind: SettingsSelectKind,
-) {
-    let open = session.open_settings_select == Some(kind);
     parent
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(44),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(4),
-                padding: UiRect::axes(px(9), px(6)),
+                row_gap: px(3),
+                padding: UiRect::all(px(9)),
                 border: UiRect::all(px(1)),
                 border_radius: BorderRadius::all(px(6)),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(0.40)),
-            BorderColor::all(if open {
-                theme.primary.with_alpha(0.70)
-            } else {
-                theme.border.with_alpha(0.42)
-            }),
+            BackgroundColor(theme.background.with_alpha(0.34)),
+            BorderColor::all(theme.border.with_alpha(0.48)),
         ))
-        .with_children(|card| {
-            card.spawn(Node {
-                width: percent(100),
-                min_height: px(30),
-                align_items: AlignItems::Center,
-                column_gap: px(7),
-                ..default()
-            })
-            .with_children(|row| {
-                spawn_text(row, font.clone(), icon, 12.0, theme.primary);
-                spawn_text(row, font.clone(), label, 9.0, theme.foreground);
-                row.spawn(Node {
-                    min_width: px(8),
-                    flex_grow: 1.0,
-                    ..default()
-                });
-                let current = settings_select_value(kind, session.config);
-                row.spawn((
-                    Button,
-                    UiAction::from(SettingsCommand::OpenSettingsSelect(kind)),
-                    Node {
-                        width: px(158),
-                        height: px(30),
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::SpaceBetween,
-                        padding: UiRect::horizontal(px(9)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(5)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    },
-                    BackgroundColor(theme.card.with_alpha(0.72)),
-                    BorderColor::all(if open {
-                        theme.primary.with_alpha(0.72)
-                    } else {
-                        theme.border.with_alpha(0.58)
-                    }),
-                ))
-                .with_children(|select| {
-                    spawn_text(
-                        select,
-                        font.clone(),
-                        settings_select_label(kind, current),
-                        8.0,
-                        theme.foreground,
-                    );
-                    spawn_text(select, font.clone(), "v", 8.0, theme.muted_foreground);
-                });
-            });
-            if let Some(strategy_id) = exact_strategy_for_select(kind) {
-                let exact = session
-                    .model_settings_job
-                    .current
-                    .as_ref()
-                    .and_then(|snapshot| {
-                        snapshot
-                            .strategy_resources
-                            .iter()
-                            .find(|status| status.strategy_id == strategy_id)
-                    });
-                let status = match exact {
-                    Some(status) if status.available => format!(
-                        "Ready · model:{} · {} · {} · {}",
-                        status.model_id, status.capability, status.validation, status.backend
-                    ),
-                    Some(status) => format!(
-                        "Blocked · model:{} · {} · {}{}",
-                        status.model_id,
-                        status.capability,
-                        status.validation,
-                        if status.reasons.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" · {}", status.reasons.join(", "))
-                        }
-                    ),
-                    None if session.model_settings_job.receiver.is_some() => {
-                        "Checking exact Runtime Manager status…".to_string()
-                    }
-                    None => "Exact Runtime Manager status unavailable".to_string(),
-                };
-                spawn_wrapped_text(card, font.clone(), status, 8.0, theme.muted_foreground);
-            }
-            if open {
-                for (value, option_label) in settings_select_options(
-                    kind,
-                    session.config.compute_backend.as_deref() == Some("intel"),
-                ) {
-                    card.spawn((
-                        Button,
-                        UiAction::from(SettingsCommand::SelectSettingsValue(
-                            kind,
-                            (*value).to_string(),
-                        )),
-                        Node {
-                            width: percent(100),
-                            min_height: px(28),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::horizontal(px(9)),
-                            border_radius: BorderRadius::all(px(4)),
-                            ..default()
-                        },
-                        BackgroundColor(if settings_select_value(kind, session.config) == *value {
-                            theme.primary.with_alpha(0.18)
-                        } else {
-                            theme.card.with_alpha(0.30)
-                        }),
-                    ))
-                    .with_children(|option| {
-                        spawn_text(option, font.clone(), *option_label, 8.0, theme.foreground);
-                    });
-                }
-            }
+        .with_children(|fact| {
+            spawn_text(fact, font.clone(), label, 8.0, theme.muted_foreground);
+            spawn_bounded_wrapped_text(fact, font, value, 10.0, theme.foreground);
         });
 }
 
@@ -286,6 +386,11 @@ pub(crate) fn spawn_analysis_model_panel(
     current_node_id: &str,
     current_status: &str,
 ) {
+    let workflow = selected_workflow_wire(session);
+    let selected = workflow
+        .as_ref()
+        .and_then(|workflow| workflow_node_for_presentation(workflow, current_node_id));
+
     parent
         .spawn((
             AnalysisModelPanelScroll,
@@ -304,435 +409,235 @@ pub(crate) fn spawn_analysis_model_panel(
                 border_radius: BorderRadius::all(px(8)),
                 ..default()
             },
-            BackgroundColor(theme.card.with_alpha(0.97)),
-            BorderColor::all(theme.border.with_alpha(0.58)),
-            ZIndex(20),
+            BackgroundColor(theme.card.with_alpha(0.98)),
+            BorderColor::all(theme.border),
+            ZIndex(10),
         ))
         .with_children(|panel| {
             panel
                 .spawn(Node {
                     width: percent(100),
-                    align_items: AlignItems::FlexStart,
+                    align_items: AlignItems::Center,
                     justify_content: JustifyContent::SpaceBetween,
                     ..default()
                 })
                 .with_children(|header| {
-                    header
-                        .spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            ..default()
-                        })
-                        .with_children(|copy| {
-                            spawn_text(copy, font.clone(), "AI 模型", 15.0, theme.foreground);
-                            spawn_text(
-                                copy,
-                                font.clone(),
-                                "快速为节点选择模型",
-                                8.0,
-                                theme.muted_foreground,
-                            );
-                        });
+                    spawn_text(
+                        header,
+                        font.clone(),
+                        "MODEL & WORKFLOW",
+                        9.0,
+                        theme.primary,
+                    );
                     spawn_text_button(
                         header,
                         font.clone(),
                         theme,
-                        "×",
-                        13.0,
+                        "Close",
+                        9.0,
                         UiAction::from(AnalysisCommand::CloseAnalysisModelPanel),
                     );
                 });
 
-            panel
-                .spawn((
-                    Node {
-                        width: percent(100),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: px(5),
-                        padding: UiRect::all(px(10)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(7)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.background.with_alpha(0.42)),
-                    BorderColor::all(theme.border.with_alpha(0.48)),
-                ))
-                .with_children(|current| {
-                    spawn_text(current, font.clone(), "当前节点", 8.0, theme.muted_foreground);
-                    current
-                        .spawn(Node {
-                            width: percent(100),
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::SpaceBetween,
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            spawn_text(
-                                row,
-                                font.clone(),
-                                analysis_graph_node_label(current_node_id, current_node_id),
-                                11.0,
-                                theme.foreground,
-                            );
-                            spawn_text(row, font.clone(), current_status, 8.0, theme.primary);
-                        });
-                    if let Some(model) =
-                        analysis_graph_configured_model_tag(current_node_id, session.config)
-                    {
-                        spawn_text(
-                            current,
-                            font.clone(),
-                            model,
-                            8.0,
-                            theme.muted_foreground,
-                        );
-                    }
-                });
-
-            panel
-                .spawn(Node {
-                    width: percent(100),
-                    column_gap: px(3),
-                    ..default()
-                })
-                .with_children(|tabs| {
-                    for category in [
-                        AnalysisModelCategory::Bgm,
-                        AnalysisModelCategory::Vocals,
-                        AnalysisModelCategory::Lyrics,
-                        AnalysisModelCategory::Pitch,
-                    ] {
-                        spawn_segment_button(
-                            tabs,
-                            font.clone(),
-                            theme,
-                            category_label(category),
-                            session.analysis_model_category == category,
-                            UiAction::from(AnalysisCommand::SetAnalysisModelCategory(category)),
-                        );
-                    }
-                });
-
-            let selected = session.analysis_model_category;
-            for (category, icon, label, kind) in [
-                (
-                    AnalysisModelCategory::Bgm,
-                    "♫",
-                    "BGM separation",
-                    SettingsSelectKind::AudioAccompanimentModel,
-                ),
-                (
-                    AnalysisModelCategory::Bgm,
-                    "1",
-                    "Post-processing 1",
-                    SettingsSelectKind::AudioBgmPostprocess1,
-                ),
-                (
-                    AnalysisModelCategory::Bgm,
-                    "2",
-                    "Post-processing 2",
-                    SettingsSelectKind::AudioBgmPostprocess2,
-                ),
-                (
-                    AnalysisModelCategory::Vocals,
-                    "●",
-                    "Vocal separation",
-                    SettingsSelectKind::AudioVocalModel,
-                ),
-                (
-                    AnalysisModelCategory::Vocals,
-                    "1",
-                    "Post-processing 1",
-                    SettingsSelectKind::AudioVocalPostprocess1,
-                ),
-                (
-                    AnalysisModelCategory::Vocals,
-                    "2",
-                    "Post-processing 2",
-                    SettingsSelectKind::AudioVocalPostprocess2,
-                ),
-                (
-                    AnalysisModelCategory::Pitch,
-                    "●",
-                    "Pitch",
-                    SettingsSelectKind::PitchModel,
-                ),
-                (
-                    AnalysisModelCategory::Lyrics,
-                    "A",
-                    "Transcribe",
-                    SettingsSelectKind::WhisperModel,
-                ),
-                (
-                    AnalysisModelCategory::Lyrics,
-                    "A",
-                    "Align",
-                    SettingsSelectKind::AlignBackend,
-                ),
-            ] {
-                if selected == category {
-                    spawn_model_row(panel, font.clone(), theme, session, icon, label, kind);
-                }
-            }
-
             spawn_wrapped_text(
                 panel,
                 font.clone(),
-                "这些选择会保存为分析默认值；已有谱面只会在重新分析后改变。模型安装仍由“设置 > 模型与运行环境”管理。",
-                8.0,
+                "1. Select a graph node.  2. Read the model/runtime chosen for that step.  3. Use Processing Studio to change workflow/model intent, then confirm the exact route in Plan Preview.",
+                9.0,
                 theme.muted_foreground,
             );
-            spawn_compact_action_button(
+            spawn_fact(panel, font.clone(), theme, "1 · SELECTED STEP", current_node_id);
+            spawn_fact(
                 panel,
-                font,
+                font.clone(),
                 theme,
-                "调节运行参数…",
-                UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
+                "CURRENT STATE",
+                current_status,
             );
+
+            if let Some((node, concrete_capability, output_port)) = selected {
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "CAPABILITY",
+                    concrete_capability
+                        .unwrap_or(node.capability_id.as_str())
+                        .to_string(),
+                );
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "2 · CURRENT MODEL",
+                    presentation_model(node, concrete_capability)
+                        .unwrap_or_else(|| "Studio / native DSP".to_string()),
+                );
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "CURRENT RUNTIME",
+                    "Engine-resolved in Plan Preview".to_string(),
+                );
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "WHEN THIS STEP RUNS",
+                    node.execution_policy.clone(),
+                );
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "SCHEDULING PRIORITY",
+                    node.priority.to_string(),
+                );
+                if let Some(workflow) = workflow.as_ref() {
+                    for output in workflow
+                        .terminal_outputs
+                        .iter()
+                        .filter(|output| {
+                            output.node == node.instance_id
+                                && output_port.is_none_or(|port| output.port == port)
+                        })
+                    {
+                        let semantic = output
+                            .audio_role
+                            .as_deref()
+                            .map(|role| format!("{} · {role}", output.semantic_type))
+                            .unwrap_or_else(|| output.semantic_type.clone());
+                        spawn_fact(
+                            panel,
+                            font.clone(),
+                            theme,
+                            &format!("TERMINAL OUTPUT · {}", output.port),
+                            semantic,
+                        );
+                    }
+                }
+            } else {
+                spawn_wrapped_text(
+                    panel,
+                    font.clone(),
+                    "This node is not present in the selected compiled snapshot.",
+                    9.0,
+                    theme.destructive,
+                );
+            }
+
+            if let Some(workflow) = workflow.as_ref() {
+                spawn_fact(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "WORKFLOW SNAPSHOT",
+                    format!("Revision {}", workflow.workflow_revision),
+                );
+            }
+
+            if !has_selected_history_for_song(session)
+                && let Some(file_hash) = session.selected_song.as_ref()
+            {
+                spawn_wrapped_text(
+                    panel,
+                    font.clone(),
+                    "3 · CHANGE SELECTION",
+                    8.0,
+                    theme.primary,
+                );
+                spawn_wrapped_text(
+                    panel,
+                    font.clone(),
+                    "Processing Studio changes which model/capability implementation this workflow asks for. Models & runtime only installs resources and controls backend availability.",
+                    9.0,
+                    theme.muted_foreground,
+                );
+                spawn_text_button(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "Open Processing Studio",
+                    10.0,
+                    UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.clone())),
+                );
+                spawn_text_button(
+                    panel,
+                    font.clone(),
+                    theme,
+                    "Manage installed models",
+                    9.0,
+                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
+                );
+            }
         });
 }
 
-pub(crate) fn spawn_analysis_toolbar_button(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    icons: Handle<Image>,
-    theme: &StudioTheme,
-    button: (UiIcon, &'static str, bool, UiAction),
-) {
-    let (icon, label, active, action) = button;
-    parent
-        .spawn((
-            Button,
-            action,
-            Node {
-                height: px(31),
-                align_items: AlignItems::Center,
-                column_gap: px(5),
-                padding: UiRect::horizontal(px(9)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(5)),
-                ..default()
-            },
-            BackgroundColor(if active {
-                theme.primary.with_alpha(0.17)
-            } else {
-                Color::NONE
-            }),
-            BorderColor::all(if active {
-                theme.primary.with_alpha(0.75)
-            } else {
-                theme.border.with_alpha(0.20)
-            }),
-        ))
-        .with_children(|button| {
-            spawn_icon(
-                button,
-                icons,
-                icon,
-                14.0,
-                if active {
-                    theme.primary
-                } else {
-                    theme.muted_foreground
-                },
-            );
-            spawn_text(
-                button,
-                font,
-                label,
-                9.0,
-                if active {
-                    theme.primary
-                } else {
-                    theme.muted_foreground
-                },
-            );
-        });
-}
+#[cfg(test)]
+mod execution_status_tests {
+    use super::*;
+    use serde_json::json;
 
-pub(crate) fn spawn_analysis_header_toolbar(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    icons: Handle<Image>,
-    theme: &StudioTheme,
-    session: &StudioSessionView<'_>,
-    file_hash: &str,
-) {
-    let active_task = session
-        .analysis_tasks
-        .iter()
-        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
-        .or_else(|| {
-            session
-                .analysis_tasks
-                .iter()
-                .find(|task| matches!(task.status, app_core::QueuedStatus::Queued))
-        });
-    let history = session.selected_analysis_history.and_then(|id| {
-        session
-            .analysis_history
-            .iter()
-            .find(|history| history.id == id)
-    });
-    let live = history
-        .map(|history| &history.snapshot)
-        .or_else(|| active_task.and_then(|task| task.live.as_ref()));
-    let focus_target = |node_id: &str| {
-        analysis_node_stage_index(node_id).map(|bucket| {
-            (
-                estimated_analysis_graph_center_scroll(
-                    node_id,
-                    clamp_analysis_graph_zoom(session.analysis_graph_zoom),
-                    session.analysis_graph_viewport_width,
-                )
-                .round() as i32,
-                bucket_stage_id(bucket).to_string(),
-            )
-        })
-    };
-    let current_focus = live
-        .and_then(|live| live.node_id.as_deref())
-        .and_then(focus_target);
-    let problem_focus = live.and_then(|snapshot| {
-        snapshot
-            .stage_routes
-            .iter()
-            .find(|route| route.node_event.as_deref() == Some("node_failed"))
-            .and_then(|route| route.node_id.as_deref())
-            .and_then(focus_target)
-    });
-    parent
-        .spawn(Node {
-            flex_shrink: 0.0,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::FlexEnd,
-            flex_wrap: FlexWrap::Wrap,
-            column_gap: px(3),
-            row_gap: px(4),
-            ..default()
-        })
-        .with_children(|toolbar| {
-            if let Some(active) = active_task {
-                spawn_analysis_toolbar_button(
-                    toolbar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    (
-                        UiIcon::Analyze,
-                        "停止分析",
-                        false,
-                        UiAction::from(AnalysisCommand::StopAnalysis(active.file_hash.clone())),
-                    ),
-                );
-            } else if analysis_start_unavailable(file_hash).is_none() {
-                spawn_analysis_toolbar_button(
-                    toolbar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    (
-                        UiIcon::Analyze,
-                        "开始分析",
-                        false,
-                        UiAction::from(AnalysisCommand::StartAnalysis(file_hash.to_string())),
-                    ),
-                );
-            }
-            spawn_analysis_toolbar_button(
-                toolbar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                (
-                    UiIcon::Fit,
-                    "适合窗口",
-                    session.analysis_graph_fit_active,
-                    UiAction::from(AnalysisCommand::FitAnalysisGraph(
-                        session.analysis_graph_viewport_width.round() as i32,
-                    )),
-                ),
-            );
-            spawn_analysis_toolbar_button(
-                toolbar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                (
-                    UiIcon::MiniView,
-                    if session.analysis_mini_view {
-                        "完整视图"
-                    } else {
-                        "迷你视图"
-                    },
-                    session.analysis_mini_view,
-                    UiAction::from(AnalysisCommand::ToggleAnalysisMiniView),
-                ),
-            );
-            spawn_analysis_toolbar_button(
-                toolbar,
-                font.clone(),
-                icons.clone(),
-                theme,
-                (
-                    UiIcon::Plan,
-                    "计划预览",
-                    false,
-                    UiAction::from(AnalysisCommand::OpenPlanPreview(file_hash.to_string())),
-                ),
-            );
-            if history.is_some() && active_task.is_some() {
-                spawn_analysis_toolbar_button(
-                    toolbar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    (
-                        UiIcon::Analyze,
-                        "查看实时任务",
-                        false,
-                        UiAction::from(AnalysisCommand::SelectAnalysisHistory(None)),
-                    ),
-                );
-            }
-            if let Some((scroll, stage_id)) = current_focus {
-                spawn_analysis_toolbar_button(
-                    toolbar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    (
-                        UiIcon::Focus,
-                        "当前节点",
-                        false,
-                        UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
-                    ),
-                );
-            }
-            if let Some((scroll, stage_id)) = problem_focus {
-                spawn_analysis_toolbar_button(
-                    toolbar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    (
-                        UiIcon::Warning,
-                        "问题节点",
-                        false,
-                        UiAction::from(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)),
-                    ),
-                );
-            }
-            spawn_analysis_toolbar_button(
-                toolbar,
-                font.clone(),
-                icons,
-                theme,
-                (
-                    UiIcon::ModelTune,
-                    "快速选模",
-                    session.analysis_model_panel_open,
-                    UiAction::from(AnalysisCommand::ToggleAnalysisModelPanel),
-                ),
-            );
-        });
+    fn snapshot(route: serde_json::Value) -> app_core::AnalysisProgressSnapshot {
+        serde_json::from_value(json!({
+            "stage": "shared text",
+            "overall_progress": 50,
+            "stage_progress": 50,
+            "operation": "operation",
+            "detail": "",
+            "implementation": "native",
+            "model": "model",
+            "device": "vulkan",
+            "requested_device": "vulkan",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null,
+            "stage_routes": [route]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn split_presentation_nodes_report_their_independent_models() {
+        let snapshot = app_core::compile_workflow(&app_core::default_workflow("song")).unwrap();
+        let workflow = app_core::WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+        let (vocal, vocal_capability, _) =
+            workflow_node_for_presentation(&workflow, "vocal_bgm_split.vocal").unwrap();
+        let (instrumental, instrumental_capability, _) =
+            workflow_node_for_presentation(&workflow, "vocal_bgm_split.instrumental").unwrap();
+        assert_eq!(vocal_capability, Some("audio.extract_vocals"));
+        assert_eq!(
+            presentation_model(vocal, vocal_capability).as_deref(),
+            Some("bs_roformer_vocals_ep317")
+        );
+        assert_eq!(
+            presentation_model(instrumental, instrumental_capability).as_deref(),
+            Some("melband_roformer_inst_v2")
+        );
+    }
+
+    #[test]
+    fn inspector_status_ignores_display_text_without_an_exact_node_id() {
+        let snapshot = snapshot(json!({
+            "stage": "shared text",
+            "node_event": "node_failed",
+            "operation": "failed",
+            "implementation": "native",
+            "model": "model",
+            "stage_progress": 100,
+            "requested_device": "vulkan",
+            "actual_device": "vulkan",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null,
+            "finished_at_ms": 2
+        }));
+        assert_eq!(
+            snapshot_node_status(&snapshot, "workflow.node", false),
+            None
+        );
+    }
 }

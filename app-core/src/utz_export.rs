@@ -14,8 +14,8 @@ use std::{
 use serde::Serialize;
 use ts_rs::TS;
 use utz::{
-    AssetRef, AssetSource, AudioAssets, ManifestV02, PITCH_EVIDENCE_MEDIA_TYPE, Provenance,
-    SongMetadata, UtzPackage, VOCAL_CHART_MEDIA_TYPE, VisualAssets,
+    AssetRef, AssetSource, AudioAssets, PITCH_EVIDENCE_MEDIA_TYPE, Provenance, SongMetadata,
+    UTZ_TIMEBASE, UtzManifest, UtzPackage, VOCAL_CHART_MEDIA_TYPE, VisualTiming,
 };
 
 use crate::{
@@ -202,38 +202,45 @@ where
         .or_else(|| song.is_video.then_some(song.path.clone()))
         .filter(|path| path.is_file());
 
-    let mut manifest = ManifestV02::new(
-        format!("uta:{file_hash}"),
-        SongMetadata {
-            title: song.title,
-            artist: song.artist,
-            album: non_empty(song.album),
-            language: song.language,
-            duration_seconds: song.duration_secs,
-            bpm: song.override_bpm.or(song.bpm),
-            key: song.override_key.or(song.key),
-            title_sort: None,
-            artist_sort: None,
-            genre: None,
-            year: None,
-            creator: Some(format!("Uta! Studio {}", env!("CARGO_PKG_VERSION"))),
-            composer: song.composer,
-            country: song.country,
-            tags: Vec::new(),
-            preview_start_seconds: None,
-        },
-        AudioAssets {
-            instrumental: AssetRef::pending(
-                &instrumental_name,
-                audio_media_type(&instrumental_path),
-            ),
-            guide_vocals: guide_name
-                .as_ref()
-                .zip(guide_path.as_ref())
-                .map(|(name, path)| AssetRef::pending(name, audio_media_type(path))),
-            original: None,
-            loudness: None,
-        },
+    let mut song_metadata = SongMetadata::new(
+        song.title,
+        song.artist,
+        duration_to_utz_units(song.duration_secs)?,
+    );
+    song_metadata.language = song.language;
+    song_metadata.bpm = song.override_bpm.or(song.bpm);
+    song_metadata.key = song.override_key.or(song.key);
+    for (key, value) in [
+        (
+            "album",
+            non_empty(song.album).map(serde_json::Value::String),
+        ),
+        ("composer", song.composer.map(serde_json::Value::String)),
+        ("country", song.country.map(serde_json::Value::String)),
+    ] {
+        if let Some(value) = value {
+            song_metadata.metadata.insert(key.to_string(), value);
+        }
+    }
+    song_metadata.metadata.insert(
+        "creator".to_string(),
+        serde_json::Value::String(format!("Uta! Studio {}", env!("CARGO_PKG_VERSION"))),
+    );
+
+    let mut audio_assets = AudioAssets::new(AssetRef::pending(
+        &instrumental_name,
+        audio_media_type(&instrumental_path),
+    ));
+    if let (Some(name), Some(path)) = (&guide_name, &guide_path) {
+        audio_assets.assets.insert(
+            "guide_vocals".to_string(),
+            AssetRef::pending(name, audio_media_type(path)),
+        );
+    }
+    let mut manifest = UtzManifest::new(
+        format!("org.uta-studio.{file_hash}"),
+        song_metadata,
+        audio_assets,
         AssetRef::pending("charts/vocal.json", VOCAL_CHART_MEDIA_TYPE),
     );
     // Frame-level f0 travels as an optional asset: it is what the editor
@@ -250,29 +257,39 @@ where
         ));
         manifest
             .optional_features
-            .push("pitch-evidence/1".to_string());
+            .push("pitch-evidence/0.3".to_string());
     }
 
     manifest.provenance = Provenance {
         generator: Some(format!("uta-studio/{}", env!("CARGO_PKG_VERSION"))),
         source: Some(file_hash.to_owned()),
         rights: None,
+        metadata: BTreeMap::new(),
     };
 
     if let Some(cover) = cover_path {
-        let cover_name = format!("artwork/cover.{}", extension_or(&cover, "jpg"));
+        let cover_name = format!("visuals/cover.{}", extension_or(&cover, "jpg"));
         sources.insert(cover_name.clone(), AssetSource::File(cover.clone()));
-        manifest.visuals = VisualAssets {
-            cover: Some(AssetRef::pending(&cover_name, media_type(&cover))),
-            video: None,
-            video_offset_seconds: 0.0,
-        };
+        manifest.visuals.assets.insert(
+            "cover".to_string(),
+            AssetRef::pending(&cover_name, media_type(&cover)),
+        );
     }
 
     if let Some(video) = source_video {
-        let video_name = format!("video/background.{}", extension_or(&video, "mp4"));
+        let video_name = format!("visuals/background.{}", extension_or(&video, "mp4"));
         sources.insert(video_name.clone(), AssetSource::File(video.clone()));
-        manifest.visuals.video = Some(AssetRef::pending(&video_name, media_type(&video)));
+        manifest.visuals.assets.insert(
+            "video".to_string(),
+            AssetRef::pending(&video_name, media_type(&video)),
+        );
+        manifest.visuals.timing.insert(
+            "video".to_string(),
+            VisualTiming {
+                timebase: UTZ_TIMEBASE,
+                offset: 0,
+            },
+        );
     }
 
     // Build beside the final path, then rename only after ZIP finalization and
@@ -365,11 +382,12 @@ fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
     if !Path::new(&audio.instrumental).is_file() {
         missing.push("instrumental".into());
     }
-    if !cache.vocal_chart_path(file_hash).is_file() && !cache.transcript_path(file_hash).is_file() {
+    let has_chart = cache.vocal_chart_path(file_hash).is_file()
+        || cache.candidate_chart_path(file_hash).is_file();
+    if !has_chart && !cache.transcript_path(file_hash).is_file() {
         missing.push("transcript".into());
     }
-    if !cache.vocal_chart_path(file_hash).is_file() && !cache.pitch_notes_path(file_hash).is_file()
-    {
+    if !has_chart && !cache.pitch_notes_path(file_hash).is_file() {
         missing.push("pitch_notes".into());
     }
     missing
@@ -380,7 +398,28 @@ fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
 fn pitch_evidence(file_hash: &str) -> Option<utz::PitchEvidenceV1> {
     let path = CacheDir::new().pitch_track_path(file_hash);
     let bytes = std::fs::read(path).ok()?;
-    migrate_pitch_evidence(&serde_json::from_slice(&bytes).ok()?)
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if let Ok(evidence) = serde_json::from_value::<utz::PitchEvidenceV1>(value.clone())
+        && evidence.validate().is_ok()
+    {
+        return Some(evidence);
+    }
+    migrate_pitch_evidence(&value)
+}
+
+fn duration_to_utz_units(seconds: f64) -> Result<u64, UtaStudioError> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(UtaStudioError::Other(
+            "song duration is not a finite non-negative value".to_string(),
+        ));
+    }
+    let units = (seconds * UTZ_TIMEBASE as f64).round();
+    if units > utz::MAX_EXACT_INTEGER as f64 {
+        return Err(UtaStudioError::Other(
+            "song duration exceeds the UTZ exact integer range".to_string(),
+        ));
+    }
+    Ok(units as u64)
 }
 
 fn non_empty(value: String) -> Option<String> {

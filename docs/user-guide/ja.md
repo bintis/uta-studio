@@ -199,6 +199,8 @@ NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認�
 
 解析済み楽曲を開いて**譜面を編集**を選びます。波形、ピッチ根拠、歌詞/フレーズ境界、ノートバー、複数トラック、名前付き Undo 履歴を利用できます。
 
+波形のコンテキストメニューで不変のワークフロー音声リビジョンを **A** と **B** に割り当て、再生位置や再生・一時停止状態をリセットせずに試聴を切り替えられます。波形表示に使うリビジョンも独立して選択できます。ソースメディアと成果物リビジョンは常に読み取り専用です。
+
 主な操作：
 
 - 再生、一時停止、シーク、選択範囲の試聴。
@@ -243,8 +245,8 @@ UTF-8 UltraStar 1.1 テキストと同階層のメディアを書き出します
 
 **設定 → ストレージ**では生成データを楽曲、モデル、その他に分けて表示します。
 
-- **生成キャッシュを消去**は対象の生成ステム、譜面/プレビュー、一時制作データを削除します。元メディアは削除しません。
-- **モデルを消去**はダウンロード済みモデルを削除します。再セットアップまでランタイム状態では不足として表示されます。
+- **生成キャッシュを消去**は対象の生成ステム、譜面/プレビュー、一時制作データを削除します。元メディアやインストール済みモデルは削除しません。
+- 個別モデル成果物のインストール、修復、削除は**設定 → モデルとランタイム**でのみ行います。
 
 既定の設定/データルートは `~/.uta-studio` です。別のデータ場所を設定した場合はそちらが使われます。移行・再インストール前には：
 
@@ -428,5 +430,11 @@ Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールには�
 ## Processing Studio とエビデンス確認
 
 曲ページから **Processing Studio** を開き、機械処理ワークフローを編集します。音声 Transformation は実際の型付きデータフローを書き換え、現在実行可能な音声 lane は Vocal、BGM、Lead、Vocal Residual です。Backing と Harmony は将来の音声分割機能が実装されるまで譜面トラックの役割です。Analyzer attachment は具体的な音声 Artifact を選択し、Analyzer の並び順は ready-node の優先度だけを変更します。型不一致、hard dependency の欠落、cycle を含むワークフローは保存できません。**Advanced Graph** は正確な compiled DAG を表示します。
+
+Stage 1 では、**リード分離**、**ノイズ除去**、**残響除去**を個別のオン／オフ前処理スイッチとして表示します。新しい既定ワークフローでは 3 つともオフです。オフは透過的なバイパスです。解析に必要な場合、OriginalMix から Vocal は引き続き生成され、解析器は誤って LeadVocal とラベル付けされた音声ではなく、その Vocal を使います。LeadVocal 出力を明示的に要求するとリード分離が必須になります。Plan Preview はキュー投入前に、正確な解析器ルートと各スイッチの状態を表示します。
+
+Stage 4 の**決定モード**は、決定論的な candidate graph / HSMM デコーダである **Algorithm** が既定です。**AI judgment** は明示的に選ぶ代替モードです。設定済みの Fusion Agent Adapter は外部 AI provider に接続でき、境界を限定した Fusion Candidate メタデータだけを受け取り、実在する Engine Candidate から最終パスを選択します。音符ジオメトリや測定エビデンスを新しく捏造することはできず、Candidate 譜面を作る前に Engine が返却結果を再検証します。Adapter は**設定 → モデルとランタイム**で構成します。Adapter/provider が見つからない、タイムアウトする、無効な応答を返す、または検証に失敗した場合、その解析は失敗します。Uta! Studio が暗黙に Algorithm へフォールバックすることはありません。Plan Preview は要求された決定モードと Adapter の readiness を表示しますが、Preview 中に provider へ接続しません。
+
+**モデルとランタイム → Fusion Agent Adapter** では、Runtime Manager が `PATH` 上のマニフェスト検証済み `uta-fusion-agent-adapter`、`uta-fusion-agent-pi`、`uta-fusion-agent-codex`、`uta-fusion-agent-claude` 連携を自動検出します。インストール後は **再スキャン** を使うか、別の互換 Adapter 実行ファイルを手動で選択できます。その実行ファイル専用の `<adapter-executable>.uta-fusion-adapter.json` sidecar が必要で、contract `uta.fusion_agent_adapter`、Adapter ID `fusion_agent_adapter`、Fusion プロトコルバージョン `3` を宣言していなければなりません。共有ディレクトリのマニフェストや、通常の `pi`、`codex`、`claude`、その他のコーディングエージェント実行ファイルは受け付けません。Uta! Studio は Adapter を起動したり provider に接続したりせず、このローカルマニフェストだけを検証します。**消去**は保存した選択だけを削除し、実行ファイル自体は削除しません。sidecar が示すのはプロトコル互換性であり、発行者の信頼性ではありません。Adapter は現在のユーザーの OS 権限で実行されます。Provider の認証情報は引き続き Adapter/provider の仕組みが所有します。
 
 完了した実行は再生成可能な Candidate revision を作成します。エディターでは人が編集した音符が常に最優先で、読み取り専用 Evidence と disagreement-first Review queue を利用できます。提案の適用は通常の undo 履歴に入り、再解析が Authored revision を暗黙に置き換えることはありません。新しい Candidate は Compare または Merge で確認します。

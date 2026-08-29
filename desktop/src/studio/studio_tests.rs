@@ -69,6 +69,12 @@ mod tests {
     }
 
     #[test]
+    fn workspace_eyebrow_is_only_a_fallback_when_there_is_no_subtitle() {
+        assert!(should_show_workspace_eyebrow(""));
+        assert!(!should_show_workspace_eyebrow("Rena · 0%"));
+    }
+
+    #[test]
     fn navigation_repeat_matches_the_restored_controller_cadence() {
         let started = Instant::now();
         let mut state = NavigationInputState::default();
@@ -107,9 +113,15 @@ mod tests {
 
     #[test]
     fn navigation_skips_invisible_dismiss_backdrops() {
-        assert!(!action_is_navigation_target(&UiAction::from(AppCommand::CloseActivity)));
-        assert!(!action_is_navigation_target(&UiAction::from(LibraryCommand::DismissSongContext)));
-        assert!(action_is_navigation_target(&UiAction::from(AppCommand::OpenAbout)));
+        assert!(!action_is_navigation_target(&UiAction::from(
+            AppCommand::CloseActivity
+        )));
+        assert!(!action_is_navigation_target(&UiAction::from(
+            LibraryCommand::DismissSongContext
+        )));
+        assert!(action_is_navigation_target(&UiAction::from(
+            AppCommand::OpenAbout
+        )));
     }
 
     #[test]
@@ -143,6 +155,35 @@ mod tests {
             ),
             theme.background.with_alpha(0.54)
         );
+
+        let resting_border = BorderColor::all(theme.border.with_alpha(0.44));
+        assert_eq!(
+            button_border(
+                &UiAction::from(LibraryCommand::ToggleLibraryLayout),
+                Interaction::None,
+                resting_border,
+                &theme,
+            ),
+            resting_border
+        );
+        assert_ne!(
+            button_border(
+                &UiAction::from(LibraryCommand::ToggleLibraryLayout),
+                Interaction::Pressed,
+                resting_border,
+                &theme,
+            ),
+            resting_border
+        );
+        assert_eq!(
+            button_border(
+                &UiAction::from(AppCommand::CloseActivity),
+                Interaction::Pressed,
+                resting_border,
+                &theme,
+            ),
+            resting_border
+        );
     }
 
     #[test]
@@ -155,7 +196,7 @@ mod tests {
     #[test]
     fn setup_request_preserves_the_selected_backend_and_artifact() {
         let mut config = AppConfig {
-            compute_backend: Some("intel".to_string()),
+            compute_backend: Some("openvino".to_string()),
             ..AppConfig::default()
         };
         let folders = setup_folders(
@@ -170,10 +211,20 @@ mod tests {
             Some(app_core::ModelDownloadTarget::Pitch)
         );
 
-        config.compute_backend = Some("cuda".to_string());
+        config.compute_backend = Some("vulkan".to_string());
         let folders = setup_folders(&config, SetupRequest { target: None });
         assert_eq!(folders.compute_backend, app_core::ComputeBackend::Vulkan);
         assert_eq!(folders.model_target, None);
+    }
+
+    #[test]
+    fn setup_request_treats_unrecognized_backend_strings_as_auto() {
+        let config = AppConfig {
+            compute_backend: Some("intel".to_string()),
+            ..AppConfig::default()
+        };
+        let folders = setup_folders(&config, SetupRequest { target: None });
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Auto);
     }
 
     #[test]
@@ -183,7 +234,10 @@ mod tests {
         assert!(root.join(FONT_PATH).is_file());
         assert!(root.join(ICON_ATLAS_PATH).is_file());
         assert!(root.join(MUSIC_PLACEHOLDER_PATH).is_file());
-        assert!(root.join("desktop/assets/icons/music-placeholder.svg").is_file());
+        assert!(
+            root.join("desktop/assets/icons/music-placeholder.svg")
+                .is_file()
+        );
         // Baked in via `include_bytes!`, not loaded from `asset_root()` --
         // a missing file would already be a compile error, but a real PNG
         // signature is worth confirming rather than assuming.
@@ -270,6 +324,58 @@ mod tests {
         assert!(lyrics[0].guided);
         assert!(lyrics[1].guided);
         assert!(!lyrics[2].guided);
+    }
+
+    #[test]
+    fn artifact_waveform_read_is_blocked_while_playback_is_running() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
+            uta_studio_audio::EditorAudioStatus {
+                playing: true,
+                ..default()
+            },
+            app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
+            "instrumental",
+        );
+        let audio = uta_studio_audio::EditorAudioPlayer::new();
+        let error = set_editor_artifact_waveform(
+            &audio,
+            &mut editor,
+            app_core::ArtifactRef {
+                file_hash: "fixture".to_string(),
+                kind: app_core::ArtifactKind::AudioStem,
+                revision_id: "revision".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "Stop playback before reading an artifact waveform");
+        assert_eq!(
+            set_editor_waveform_source(&audio, &mut editor, WaveformSource::Original).unwrap_err(),
+            "Stop playback before reading a waveform"
+        );
+    }
+
+    #[test]
+    fn unknown_audio_status_conservatively_blocks_waveform_reads() {
+        let mut editor = NativeEditor::new(
+            chart_fixture(&[(0.0, 1.0, 60, "a")]),
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
+            "instrumental",
+        );
+        let error = confirm_waveform_status(
+            &mut editor,
+            Err("transport status unavailable".to_string()),
+            "Stop playback before reading a waveform",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Could not confirm playback was stopped: transport status unavailable"
+        );
+        assert!(editor.audio_status.playing);
     }
 
     #[test]
@@ -420,8 +526,8 @@ mod tests {
                 .unwrap();
         assert!((before.1 - 4.0).abs() < 1e-9);
         assert!(before.0 < before.1);
-        let after = editor::actions::audition_range(EditorAction::AuditionAfterSelection, &editor)
-            .unwrap();
+        let after =
+            editor::actions::audition_range(EditorAction::AuditionAfterSelection, &editor).unwrap();
         assert!((after.0 - 6.0).abs() < 1e-9);
         assert!(after.1 > after.0);
         assert_eq!(

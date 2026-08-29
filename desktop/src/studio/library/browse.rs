@@ -146,20 +146,10 @@ pub(crate) fn spawn_library_collection(
 ) {
     let artists = session.library_view == LibraryView::Artists;
     debug_assert!(artists || session.library_view == LibraryView::Albums);
-    let (title, description, icon, items) = if artists {
-        (
-            "Artists",
-            "Browse artists in the main workspace. The sidebar remains a quiet navigation surface.",
-            UiIcon::Artists,
-            &session.menu_items.artists,
-        )
+    let (icon, items) = if artists {
+        (UiIcon::Artists, &session.menu_items.artists)
     } else {
-        (
-            "Albums",
-            "Browse albums in the main workspace. Choose one to see all matching tracks.",
-            UiIcon::Albums,
-            &session.menu_items.albums,
-        )
+        (UiIcon::Albums, &session.menu_items.albums)
     };
     parent
         .spawn(Node {
@@ -170,27 +160,6 @@ pub(crate) fn spawn_library_collection(
             ..default()
         })
         .with_children(|page| {
-            page.spawn((
-                Node {
-                    width: percent(100),
-                    padding: UiRect::axes(px(28), px(24)),
-                    flex_direction: FlexDirection::Column,
-                    border: UiRect::bottom(px(1)),
-                    ..default()
-                },
-                BorderColor::all(theme.border.with_alpha(0.55)),
-            ))
-            .with_children(|header| {
-                spawn_text(header, font.clone(), "MY LIBRARY", 9.0, theme.primary);
-                spawn_text(header, font.clone(), title, 34.0, theme.foreground);
-                spawn_wrapped_text(
-                    header,
-                    font.clone(),
-                    format!("{description} · {} total", items.len()),
-                    11.0,
-                    theme.muted_foreground,
-                );
-            });
             page.spawn((
                 LibrarySongList,
                 ScrollPosition::default(),
@@ -230,11 +199,11 @@ pub(crate) fn spawn_library_collection(
                             padding: UiRect::all(px(12)),
                             column_gap: px(11),
                             border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(6)),
+                            border_radius: studio_card_radius(),
                             ..default()
                         },
-                        BackgroundColor(theme.card.with_alpha(0.36)),
-                        BorderColor::all(theme.border.with_alpha(0.42)),
+                        studio_card_background(theme),
+                        studio_card_border(theme),
                     ))
                     .with_children(|card| {
                         card.spawn((
@@ -297,14 +266,101 @@ pub(crate) fn spawn_library_collection(
         });
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "this declarative route renderer receives the shared UI asset set"
-)]
-pub(crate) fn spawn_library(
+pub(crate) fn spawn_library_header_toolbar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+) {
+    if session.library_view == LibraryView::All && session.library_facet.is_none() {
+        spawn_toolbar_button(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            UiIcon::Repeat,
+            if session.scanning {
+                "Scanning…"
+            } else {
+                "Rescan library"
+            },
+            UiAction::from(LibraryCommand::RescanLibrary),
+            false,
+        );
+    }
+    if session.library_view == LibraryView::Completed {
+        spawn_toolbar_button(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            UiIcon::Music,
+            "Open local file…",
+            UiAction::from(LibraryCommand::ChooseEditorFile),
+            false,
+        );
+    }
+    spawn_library_filter_select(
+        parent,
+        font.clone(),
+        icons.clone(),
+        theme,
+        LibrarySelectKind::Status,
+        session,
+    );
+    spawn_library_filter_select(
+        parent,
+        font.clone(),
+        icons.clone(),
+        theme,
+        LibrarySelectKind::TranscriptSource,
+        session,
+    );
+    spawn_export_all_menu(parent, font.clone(), icons.clone(), theme, session);
+    spawn_toolbar_button(
+        parent,
+        font.clone(),
+        icons.clone(),
+        theme,
+        UiIcon::Sparkles,
+        "Analyze all",
+        UiAction::from(LibraryCommand::AnalyzeAll),
+        false,
+    );
+    spawn_toolbar_button(
+        parent,
+        font.clone(),
+        icons.clone(),
+        theme,
+        UiIcon::Repair,
+        "Models",
+        UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
+        false,
+    );
+    spawn_toolbar_button(
+        parent,
+        font,
+        icons,
+        theme,
+        if session.config.song_list_view.as_deref() == Some("grid") {
+            UiIcon::List
+        } else {
+            UiIcon::Grid
+        },
+        if session.config.song_list_view.as_deref() == Some("grid") {
+            "Table view"
+        } else {
+            "Grid view"
+        },
+        UiAction::from(LibraryCommand::ToggleLibraryLayout),
+        false,
+    );
+}
+
+pub(crate) fn spawn_library(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
     local_images: &mut LocalImages,
@@ -319,13 +375,13 @@ pub(crate) fn spawn_library(
             ..default()
         })
         .with_children(|library| {
-            library
-                .spawn((
-                    Node {
-                        position_type: PositionType::Relative,
-                        width: percent(100),
-                        padding: if session.library_view == LibraryView::Queue {
-                            UiRect::new(
+            if session.library_view == LibraryView::Queue {
+                library
+                    .spawn((
+                        Node {
+                            position_type: PositionType::Relative,
+                            width: percent(100),
+                            padding: UiRect::new(
                                 px(22),
                                 px(if session.analysis_model_panel_open {
                                     ANALYSIS_MODEL_PANEL_WIDTH + 22.0
@@ -334,10 +390,7 @@ pub(crate) fn spawn_library(
                                 }),
                                 px(10),
                                 px(10),
-                            )
-                        } else {
-                            UiRect::axes(px(28), px(24))
-                        },
+                            ),
                         flex_direction: FlexDirection::Column,
                         border: UiRect::bottom(px(1)),
                         ..default()
@@ -345,121 +398,22 @@ pub(crate) fn spawn_library(
                     BorderColor::all(theme.border.with_alpha(0.55)),
                 ))
                 .with_children(|header| {
-                    spawn_text(
-                        header,
-                        font.clone(),
-                        if session.library_facet.is_some() {
-                            "MY LIBRARY"
-                        } else if session.library_view == LibraryView::Queue {
-                            current_analysis_eyebrow(session)
-                        } else {
-                            session.library_view.eyebrow()
-                        },
-                        9.0,
-                        theme.muted_foreground,
-                    );
-                    if session.library_view == LibraryView::Queue {
-                        let current = current_analysis_header(session);
-                        let file_hash = current_analysis_file_hash(session);
-                        header
-                            .spawn(Node {
-                                width: percent(100),
-                                align_items: AlignItems::FlexEnd,
-                                justify_content: JustifyContent::SpaceBetween,
-                                flex_wrap: FlexWrap::Wrap,
-                                column_gap: px(16),
-                                row_gap: px(8),
-                                ..default()
-                            })
-                            .with_children(|title_row| {
-                                title_row
-                                    .spawn(Node {
-                                        min_width: px(0),
-                                        flex_grow: 1.0,
-                                        flex_direction: FlexDirection::Column,
-                                        row_gap: px(2),
-                                        ..default()
-                                    })
-                                    .with_children(|song| {
-                                        if let Some((title, artist, progress)) = current.as_ref() {
-                                            spawn_text(
-                                                song,
-                                                font.clone(),
-                                                title.clone(),
-                                                22.0,
-                                                theme.foreground,
-                                            );
-                                            spawn_text(
-                                                song,
-                                                font.clone(),
-                                                format!("{artist} · {progress}%"),
-                                                11.0,
-                                                theme.muted_foreground,
-                                            );
-                                        } else {
-                                            spawn_text(
-                                                song,
-                                                font.clone(),
-                                                "No analysis is running",
-                                                22.0,
-                                                theme.foreground,
-                                            );
-                                        }
-                                    });
-                                if let Some(file_hash) = file_hash.as_deref() {
-                                    spawn_analysis_header_toolbar(
-                                        title_row,
-                                        font.clone(),
-                                        icons.clone(),
-                                        theme,
-                                        session,
-                                        file_hash,
-                                    );
-                                }
-                            });
-                    } else {
+                    if let Some(reason) = current_analysis_file_hash(session)
+                        .as_deref()
+                        .and_then(analysis_start_unavailable)
+                    {
                         spawn_text(
                             header,
                             font.clone(),
-                            session
-                                .library_search
-                                .as_deref()
-                                .map(|query| format!("Results for “{query}”"))
-                                .unwrap_or_else(|| session.library_title().to_string()),
-                            34.0,
-                            theme.foreground,
-                        );
-                    }
-                    if session.library_view == LibraryView::Queue {
-                        if let Some(reason) = current_analysis_file_hash(session)
-                            .as_deref()
-                            .and_then(analysis_start_unavailable)
-                        {
-                            spawn_text(
-                                header,
-                                font.clone(),
-                                reason,
-                                10.0,
-                                theme.muted_foreground,
-                            );
-                        }
-                    } else {
-                        spawn_text(
-                            header,
-                            font.clone(),
-                            format!(
-                                "{} tracks · analysis workspace{}",
-                                session.songs.processed_count,
-                                if session.scanning { " · scanning" } else { "" }
-                            ),
-                            11.0,
+                            reason,
+                            10.0,
                             theme.muted_foreground,
                         );
                     }
-                    if session.library_view == LibraryView::Queue {
-                        let progress = current_analysis_header(session)
-                            .map(|(_, _, progress)| progress)
-                            .unwrap_or(0);
+                    let indeterminate = analysis_overall_progress_is_indeterminate(session);
+                    let progress = current_analysis_header(session)
+                        .map(|(_, _, progress)| progress)
+                        .unwrap_or(0);
                         header
                             .spawn((
                                 Node {
@@ -476,112 +430,23 @@ pub(crate) fn spawn_library(
                             .with_children(|track| {
                                 track.spawn((
                                     Node {
-                                        width: percent(progress as f32),
+                                        width: percent(if indeterminate {
+                                            100.0
+                                        } else {
+                                            progress as f32
+                                        }),
                                         height: percent(100),
                                         ..default()
                                     },
-                                    BackgroundColor(theme.primary.with_alpha(0.92)),
+                                    BackgroundColor(theme.primary.with_alpha(if indeterminate {
+                                        0.38
+                                    } else {
+                                        0.92
+                                    })),
                                 ));
                             });
-                    }
-                    if session.library_view != LibraryView::Queue {
-                    header
-                        .spawn(Node {
-                            width: percent(100),
-                            align_items: AlignItems::Center,
-                            flex_wrap: FlexWrap::Wrap,
-                            column_gap: px(8),
-                            row_gap: px(8),
-                            margin: UiRect::top(px(12)),
-                            ..default()
-                        })
-                        .with_children(|tools| {
-                            tools.spawn(Node {
-                                flex_grow: 1.0,
-                                ..default()
-                            });
-                            if session.library_view == LibraryView::All
-                                && session.library_facet.is_none()
-                            {
-                                spawn_toolbar_button(
-                                    tools,
-                                    font.clone(),
-                                    icons.clone(),
-                                    theme,
-                                    UiIcon::Repeat,
-                                    if session.scanning {
-                                        "Scanning…"
-                                    } else {
-                                        "Rescan library"
-                                    },
-                                    UiAction::from(LibraryCommand::RescanLibrary),
-                                    false,
-                                );
-                            }
-                            spawn_library_filter_select(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                LibrarySelectKind::Status,
-                                session,
-                            );
-                            spawn_library_filter_select(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                LibrarySelectKind::TranscriptSource,
-                                session,
-                            );
-                            spawn_export_all_menu(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                session,
-                            );
-                            spawn_toolbar_button(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                UiIcon::Sparkles,
-                                "Analyze all",
-                                UiAction::from(LibraryCommand::AnalyzeAll),
-                                false,
-                            );
-                            spawn_toolbar_button(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                UiIcon::Repair,
-                                "Models",
-                                UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-                                false,
-                            );
-                            spawn_toolbar_button(
-                                tools,
-                                font.clone(),
-                                icons.clone(),
-                                theme,
-                                if session.config.song_list_view.as_deref() == Some("grid") {
-                                    UiIcon::List
-                                } else {
-                                    UiIcon::Grid
-                                },
-                                if session.config.song_list_view.as_deref() == Some("grid") {
-                                    "Table view"
-                                } else {
-                                    "Grid view"
-                                },
-                                UiAction::from(LibraryCommand::ToggleLibraryLayout),
-                                false,
-                            );
-                        });
-                    }
                 });
+            }
 
             library
                 .spawn((
@@ -633,11 +498,10 @@ pub(crate) fn spawn_library(
                     }
                     for song in &session.songs.processed {
                         let cover = album_art_handle(song, asset_server, images, local_images);
-                        let analysis_status = session
+                        let analysis_task = session
                             .analysis_tasks
                             .iter()
-                            .find(|task| task.file_hash == song.file_hash)
-                            .map(|task| &task.status);
+                            .find(|task| task.file_hash == song.file_hash);
                         if grid {
                             spawn_library_song_card(
                                 list,
@@ -645,7 +509,9 @@ pub(crate) fn spawn_library(
                                 theme,
                                 song,
                                 cover,
-                                analysis_status,
+                                analysis_task,
+                                session.library_view == LibraryView::Completed
+                                    && song.editor_ready,
                             );
                         } else {
                             spawn_library_song_row(
@@ -654,7 +520,9 @@ pub(crate) fn spawn_library(
                                 theme,
                                 song,
                                 cover,
-                                analysis_status,
+                                analysis_task,
+                                session.library_view == LibraryView::Completed
+                                    && song.editor_ready,
                             );
                         }
                     }
@@ -805,6 +673,21 @@ pub(crate) fn spawn_song_context_menu(
                     UiAction::from(LibraryCommand::AnalyzeSong(context.song.file_hash.clone())),
                 );
             }
+            if !matches!(
+                app_core::candidate_chart_status(&context.song.file_hash),
+                app_core::CandidateChartStatus::NotAuthoredYet
+            ) {
+                spawn_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    "Delete chart…",
+                    11.0,
+                    UiAction::from(AnalysisCommand::RequestDeleteAuthoredChart(
+                        context.song.file_hash.clone(),
+                    )),
+                );
+            }
             spawn_text_button(
                 menu,
                 font.clone(),
@@ -854,18 +737,51 @@ pub(crate) fn spawn_song_context_menu(
 
 pub(crate) fn song_status_copy(
     song: &Song,
-    analysis_status: Option<&app_core::QueuedStatus>,
+    analysis_task: Option<&app_core::AnalysisTask>,
     theme: &StudioTheme,
 ) -> (String, Color) {
-    match analysis_status {
-        Some(app_core::QueuedStatus::Queued) => ("Queued".to_string(), theme.primary),
-        Some(app_core::QueuedStatus::Analyzing(progress)) => {
+    match analysis_task.map(|task| (&task.status, task.live.as_ref())) {
+        Some((app_core::QueuedStatus::Staged, _)) => {
+            ("Waiting to start".to_string(), theme.primary)
+        }
+        Some((app_core::QueuedStatus::Queued, _)) => ("Queued".to_string(), theme.primary),
+        Some((app_core::QueuedStatus::Analyzing(_), Some(live))) if live.engine.is_some() => (
+            "Analyzing · overall work units unavailable".to_string(),
+            theme.primary,
+        ),
+        Some((app_core::QueuedStatus::Analyzing(progress), _)) => {
             (format!("Analyzing · {progress}%"), theme.primary)
         }
-        Some(app_core::QueuedStatus::Failed(_)) => ("Failed".to_string(), theme.destructive),
+        Some((app_core::QueuedStatus::Failed(_), _)) => ("Failed".to_string(), theme.destructive),
         None if song.authoring_ready => ("Ready to author".to_string(), theme.pitch_contour),
         None if song.is_analyzed => ("Analysis incomplete".to_string(), theme.editor_warning),
         None => ("Not analyzed".to_string(), theme.muted_foreground),
+    }
+}
+
+fn song_primary_command(open_editor_on_primary: bool, file_hash: &str) -> LibraryCommand {
+    if open_editor_on_primary {
+        LibraryCommand::OpenEditor(file_hash.to_string())
+    } else {
+        LibraryCommand::OpenSong(file_hash.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::song_primary_command;
+    use crate::studio::LibraryCommand;
+
+    #[test]
+    fn completed_editor_ready_song_primary_action_opens_the_editor() {
+        assert!(matches!(
+            song_primary_command(true, "song-hash"),
+            LibraryCommand::OpenEditor(file_hash) if file_hash == "song-hash"
+        ));
+        assert!(matches!(
+            song_primary_command(false, "song-hash"),
+            LibraryCommand::OpenSong(file_hash) if file_hash == "song-hash"
+        ));
     }
 }
 
@@ -875,12 +791,18 @@ pub(crate) fn spawn_library_song_row(
     theme: &StudioTheme,
     song: &Song,
     cover: Handle<Image>,
-    analysis_status: Option<&app_core::QueuedStatus>,
+    analysis_task: Option<&app_core::AnalysisTask>,
+    open_editor_on_primary: bool,
 ) {
     let context_song = song.clone();
+    let primary_action = UiAction::from(song_primary_command(
+        open_editor_on_primary,
+        &song.file_hash,
+    ));
     parent
         .spawn((
             Button,
+            primary_action,
             UiPointerApi(&["ui.pointer.song.primary", "ui.pointer.song.secondary"]),
             Node {
                 width: percent(100),
@@ -985,7 +907,7 @@ pub(crate) fn spawn_library_song_row(
                     theme.muted_foreground,
                 );
             });
-            let (status_label, status_color) = song_status_copy(song, analysis_status, theme);
+            let (status_label, status_color) = song_status_copy(song, analysis_task, theme);
             row.spawn(Node {
                 width: px(150),
                 flex_shrink: 0.0,
@@ -1014,20 +936,16 @@ pub(crate) fn spawn_library_song_row(
         })
         .observe(
             move |mut event: On<Pointer<Press>>,
-                  mut shell: ResMut<ShellState>,
-                  mut library: ResMut<LibraryState>,
                   mut dialogs: ResMut<DialogState>,
                   mut invalidated: ResMut<UiInvalidated>| {
-                event.propagate(false);
-                open_song_from_pointer(
-                    event.button,
-                    event.pointer_location.position,
-                    &context_song,
-                    &mut shell,
-                    &mut library,
-                    &mut dialogs,
-                    &mut invalidated,
-                );
+                if event.button == PointerButton::Secondary {
+                    event.propagate(false);
+                    dialogs.song_context = Some(SongContextMenu {
+                        song: context_song.clone(),
+                        position: event.pointer_location.position,
+                    });
+                    invalidated.invalidate(UiDirtyRegion::Library);
+                }
             },
         );
 }
@@ -1038,13 +956,19 @@ pub(crate) fn spawn_library_song_card(
     theme: &StudioTheme,
     song: &Song,
     cover: Handle<Image>,
-    analysis_status: Option<&app_core::QueuedStatus>,
+    analysis_task: Option<&app_core::AnalysisTask>,
+    open_editor_on_primary: bool,
 ) {
     let context_song = song.clone();
-    let (status_label, status_color) = song_status_copy(song, analysis_status, theme);
+    let primary_action = UiAction::from(song_primary_command(
+        open_editor_on_primary,
+        &song.file_hash,
+    ));
+    let (status_label, status_color) = song_status_copy(song, analysis_task, theme);
     parent
         .spawn((
             Button,
+            primary_action,
             UiPointerApi(&["ui.pointer.song.primary", "ui.pointer.song.secondary"]),
             Node {
                 width: px(172),
@@ -1054,11 +978,11 @@ pub(crate) fn spawn_library_song_card(
                 padding: UiRect::all(px(8)),
                 row_gap: px(6),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_card_radius(),
                 ..default()
             },
-            BackgroundColor(theme.card.with_alpha(0.34)),
-            BorderColor::all(theme.border.with_alpha(0.38)),
+            studio_card_background(theme),
+            studio_card_border(theme),
         ))
         .with_children(|card| {
             card.spawn((
@@ -1097,47 +1021,16 @@ pub(crate) fn spawn_library_song_card(
         })
         .observe(
             move |mut event: On<Pointer<Press>>,
-                  mut shell: ResMut<ShellState>,
-                  mut library: ResMut<LibraryState>,
                   mut dialogs: ResMut<DialogState>,
                   mut invalidated: ResMut<UiInvalidated>| {
-                event.propagate(false);
-                open_song_from_pointer(
-                    event.button,
-                    event.pointer_location.position,
-                    &context_song,
-                    &mut shell,
-                    &mut library,
-                    &mut dialogs,
-                    &mut invalidated,
-                );
+                if event.button == PointerButton::Secondary {
+                    event.propagate(false);
+                    dialogs.song_context = Some(SongContextMenu {
+                        song: context_song.clone(),
+                        position: event.pointer_location.position,
+                    });
+                    invalidated.invalidate(UiDirtyRegion::Library);
+                }
             },
         );
-}
-
-pub(crate) fn open_song_from_pointer(
-    button: PointerButton,
-    position: Vec2,
-    song: &Song,
-    shell: &mut ShellState,
-    library: &mut LibraryState,
-    dialogs: &mut DialogState,
-    invalidated: &mut UiInvalidated,
-) {
-    match button {
-        PointerButton::Primary => {
-            library.selected_song = Some(song.file_hash.clone());
-            shell.route = StudioRoute::SongDetail;
-            dialogs.song_context = None;
-            shell.notice = None;
-        }
-        PointerButton::Secondary => {
-            dialogs.song_context = Some(SongContextMenu {
-                song: song.clone(),
-                position,
-            });
-        }
-        PointerButton::Middle => return,
-    }
-    invalidated.invalidate(UiDirtyRegion::Library);
 }

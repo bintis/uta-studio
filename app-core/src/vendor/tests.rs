@@ -5,14 +5,15 @@ fn isolated_runtime_client(label: &str) -> crate::backend_cli::RuntimeCliClient 
 }
 
 #[test]
-fn runtime_status_is_read_only_and_reports_the_runtime_lock() {
+fn runtime_status_is_read_only_and_reports_backend_protocol_fields() {
     let client = isolated_runtime_client("status");
     let status = analysis_runtime_status_with_clients(
         true,
         Some(&client),
         std::path::PathBuf::from("missing-ffmpeg"),
     );
-    assert_eq!(status.runtime_lock_sha256, crate::native_runtime::RUNTIME_LOCK_SHA256);
+    assert!(status.runtime_contract_current);
+    assert!(status.ffmpeg_path.is_none());
     let serialized = serde_json::to_value(&status).expect("runtime status serializes");
     assert!(serialized.get("openvinoRuntimeAvailable").is_some());
 }

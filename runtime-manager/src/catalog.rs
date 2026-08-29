@@ -49,6 +49,33 @@ impl FromStr for NativeBackend {
     }
 }
 
+/// Device-class preference, orthogonal to `NativeBackend`. Captured through
+/// the process boundary; Runtime Manager does not yet enumerate multiple
+/// physical devices, so this does not change device selection on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeDeviceClass {
+    Cpu,
+    Gpu,
+    IntegratedGpu,
+}
+
+impl FromStr for NativeDeviceClass {
+    type Err = RuntimeManagerError;
+
+    fn from_str(value: &str) -> RuntimeManagerResult<Self> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "gpu" => Ok(Self::Gpu),
+            "integrated_gpu" => Ok(Self::IntegratedGpu),
+            other => Err(RuntimeManagerError::new(
+                "invalid_device_class",
+                format!("unknown native device class: {other}"),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendCapability {
     pub backend: NativeBackend,
@@ -234,6 +261,7 @@ impl ResourceCatalog {
         catalog.add_default_models()?;
         catalog.add_openvino_cpu_reference_routes();
         catalog.add_ggml_roformer_routes()?;
+        catalog.promote_all_effective_model_routes_to_production();
         catalog.add_default_tools_and_bundles()?;
         Ok(catalog)
     }
@@ -346,20 +374,39 @@ impl ResourceCatalog {
             model.runtime_recipe_digest = Some(
                 "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a".to_string(),
             );
-            if model_id == "melband_roformer_harmony"
-                && !model
-                    .capabilities
-                    .iter()
-                    .any(|capability| capability == "audio.lead_partition")
-            {
-                model.capabilities.push("audio.lead_partition".to_string());
-            }
+            let (artifact, installed_bytes) = ggml_roformer_artifact(model_id);
+            model.source.converted_artifact = Some(artifact);
+            model.estimated_installed_bytes = Some(installed_bytes);
             model.acquisition = vec![acquisition(
                 AcquisitionMethod::LocalImport,
-                "explicit import of the exact verified legacy GGUF",
+                "explicit import of the exact catalog-pinned GGUF",
             )];
         }
         Ok(())
+    }
+
+    /// Applies the repository owner's explicit release policy: every model's
+    /// effective native route is admitted under Production policy. CPU reference
+    /// routes remain diagnostic-only and therefore stay Experimental.
+    ///
+    /// This changes policy admission only. Existing evidence identifiers,
+    /// provenance, license metadata, structural validation, and fail-closed
+    /// runtime checks remain intact and continue to be surfaced to the UI.
+    fn promote_all_effective_model_routes_to_production(&mut self) {
+        for runtime in self.runtimes.values_mut() {
+            for capability in &mut runtime.backends {
+                if capability.backend != NativeBackend::CpuReference {
+                    capability.validation = ValidationState::ProductionPinned;
+                }
+            }
+        }
+        for model in self.models.values_mut() {
+            for capability in &mut model.backends {
+                if capability.backend != NativeBackend::CpuReference {
+                    capability.validation = ValidationState::ProductionPinned;
+                }
+            }
+        }
     }
 
     fn add_default_runtimes(&mut self) -> RuntimeManagerResult<()> {
@@ -396,7 +443,8 @@ impl ResourceCatalog {
         self.insert_runtime(RuntimeCatalogEntry {
             id: "ggml_vulkan_v1".to_string(),
             display_name: "GGML Vulkan Worker".to_string(),
-            purpose: "Explicit GGUF Vulkan inference candidate for non-Qwen models".to_string(),
+            purpose: "Manifest-pinned Production GGUF Vulkan inference for RoFormer models"
+                .to_string(),
             backends: vec![BackendCapability {
                 backend: Vulkan,
                 validation: BenchmarkCandidate,
@@ -464,23 +512,6 @@ impl ResourceCatalog {
                 runtime_recipe_digest("qwen3_forced_aligner_0_6b")
                     .map_err(RuntimeManagerError::invalid_catalog)?,
             ),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "native_analyzer".to_string(),
-            display_name: "Native Analyzer".to_string(),
-            purpose: "Native analyzer command boundary".to_string(),
-            backends: vec![BackendCapability {
-                backend: NativeDsp,
-                validation: ProductionPinned,
-                evidence_id: None,
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native component",
-            )],
-            executable_component_id: "native_analyzer".to_string(),
-            supported_models: Vec::new(),
-            recipe_digest: None,
         })?;
         Ok(())
     }
@@ -604,7 +635,7 @@ impl ResourceCatalog {
                 self.insert_model(ModelCatalogEntry {
                     id: ModelId::new(id)?,
                     display_name: display_name.to_string(),
-                    purpose: "Exact 44.1 kHz all-vocals partition into lead and backing residual".to_string(),
+                    purpose: "Exact 44.1 kHz all-vocals lead isolation yielding LeadVocal and VocalResidual".to_string(),
                     capabilities: vec![capability.to_string()],
                     source,
                     license,
@@ -1093,7 +1124,7 @@ impl ResourceCatalog {
                     format: align.gguf_format.clone(),
                     manifest_filename: align.gguf_file.clone(),
                     manifest_sha256: align.gguf_sha256.clone(),
-                    conversion_recipe_sha256: align.converter_patch_sha256.clone(),
+                    conversion_recipe_sha256: align.conversion_recipe_digest.clone(),
                     runtime_id: "qwen_align_runtime".to_string(),
                     runtime_version: align.runtime_commit.clone(),
                     runtime_commit: align.runtime_commit.clone(),
@@ -1120,6 +1151,19 @@ impl ResourceCatalog {
                         "explicit system ffmpeg path",
                     ),
                 ],
+            },
+        );
+        self.tools.insert(
+            crate::external_tool::FUSION_AGENT_ADAPTER_ID.to_string(),
+            ToolCatalogEntry {
+                id: crate::external_tool::FUSION_AGENT_ADAPTER_ID.to_string(),
+                display_name: "Fusion Agent Adapter".to_string(),
+                purpose: "Verified external adapter for bounded AI candidate-path selection"
+                    .to_string(),
+                acquisition: vec![acquisition(
+                    AcquisitionMethod::ExternalTool,
+                    "explicit verified Uta Fusion Agent Adapter executable",
+                )],
             },
         );
         self.bundles.insert(
@@ -1304,6 +1348,44 @@ fn openvino_artifact(format: &str, manifest_sha256: &str) -> ConvertedArtifactId
     }
 }
 
+fn ggml_roformer_artifact(model_id: &str) -> (ConvertedArtifactIdentity, u64) {
+    let (sha256, size_bytes) = match model_id {
+        "bs_roformer_vocals_ep317" => (
+            "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de",
+            320_092_800,
+        ),
+        "melband_roformer_denoise_aufr33" => (
+            "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
+            457_008_736,
+        ),
+        "melband_roformer_dereverb_anvuew" => (
+            "f850fb2460099df356676ce37ba48875e3c75726d7a848b42d75ff6015955ac7",
+            457_008_736,
+        ),
+        "melband_roformer_inst_v2" => (
+            "e2b39b979e2413af172bad88a6b0a324a54d47fbca6622083f7f3817b9046897",
+            787_918_656,
+        ),
+        "melband_roformer_harmony" => (
+            "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
+            457_008_736,
+        ),
+        _ => unreachable!("shipped GGML RoFormer id"),
+    };
+    (
+        ConvertedArtifactIdentity {
+            format: "gguf_f16".to_string(),
+            manifest_filename: "model-fp16.gguf".to_string(),
+            manifest_sha256: sha256.to_string(),
+            conversion_recipe_sha256: String::new(),
+            runtime_id: "ggml_vulkan_v1".to_string(),
+            runtime_version: "1".to_string(),
+            runtime_commit: "8c63e70982c95ceb862e3a1073a2c1beef75d60a".to_string(),
+        },
+        size_bytes,
+    )
+}
+
 fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
     AcquisitionSpec {
         method,
@@ -1440,15 +1522,11 @@ mod tests {
         ] {
             assert!(catalog.models.contains_key(model), "{model}");
         }
-        for runtime in [
-            "openvino_2026_3",
-            "qwen_asr_runtime",
-            "qwen_align_runtime",
-            "native_analyzer",
-        ] {
+        for runtime in ["openvino_2026_3", "qwen_asr_runtime", "qwen_align_runtime"] {
             assert!(catalog.runtimes.contains_key(runtime), "{runtime}");
         }
         assert!(catalog.tools.contains_key("ffmpeg"));
+        assert!(catalog.tools.contains_key("fusion_agent_adapter"));
         assert!(catalog.bundles.contains_key("roformer"));
     }
 
@@ -1488,7 +1566,7 @@ mod tests {
             assert_eq!(model.backends.len(), 1);
             assert!(model.backends.iter().all(|backend| {
                 backend.backend == NativeBackend::Vulkan
-                    && backend.validation == ValidationState::BenchmarkCandidate
+                    && backend.validation == ValidationState::ProductionPinned
             }));
             assert_eq!(
                 model.runtime_recipe_digest.as_deref(),
@@ -1537,14 +1615,14 @@ mod tests {
                 .all(|spec| spec.method == AcquisitionMethod::LocalImport)
         );
         assert_eq!(roformer.pinned_backend, Some(NativeBackend::Vulkan));
+        let converted = roformer.source.converted_artifact.as_ref().unwrap();
+        assert_eq!(converted.format, "gguf_f16");
+        assert_eq!(converted.manifest_filename, "model-fp16.gguf");
         assert_eq!(
-            roformer
-                .source
-                .converted_artifact
-                .as_ref()
-                .map(|artifact| artifact.manifest_sha256.as_str()),
-            Some(BS_ROFORMER_IR_MANIFEST_SHA256)
+            converted.manifest_sha256,
+            "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de"
         );
+        assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
         let align = catalog.model("qwen3_forced_aligner_0_6b").unwrap();
         assert!(
             align
@@ -1567,7 +1645,7 @@ mod tests {
             "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6"
         );
         assert!(align.backends.iter().all(|backend| {
-            backend.validation == ValidationState::BenchmarkCandidate
+            backend.validation == ValidationState::ProductionPinned
                 && backend.evidence_id.as_deref()
                     == Some("validation:qwen-runtime-validation#aligner-static-closure")
         }));
@@ -1659,7 +1737,7 @@ mod tests {
             assert_eq!(model.pinned_backend, Some(NativeBackend::OpenVino));
             assert!(model.backends.iter().any(|backend| {
                 backend.backend == NativeBackend::OpenVino
-                    && backend.validation == ValidationState::BenchmarkCandidate
+                    && backend.validation == ValidationState::ProductionPinned
             }));
             assert!(model.backends.iter().any(|backend| {
                 backend.backend == NativeBackend::CpuReference
@@ -1722,8 +1800,21 @@ mod tests {
             assert_eq!(model.backends.len(), 1);
             assert!(model.backends.iter().all(|backend| {
                 backend.backend == NativeBackend::Vulkan
-                    && backend.validation == ValidationState::BenchmarkCandidate
+                    && backend.validation == ValidationState::ProductionPinned
             }));
+            let converted = model.source.converted_artifact.as_ref().unwrap();
+            assert_eq!(converted.format, "gguf_f16");
+            assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
+            assert_eq!(
+                converted.runtime_commit,
+                "8c63e70982c95ceb862e3a1073a2c1beef75d60a"
+            );
+            assert!(
+                !model
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "audio.lead_partition")
+            );
             assert!(!openvino.supported_models.contains(&model_id.to_string()));
         }
     }
@@ -1752,7 +1843,7 @@ mod tests {
                 FCPE_IR_MANIFEST_SHA256,
                 "https://github.com/CNChTu/FCPE",
                 "MIT",
-                ValidationState::BenchmarkCandidate,
+                ValidationState::ProductionPinned,
             ),
             (
                 "basic_pitch",
@@ -1763,7 +1854,7 @@ mod tests {
                 BASIC_PITCH_IR_MANIFEST_SHA256,
                 "https://github.com/spotify/basic-pitch",
                 "Apache-2.0",
-                ValidationState::BenchmarkCandidate,
+                ValidationState::ProductionPinned,
             ),
         ];
         for (
@@ -1854,21 +1945,39 @@ mod tests {
     }
 
     #[test]
-    fn registry_view_preserves_current_backend_states() {
+    fn every_effective_model_and_runtime_route_is_production_pinned() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let registry = catalog.native_runtime_registry();
-        let expected = [
-            ("rmvpe", ValidationState::ProductionPinned),
-            ("game", ValidationState::ProductionPinned),
-        ];
-        for (model_id, validation) in expected {
-            let model = registry
-                .iter()
-                .find(|model| model.model_id == model_id)
-                .unwrap();
-            assert!(model.backends.iter().any(|capability| {
-                capability.backend == NativeBackend::OpenVino && capability.validation == validation
-            }));
+        assert_eq!(catalog.models.len(), 14);
+        for model in catalog.models.values() {
+            let pinned = model
+                .pinned_backend
+                .expect("every model must declare its effective backend");
+            assert!(
+                model.backends.iter().any(|capability| {
+                    capability.backend == pinned
+                        && capability.validation == ValidationState::ProductionPinned
+                }),
+                "{}",
+                model.id.as_str()
+            );
+            assert!(
+                model.backends.iter().all(|capability| {
+                    capability.backend != NativeBackend::CpuReference
+                        || capability.validation == ValidationState::Experimental
+                }),
+                "{}",
+                model.id.as_str()
+            );
+        }
+        for runtime in catalog.runtimes.values() {
+            assert!(
+                runtime.backends.iter().all(|capability| {
+                    capability.backend == NativeBackend::CpuReference
+                        || capability.validation == ValidationState::ProductionPinned
+                }),
+                "{}",
+                runtime.id
+            );
         }
     }
 }

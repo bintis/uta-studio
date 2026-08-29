@@ -7,9 +7,14 @@ use uta_runtime_manager::{
 };
 
 use super::*;
-use crate::artifact::PitchEvidenceV03;
+use crate::artifact::{PitchEvidenceV03, TranscriptArtifactV1};
 use crate::contract::request::tests::valid_request;
 use crate::contract::{AudioRole, TIMELINE_VALID_GATE};
+use crate::fusion::{BoundaryCandidateRole, BoundaryEvidenceKind};
+
+mod fingerprint_versions;
+mod phase_b;
+mod phase_e;
 
 #[test]
 fn failed_run_guard_removes_only_children_of_empty_authorized_root() {
@@ -60,43 +65,9 @@ fn request_fingerprint_identity_does_not_depend_on_local_path() {
 }
 
 #[test]
-fn quantization_and_audio_quality_versions_participate_in_execution_fingerprint() {
-    let request = valid_request(AudioRole::LeadVocal);
-    let quality_gates = vec![TIMELINE_VALID_GATE.to_string()];
-    let identity = |quantization_version, audio_quality_version| ExecutionIdentity {
-        request: fingerprint_request(&request).unwrap(),
-        resources: Vec::new(),
-        acoustic_dsp_version: ACOUSTIC_DSP_VERSION,
-        audio_quality_version,
-        quality_gates: &quality_gates,
-        calibration_version: CALIBRATION_VERSION,
-        finalize_vocal_chart_version: FINALIZE_VOCAL_CHART_VERSION,
-        fusion_version: FUSION_VERSION,
-        hsmm_version: HSMM_VERSION,
-        quantization_version,
-        postprocess_version: POSTPROCESS_VERSION,
-    };
-    let current =
-        deterministic_fingerprint(&identity(QUANTIZATION_VERSION, AUDIO_QUALITY_VERSION)).unwrap();
-    assert_ne!(
-        current,
-        deterministic_fingerprint(&identity("rhythm-grid-dp-future", AUDIO_QUALITY_VERSION,))
-            .unwrap()
-    );
-    assert_ne!(
-        current,
-        deterministic_fingerprint(&identity(
-            QUANTIZATION_VERSION,
-            "audio-quality-gates-future",
-        ))
-        .unwrap()
-    );
-}
-
-#[test]
 fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
-    use crate::artifact::{CandidateVocalChartV1, SingingAnalysisV1, VocalChartAuthority};
-    use crate::candidate_pipeline::SingingStagesOutput;
+    use crate::artifact::{CandidateVocalChartV1, SingingAnalysisV1};
+    use crate::candidate_pipeline::{CandidatePathDecisionV1, SingingStagesOutput};
     use crate::fusion::{
         AcousticCandidateFeatures, CanonicalLyrics, CanonicalNote, CanonicalNoteEvidence,
         CanonicalSingingTrack, CanonicalWordBoundary, HarmonyMetadata, LyricsAuthority,
@@ -140,9 +111,15 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             word_id: Some("word-0".to_string()),
             evidence: CanonicalNoteEvidence {
                 source_experts: vec!["game".to_string()],
-                game_fractional_midi: 69.0,
-                game_boundary_decision_threshold: 0.2,
-                game_presence_decision_threshold: 0.2,
+                decision_trace: Default::default(),
+                boundary_source: "game".to_string(),
+                boundary_kind: BoundaryEvidenceKind::Game,
+                boundary_role: BoundaryCandidateRole::Primary,
+                boundary_fractional_midi: Some(69.0),
+                boundary_decision_parameter: Some(0.2),
+                presence_decision_parameter: Some(0.2),
+                boundary_calibrated_confidence: None,
+                target_pitch_source: "game".to_string(),
                 rmvpe_center_hz: None,
                 rmvpe_confidence: None,
                 rmvpe_cents_difference: None,
@@ -157,13 +134,20 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                     frame_count: 30,
                     mean_rms: 0.2,
                     mean_periodicity: 0.8,
+                    fundamental_center_hz: Some(440.0),
                     mean_snr_db: 20.0,
+                    mean_vibrato_activation: 0.0,
+                    mean_glide_activation: 0.0,
+                    mean_ornament_activation: 0.0,
+                    mean_breath_activation: 0.0,
+                    max_voicing_transition_activation: 0.0,
                     onset_flux: Some(0.3),
                     preceding_flux: Some(0.01),
                     onset_supported: Some(true),
-                    basic_pitch_onset_activation: None,
-                    basic_pitch_onset_supported: None,
                 }),
+                basic_pitch: None,
+                boundary_alternatives: Vec::new(),
+                technique_evidence: Vec::new(),
             },
         }],
         f0_curve: Vec::new(),
@@ -172,14 +156,21 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     };
     let singing = SingingStagesOutput {
         fusion: SingingFusionEvidence {
-            schema_version: 1,
+            schema_version: 2,
             candidates: vec![SegmentCandidate {
                 id: "game-note-0".to_string(),
                 range,
                 target_midi: 69,
-                game_midi: 69.0,
-                game_boundary_decision_threshold: 0.2,
-                game_presence_decision_threshold: 0.2,
+                boundary_source: "game".to_string(),
+                boundary_kind: BoundaryEvidenceKind::Game,
+                boundary_role: BoundaryCandidateRole::Primary,
+                boundary_fractional_midi: Some(69.0),
+                boundary_decision_parameter: Some(0.2),
+                presence_decision_parameter: Some(0.2),
+                boundary_hard: false,
+                boundary_support: None,
+                boundary_calibrated_confidence: None,
+                target_pitch_source: "game".to_string(),
                 center_pitch_hz: 440.0,
                 rmvpe_center_hz: None,
                 rmvpe_confidence: None,
@@ -192,10 +183,15 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                 fcpe_cents_from_rmvpe: None,
                 fcpe_supports_rmvpe: None,
                 acoustic: None,
+                basic_pitch: None,
+                boundary_alternatives: Vec::new(),
+                boundary_constraints: Vec::new(),
+                technique_evidence: Vec::new(),
                 techniques: TechniqueScores::default(),
                 word_id: Some("word-0".to_string()),
                 alternatives: Vec::new(),
             }],
+            hard_boundaries: Default::default(),
         },
         track,
         review_regions: vec![SingingReviewRegion {
@@ -206,6 +202,18 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             evidence_experts: vec!["game".to_string()],
             reviewed: false,
         }],
+        decision: CandidatePathDecisionV1::Algorithm {
+            candidate_set_digest: "a".repeat(64),
+            selected_candidate_ids: vec!["game-note-0".to_string()],
+        },
+    };
+    let candidate_digest = crate::execution::candidate_set_digest(&singing.fusion).unwrap();
+    let decision_provenance = FusionDecisionProvenanceV1::Algorithm {
+        selector: HSMM_VITERBI_SELECTOR.to_string(),
+        selector_version: HSMM_VERSION.to_string(),
+        candidate_set_digest: candidate_digest,
+        selected_candidate_ids: vec!["game-note-0".to_string()],
+        reuse_policy: AnalysisReusePolicyV1::Deterministic,
     };
     let root = std::env::temp_dir().join(format!(
         "uta-engine-pure-candidate-{}-{}",
@@ -224,6 +232,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         true,
         true,
         &fingerprint,
+        Some(&decision_provenance),
         Some(&singing),
         None,
         None,
@@ -239,15 +248,18 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     let analysis: SingingAnalysisV1 =
         serde_json::from_slice(&fs::read(root.join(&singing_ref.path)).unwrap()).unwrap();
     analysis.validate().unwrap();
+    assert!(analysis.track.is_none());
+    assert_eq!(analysis.chart_references.track_id, "lead");
+    assert_eq!(analysis.chart_references.note_ids, ["game-note-0"]);
     assert_eq!(analysis.candidate_evidence.len(), 1);
     let chart_ref = artifacts.candidate_vocal_chart.as_ref().unwrap();
     assert_eq!(chart_ref.path, Path::new("candidate/vocal-chart.json"));
     let chart: CandidateVocalChartV1 =
         serde_json::from_slice(&fs::read(root.join(&chart_ref.path)).unwrap()).unwrap();
     chart.validate().unwrap();
-    assert_eq!(chart.authority, VocalChartAuthority::Candidate);
-    assert_eq!(chart.notes[0].confidence, None);
-    assert!(chart.provenance.quantization.is_none());
+    assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
+    assert_eq!(chart.tracks[0].phrases[0].notes[0].id, "game-note-0");
+    assert_eq!(chart.tracks[0].phrases[0].notes[0].scoring.weight, 1.0);
 
     let quantized_root = root.join("quantized");
     fs::create_dir(&quantized_root).unwrap();
@@ -273,6 +285,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         true,
         true,
         &fingerprint,
+        Some(&decision_provenance),
         Some(&singing),
         Some(&quantized_track),
         Some(&report),
@@ -300,14 +313,14 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(raw_analysis.track.notes[0].range, range);
+    assert!(raw_analysis.track.is_none());
+    assert_eq!(raw_analysis.chart_references.note_ids, ["game-note-0"]);
+    let quantized_note = &quantized_chart.tracks[0].phrases[0].notes[0];
+    assert_eq!(quantized_note.id, "game-note-0");
+    assert_eq!(quantized_note.start, quantized_track.notes[0].range.start);
     assert_eq!(
-        quantized_chart.notes[0].range,
-        quantized_track.notes[0].range
-    );
-    assert_eq!(
-        quantized_chart.provenance.quantization,
-        Some(report.clone())
+        quantized_note.duration,
+        quantized_track.notes[0].range.end - quantized_track.notes[0].range.start
     );
     let quantized_manifest = AnalysisResultManifestV1 {
         contract: ANALYSIS_RESULT_CONTRACT.to_string(),
@@ -323,7 +336,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             resources: Vec::new(),
             calibration_version: CALIBRATION_VERSION.to_string(),
             fusion_version: FUSION_VERSION.to_string(),
-            hsmm_version: HSMM_VERSION.to_string(),
+            fusion_decision: Some(decision_provenance.clone()),
             quantization_version: QUANTIZATION_VERSION.to_string(),
             audio_quality_version: String::new(),
             postprocess_version: POSTPROCESS_VERSION.to_string(),
@@ -344,7 +357,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             resources: Vec::new(),
             calibration_version: CALIBRATION_VERSION.to_string(),
             fusion_version: FUSION_VERSION.to_string(),
-            hsmm_version: HSMM_VERSION.to_string(),
+            fusion_decision: Some(decision_provenance),
             quantization_version: QUANTIZATION_VERSION.to_string(),
             audio_quality_version: String::new(),
             postprocess_version: POSTPROCESS_VERSION.to_string(),
@@ -376,6 +389,7 @@ fn cancelled_candidate_publication_writes_no_artifact() {
         true,
         true,
         &"8".repeat(64),
+        None,
         None,
         None,
         None,
@@ -458,6 +472,175 @@ fn install_fixture_generation(
         format!(r#"{{"generation":"{generation}"}}"#),
     )
     .unwrap();
+}
+
+fn fcpe_primary_candidate_workflow() -> serde_json::Value {
+    let node = |instance: &str,
+                capability: &str,
+                model: Option<&str>,
+                priority: i32,
+                _runtime: &str,
+                _parameters: serde_json::Value| {
+        let mut value = serde_json::json!({
+            "instance_id": instance,
+            "capability_id": capability,
+            "execution_policy": "always",
+            "priority": priority,
+            "provider_preferences": {
+                "primary": model,
+                "instrumental": null
+            }
+        });
+        if capability == "audio.separate_vocal_bgm" {
+            value["execution_invocations"] = serde_json::json!([{
+                "invocation_id": format!("{instance}.vocal"),
+                "provider_id": model.expect("separation fixture has a provider"),
+                "capabilities": ["audio.extract_vocals"],
+                "output_ports": ["vocal"]
+            }]);
+        }
+        value
+    };
+    let binding = |from_node: &str,
+                   from_port: &str,
+                   to_node: &str,
+                   to_port: &str,
+                   semantic_type: &str,
+                   audio_role: Option<&str>,
+                   analyzer_attachment: bool| {
+        serde_json::json!({
+            "from_node": from_node,
+            "from_port": from_port,
+            "to_node": to_node,
+            "to_port": to_port,
+            "semantic_type": semantic_type,
+            "audio_role": audio_role,
+            "execution_active": true,
+            "analyzer_attachment": analyzer_attachment
+        })
+    };
+    serde_json::json!({
+        "contract": "uta.workflow-execution",
+        "version": 1,
+        "workflow_schema_version": 2,
+        "workflow_id": "fcpe-primary-candidate",
+        "workflow_revision": 1,
+        "quality_mode": "fast",
+        "definition_digest": "fcpe-primary-candidate-fixture-v1",
+        "nodes": [
+            node("source", "audio.source", None, 1000, "native_dsp", serde_json::json!({})),
+            node(
+                "vocal_split",
+                "audio.separate_vocal_bgm",
+                Some("bs_roformer_vocals_ep317"),
+                900,
+                "vulkan",
+                serde_json::json!({})
+            ),
+            node(
+                "lead_isolate",
+                "audio.lead_isolate",
+                Some("melband_roformer_harmony"),
+                880,
+                "vulkan",
+                serde_json::json!({})
+            ),
+            node(
+                "asr_qwen",
+                "analysis.asr",
+                Some("qwen3_asr_1_7b"),
+                700,
+                "pinned_qwen_asr_vulkan",
+                serde_json::json!({})
+            ),
+            node(
+                "transcript_fusion",
+                "fusion.transcript",
+                None,
+                600,
+                "native_dsp",
+                serde_json::json!({})
+            ),
+            node(
+                "forced_alignment",
+                "analysis.forced_alignment",
+                Some("qwen3_forced_aligner_0_6b"),
+                590,
+                "pinned_qwen_align_vulkan",
+                serde_json::json!({})
+            ),
+            node(
+                "f0_fcpe",
+                "analysis.pitch_f0",
+                Some("fcpe"),
+                680,
+                "openvino",
+                serde_json::json!({})
+            ),
+            node(
+                "boundary_game",
+                "analysis.note_boundary",
+                Some("game"),
+                660,
+                "openvino",
+                serde_json::json!({})
+            ),
+            node(
+                "evidence_fusion",
+                "fusion.singing_evidence",
+                None,
+                500,
+                "native_dsp",
+                serde_json::json!({
+                    "pitch_owner": "fcpe",
+                    "boundary_owner": "game",
+                    "onset_owner": "automatic"
+                })
+            ),
+            node(
+                "candidate_graph",
+                "fusion.candidate_graph",
+                None,
+                400,
+                "native_dsp",
+                serde_json::json!({})
+            ),
+            node(
+                "canonical_track",
+                "finalize.canonical_singing_track",
+                None,
+                300,
+                "native_dsp",
+                serde_json::json!({})
+            )
+        ],
+        "bindings": [
+            binding("source", "mix", "vocal_split", "audio", "audio", Some("source_mix"), false),
+            binding("vocal_split", "vocal", "lead_isolate", "audio", "audio", Some("vocal"), false),
+            binding("lead_isolate", "lead", "asr_qwen", "audio", "audio", Some("lead_vocal"), true),
+            binding("asr_qwen", "transcript", "transcript_fusion", "evidence", "transcript_evidence", None, false),
+            binding("lead_isolate", "lead", "forced_alignment", "audio", "audio", Some("lead_vocal"), true),
+            binding("transcript_fusion", "lyrics", "forced_alignment", "lyrics", "lyrics", None, false),
+            binding("lead_isolate", "lead", "f0_fcpe", "audio", "audio", Some("lead_vocal"), true),
+            binding("lead_isolate", "lead", "boundary_game", "audio", "audio", Some("lead_vocal"), true),
+            binding("f0_fcpe", "pitch", "evidence_fusion", "pitch", "pitch_evidence", None, false),
+            binding("boundary_game", "boundaries", "evidence_fusion", "boundaries", "boundary_evidence", None, false),
+            binding("forced_alignment", "alignment", "evidence_fusion", "alignment", "alignment_evidence", None, false),
+            binding("evidence_fusion", "evidence", "candidate_graph", "evidence", "evidence_bundle", None, false),
+            binding("candidate_graph", "candidates", "canonical_track", "candidates", "candidate_graph", None, false),
+            binding("transcript_fusion", "lyrics", "canonical_track", "lyrics", "lyrics", None, false)
+        ],
+        "terminal_outputs": [{
+            "node": "canonical_track",
+            "port": "chart",
+            "semantic_type": "candidate_chart"
+        }],
+        "fusion_policy": {
+            "continuous_f0": "fcpe",
+            "note_lengths": "game",
+            "onset_support": "automatic"
+        }
+    })
 }
 
 #[test]
@@ -551,7 +734,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     executable(
         &worker,
         &format!(
-            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nwhile read line; do\ncase \"$line\" in\n*output-one*) out='{}' ;;\n*output-two*) out='{}' ;;\n*quit*) exit 0 ;;\nesac\nmkdir -p \"$(dirname \"$out\")\"\nprintf '%s\\n' '{{\"schema_version\":1,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"{}\",\"model_manifest_sha256\":\"{}\",\"model_bin_sha256\":\"{}\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.25,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":440.0,\"confidence\":0.8,\"voiced\":true}}]}}' > \"$out\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"task-rmvpe\\\",\\\"artifact\\\":\\\"pitch_evidence\\\",\\\"path\\\":\\\"$out\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rmvpe\",\"status\":\"ok\"}}'\ndone",
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nwhile read line; do\ncase \"$line\" in\n*output-one*) out='{}' ;;\n*output-two*) out='{}' ;;\n*quit*) exit 0 ;;\nesac\nmkdir -p \"$(dirname \"$out\")\"\nprintf '%s\\n' '{{\"schema_version\":1,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"{}\",\"model_manifest_sha256\":\"{}\",\"model_bin_sha256\":\"{}\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.25,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":440.0,\"confidence\":0.8,\"voiced\":true}}]}}' > \"$out\"\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-rmvpe\",\"fraction\":0.5,\"message\":\"measured frame batch\"}}'\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"task-rmvpe\\\",\\\"artifact\\\":\\\"pitch_evidence\\\",\\\"path\\\":\\\"$out\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rmvpe\",\"status\":\"ok\"}}'\ndone",
             uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
             evidence_one.display(),
             evidence_two.display(),
@@ -583,8 +766,32 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     request.requested_artifacts.pitch_evidence = true;
 
     let planned_gates = engine.plan(&request).unwrap().quality_gates;
-    let first = engine.analyze(&request, &output_one).unwrap();
+    let lifecycle_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let lifecycle_target = std::sync::Arc::clone(&lifecycle_events);
+    let first = engine
+        .analyze_with_events(
+            &request,
+            &output_one,
+            &CancellationToken::default(),
+            std::sync::Arc::new(move |event| {
+                lifecycle_target.lock().unwrap().push(event);
+            }),
+        )
+        .unwrap();
     let second = engine.analyze(&request, &output_two).unwrap();
+    let lifecycle_events = lifecycle_events.lock().unwrap();
+    assert!(lifecycle_events.iter().any(|event| {
+        event.kind == crate::events::EngineLifecycleKindV1::NodeStarted
+            && event.capability_id == "pitch.track"
+            && event.model_id.as_deref() == Some("rmvpe")
+    }));
+    assert!(lifecycle_events.iter().any(|event| {
+        event.kind == crate::events::EngineLifecycleKindV1::NodeProgress && event.progress.is_some()
+    }));
+    assert!(lifecycle_events.iter().any(|event| {
+        event.kind == crate::events::EngineLifecycleKindV1::NodeCompleted
+            && event.capability_id == "pitch.track"
+    }));
     assert_eq!(first.status, AnalysisStatus::Ok);
     let quality = first
         .diagnostics
@@ -1048,7 +1255,7 @@ fn real_advanced_note_helper_active_cancel_has_no_partial_artifact() {
 
 #[test]
 #[cfg(unix)]
-fn fcpe_secondary_is_consumed_without_replacing_rmvpe() {
+fn fcpe_secondary_waits_for_typed_disagreement_in_standalone_balanced() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1123,7 +1330,17 @@ fn fcpe_secondary_is_consumed_without_replacing_rmvpe() {
         "{:?}",
         result.degraded_reasons
     );
-    assert_eq!(result.diagnostics.evidence["fcpe_frame_count"], 2);
+    assert!(result.diagnostics.evidence["fcpe_frame_count"].is_null());
+    assert!(
+        result.diagnostics.evidence["conditional_schedule"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["capability"] == "pitch.secondary.fcpe"
+                    && record["decision"] == "skipped:no_relevant_disagreement"
+            })
+    );
     let pitch_ref = result.artifacts.pitch_evidence.unwrap();
     let pitch: PitchEvidenceV03 =
         serde_json::from_slice(&fs::read(output.join(pitch_ref.path)).unwrap()).unwrap();
@@ -1137,7 +1354,7 @@ fn fcpe_secondary_is_consumed_without_replacing_rmvpe() {
 
 #[test]
 #[cfg(unix)]
-fn firered_windowed_challenger_is_consumed_without_replacing_qwen() {
+fn firered_challenger_runs_full_input_for_typed_reference_disagreement() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1207,6 +1424,14 @@ fn firered_windowed_challenger_is_consumed_without_replacing_qwen() {
     request.requested_artifacts.singing_analysis = false;
     request.requested_artifacts.transcript = true;
     request.requested_artifacts.alignment = false;
+    request.lyrics.mode = crate::contract::LyricsMode::Reference;
+    request.lyrics.language = Some("en".to_string());
+    request.lyrics.tokens = vec![crate::contract::LyricTokenV1 {
+        id: "reference-0".to_string(),
+        text: "sing know".to_string(),
+        reading: None,
+        phonemes: None,
+    }];
     let result = engine.analyze(&request, &output).unwrap();
     assert_eq!(result.status, AnalysisStatus::Ok);
     assert!(
@@ -1217,9 +1442,243 @@ fn firered_windowed_challenger_is_consumed_without_replacing_qwen() {
     let transcript_ref = result.artifacts.transcript.unwrap();
     let transcript: TranscriptArtifactV1 =
         serde_json::from_slice(&fs::read(output.join(transcript_ref.path)).unwrap()).unwrap();
-    assert_eq!(transcript.text, "sing now");
+    assert_eq!(transcript.text, "sing know");
     assert_eq!(transcript.confidence, None);
-    assert_eq!(transcript.alternatives, ["你好世界 你好世界"]);
+    assert!(
+        transcript
+            .alternatives
+            .iter()
+            .any(|text| text == "sing now")
+    );
+    assert!(
+        transcript
+            .alternatives
+            .iter()
+            .any(|text| text == "你好世界 你好世界")
+    );
+    assert!(
+        result.diagnostics.evidence["conditional_schedule"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["capability"] == "speech.transcribe.challenger"
+                    && record["decision"] == "full_input"
+            })
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
+    use crate::artifact::{CandidateVocalChartV1, SingingAnalysisV1};
+    use crate::contract::{LyricTokenV1, LyricsMode};
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "uta-engine-fcpe-primary-candidate-{}-{stamp}",
+        std::process::id()
+    ));
+    let store = root.join("store");
+    let output = root.join("output");
+    fs::create_dir_all(&store).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let source_identity = uta_runtime_manager::SourceIdentity::default();
+    for model in ["fcpe", "game", "qwen3_forced_aligner_0_6b"] {
+        install_fixture_generation(&store, model, Some(source_identity.clone()));
+    }
+
+    let source = root.join("source.wav");
+    fs::write(&source, b"authorized fixture audio").unwrap();
+    let ffmpeg = root.join("ffmpeg");
+    executable(&ffmpeg, &non_silent_pcm_script(48_000));
+
+    let fcpe_fixture = root.join("fcpe.json");
+    let frames = (0..100)
+        .map(|index| serde_json::json!({"time": f64::from(index) / 100.0, "hz": 440.0}))
+        .collect::<Vec<_>>();
+    fs::write(
+        &fcpe_fixture,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 3,
+            "model_id": "fcpe",
+            "source_model_sha256": "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0",
+            "model_manifest_sha256": "bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6",
+            "model_xml_sha256": "9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237",
+            "model_bin_sha256": "6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824",
+            "runtime_manifest_sha256": uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            "backend": "openvino_gpu",
+            "timeline_step_ms": 10,
+            "sample_rate": 16000,
+            "window_samples": 32000,
+            "window_hop_samples": 32000,
+            "frames": frames
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let game_fixture = root.join("game.json");
+    fs::write(
+        &game_fixture,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "model_id": "game",
+            "variant": "GAME-1.0.3-medium-onnx",
+            "source_asset_sha256": "5b7a21e64c6310efac399f5d12838fffa70565be162436b5a4a65f290721e7d8",
+            "source_commit": "475a8ee781fe8cca980b3b12fbe6c80c768a813a",
+            "model_manifest_sha256": "aa9f3a4c2d107527913ef3947f337b41bff7b6de39de6c91ce46b82ced15ac87",
+            "runtime_manifest_sha256": uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            "backend": "openvino_gpu",
+            "sample_rate": 44100,
+            "timestep_ms": 10,
+            "d3pm_steps": 8,
+            "estimator_note_buckets": [32, 64, 128, 256, 512, 1024],
+            "boundary_decision_threshold": 0.2,
+            "presence_decision_threshold": 0.2,
+            "notes": [{"start": 0.08, "duration": 0.72, "midi": 60.0, "voiced": true}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let alignment_fixture = root.join("alignment.json");
+    fs::write(
+        &alignment_fixture,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "model_id": "qwen3_forced_aligner_0_6b",
+            "model_sha256": "c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b",
+            "backend": "vulkan",
+            "runtime_manifest_sha256": uta_runtime_manager::runtime_recipe_digest("qwen3_forced_aligner_0_6b").unwrap(),
+            "text_normalization_profile": "qwen-align-text-preserve-v1",
+            "language_normalization_profile": "qwen-align-language-v1",
+            "alignment_semantics_profile": "qwen-align-token-word-80ms-v1",
+            "transcript": "sing",
+            "language": "en",
+            "runtime_language": "english",
+            "words": [{"word": "sing", "start": 0.08, "end": 0.8}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let fcpe_output = output.join("worker/fcpe/fcpe.json");
+    let game_output = output.join("worker/game/game.json");
+    let openvino = root.join("openvino-worker");
+    executable(
+        &openvino,
+        &format!(
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\ncase \"$run\" in\n*'\"model_id\":\"fcpe\"'*) task=task-fcpe; artifact=pitch_evidence; path='{}'; fixture='{}';;\n*) task=task-game; artifact=note_candidate_evidence; path='{}'; fixture='{}';;\nesac\nmkdir -p \"$(dirname \"$path\")\"\ncp \"$fixture\" \"$path\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"$task\\\",\\\"artifact\\\":\\\"$artifact\\\",\\\"path\\\":\\\"$path\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"done\\\",\\\"task_id\\\":\\\"$task\\\",\\\"status\\\":\\\"ok\\\"}}\"\nread quit",
+            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            fcpe_output.display(),
+            fcpe_fixture.display(),
+            game_output.display(),
+            game_fixture.display(),
+        ),
+    );
+    let alignment_output = output.join("worker/alignment/alignment.json");
+    let align_worker = root.join("qwen-align-worker");
+    executable(
+        &align_worker,
+        &format!(
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-qwen-align-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\nmkdir -p '{}'\ncp '{}' '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-align\",\"artifact\":\"alignment_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-align\",\"status\":\"ok\"}}'\nread quit",
+            uta_runtime_manager::runtime_recipe_digest("qwen3_forced_aligner_0_6b").unwrap(),
+            alignment_output.parent().unwrap().display(),
+            alignment_fixture.display(),
+            alignment_output.display(),
+            alignment_output.display(),
+        ),
+    );
+
+    let mut catalog = ResourceCatalog::default_catalog().unwrap();
+    for model in ["fcpe", "game", "qwen3_forced_aligner_0_6b"] {
+        catalog.models.get_mut(model).unwrap().source = source_identity.clone();
+    }
+    let engine = AnalysisEngine::new(RuntimeManager::new(
+        catalog,
+        StorePaths::default()
+            .with_store_root(&store)
+            .with_tool_override("ffmpeg", &ffmpeg)
+            .with_runtime_override("openvino_2026_3", &openvino)
+            .with_runtime_override("qwen_align_runtime", &align_worker),
+    ));
+    let mut request = valid_request(AudioRole::CleanLeadVocal);
+    request.request_id = "fcpe-primary-candidate".to_string();
+    request.audio_sources[0].path = source;
+    request.lyrics.mode = LyricsMode::Canonical;
+    request.lyrics.language = Some("en".to_string());
+    request.lyrics.tokens = vec![LyricTokenV1 {
+        id: "lyric-1".to_string(),
+        text: "sing".to_string(),
+        reading: None,
+        phonemes: None,
+    }];
+    request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
+    request.extensions.insert(
+        crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+        fcpe_primary_candidate_workflow(),
+    );
+
+    engine.validate(&request).unwrap();
+    let requirements = engine.requirements(&request).unwrap();
+    assert!(requirements.resources.iter().any(|item| {
+        item.resource == "model:fcpe" && item.required && item.reason == "pitch.track"
+    }));
+    assert!(
+        !requirements
+            .resources
+            .iter()
+            .any(|item| item.resource == "model:rmvpe")
+    );
+    let plan = engine.plan(&request).unwrap();
+    assert!(
+        plan.execution_nodes
+            .iter()
+            .any(|node| node.capability.as_str() == "pitch.track")
+    );
+    assert!(plan.resolved_resources.iter().any(|resource| {
+        resource.requirement.resource == "model:fcpe" && resource.status.is_some()
+    }));
+
+    let result = engine.analyze(&request, &output).unwrap();
+    assert_eq!(result.status, AnalysisStatus::OkDegraded);
+    assert_eq!(
+        result
+            .diagnostics
+            .audio_quality
+            .as_ref()
+            .and_then(|quality| quality.vocal_topology.as_ref())
+            .map(|topology| topology.mode),
+        Some(crate::contract::VocalTopologyModeV1::Unknown)
+    );
+    let pitch_ref = result.artifacts.pitch_evidence.as_ref().unwrap();
+    let pitch: PitchEvidenceV03 =
+        serde_json::from_slice(&fs::read(output.join(&pitch_ref.path)).unwrap()).unwrap();
+    assert_eq!(pitch.model["id"], "fcpe");
+    let singing_ref = result.artifacts.singing_analysis.as_ref().unwrap();
+    let singing: SingingAnalysisV1 =
+        serde_json::from_slice(&fs::read(output.join(&singing_ref.path)).unwrap()).unwrap();
+    assert!(singing.candidate_evidence.iter().any(|candidate| {
+        candidate.target_pitch_source == "fcpe" && candidate.rmvpe_center_hz.is_none()
+    }));
+    assert!(singing.review_regions.iter().any(|region| {
+        region
+            .reasons
+            .contains(&SingingReviewReason::VocalTopologyUnknown)
+    }));
+    let chart_ref = result.artifacts.candidate_vocal_chart.as_ref().unwrap();
+    let chart: CandidateVocalChartV1 =
+        serde_json::from_slice(&fs::read(output.join(&chart_ref.path)).unwrap()).unwrap();
+    chart.validate().unwrap();
+    assert!(
+        chart
+            .tracks
+            .iter()
+            .any(|track| track.phrases.iter().any(|phrase| !phrase.notes.is_empty()))
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1422,12 +1881,14 @@ fn denoise_route_uses_supervised_worker_and_atomically_publishes_flac() {
         &CancellationToken::default(),
     )
     .unwrap();
-    assert_eq!(harmony.role, AudioRole::LeadVocal);
+    assert_eq!(harmony.stem.role, AudioRole::LeadVocal);
     assert_eq!(
-        harmony.artifact.path,
+        harmony.stem.artifact.path,
         PathBuf::from("stems/lead_vocal.flac")
     );
-    assert!(output_root.join(harmony.artifact.path).is_file());
+    assert!(output_root.join(harmony.stem.artifact.path).is_file());
+    assert!(!harmony.lead_profile.windows.is_empty());
+    assert!(!harmony.residual_profile.windows.is_empty());
     assert!(!output_root.join("worker/lead-isolate").exists());
     assert!(!output_root.join("stems/vocal_residual.flac").exists());
 

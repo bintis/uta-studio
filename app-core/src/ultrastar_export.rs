@@ -7,6 +7,8 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack, VocalTrackRole};
@@ -22,6 +24,93 @@ use crate::{
 
 const EXPORT_BPM: f64 = 300.0;
 const SECONDS_PER_BEAT: f64 = 60.0 / (EXPORT_BPM * 4.0);
+static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct UltraStarExportStaging {
+    root: PathBuf,
+}
+
+impl UltraStarExportStaging {
+    fn create(output: &Path) -> Result<Self, UtaStudioError> {
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        let stem = output
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(safe_component)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "chart".to_string());
+        for _ in 0..32 {
+            let id = NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = parent.join(format!(
+                ".uta-studio-ultrastar-{stem}-{}-{nanos}-{id}.tmp",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&root) {
+                Ok(()) => return Ok(Self { root }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(UtaStudioError::Other(
+            "could not create a unique UltraStar staging directory".to_string(),
+        ))
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.join(name)
+    }
+}
+
+impl Drop for UltraStarExportStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[derive(Debug)]
+struct StagedUltraStarFile {
+    staged: PathBuf,
+    destination: PathBuf,
+}
+
+fn publish_file_no_replace(file: &StagedUltraStarFile) -> Result<(), UtaStudioError> {
+    match std::fs::hard_link(&file.staged, &file.destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(UtaStudioError::Other(format!(
+                "UltraStar export refuses to overwrite existing output: {}",
+                file.destination.display()
+            )))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Publish assets first and the chart last. The chart is the logical bundle
+/// commit marker: no consumer can discover a completed chart before every
+/// referenced asset exists. All publications are no-replace hard links from
+/// a sibling staging directory, so concurrent targets are never overwritten.
+fn publish_staged_ultrastar_bundle(
+    assets: &[StagedUltraStarFile],
+    chart: &StagedUltraStarFile,
+) -> Result<(), UtaStudioError> {
+    let mut published = Vec::new();
+    for file in assets.iter().chain(std::iter::once(chart)) {
+        if let Err(error) = publish_file_no_replace(file) {
+            for path in published.into_iter().rev() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+        published.push(file.destination.clone());
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 struct NoteLine {
@@ -132,38 +221,64 @@ pub fn export_ultrastar(
     );
     crate::usdx::validate_usdx_str(&text)?;
 
-    let copies = [
-        cover.zip(cover_target.as_ref()),
-        video.zip(video_target.as_ref()),
-    ];
-    let mut created = Vec::new();
-    let result = (|| -> Result<(), UtaStudioError> {
-        materialize_audio(&instrumental, &instrumental_target)?;
-        created.push(instrumental_target.clone());
-        if let (Some(source), Some(target)) = (vocals.as_ref(), vocals_target.as_ref()) {
-            materialize_audio(source, target)?;
-            created.push(target.clone());
-        }
-        for (source, target) in copies.into_iter().flatten() {
-            std::fs::copy(source, target)?;
-            created.push(target.to_path_buf());
-        }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(output)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        for path in created {
-            let _ = std::fs::remove_file(path);
-        }
-        let _ = std::fs::remove_file(output);
-        return Err(error);
+    let staging = UltraStarExportStaging::create(output)?;
+    let mut staged_assets = Vec::new();
+
+    let staged_instrumental = staging.path(&instrumental_name);
+    materialize_audio(&instrumental, &staged_instrumental)?;
+    staged_assets.push(StagedUltraStarFile {
+        staged: staged_instrumental,
+        destination: instrumental_target,
+    });
+    if let (Some(source), Some(name), Some(destination)) =
+        (vocals.as_ref(), vocals_name.as_ref(), vocals_target)
+    {
+        let staged = staging.path(name);
+        materialize_audio(source, &staged)?;
+        staged_assets.push(StagedUltraStarFile {
+            staged,
+            destination,
+        });
     }
+    for (source, name, destination) in [
+        cover.zip(cover_name.as_ref()).zip(cover_target),
+        video.zip(video_name.as_ref()).zip(video_target),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|((source, name), destination)| (source, name, destination))
+    {
+        let staged = staging.path(name);
+        std::fs::copy(source, &staged)?;
+        staged_assets.push(StagedUltraStarFile {
+            staged,
+            destination,
+        });
+    }
+
+    let chart_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| UtaStudioError::Other("invalid UltraStar output name".to_string()))?;
+    let staged_chart = staging.path(chart_name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged_chart)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    validate_ultrastar_chart(&staged_chart)?;
+
     let published = output.to_path_buf();
+    publish_staged_ultrastar_bundle(
+        &staged_assets,
+        &StagedUltraStarFile {
+            staged: staged_chart,
+            destination: published.clone(),
+        },
+    )?;
+    drop(staging);
     let _ = crate::export_destination::record_last_export(
         file_hash,
         crate::export_destination::ExportPackageKind::UltraStar,
@@ -455,11 +570,42 @@ fn materialize_audio(source: &Path, target: &Path) -> Result<(), UtaStudioError>
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ultrastar_text, ultrastar_note_kind};
+    use super::{
+        StagedUltraStarFile, UltraStarExportStaging, build_ultrastar_text,
+        publish_staged_ultrastar_bundle, ultrastar_note_kind,
+    };
     use crate::{editor::NoteKind, usdx::validate_usdx_str, vocal_chart::migrate_analyzer_chart};
     use utz::VocalChartV1;
 
     type TestNote<'a> = (f64, f64, u8, &'a str, &'a str);
+
+    fn publication_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "uta-ultrastar-publication-{name}-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            super::NEXT_STAGING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    fn staged_file(
+        staging: &UltraStarExportStaging,
+        staged_name: &str,
+        destination: std::path::PathBuf,
+        bytes: &[u8],
+    ) -> StagedUltraStarFile {
+        let staged = staging.path(staged_name);
+        std::fs::write(&staged, bytes).unwrap();
+        StagedUltraStarFile {
+            staged,
+            destination,
+        }
+    }
 
     fn chart(language: &str, phrases: &[&[TestNote<'_>]]) -> VocalChartV1 {
         let mut segments = Vec::new();
@@ -492,6 +638,66 @@ mod tests {
             &serde_json::json!({"notes": notes}),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn publication_race_preserves_competing_target_and_never_publishes_chart() {
+        let root = publication_root("race");
+        let chart_destination = root.join("song.txt");
+        let asset_destination = root.join("song.mp3");
+        std::fs::write(&asset_destination, b"competitor").unwrap();
+        let staging = UltraStarExportStaging::create(&chart_destination).unwrap();
+        let staging_root = staging.root.clone();
+        let asset = staged_file(&staging, "song.mp3", asset_destination.clone(), b"ours");
+        let chart = staged_file(
+            &staging,
+            "song.txt",
+            chart_destination.clone(),
+            b"#TITLE:Song\nE\n",
+        );
+
+        let error = publish_staged_ultrastar_bundle(&[asset], &chart).unwrap_err();
+        assert!(error.to_string().contains("refuses to overwrite"));
+        assert_eq!(std::fs::read(&asset_destination).unwrap(), b"competitor");
+        assert!(!chart_destination.exists());
+        drop(staging);
+        assert!(!staging_root.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_failure_rolls_back_only_files_created_by_this_export() {
+        let root = publication_root("rollback");
+        let chart_destination = root.join("song.txt");
+        let first_destination = root.join("song.mp3");
+        let competing_destination = root.join("song.jpg");
+        std::fs::write(&competing_destination, b"competitor").unwrap();
+        let staging = UltraStarExportStaging::create(&chart_destination).unwrap();
+        let staging_root = staging.root.clone();
+        let first = staged_file(&staging, "song.mp3", first_destination.clone(), b"audio");
+        let second = staged_file(
+            &staging,
+            "song.jpg",
+            competing_destination.clone(),
+            b"cover",
+        );
+        let chart = staged_file(
+            &staging,
+            "song.txt",
+            chart_destination.clone(),
+            b"#TITLE:Song\nE\n",
+        );
+
+        publish_staged_ultrastar_bundle(&[first, second], &chart).unwrap_err();
+        assert!(!first_destination.exists());
+        assert_eq!(
+            std::fs::read(&competing_destination).unwrap(),
+            b"competitor"
+        );
+        assert!(!chart_destination.exists());
+        drop(staging);
+        assert!(!staging_root.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

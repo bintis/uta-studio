@@ -6,6 +6,8 @@
 //! `pub(crate)` so sibling query modules reuse them
 //! without copy-pasting the column lists.
 
+use std::path::Path;
+
 use rusqlite::params;
 
 use crate::song::{Song, TranscriptSource};
@@ -155,24 +157,54 @@ pub fn delete_songs_not_in_paths(paths: &[String]) -> rusqlite::Result<()> {
 }
 
 pub fn load_song_by_hash(file_hash: &str) -> rusqlite::Result<Option<Song>> {
+    load_song_where("file_hash", file_hash)
+}
+
+pub fn load_song_by_path(path: &Path) -> rusqlite::Result<Option<Song>> {
+    if let Some(song) = load_song_where("path", &path.to_string_lossy())? {
+        return Ok(Some(song));
+    }
+    let Ok(requested) = std::fs::canonicalize(path) else {
+        return Ok(None);
+    };
+    let candidates = with_conn(|connection| {
+        let mut statement = connection.prepare("SELECT path, payload FROM songs")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+    for (stored_path, payload) in candidates {
+        if std::fs::canonicalize(&stored_path).is_ok_and(|stored| stored == requested) {
+            let mut song = song_from_payload(&payload)?;
+            song.refresh_authoring_state(&crate::cache::CacheDir::new());
+            return Ok(Some(song));
+        }
+    }
+    Ok(None)
+}
+
+fn song_from_payload(payload: &str) -> rusqlite::Result<Song> {
+    serde_json::from_str::<Song>(payload).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn load_song_where(column: &str, value: &str) -> rusqlite::Result<Option<Song>> {
     use rusqlite::OptionalExtension;
-    with_conn(|c| {
-        let mut stmt = c.prepare("SELECT payload FROM songs WHERE file_hash = ?1 LIMIT 1")?;
-        let song = stmt
-            .query_row([file_hash], |r| {
-                let payload: String = r.get(0)?;
-                let mut song = serde_json::from_str::<Song>(&payload).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
+    with_conn(|connection| {
+        let mut statement = connection.prepare(&format!(
+            "SELECT payload FROM songs WHERE {column} = ?1 LIMIT 1"
+        ))?;
+        statement
+            .query_row([value], |row| {
+                let payload: String = row.get(0)?;
+                let mut song = song_from_payload(&payload)?;
                 song.refresh_authoring_state(&crate::cache::CacheDir::new());
                 Ok(song)
             })
-            .optional()?;
-        Ok(song)
+            .optional()
     })
 }
 

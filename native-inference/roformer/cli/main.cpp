@@ -109,6 +109,7 @@ void print_usage(const char* program_name) {
     std::cerr << "  --vulkan-no-async             Disable async Vulkan without serialized submissions" << std::endl;
     std::cerr << "  --vulkan-fast                 Restore async Vulkan and keep durable stage logs" << std::endl;
     std::cerr << "  --serial-pipeline             Run CPU preprocess, GPU compute, and CPU postprocess in order" << std::endl;
+    std::cerr << "  --machine-progress            Emit exact completed/total overlap-add chunk records" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
 }
 
@@ -125,6 +126,7 @@ int main(int argc, char* argv[]) {
     bool vulkan_no_async = false;
     bool vulkan_fast = false;
     bool serial_pipeline = false;
+    bool machine_progress = false;
     std::string diagnostic_log_path;
 
     // Check for help flag first
@@ -210,6 +212,8 @@ int main(int argc, char* argv[]) {
             vulkan_fast = true;
         } else if (arg == "--serial-pipeline") {
             serial_pipeline = true;
+        } else if (arg == "--machine-progress") {
+            machine_progress = true;
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
@@ -323,13 +327,20 @@ int main(int argc, char* argv[]) {
             " batch_size=" + std::to_string(batch_size) +
             " interleaved_samples=" + std::to_string(input_audio.data.size()));
 
-        // Progress Bar Callback
-        auto progress_callback = [&](float progress) {
-            if (!diagnostic_log_path.empty()) {
-                uta_diagnostics::Log("cli", "audio.progress",
-                                     "percent=" + std::to_string(progress * 100.0f));
+        // Exact overlap-add work-unit callback. Machine records are consumed
+        // only by the owned GGML protocol worker; human CLI mode keeps a bar.
+        auto progress_callback = [&](int completed, int total) {
+            if (machine_progress) {
+                std::cout << "UTA_WORK_UNITS v1 " << completed << " " << total << std::endl;
                 return;
             }
+            if (!diagnostic_log_path.empty()) {
+                uta_diagnostics::Log("cli", "audio.progress",
+                                     "completed=" + std::to_string(completed) +
+                                     " total=" + std::to_string(total));
+                return;
+            }
+            const float progress = static_cast<float>(completed) / static_cast<float>(total);
             int barWidth = 50;
             std::cout << "[";
             int pos = barWidth * progress;

@@ -312,13 +312,12 @@ mod tests {
             assert_eq!(status.install_state, InstallState::Installed, "{model_id}");
             assert!(status.integrity_verified, "{model_id}");
             assert!(status.usable, "{model_id}: {status:?}");
-            assert_eq!(
+            assert!(
                 manager
                     .status(&resource, RuntimePolicy::Production)
                     .unwrap()
                     .usable,
-                model_id == "firered_asr2_aed",
-                "only the Production-pinned FireRed expert may be Production usable: {model_id}"
+                "every promoted optional expert must be Production usable: {model_id}"
             );
 
             manager

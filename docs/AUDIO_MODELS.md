@@ -10,7 +10,7 @@ Uta! Studio keeps audio transformations, analysis experts, and runtime recipes s
   Qwen keeps its locked GGML/Vulkan recipes. Exact legacy RoFormer GGUFs are a
   separate native exception: all five RoFormer resources—BS-RoFormer, Inst V2,
   Harmony, Denoise and Dereverb—expose only the user-selected GGML/Vulkan
-  Benchmark route and must never launch OpenVINO.
+  `ProductionPinned` route and must never launch OpenVINO.
 
 A catalog entry is not production support. Every `(model revision, backend, runtime recipe)` is classified independently as production-pinned, benchmark candidate, experimental, or unsupported. The router uses only production-pinned combinations and fails closed when no validated backend is available.
 
@@ -54,7 +54,7 @@ acceptance remains separate from this model qualification.
 GGUF/runtime semantic identities while retaining hashes only as provenance
 metadata. It emits typed lossless stem outputs without CPU fallback. All five RoFormer resources—BS-RoFormer
 Vocals EP317, MelBand Inst V2, MelBand Harmony, Denoise and Dereverb—expose only
-their user-selected GGML/Vulkan `BenchmarkCandidate` routes and must never
+their user-selected GGML/Vulkan `ProductionPinned` routes and must never
 launch OpenVINO. The Worker always passes `--batch-size 1`,
 `--vulkan-no-async` and `--serial-pipeline`. All five exact GGUFs have isolated
 305.813333-second full-song evidence; this does not authorize concurrent or

@@ -1,12 +1,11 @@
-use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::Deserialize;
-use uta_runtime_manager::{RuntimeManager, RuntimePolicy, StorePaths};
+use uta_runtime_manager::RuntimePolicy;
 
 use crate::contract::{
     AnalysisResultManifestV1, AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult,
@@ -78,6 +77,7 @@ struct ActiveAnalysis {
     request_id: String,
     cancellation: CancellationToken,
     result: mpsc::Receiver<EngineResult<AnalysisResultManifestV1>>,
+    events: mpsc::Receiver<crate::events::EngineLifecycleEventV1>,
     handle: JoinHandle<()>,
 }
 
@@ -115,8 +115,14 @@ pub fn worker_main() -> Result<(), String> {
     let mut active: Option<ActiveAnalysis> = None;
     loop {
         if let Some(task) = active.as_mut() {
+            while let Ok(event) = task.events.try_recv() {
+                emit(serde_json::to_value(event).map_err(|error| error.to_string())?)?;
+            }
             match task.result.try_recv() {
                 Ok(result) => {
+                    while let Ok(event) = task.events.try_recv() {
+                        emit(serde_json::to_value(event).map_err(|error| error.to_string())?)?;
+                    }
                     emit_analysis_result(&task.request_id, result)?;
                     let task = active.take().expect("active task exists");
                     task.handle
@@ -228,11 +234,16 @@ pub fn worker_main() -> Result<(), String> {
                 let thread_token = cancellation.clone();
                 let thread_engine = engine.clone();
                 let (sender, result) = mpsc::channel();
+                let (event_sender, events) = mpsc::channel();
                 let handle = std::thread::spawn(move || {
-                    let outcome = thread_engine.analyze_with_cancellation(
+                    let sink = Arc::new(move |event| {
+                        let _ = event_sender.send(event);
+                    });
+                    let outcome = thread_engine.analyze_with_events(
                         &request,
                         output_dir,
                         &thread_token,
+                        sink,
                     );
                     let _ = sender.send(outcome);
                 });
@@ -240,6 +251,7 @@ pub fn worker_main() -> Result<(), String> {
                     request_id,
                     cancellation,
                     result,
+                    events,
                     handle,
                 });
             }
@@ -335,125 +347,6 @@ fn emit(value: serde_json::Value) -> Result<(), String> {
     stdout.flush().map_err(|error| error.to_string())
 }
 
-#[derive(Debug, Deserialize)]
-struct CompatibilityCommand {
-    #[serde(rename = "type")]
-    kind: String,
-    protocol: u32,
-    #[serde(default)]
-    hash: String,
-    #[serde(default)]
-    audio_path: Option<PathBuf>,
-    #[serde(default)]
-    cache_path: Option<PathBuf>,
-    #[serde(default)]
-    workflow_execution: Option<CompatibilityWorkflow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CompatibilityWorkflow {
-    #[serde(default)]
-    quality_mode: String,
-    #[serde(default)]
-    node_bindings: Vec<CompatibilityBinding>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CompatibilityBinding {
-    #[serde(default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    runtime: String,
-    #[serde(default)]
-    execution_policy: CompatibilityPolicy,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct CompatibilityPolicy {
-    #[serde(default)]
-    mode: String,
-    #[serde(default)]
-    condition: String,
-}
-
-/// Temporary v0.5 Studio adapter. It retains the old command shape while all
-/// parsing and fail-closed behavior live in the standalone Engine crate.
-pub fn compatibility_worker_main() -> Result<(), String> {
-    emit(serde_json::json!({
-        "type": "ready",
-        "protocol": WORKER_PROTOCOL_VERSION,
-        "component": "uta-native-analyzer",
-        "runtime_recipe_digest": uta_runtime_manager::runtime_lock::RUNTIME_LOCK_SHA256
-    }))?;
-    let mut stdin = std::io::stdin().lock();
-    while let Some(line) = read_bounded_line(&mut stdin)? {
-        let line = match line {
-            Ok(line) => line,
-            Err(message) => {
-                emit(serde_json::json!({
-                    "type": "error",
-                    "kind": "invalid_command",
-                    "msg": message
-                }))?;
-                continue;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let command = match serde_json::from_str::<CompatibilityCommand>(&line) {
-            Ok(command) => command,
-            Err(error) => {
-                emit(serde_json::json!({
-                    "type": "error",
-                    "kind": "invalid_command",
-                    "msg": error.to_string()
-                }))?;
-                continue;
-            }
-        };
-        if command.protocol != WORKER_PROTOCOL_VERSION {
-            emit(serde_json::json!({
-                "type": "error",
-                "kind": "unsupported_protocol",
-                "msg": format!("unsupported native analyzer protocol {}", command.protocol)
-            }))?;
-            continue;
-        }
-        if command.kind == "quit" {
-            break;
-        }
-        if command.kind != "analyze" {
-            emit(serde_json::json!({
-                "type": "error",
-                "kind": "unsupported_command",
-                "msg": format!("unsupported native analyzer command: {}", command.kind)
-            }))?;
-            continue;
-        }
-        let error = compatibility_analyze(&command).unwrap_err_or_else();
-        emit(serde_json::json!({
-            "type": "error",
-            "kind": "native_runtime_unavailable",
-            "msg": error
-        }))?;
-    }
-    Ok(())
-}
-
-trait CompatibilityResultExt {
-    fn unwrap_err_or_else(self) -> String;
-}
-
-impl CompatibilityResultExt for Result<(), String> {
-    fn unwrap_err_or_else(self) -> String {
-        match self {
-            Ok(()) => "compatibility analysis unexpectedly returned without artifacts".to_string(),
-            Err(error) => error,
-        }
-    }
-}
-
 fn read_bounded_line<R: BufRead>(reader: &mut R) -> Result<Option<Result<String, String>>, String> {
     let mut line = Vec::new();
     loop {
@@ -504,109 +397,11 @@ fn drain_line<R: BufRead>(reader: &mut R) -> Result<(), String> {
     }
 }
 
-fn compatibility_analyze(command: &CompatibilityCommand) -> Result<(), String> {
-    let source = command
-        .audio_path
-        .as_ref()
-        .ok_or_else(|| "analysis command omitted audio_path".to_string())?;
-    if !source.is_file() {
-        return Err(format!("source media is unavailable: {}", source.display()));
-    }
-    let output = command
-        .cache_path
-        .as_ref()
-        .ok_or_else(|| "analysis command omitted cache_path".to_string())?;
-    if !output.is_dir() {
-        return Err(format!(
-            "authorized cache directory is unavailable: {}",
-            output.display()
-        ));
-    }
-    let manager = RuntimeManager::with_default_catalog(StorePaths::from_env())
-        .map_err(|error| error.to_string())?;
-    for model_id in compatibility_models(command)? {
-        manager
-            .resolve_model(&model_id, RuntimePolicy::Experimental)
-            .map_err(|error| {
-                format!(
-                    "native resource {model_id} is unavailable for testing: {}; install or repair it in Settings > Models & runtime",
-                    error.message
-                )
-            })?;
-    }
-    Err(format!(
-        "native workflow execution for {} is not implemented by the compatibility adapter",
-        command.hash
-    ))
-}
-
-fn compatibility_models(command: &CompatibilityCommand) -> Result<Vec<String>, String> {
-    let Some(workflow) = command.workflow_execution.as_ref() else {
-        return Ok([
-            "bs_roformer_vocals_ep317",
-            "melband_roformer_harmony",
-            "qwen3_asr_1_7b",
-            "qwen3_forced_aligner_0_6b",
-            "rmvpe",
-            "game",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect());
-    };
-    let mut required = BTreeMap::new();
-    for binding in &workflow.node_bindings {
-        let Some(model_id) = binding.model_id.as_deref() else {
-            continue;
-        };
-        if binding.execution_policy.mode == "disabled"
-            || (binding.execution_policy.mode == "conditional"
-                && binding.execution_policy.condition == "maximum_only"
-                && workflow.quality_mode != "maximum")
-        {
-            continue;
-        }
-        match binding.runtime.as_str() {
-            "vulkan"
-            | "openvino"
-            | "open_vino"
-            | "cpu_reference"
-            | "pinned_qwen_asr_vulkan"
-            | "pinned_qwen_align_vulkan" => {
-                required.insert(model_id.to_string(), binding.runtime.clone());
-            }
-            "native_dsp" => continue,
-            "unresolved" | "" => {
-                return Err(format!(
-                    "model {model_id} has no local runtime route selected for testing"
-                ));
-            }
-            runtime => {
-                return Err(format!(
-                    "model {model_id} selected unknown runtime {runtime}"
-                ));
-            }
-        }
-    }
-    Ok(required.into_keys().collect())
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
     use super::*;
-
-    fn compatibility_command(workflow: serde_json::Value) -> CompatibilityCommand {
-        CompatibilityCommand {
-            kind: "analyze".to_string(),
-            protocol: WORKER_PROTOCOL_VERSION,
-            hash: "fixture".to_string(),
-            audio_path: None,
-            cache_path: None,
-            workflow_execution: Some(serde_json::from_value(workflow).unwrap()),
-        }
-    }
 
     #[test]
     fn bounded_reader_rejects_and_drains_oversized_frames() {
@@ -619,43 +414,5 @@ mod tests {
             "{}"
         );
         assert!(read_bounded_line(&mut reader).unwrap().is_none());
-    }
-
-    #[test]
-    fn compatibility_routing_uses_runtime_selection_not_model_name() {
-        let command = compatibility_command(serde_json::json!({
-            "quality_mode": "balanced",
-            "node_bindings": [
-                {
-                    "model_id": "separation-model",
-                    "runtime": "vulkan",
-                    "execution_policy": {"mode": "always"}
-                },
-                {
-                    "model_id": "pitch-model",
-                    "runtime": "open_vino",
-                    "execution_policy": {"mode": "always"}
-                }
-            ]
-        }));
-        let required = compatibility_models(&command).unwrap();
-        assert_eq!(required, ["pitch-model", "separation-model"]);
-    }
-
-    #[test]
-    fn compatibility_routing_fails_closed_for_unresolved_model() {
-        let command = compatibility_command(serde_json::json!({
-            "quality_mode": "balanced",
-            "node_bindings": [{
-                "model_id": "candidate-only",
-                "runtime": "unresolved",
-                "execution_policy": {"mode": "always"}
-            }]
-        }));
-        assert!(
-            compatibility_models(&command)
-                .unwrap_err()
-                .contains("no local runtime route selected for testing")
-        );
     }
 }

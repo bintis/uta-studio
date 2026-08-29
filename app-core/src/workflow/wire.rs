@@ -9,13 +9,51 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConditionalExecution, ExecutionPolicy, QualityMode, ResolvedRuntimeKind,
-    WorkflowExecutionSnapshot, WorkflowPortType, builtin_capabilities,
+    ConditionalExecution, ExecutionPolicy, QualityMode, WorkflowExecutionSnapshot,
+    WorkflowPortType, builtin_capabilities,
 };
 
 pub const WORKFLOW_EXECUTION_EXTENSION_KEY: &str = "uta.workflow_execution.v1";
 pub const WORKFLOW_EXECUTION_CONTRACT: &str = "uta.workflow-execution";
 pub const WORKFLOW_EXECUTION_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowContinuousF0SourceWireV1 {
+    Rmvpe,
+    Fcpe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNoteLengthSourceWireV1 {
+    Game,
+    F0Derived,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOnsetSupportSourceWireV1 {
+    Automatic,
+    Acoustic,
+    BasicPitch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowFusionModeWireV1 {
+    #[default]
+    Algorithm,
+    AiJudgment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowExpertFusionPolicyWireV1 {
+    pub continuous_f0: WorkflowContinuousF0SourceWireV1,
+    pub note_lengths: WorkflowNoteLengthSourceWireV1,
+    pub onset_support: WorkflowOnsetSupportSourceWireV1,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +68,31 @@ pub struct WorkflowExecutionWireV1 {
     pub nodes: Vec<WorkflowNodeWireV1>,
     pub bindings: Vec<WorkflowBindingWireV1>,
     pub terminal_outputs: Vec<WorkflowTerminalOutputWireV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_policy: Option<WorkflowExpertFusionPolicyWireV1>,
+    #[serde(default)]
+    pub fusion_mode: WorkflowFusionModeWireV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowProviderPreferencesWireV1 {
+    /// Stable Engine resource ID for the node's primary capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
+    /// Stable Engine resource ID for the independent Instrumental output slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrumental: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowExecutionInvocationWireV1 {
+    /// Stable UI/runtime correlation identity for exactly one provider call.
+    pub invocation_id: String,
+    pub provider_id: String,
+    pub capabilities: Vec<String>,
+    pub output_ports: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,16 +100,18 @@ pub struct WorkflowExecutionWireV1 {
 pub struct WorkflowNodeWireV1 {
     pub instance_id: String,
     pub capability_id: String,
-    pub analysis_node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
     pub execution_policy: String,
     pub priority: i32,
-    pub runtime: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_recipe_digest: Option<String>,
-    #[serde(default)]
-    pub parameters: serde_json::Value,
+    #[serde(default, skip_serializing_if = "provider_preferences_are_empty")]
+    pub provider_preferences: WorkflowProviderPreferencesWireV1,
+    /// Typed provider-call topology. One descriptor is one real execution card;
+    /// two descriptors are two independently progressing/logged provider calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_invocations: Vec<WorkflowExecutionInvocationWireV1>,
+}
+
+fn provider_preferences_are_empty(preferences: &WorkflowProviderPreferencesWireV1) -> bool {
+    preferences.primary.is_none() && preferences.instrumental.is_none()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,38 +138,125 @@ pub struct WorkflowTerminalOutputWireV1 {
     pub audio_role: Option<String>,
 }
 
+fn fusion_mode(snapshot: &WorkflowExecutionSnapshot) -> WorkflowFusionModeWireV1 {
+    let Some(binding) = snapshot
+        .node_bindings
+        .iter()
+        .find(|binding| binding.capability_id.as_str() == "fusion.singing_evidence")
+    else {
+        return WorkflowFusionModeWireV1::default();
+    };
+    let mode = snapshot
+        .resolved_parameters
+        .get(&binding.workflow_node)
+        .and_then(serde_json::Value::as_object)
+        .and_then(|parameters| parameters.get("fusion_mode"))
+        .and_then(serde_json::Value::as_str);
+    match mode {
+        Some("ai") => WorkflowFusionModeWireV1::AiJudgment,
+        _ => WorkflowFusionModeWireV1::Algorithm,
+    }
+}
 impl WorkflowExecutionWireV1 {
     pub fn from_snapshot(snapshot: &WorkflowExecutionSnapshot) -> Result<Self, String> {
         let mut nodes = snapshot
             .node_bindings
             .iter()
-            .map(|binding| WorkflowNodeWireV1 {
-                instance_id: binding.workflow_node.to_string(),
-                capability_id: binding.capability_id.to_string(),
-                analysis_node: binding.analysis_node.to_string(),
-                model_id: binding.model_id.clone(),
-                execution_policy: policy_name(&binding.execution_policy).to_string(),
-                priority: binding.priority,
-                runtime: runtime_name(&binding.runtime).to_string(),
-                runtime_recipe_digest: binding.runtime_recipe_digest.clone(),
-                parameters: snapshot
-                    .resolved_parameters
-                    .get(&binding.workflow_node)
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
+            .map(|binding| {
+                let strategy = binding
+                    .separation_strategy
+                    .map(super::separation_strategy_descriptor);
+                let primary = strategy
+                    .and_then(|descriptor| descriptor.executions.first())
+                    .map(|execution| execution.provider_id.to_string())
+                    .or_else(|| binding.model_id.clone());
+                let instrumental = strategy.and_then(|descriptor| {
+                    descriptor.executions.iter().find_map(|execution| {
+                        execution
+                            .output_roles
+                            .contains(&super::SeparationOutputRoleV1::Instrumental)
+                            .then(|| execution.provider_id.to_string())
+                    })
+                });
+                let execution_invocations = strategy
+                    .map(|descriptor| {
+                        descriptor
+                            .executions
+                            .iter()
+                            .map(|execution| {
+                                let suffix = if descriptor.executions.len() == 1 {
+                                    None
+                                } else {
+                                    Some(match execution.output_roles[0] {
+                                        super::SeparationOutputRoleV1::Vocal => "vocal",
+                                        super::SeparationOutputRoleV1::Instrumental => {
+                                            "instrumental"
+                                        }
+                                    })
+                                };
+                                WorkflowExecutionInvocationWireV1 {
+                                    invocation_id: suffix.map_or_else(
+                                        || binding.workflow_node.to_string(),
+                                        |suffix| format!("{}.{suffix}", binding.workflow_node),
+                                    ),
+                                    provider_id: execution.provider_id.to_string(),
+                                    capabilities: execution
+                                        .output_roles
+                                        .iter()
+                                        .map(|role| role.engine_capability().to_string())
+                                        .collect(),
+                                    output_ports: execution
+                                        .output_roles
+                                        .iter()
+                                        .map(|role| role.output_port().to_string())
+                                        .collect(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                WorkflowNodeWireV1 {
+                    instance_id: binding.workflow_node.to_string(),
+                    capability_id: binding.capability_id.to_string(),
+                    execution_policy: policy_name(&binding.execution_policy).to_string(),
+                    priority: binding.priority,
+                    provider_preferences: WorkflowProviderPreferencesWireV1 {
+                        primary,
+                        instrumental,
+                    },
+                    execution_invocations,
+                }
             })
             .collect::<Vec<_>>();
         nodes.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
 
+        let analysis_to_instance = snapshot
+            .node_bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.analysis_node.as_str(),
+                    binding.workflow_node.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut bindings = snapshot
             .artifact_bindings
             .iter()
             .map(|binding| {
                 let (semantic_type, audio_role) = port_type_names(&binding.port_type);
                 WorkflowBindingWireV1 {
-                    from_node: binding.from_node.to_string(),
+                    from_node: analysis_to_instance
+                        .get(binding.from_node.as_str())
+                        .copied()
+                        .unwrap_or(binding.from_node.as_str())
+                        .to_string(),
                     from_port: binding.from_port.clone(),
-                    to_node: binding.to_node.to_string(),
+                    to_node: analysis_to_instance
+                        .get(binding.to_node.as_str())
+                        .copied()
+                        .unwrap_or(binding.to_node.as_str())
+                        .to_string(),
                     to_port: binding.to_port.clone(),
                     semantic_type: semantic_type.to_string(),
                     audio_role: audio_role.map(str::to_string),
@@ -149,12 +301,12 @@ impl WorkflowExecutionWireV1 {
                 )
             })?;
             for output in &capability.outputs {
-                if consumed.contains(&(node.analysis_node.as_str(), output.id.as_str())) {
+                if consumed.contains(&(node.instance_id.as_str(), output.id.as_str())) {
                     continue;
                 }
                 let (semantic_type, audio_role) = port_type_names(&output.port_type);
                 terminal_outputs.push(WorkflowTerminalOutputWireV1 {
-                    node: node.analysis_node.clone(),
+                    node: node.instance_id.clone(),
                     port: output.id.clone(),
                     semantic_type: semantic_type.to_string(),
                     audio_role: audio_role.map(str::to_string),
@@ -175,6 +327,10 @@ impl WorkflowExecutionWireV1 {
             nodes,
             bindings,
             terminal_outputs,
+            // Kept as a deserialize-only compatibility field. Step 4 no longer
+            // authors expert ownership; the Engine derives it from Stage 3.
+            fusion_policy: None,
+            fusion_mode: fusion_mode(snapshot),
         })
     }
 }
@@ -199,18 +355,6 @@ fn policy_name(policy: &ExecutionPolicy) -> &'static str {
         ExecutionPolicy::Conditional {
             condition: ConditionalExecution::DisagreementWindows,
         } => "disagreement_windows",
-    }
-}
-
-fn runtime_name(runtime: &ResolvedRuntimeKind) -> &'static str {
-    match runtime {
-        ResolvedRuntimeKind::OpenVino => "openvino",
-        ResolvedRuntimeKind::Vulkan => "vulkan",
-        ResolvedRuntimeKind::NativeDsp => "native_dsp",
-        ResolvedRuntimeKind::CpuReference => "cpu_reference",
-        ResolvedRuntimeKind::PinnedQwenAsrVulkan => "pinned_qwen_asr_vulkan",
-        ResolvedRuntimeKind::PinnedQwenAlignVulkan => "pinned_qwen_align_vulkan",
-        ResolvedRuntimeKind::Unresolved => "unresolved",
     }
 }
 
@@ -272,6 +416,9 @@ mod tests {
                 .find(|node| node.instance_id == id)
                 .unwrap()
         };
+        assert_eq!(node("lead_isolate").execution_policy, "disabled");
+        assert_eq!(node("vocal_cleanup_1").execution_policy, "disabled");
+        assert_eq!(node("vocal_dereverb_1").execution_policy, "disabled");
         assert_eq!(node("asr_qwen").execution_policy, "always");
         assert_eq!(node("asr_firered").execution_policy, "on_disagreement");
         assert_eq!(node("f0_fcpe").execution_policy, "disagreement_windows");
@@ -282,10 +429,14 @@ mod tests {
         assert_eq!(node("boundary_stars").execution_policy, "maximum_only");
         assert_eq!(node("technique_stars").capability_id, "analysis.technique");
         assert_eq!(node("technique_stars").execution_policy, "maximum_only");
+        assert_eq!(wire.fusion_policy, None);
         assert!(wire.bindings.iter().any(|binding| {
-            binding.semantic_type == "audio" && binding.audio_role.as_deref() == Some("lead_vocal")
+            binding.execution_active
+                && binding.analyzer_attachment
+                && binding.semantic_type == "audio"
+                && binding.audio_role.as_deref() == Some("vocal")
         }));
-        assert!(wire.terminal_outputs.iter().any(|output| {
+        assert!(!wire.terminal_outputs.iter().any(|output| {
             output.semantic_type == "audio"
                 && output.audio_role.as_deref() == Some("vocal_residual")
         }));
@@ -300,5 +451,105 @@ mod tests {
                 output.semantic_type == "candidate_chart" && output.port == "chart"
             })
         );
+        let json = serde_json::to_value(&wire).unwrap();
+        let node = &json["nodes"][0];
+        for forbidden in [
+            "analysis_node",
+            "model_id",
+            "runtime",
+            "runtime_recipe_digest",
+            "parameters",
+        ] {
+            assert!(node.get(forbidden).is_none(), "wire leaked {forbidden}");
+        }
+        let separation = wire
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == "vocal_bgm_split")
+            .unwrap();
+        assert_eq!(
+            separation.provider_preferences.instrumental.as_deref(),
+            Some("melband_roformer_inst_v2")
+        );
+        assert_eq!(separation.execution_invocations.len(), 2);
+        assert_eq!(
+            separation.execution_invocations[0].invocation_id,
+            "vocal_bgm_split.vocal"
+        );
+        assert_eq!(
+            separation.execution_invocations[0].provider_id,
+            "bs_roformer_vocals_ep317"
+        );
+        assert_eq!(
+            separation.execution_invocations[1].invocation_id,
+            "vocal_bgm_split.instrumental"
+        );
+        assert_eq!(
+            separation.execution_invocations[1].provider_id,
+            "melband_roformer_inst_v2"
+        );
+    }
+
+    #[test]
+    fn wire_never_authors_a_typed_fusion_policy() {
+        let mut definition = default_workflow("song-a");
+        crate::workflow::set_workflow_execution_policy(
+            &mut definition,
+            &crate::workflow::WorkflowNodeId::new("boundary_game"),
+            crate::workflow::ExecutionPolicy::Disabled,
+        )
+        .unwrap();
+        let snapshot = compile_workflow(&definition).unwrap();
+        let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+        assert_eq!(wire.fusion_policy, None);
+        let json = serde_json::to_value(wire).unwrap();
+        assert!(json.get("fusion_policy").is_none());
+    }
+
+    #[test]
+    fn wire_defaults_to_algorithm_fusion_mode_and_carries_an_explicit_ai_selection() {
+        let mut definition = default_workflow("song-a");
+        let snapshot = compile_workflow(&definition).unwrap();
+        let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+        assert_eq!(wire.fusion_mode, WorkflowFusionModeWireV1::Algorithm);
+        assert_eq!(
+            crate::workflow::fusion_mode(&definition),
+            crate::workflow::FusionModeV1::Algorithm
+        );
+
+        crate::workflow::set_workflow_parameter(
+            &mut definition,
+            &crate::workflow::WorkflowNodeId::new("evidence_fusion"),
+            "fusion_mode",
+            serde_json::Value::String("ai".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::workflow::fusion_mode(&definition),
+            crate::workflow::FusionModeV1::AiJudgment
+        );
+        let snapshot = compile_workflow(&definition).unwrap();
+        let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+        assert_eq!(wire.fusion_mode, WorkflowFusionModeWireV1::AiJudgment);
+
+        let json = serde_json::to_value(&wire).unwrap();
+        let round_tripped: WorkflowExecutionWireV1 = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped.fusion_mode,
+            WorkflowFusionModeWireV1::AiJudgment
+        );
+    }
+
+    #[test]
+    fn set_workflow_parameter_rejects_an_unknown_fusion_mode() {
+        let mut definition = default_workflow("song-a");
+        let error = crate::workflow::set_workflow_parameter(
+            &mut definition,
+            &crate::workflow::WorkflowNodeId::new("evidence_fusion"),
+            "fusion_mode",
+            serde_json::Value::String("agentic".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("fusion_mode"));
     }
 }

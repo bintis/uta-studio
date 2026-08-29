@@ -36,41 +36,32 @@ pub struct AppConfig {
     /// Native acceleration preference. Production still uses only validated
     /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
+    /// Global device-class preference (`cpu`, `gpu`, `integrated_gpu`),
+    /// orthogonal to `compute_backend`'s runtime choice. Captured and
+    /// forwarded to the Engine; Runtime Manager does not yet enumerate
+    /// multiple physical devices, so this does not change device selection
+    /// until that resolver support exists.
+    #[serde(default)]
+    pub default_device_class: Option<String>,
     /// Explicit model-specific backend choices. Missing entries use Runtime
     /// Manager's pinned route and never imply fallback.
     #[serde(default)]
     pub model_backend_overrides: BTreeMap<String, String>,
+    /// Explicit model-specific device-class preference (`cpu`, `gpu`,
+    /// `integrated_gpu`), orthogonal to `model_backend_overrides`'s runtime
+    /// choice. Captured and forwarded to the Engine; Runtime Manager does not
+    /// yet enumerate multiple physical devices, so this does not change
+    /// device selection until that resolver support exists.
+    #[serde(default)]
+    pub model_device_overrides: BTreeMap<String, String>,
     /// Human-readable operator guidance retained in JSON because JSON has no
     /// comment syntax. Runtime routing never parses this field.
     #[serde(default = "default_model_backend_note")]
     pub model_backend_note: String,
-    pub whisper_model: Option<String>,
-    pub beam_size: Option<u32>,
-    pub batch_size: Option<u32>,
-    pub separator: Option<String>,
-    #[serde(default)]
-    pub separator_segment_size: Option<u32>,
-    #[serde(default)]
-    pub separator_overlap: Option<u32>,
-    #[serde(default)]
-    pub separator_batch_size: Option<u32>,
-    #[serde(default)]
-    pub separator_normalization_pct: Option<u32>,
-    /// Purpose-oriented audio-processing settings. Legacy `separator*` fields
-    /// stay on disk for one release so older clients keep loading.
-    #[serde(default)]
-    pub audio_processing: Option<crate::audio_processing::AudioProcessingSettings>,
-    /// Product-level analysis intent. Concrete legacy model/parameter fields
-    /// remain readable while their semantics migrate incrementally.
+    /// Product-level analysis intent. Backend resources and parameters are
+    /// resolved only by the versioned Engine and Runtime Manager protocols.
     #[serde(default)]
     pub analysis_experience: crate::analysis_experience::AnalysisExperienceSettings,
-    pub asr_engine: Option<String>,
-    pub align_backend: Option<String>,
-    /// Pitch/frequency-analysis model. Kept explicit even while RMVPE is the
-    /// only supported option so the settings and download API can evolve.
-    #[serde(default)]
-    pub pitch_model: Option<String>,
-    pub vocal_detection_threshold_pct: Option<f64>,
     pub auto_analyze: Option<bool>,
     #[serde(default)]
     pub font_scale_percent: Option<u32>,
@@ -101,22 +92,11 @@ impl Default for AppConfig {
             fullscreen: None,
             dark_mode: None,
             compute_backend: None,
+            default_device_class: None,
             model_backend_overrides: BTreeMap::new(),
+            model_device_overrides: BTreeMap::new(),
             model_backend_note: default_model_backend_note(),
-            whisper_model: None,
-            beam_size: None,
-            batch_size: None,
-            separator: None,
-            separator_segment_size: None,
-            separator_overlap: None,
-            separator_batch_size: None,
-            separator_normalization_pct: None,
-            audio_processing: None,
             analysis_experience: crate::analysis_experience::AnalysisExperienceSettings::default(),
-            asr_engine: None,
-            align_backend: None,
-            pitch_model: None,
-            vocal_detection_threshold_pct: None,
             auto_analyze: None,
             font_scale_percent: Some(100),
             ui_language: None,
@@ -141,9 +121,11 @@ impl AppConfig {
         if self.data_path.is_none() {
             self.data_path = Some(Self::default_data_path());
         }
-        if self.separator.as_deref() != Some("native_workflow") {
-            self.separator = Some("native_workflow".to_string());
-        }
+        // `native_dsp` is intentionally excluded here: it is a valid
+        // per-model override (not every model has a native DSP path) but
+        // `compile_analyze_request_v1` rejects it as a *global* backend
+        // choice, so accepting it here would persist a config that then
+        // fails every analysis request.
         self.compute_backend = Some(
             match self.compute_backend.as_deref() {
                 Some("openvino") => "openvino",
@@ -160,31 +142,21 @@ impl AppConfig {
                     "openvino" | "vulkan" | "native_dsp" | "diagnostic_cpu"
                 )
         });
+        self.model_device_overrides.retain(|model_id, device| {
+            !model_id.trim().is_empty()
+                && matches!(device.as_str(), "cpu" | "gpu" | "integrated_gpu")
+        });
+        if !self
+            .default_device_class
+            .as_deref()
+            .is_some_and(|device| matches!(device, "cpu" | "gpu" | "integrated_gpu"))
+        {
+            self.default_device_class = None;
+        }
         if self.model_backend_note.trim().is_empty() {
             self.model_backend_note = default_model_backend_note();
         }
-        self.asr_engine = Some("transcript_fusion".to_string());
-        self.align_backend = Some("qwen3_forced_aligner".to_string());
-        self.whisper_model = None;
         self.analysis_experience.normalize();
-        if self.audio_processing.is_none() {
-            self.audio_processing = Some(
-                crate::audio_processing::AudioProcessingSettings::from_legacy_separator(
-                    self.separator(),
-                ),
-            );
-        }
-        if let Some(settings) = self.audio_processing.as_mut()
-            && settings.vocal_model_id.is_some()
-            && settings.multistem_model_id.is_none()
-            && settings.accompaniment_model_id.is_none()
-        {
-            settings.accompaniment_model_id =
-                Some(crate::audio_model::DEFAULT_BGM_MODEL_ID.to_string());
-        }
-        if !matches!(self.pitch_model.as_deref(), None | Some("rmvpe")) {
-            self.pitch_model = Some("rmvpe".to_string());
-        }
         if self
             .ui_language
             .as_deref()
@@ -212,28 +184,13 @@ impl AppConfig {
         let (config, should_save) = match loaded {
             Some(cfg) => {
                 let had_data_path = cfg.data_path.is_some();
-                let had_invalid_separator = cfg.separator.as_deref() != Some("native_workflow");
-                let had_invalid_pitch_model =
-                    !matches!(cfg.pitch_model.as_deref(), None | Some("rmvpe"));
-                let had_invalid_align_backend =
-                    cfg.align_backend.as_deref() != Some("qwen3_forced_aligner");
                 let had_invalid_ui_language = cfg
                     .ui_language
                     .as_deref()
                     .is_some_and(|language| !matches!(language, "en" | "zh-CN" | "ja"));
-                let had_missing_bgm_model = cfg.audio_processing.as_ref().is_some_and(|settings| {
-                    settings.vocal_model_id.is_some()
-                        && settings.multistem_model_id.is_none()
-                        && settings.accompaniment_model_id.is_none()
-                });
                 (
                     cfg.with_defaults(),
-                    !had_data_path
-                        || had_invalid_separator
-                        || had_invalid_pitch_model
-                        || had_invalid_align_backend
-                        || had_invalid_ui_language
-                        || had_missing_bgm_model,
+                    !had_data_path || had_invalid_ui_language,
                 )
             }
             None => (Self::default().with_defaults(), true),
@@ -255,56 +212,6 @@ impl AppConfig {
             .map_err(|error| format!("could not serialize config: {error}"))?;
         write_config_atomically(&path, &json)
             .map_err(|error| format!("could not write {}: {error}", path.display()))
-    }
-
-    pub fn whisper_model(&self) -> &str {
-        "qwen3_asr_1_7b"
-    }
-
-    pub fn beam_size(&self) -> u32 {
-        self.beam_size.unwrap_or(8)
-    }
-
-    pub fn batch_size(&self) -> u32 {
-        self.batch_size.unwrap_or(8)
-    }
-
-    pub fn separator(&self) -> &str {
-        "native_workflow"
-    }
-
-    pub fn separator_segment_size(&self) -> u32 {
-        self.separator_segment_size.unwrap_or(256).clamp(64, 1024)
-    }
-
-    pub fn separator_overlap(&self) -> u32 {
-        self.separator_overlap.unwrap_or(8).clamp(2, 32)
-    }
-
-    pub fn separator_batch_size(&self) -> u32 {
-        self.separator_batch_size.unwrap_or(1).clamp(1, 8)
-    }
-
-    pub fn separator_normalization_pct(&self) -> u32 {
-        self.separator_normalization_pct.unwrap_or(90).clamp(1, 100)
-    }
-
-    pub fn asr_engine(&self) -> &str {
-        "transcript_fusion"
-    }
-
-    pub fn align_backend(&self) -> &str {
-        "qwen3_forced_aligner"
-    }
-
-    pub fn pitch_model(&self) -> &str {
-        self.pitch_model.as_deref().unwrap_or("rmvpe")
-    }
-
-    pub fn vocal_detection_threshold_pct(&self) -> f64 {
-        self.vocal_detection_threshold_pct
-            .unwrap_or(0.15)
-            .clamp(0.0, 1.0)
     }
 
     pub fn analysis_quality(&self) -> crate::analysis_experience::AnalysisQualityProfile {
@@ -440,25 +347,23 @@ mod tests {
     }
 
     #[test]
-    fn old_config_without_analysis_experience_preserves_legacy_fields() {
-        let json = serde_json::json!({
-            "separator": "native_workflow",
+    fn old_backend_fields_are_dropped_when_configuration_is_rewritten() {
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "separator": "old",
             "beam_size": 11,
             "batch_size": 3,
             "auto_analyze": true
-        });
-        let config: AppConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            config.analysis_quality(),
-            crate::analysis_experience::AnalysisQualityProfile::Balanced
-        );
-        assert_eq!(config.beam_size, Some(11));
-        assert_eq!(config.batch_size, Some(3));
-        assert_eq!(config.auto_analyze, Some(true));
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(config).unwrap();
+        assert!(serialized.get("separator").is_none());
+        assert!(serialized.get("beam_size").is_none());
+        assert!(serialized.get("batch_size").is_none());
+        assert_eq!(serialized["auto_analyze"], true);
     }
 
     #[test]
-    fn invalid_analysis_experience_values_do_not_discard_legacy_config() {
+    fn invalid_analysis_experience_values_fall_back_to_product_defaults() {
         let json = serde_json::json!({
             "beam_size": 12,
             "analysis_experience": {
@@ -475,23 +380,6 @@ mod tests {
             config.analysis_default_target(),
             crate::analysis_experience::AnalysisDefaultTarget::FullCandidate
         );
-        assert_eq!(config.beam_size, Some(12));
-    }
-
-    #[test]
-    fn old_runtime_values_migrate_to_native_fail_closed_defaults() {
-        let repaired = AppConfig {
-            compute_backend: Some("intel".to_string()),
-            separator: Some("old_separator".to_string()),
-            asr_engine: Some("old_transcriber".to_string()),
-            align_backend: Some("old_aligner".to_string()),
-            ..AppConfig::default()
-        }
-        .with_defaults();
-        assert_eq!(repaired.compute_backend.as_deref(), Some("auto"));
-        assert_eq!(repaired.separator(), "native_workflow");
-        assert_eq!(repaired.asr_engine(), "transcript_fusion");
-        assert_eq!(repaired.align_backend(), "qwen3_forced_aligner");
     }
 
     #[test]
@@ -518,24 +406,64 @@ mod tests {
     }
 
     #[test]
-    fn legacy_vocal_only_settings_gain_the_dedicated_bgm_model() {
-        let config = AppConfig {
-            separator: Some("karaoke".to_string()),
-            audio_processing: Some(crate::audio_processing::AudioProcessingSettings {
-                vocal_model_id: Some(crate::audio_model::DEFAULT_VOCAL_MODEL_ID.to_string()),
-                ..Default::default()
-            }),
+    fn model_device_preferences_are_explicit_and_invalid_values_are_removed() {
+        let repaired = AppConfig {
+            model_device_overrides: BTreeMap::from([
+                ("bs_roformer_vocals_ep317".to_string(), "gpu".to_string()),
+                (
+                    "melband_roformer_harmony".to_string(),
+                    "integrated_gpu".to_string(),
+                ),
+                ("rmvpe".to_string(), "quantum_accelerator".to_string()),
+            ]),
             ..AppConfig::default()
         }
         .with_defaults();
-
         assert_eq!(
-            config
-                .audio_processing
-                .as_ref()
-                .and_then(|settings| settings.accompaniment_model_id.as_deref()),
-            Some(crate::audio_model::DEFAULT_BGM_MODEL_ID)
+            repaired
+                .model_device_overrides
+                .get("bs_roformer_vocals_ep317")
+                .map(String::as_str),
+            Some("gpu")
         );
+        assert_eq!(
+            repaired
+                .model_device_overrides
+                .get("melband_roformer_harmony")
+                .map(String::as_str),
+            Some("integrated_gpu")
+        );
+        assert!(!repaired.model_device_overrides.contains_key("rmvpe"));
+    }
+
+    #[test]
+    fn default_device_class_is_explicit_and_invalid_values_are_cleared() {
+        let valid = AppConfig {
+            default_device_class: Some("integrated_gpu".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(
+            valid.default_device_class.as_deref(),
+            Some("integrated_gpu")
+        );
+
+        let invalid = AppConfig {
+            default_device_class: Some("quantum_accelerator".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(invalid.default_device_class, None);
+    }
+
+    #[test]
+    fn global_compute_backend_rejects_native_dsp_which_is_only_a_valid_model_override() {
+        let config = AppConfig {
+            compute_backend: Some("native_dsp".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(config.compute_backend.as_deref(), Some("auto"));
     }
 
     #[test]

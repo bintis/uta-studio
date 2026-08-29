@@ -17,7 +17,7 @@ fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
-fn python_round_average(left: usize, right: usize) -> usize {
+fn round_half_to_even_average(left: usize, right: usize) -> usize {
     let sum = left + right;
     let floor = sum / 2;
     if sum.is_multiple_of(2) || floor.is_multiple_of(2) {
@@ -120,7 +120,7 @@ pub fn regulate_boundaries(
             };
             if boundary as isize - last_boundary < minimum_gap as isize && last_boundary > 0 {
                 let previous = last_boundary as usize;
-                boundary = python_round_average(boundary, previous);
+                boundary = round_half_to_even_average(boundary, previous);
                 result[previous] = 0;
             }
             result[boundary] = 1;

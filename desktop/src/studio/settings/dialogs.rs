@@ -243,6 +243,215 @@ pub(crate) fn spawn_setup_confirmation(
     ));
 }
 
+pub(crate) fn spawn_model_downloads_dialog(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    session: &StudioSessionView<'_>,
+    setup: &NativeSetup,
+) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                top: px(0),
+                bottom: px(0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.78)),
+            ZIndex(70),
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    ScrollPosition::default(),
+                    Node {
+                        width: px(820),
+                        max_width: percent(92),
+                        height: vh(84.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(px(22)),
+                        row_gap: px(12),
+                        overflow: Overflow::scroll_y(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(10)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.card),
+                    BorderColor::all(theme.border),
+                ))
+                .with_children(|dialog| {
+                    dialog
+                        .spawn(Node {
+                            width: percent(100),
+                            align_items: AlignItems::Center,
+                            column_gap: px(10),
+                            ..default()
+                        })
+                        .with_children(|header| {
+                            spawn_icon(header, icons.clone(), UiIcon::Box, 18.0, theme.primary);
+                            header
+                                .spawn(Node {
+                                    min_width: px(0),
+                                    flex_grow: 1.0,
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(2),
+                                    ..default()
+                                })
+                                .with_children(|copy| {
+                                    spawn_text(
+                                        copy,
+                                        font.clone(),
+                                        "Model downloads",
+                                        18.0,
+                                        theme.foreground,
+                                    );
+                                    spawn_wrapped_text(
+                                        copy,
+                                        font.clone(),
+                                        "Install and repair local model files here. This screen never changes analysis output, workflow logic, or per-song model choice.",
+                                        9.0,
+                                        theme.muted_foreground,
+                                    );
+                                });
+                            spawn_text_button(
+                                header,
+                                font.clone(),
+                                theme,
+                                "Close",
+                                10.0,
+                                UiAction::from(SettingsCommand::CloseModelDownloads),
+                            );
+                        });
+
+                    if setup.receiver.is_some() || setup.progress.is_some() {
+                        spawn_setup_progress_panel(
+                            dialog,
+                            font.clone(),
+                            icons.clone(),
+                            setup,
+                            theme,
+                        );
+                    }
+
+                    if let Some(snapshot) = session.model_settings_job.current.as_ref() {
+                        let installed = snapshot
+                            .runtime_status
+                            .models
+                            .iter()
+                            .filter(|model| model.available)
+                            .count();
+                        spawn_setting_row(
+                            dialog,
+                            font.clone(),
+                            theme,
+                            "Local model status",
+                            format!(
+                                "{} of {} packaged model groups are available. Refresh only re-checks local files; it does not download anything.",
+                                installed,
+                                snapshot.runtime_status.models.len()
+                            ),
+                            Some((
+                                "Refresh",
+                                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+                            )),
+                        );
+
+                        spawn_settings_section(
+                            dialog,
+                            font.clone(),
+                            theme,
+                            "PACKAGED MODELS",
+                            "Required and optional packaged resources are shown together with a direct action. Repair re-runs setup only for that model group.",
+                        );
+                        for model in &snapshot.runtime_status.models {
+                            let role = super::models::model_install_role(session.config, model.target);
+                            spawn_setting_row(
+                                dialog,
+                                font.clone(),
+                                theme,
+                                model.label.clone(),
+                                format!(
+                                    "{} · {} · backend {} · {}",
+                                    role, model.validation, model.backend, model.description
+                                ),
+                                Some((
+                                    if model.available { "Repair" } else { "Install" },
+                                    UiAction::from(SettingsCommand::RequestSetup(Some(model.target))),
+                                )),
+                            );
+                        }
+
+                        spawn_settings_section(
+                            dialog,
+                            font.clone(),
+                            theme,
+                            "OPTIONAL AUDIO MODELS",
+                            "Catalog models are optional local weights. Installing or removing one changes only local model files.",
+                        );
+                        if let Some(error) = snapshot.audio_catalog_error.as_deref() {
+                            spawn_wrapped_text(
+                                dialog,
+                                font.clone(),
+                                format!("Audio model catalog unavailable: {error}"),
+                                9.0,
+                                theme.destructive,
+                            );
+                        }
+                        for model in &snapshot.audio_catalog.models {
+                            let backends = model.supported_backends.join(" / ");
+                            spawn_setting_row(
+                                dialog,
+                                font.clone(),
+                                theme,
+                                model.display_name.clone(),
+                                format!(
+                                    "{} · {} · {} · {}",
+                                    model.purpose,
+                                    model.architecture,
+                                    backends,
+                                    model.license.source_attribution
+                                ),
+                                Some((
+                                    if model.state == "installed" {
+                                        "Remove"
+                                    } else {
+                                        "Install"
+                                    },
+                                    if model.state == "installed" {
+                                        UiAction::from(SettingsCommand::RemoveAudioModel(
+                                            model.model_id.clone(),
+                                        ))
+                                    } else {
+                                        UiAction::from(SettingsCommand::InstallAudioModel(
+                                            model.model_id.clone(),
+                                        ))
+                                    },
+                                )),
+                            );
+                        }
+                    } else {
+                        spawn_setting_row(
+                            dialog,
+                            font.clone(),
+                            theme,
+                            "Loading model inventory…",
+                            "The download manager needs the local runtime inventory before it can show model-specific actions.",
+                            Some((
+                                "Refresh",
+                                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+                            )),
+                        );
+                    }
+                });
+        });
+}
+
 pub(crate) fn spawn_global_cache_confirmation(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -252,11 +461,7 @@ pub(crate) fn spawn_global_cache_confirmation(
     let (title, description) = match scope {
         CacheClearScope::Generated => (
             "Clear generated cache?",
-            "Generated stems, charts, previews, and authoring variants will be removed. Indexed source songs remain untouched.",
-        ),
-        CacheClearScope::Models => (
-            "Clear downloaded models?",
-            "Downloaded model artifacts will be removed. Existing configured directories remain in place, and analysis stays disabled until an explicit download.",
+            "Generated stems, charts, previews, and authoring variants will be removed. Indexed source songs and installed models remain untouched.",
         ),
     };
     parent.spawn((

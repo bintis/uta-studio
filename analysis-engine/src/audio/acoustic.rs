@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::f32::consts::PI;
 use std::io::Read;
 use std::path::Path;
@@ -232,6 +233,9 @@ struct AcousticProcessor {
     next_sample: u64,
     buffer: Vec<f32>,
     previous_spectrum: Option<Vec<f32>>,
+    previous_periodicity: Option<f32>,
+    previous_fundamental_hz: Option<f32>,
+    pitch_deltas_cents: VecDeque<f32>,
     frames: Vec<AcousticEvidenceFrameV1>,
 }
 
@@ -242,6 +246,9 @@ impl AcousticProcessor {
             next_sample: 0,
             buffer: Vec::with_capacity(WINDOW_SAMPLES + 64 * 1024),
             previous_spectrum: None,
+            previous_periodicity: None,
+            previous_fundamental_hz: None,
+            pitch_deltas_cents: VecDeque::with_capacity(12),
             frames: Vec::new(),
         }
     }
@@ -287,15 +294,59 @@ impl AcousticProcessor {
                 .sum::<f32>()
                 / spectrum.len() as f32
         });
-        let (periodicity, snr_db) = periodicity_and_snr(&window, &spectrum);
+        let (periodicity, snr_db, fundamental_hz) =
+            periodicity_snr_and_fundamental(&window, &spectrum, rms);
+        let cents_delta = self
+            .previous_fundamental_hz
+            .zip(fundamental_hz)
+            .map(|(previous, current)| 1_200.0 * (current / previous).log2())
+            .filter(|delta| delta.is_finite());
+        if let Some(delta) = cents_delta {
+            if self.pitch_deltas_cents.len() == 12 {
+                self.pitch_deltas_cents.pop_front();
+            }
+            self.pitch_deltas_cents.push_back(delta);
+        } else {
+            self.pitch_deltas_cents.clear();
+        }
+        let vibrato_activation = vibrato_activation(&self.pitch_deltas_cents, periodicity);
+        let glide_activation = cents_delta
+            .map(|delta| ((delta.abs() - 5.0) / 75.0).clamp(0.0, 1.0) * periodicity)
+            .unwrap_or(0.0);
+        let ornament_activation = cents_delta
+            .map(|delta| (delta.abs() / 180.0).clamp(0.0, 1.0) * periodicity)
+            .unwrap_or(0.0);
+        let high_frequency_ratio = spectrum
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| (*index + 1) * SAMPLE_RATE as usize / WINDOW_SAMPLES >= 2_000)
+            .map(|(_, magnitude)| *magnitude)
+            .sum::<f32>();
+        let breath_activation = ((high_frequency_ratio / 0.4).clamp(0.0, 1.0)
+            * (1.0 - periodicity)
+            * (rms / 0.02).clamp(0.0, 1.0))
+        .clamp(0.0, 1.0);
+        let voicing_transition_activation = self
+            .previous_periodicity
+            .map(|previous| (periodicity - previous).abs())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
         self.frames.push(AcousticEvidenceFrameV1 {
             start,
             rms,
             spectral_flux,
             periodicity,
             snr_db,
+            fundamental_hz,
+            vibrato_activation,
+            glide_activation,
+            ornament_activation,
+            breath_activation,
+            voicing_transition_activation,
         });
         self.previous_spectrum = Some(spectrum);
+        self.previous_periodicity = Some(periodicity);
+        self.previous_fundamental_hz = fundamental_hz;
         Ok(())
     }
 }
@@ -353,7 +404,11 @@ fn magnitude_spectrum(samples: &[f32; WINDOW_SAMPLES]) -> Vec<f32> {
     magnitudes
 }
 
-fn periodicity_and_snr(samples: &[f32; WINDOW_SAMPLES], spectrum: &[f32]) -> (f32, f32) {
+fn periodicity_snr_and_fundamental(
+    samples: &[f32; WINDOW_SAMPLES],
+    spectrum: &[f32],
+    rms: f32,
+) -> (f32, f32, Option<f32>) {
     let minimum_bin = (50 * WINDOW_SAMPLES / SAMPLE_RATE as usize).max(1);
     let maximum_bin = (1_000 * WINDOW_SAMPLES / SAMPLE_RATE as usize).min(spectrum.len() - 1);
     let strongest = (minimum_bin..=maximum_bin)
@@ -366,7 +421,7 @@ fn periodicity_and_snr(samples: &[f32; WINDOW_SAMPLES], spectrum: &[f32]) -> (f3
         .map(|sample| (sample - mean).powi(2))
         .sum::<f32>();
     if power <= 1.0e-12 {
-        return (0.0, -120.0);
+        return (0.0, -120.0, None);
     }
     let mut best = (0.0_f32, center_lag);
     for lag in center_lag.saturating_sub(2)..=(center_lag + 2).min(WINDOW_SAMPLES - 1) {
@@ -392,7 +447,33 @@ fn periodicity_and_snr(samples: &[f32; WINDOW_SAMPLES], spectrum: &[f32]) -> (f3
         residual_power += residual * residual;
     }
     let snr_db = (10.0 * (power / residual_power.max(1.0e-12)).log10()).clamp(-120.0, 120.0);
-    (periodicity, snr_db)
+    let fundamental_hz =
+        (periodicity >= 0.35 && rms >= 1.0e-4).then_some(SAMPLE_RATE as f32 / best.1 as f32);
+    (periodicity, snr_db, fundamental_hz)
+}
+
+fn vibrato_activation(deltas: &VecDeque<f32>, periodicity: f32) -> f32 {
+    if deltas.len() < 6 {
+        return 0.0;
+    }
+    let meaningful = deltas
+        .iter()
+        .copied()
+        .filter(|delta| delta.abs() >= 1.0)
+        .collect::<Vec<_>>();
+    if meaningful.len() < 4 {
+        return 0.0;
+    }
+    let reversals = meaningful
+        .windows(2)
+        .filter(|pair| pair[0].is_sign_positive() != pair[1].is_sign_positive())
+        .count();
+    let mean_magnitude =
+        meaningful.iter().map(|delta| delta.abs()).sum::<f32>() / meaningful.len() as f32;
+    ((reversals as f32 / 4.0).clamp(0.0, 1.0)
+        * ((mean_magnitude - 2.0) / 48.0).clamp(0.0, 1.0)
+        * periodicity)
+        .clamp(0.0, 1.0)
 }
 
 fn kill_process(child: &mut std::process::Child) {
@@ -433,6 +514,108 @@ mod tests {
         assert!(first[0].snr_db.is_finite());
         assert!(first[0].spectral_flux.is_none());
         assert!(first[1].spectral_flux.is_some());
+    }
+
+    fn analyze_samples(samples: &[f32]) -> Vec<AcousticEvidenceFrameV1> {
+        let mut processor = AcousticProcessor::new(0);
+        for sample in samples {
+            processor.push(*sample).unwrap();
+        }
+        processor.finish(samples.len() as u64).unwrap();
+        processor.frames
+    }
+
+    fn swept_tone(mut frequency: impl FnMut(f32) -> f32, seconds: f32) -> Vec<f32> {
+        let count = (SAMPLE_RATE as f32 * seconds) as usize;
+        let mut phase = 0.0_f32;
+        (0..count)
+            .map(|index| {
+                let time = index as f32 / SAMPLE_RATE as f32;
+                phase += 2.0 * PI * frequency(time) / SAMPLE_RATE as f32;
+                phase.sin() * 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    fn generated_expressive_fixtures_remain_source_local_and_deterministic() {
+        let steady = analyze_samples(&swept_tone(|_| 440.0, 1.0));
+        assert!(
+            steady
+                .iter()
+                .filter_map(|frame| frame.fundamental_hz)
+                .count()
+                > 50
+        );
+        assert!(
+            steady
+                .iter()
+                .skip(12)
+                .all(|frame| frame.vibrato_activation < 0.05)
+        );
+
+        let vibrato = analyze_samples(&swept_tone(
+            |time| 440.0 * 2.0_f32.powf((45.0 * (2.0 * PI * 5.5 * time).sin()) / 1_200.0),
+            1.5,
+        ));
+        assert!(
+            vibrato
+                .iter()
+                .map(|frame| frame.vibrato_activation)
+                .max_by(f32::total_cmp)
+                .unwrap()
+                > 0.05
+        );
+
+        let glide = analyze_samples(&swept_tone(
+            |time| 220.0 * 2.0_f32.powf(time.clamp(0.0, 1.0)),
+            1.0,
+        ));
+        assert!(
+            glide
+                .iter()
+                .map(|frame| frame.glide_activation)
+                .max_by(f32::total_cmp)
+                .unwrap()
+                > 0.05
+        );
+
+        let mut state = 0x1234_5678_u32;
+        let noise = (0..SAMPLE_RATE as usize)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.15
+            })
+            .collect::<Vec<_>>();
+        let breath = analyze_samples(&noise);
+        assert!(
+            breath
+                .iter()
+                .map(|frame| frame.breath_activation)
+                .max_by(f32::total_cmp)
+                .unwrap()
+                > 0.1
+        );
+
+        let silence = analyze_samples(&vec![0.0; SAMPLE_RATE as usize / 2]);
+        assert!(silence.iter().all(|frame| {
+            frame.fundamental_hz.is_none()
+                && frame.breath_activation == 0.0
+                && frame.vibrato_activation == 0.0
+        }));
+
+        let mut repeated = swept_tone(|_| 440.0, 0.4);
+        repeated.extend(vec![0.0; SAMPLE_RATE as usize / 10]);
+        repeated.extend(swept_tone(|_| 440.0, 0.4));
+        let repeated = analyze_samples(&repeated);
+        assert!(
+            repeated
+                .iter()
+                .filter_map(|frame| frame.spectral_flux)
+                .max_by(f32::total_cmp)
+                .unwrap()
+                > 0.001
+        );
     }
 
     #[test]

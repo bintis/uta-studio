@@ -1,5 +1,34 @@
 use crate::studio::*;
 
+fn pending_editor_leave(
+    route: StudioRoute,
+    editor_dirty: bool,
+    destination: PendingLeave,
+) -> Option<PendingLeave> {
+    (route == StudioRoute::Editor && editor_dirty).then_some(destination)
+}
+
+fn refresh_workflow_snapshot(analysis: &mut AnalysisUiState) {
+    let result = analysis
+        .workflow
+        .as_ref()
+        .ok_or_else(|| "workflow is unavailable".to_string())
+        .and_then(|workflow| {
+            app_core::preview_workflow_compile(&workflow.definition)
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(snapshot) => {
+            analysis.workflow_snapshot = Some(snapshot);
+            analysis.workflow_compile_error = None;
+        }
+        Err(error) => {
+            analysis.workflow_snapshot = None;
+            analysis.workflow_compile_error = Some(error);
+        }
+    }
+}
+
 pub(crate) fn completed_analysis_run_id(
     history: &[app_core::AnalysisRunHistory],
     file_hash: &str,
@@ -8,6 +37,94 @@ pub(crate) fn completed_analysis_run_id(
         .iter()
         .find(|run| run.file_hash == file_hash && run.status == "completed")
         .map(|run| run.id)
+}
+
+fn open_song_analysis(studio: &mut StudioStateMut<'_>, file_hash: &str) {
+    // Advanced Graph opens on the current compiled workflow. A frozen
+    // historical plan becomes authoritative only after the user explicitly
+    // selects that run from the history strip.
+    studio.library.selected_song = Some(file_hash.to_string());
+    studio.analysis.analysis_history = app_core::load_analysis_history(500);
+    studio.analysis.selected_analysis_history = None;
+    let expected_workflow_id = format!("song:{file_hash}:workflow");
+    let current_matches = studio
+        .analysis
+        .workflow
+        .as_ref()
+        .is_some_and(|workflow| workflow.definition.workflow_id.0 == expected_workflow_id);
+    if !current_matches {
+        match app_core::load_song_workflow(file_hash) {
+            Ok(workflow) => studio.analysis.workflow = Some(workflow),
+            Err(error) => studio.shell.notice = Some(format!("Could not load workflow: {error}")),
+        }
+    }
+    refresh_workflow_snapshot(studio.analysis);
+    studio.analysis.selected_analysis_node = None;
+    studio.analysis.analysis_graph_scroll_offset = 0.0;
+    studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+    studio.analysis.analysis_graph_needs_fit = true;
+    studio.analysis.analysis_graph_fit_active = true;
+    studio.library.library_view = LibraryView::Queue;
+    studio.library.library_facet = None;
+    studio.shell.route = StudioRoute::Library;
+    studio.dialogs.activity_open = false;
+    studio.shell.notice = studio
+        .analysis
+        .workflow_compile_error
+        .as_ref()
+        .map(|error| format!("Workflow graph unavailable: {error}"))
+        .or_else(|| Some("Showing the current compiled workflow.".to_string()));
+}
+
+fn open_song_model_selection(studio: &mut StudioStateMut<'_>, file_hash: &str) {
+    studio.library.selected_song = Some(file_hash.to_string());
+    studio.analysis.analysis_history = app_core::load_analysis_history(500);
+    studio.analysis.selected_analysis_history =
+        completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
+    studio.analysis.selected_analysis_node = None;
+    studio.analysis.analysis_graph_scroll_offset = 0.0;
+    studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+    studio.analysis.analysis_graph_needs_fit = true;
+    studio.analysis.analysis_graph_fit_active = true;
+    studio.analysis.analysis_model_panel_open = true;
+    if studio.jobs.model_settings_job.current.is_none() {
+        studio.jobs.request_model_settings_refresh = true;
+    }
+    studio.library.library_view = LibraryView::Queue;
+    studio.library.library_facet = None;
+    studio.shell.route = StudioRoute::Library;
+    studio.dialogs.open_settings_select = None;
+    studio.dialogs.activity_open = false;
+    studio.shell.notice = None;
+}
+
+fn open_processing_studio(studio: &mut StudioStateMut<'_>, file_hash: Option<&str>) {
+    studio.jobs.request_model_settings_refresh = true;
+    let Some(file_hash) = file_hash else {
+        studio.library.selected_song = None;
+        studio.analysis.workflow = None;
+        studio.analysis.workflow_snapshot = None;
+        studio.analysis.workflow_compile_error = None;
+        studio.analysis.selected_workflow_node = None;
+        studio.analysis.processing_studio_scroll_offset = 0.0;
+        studio.shell.route = StudioRoute::ProcessingStudio;
+        studio.shell.notice = None;
+        return;
+    };
+    studio.library.selected_song = Some(file_hash.to_string());
+    match app_core::load_song_workflow(file_hash) {
+        Ok(workflow) => {
+            studio.analysis.workflow = Some(workflow);
+            refresh_workflow_snapshot(studio.analysis);
+            studio.analysis.selected_workflow_node = None;
+            studio.analysis.processing_studio_scroll_offset = 0.0;
+            studio.shell.route = StudioRoute::ProcessingStudio;
+            studio.shell.notice = None;
+        }
+        Err(error) => {
+            studio.shell.notice = Some(format!("Could not load workflow: {error}"));
+        }
+    }
 }
 
 pub(crate) struct ChromeActionState<'a> {
@@ -28,7 +145,7 @@ pub(crate) fn apply_chrome_action(
     let ChromeActionState {
         audio,
         library_audio,
-        state: studio,
+        state: mut studio,
         invalidated,
     } = state;
     match &action.0 {
@@ -51,7 +168,6 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::Analysis(AnalysisCommand::SelectAnalysisHistory(id)) => {
             studio.analysis.selected_analysis_history = *id;
-            studio.analysis.selected_analysis_stage = None;
             studio.analysis.selected_analysis_node = None;
             studio.analysis.analysis_graph_scroll_offset = 0.0;
             studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
@@ -62,74 +178,96 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Analysis(AnalysisCommand::OpenSongAnalysis(file_hash)) => {
-            // Refresh before resolving the run so a just-finished analysis can be
-            // opened directly from the song page without waiting for the timer.
-            // Keep the song identity as the graph's return destination; Queue is a
-            // Library sub-view rather than a separate top-level route.
-            studio.library.selected_song = Some(file_hash.clone());
-            studio.analysis.analysis_history = app_core::load_analysis_history(500);
-            studio.analysis.selected_analysis_history =
-                completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
-            studio.analysis.selected_analysis_stage = None;
-            studio.analysis.selected_analysis_node = None;
-            studio.analysis.analysis_graph_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_needs_fit = true;
-            studio.analysis.analysis_graph_fit_active = true;
-            studio.library.library_view = LibraryView::Queue;
-            studio.library.library_facet = None;
-            studio.shell.route = StudioRoute::Library;
-            studio.dialogs.activity_open = false;
-            studio.shell.notice = studio
-                .analysis
-                .selected_analysis_history
-                .is_none()
-                .then(|| "No saved analysis session is available for this song.".to_string());
+            if let Some(pending) = pending_editor_leave(
+                studio.shell.route,
+                studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty),
+                PendingLeave::OpenSongAnalysis(file_hash.clone()),
+            ) {
+                studio.dialogs.pending_leave = Some(pending);
+                invalidated.invalidate(UiDirtyRegion::Dialog);
+                return true;
+            }
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
+            open_song_analysis(&mut studio, file_hash);
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::OpenSongModelSelection(file_hash)) => {
-            studio.library.selected_song = Some(file_hash.clone());
-            studio.analysis.analysis_history = app_core::load_analysis_history(500);
-            studio.analysis.selected_analysis_history =
-                completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
-            studio.analysis.selected_analysis_stage = None;
-            studio.analysis.selected_analysis_node = None;
-            studio.analysis.analysis_graph_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_needs_fit = true;
-            studio.analysis.analysis_graph_fit_active = true;
-            studio.analysis.analysis_model_panel_open = true;
-            if studio.jobs.model_settings_job.current.is_none() {
-                studio.jobs.request_model_settings_refresh = true;
+            if let Some(pending) = pending_editor_leave(
+                studio.shell.route,
+                studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty),
+                PendingLeave::OpenSongModelSelection(file_hash.clone()),
+            ) {
+                studio.dialogs.pending_leave = Some(pending);
+                invalidated.invalidate(UiDirtyRegion::Dialog);
+                return true;
             }
-            studio.library.library_view = LibraryView::Queue;
-            studio.library.library_facet = None;
-            studio.shell.route = StudioRoute::Library;
-            studio.dialogs.open_settings_select = None;
-            studio.dialogs.activity_open = false;
-            studio.shell.notice = None;
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
+            open_song_model_selection(&mut studio, file_hash);
             invalidated.invalidate(action.0.dirty_region());
             invalidated.invalidate(UiDirtyRegion::Analysis);
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Analysis(AnalysisCommand::OpenProcessingStudio(file_hash)) => {
-            studio.library.selected_song = Some(file_hash.clone());
-            match app_core::load_song_workflow(file_hash) {
-                Ok(workflow) => {
-                    studio.analysis.workflow = Some(workflow);
-                    studio.analysis.workflow_compile_error = None;
-                    studio.analysis.selected_workflow_node = None;
-                    studio.shell.route = StudioRoute::ProcessingStudio;
-                    studio.shell.notice = None;
-                }
-                Err(error) => {
-                    studio.shell.notice = Some(format!("Could not load workflow: {error}"));
-                }
+            if let Some(pending) = pending_editor_leave(
+                studio.shell.route,
+                studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty),
+                PendingLeave::OpenProcessingStudio(Some(file_hash.clone())),
+            ) {
+                studio.dialogs.pending_leave = Some(pending);
+                invalidated.invalidate(UiDirtyRegion::Dialog);
+                return true;
             }
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
+            open_processing_studio(&mut studio, Some(file_hash));
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::OpenEmptyProcessingStudio) => {
+            if let Some(pending) = pending_editor_leave(
+                studio.shell.route,
+                studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty),
+                PendingLeave::OpenProcessingStudio(None),
+            ) {
+                studio.dialogs.pending_leave = Some(pending);
+                invalidated.invalidate(UiDirtyRegion::Dialog);
+                return true;
+            }
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
+            open_processing_studio(&mut studio, None);
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::SelectWorkflowNode(node_id)) => {
-            studio.analysis.selected_workflow_node = Some(app_core::WorkflowNodeId::new(node_id));
+            let node_id = app_core::WorkflowNodeId::new(node_id);
+            studio.analysis.selected_workflow_node =
+                (studio.analysis.selected_workflow_node.as_ref() != Some(&node_id))
+                    .then_some(node_id);
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::MoveWorkflowNode(node_id, earlier)) => {
@@ -140,6 +278,9 @@ pub(crate) fn apply_chrome_action(
                     *earlier,
                 );
                 studio.analysis.workflow_compile_error = result.err();
+                if studio.analysis.workflow_compile_error.is_none() {
+                    refresh_workflow_snapshot(studio.analysis);
+                }
                 studio.shell.notice = studio
                     .analysis
                     .workflow_compile_error
@@ -156,9 +297,158 @@ pub(crate) fn apply_chrome_action(
                 ) {
                     Ok(duplicate) => {
                         studio.analysis.selected_workflow_node = Some(duplicate);
-                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
                         studio.shell.notice =
                             Some("Transformation duplicated in the audio dataflow.".to_string());
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::RemoveWorkflowNode(node_id)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::remove_workflow_node(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id.clone()),
+                ) {
+                    Ok(()) => {
+                        studio.analysis.selected_workflow_node = None;
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(
+                            "Workflow card deleted. Save Workflow to keep this change.".to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowNodeModel(node_id, model_id)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::set_workflow_node_model(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    model_id,
+                ) {
+                    Ok(()) => {
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(format!(
+                            "Model changed to {model_id}. Save Workflow to keep this change."
+                        ));
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowSeparationStrategy(node_id, strategy)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::set_workflow_separation_strategy(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    *strategy,
+                ) {
+                    Ok(()) => {
+                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(
+                            "Separation strategy changed. Save Workflow to keep this change."
+                                .to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::AddWorkflowProcessor(
+            source_node,
+            source_port,
+            capability_id,
+            model_id,
+        )) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::insert_audio_transformation_after_output(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(source_node),
+                    source_port,
+                    &app_core::CapabilityId::new(capability_id),
+                    model_id.clone(),
+                ) {
+                    Ok(inserted) => {
+                        studio.analysis.selected_workflow_node = Some(inserted);
+                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(
+                            "Processor added to the real audio dataflow. Save to keep it."
+                                .to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::AddOptionalWorkflowCard(
+            source_node,
+            source_port,
+            card,
+        )) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::add_optional_workflow_card(
+                    &mut workflow.definition,
+                    app_core::WorkflowPortRef {
+                        node: app_core::WorkflowNodeId::new(source_node),
+                        port: source_port.clone(),
+                    },
+                    *card,
+                ) {
+                    Ok(inserted) => {
+                        studio.analysis.selected_workflow_node = Some(inserted);
+                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(format!(
+                            "{} added and wired to the analysis input. Save to keep it.",
+                            card.label()
+                        ));
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowParameter(node_id, key, value)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::set_workflow_parameter(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    key.clone(),
+                    value.clone(),
+                ) {
+                    Ok(()) => {
+                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice =
+                            Some("Workflow preference changed. Save to keep it.".to_string());
                     }
                     Err(error) => {
                         studio.analysis.workflow_compile_error = Some(error.clone());
@@ -176,7 +466,7 @@ pub(crate) fn apply_chrome_action(
                     policy.clone(),
                 ) {
                     Ok(()) => {
-                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
                         studio.shell.notice = Some(
                             "Execution condition changed; priority and dependencies are unchanged."
                                 .to_string(),
@@ -206,6 +496,7 @@ pub(crate) fn apply_chrome_action(
                     current.saturating_add(*delta),
                 ) {
                     Ok(()) => {
+                        refresh_workflow_snapshot(studio.analysis);
                         Some("Analyzer priority changed; dependencies are unchanged.".to_string())
                     }
                     Err(error) => Some(error),
@@ -228,7 +519,7 @@ pub(crate) fn apply_chrome_action(
                     },
                 ) {
                     Ok(()) => {
-                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
                         studio.shell.notice = Some("Analyzer input artifact changed.".to_string());
                     }
                     Err(error) => {
@@ -240,19 +531,14 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::PreviewWorkflow) => {
-            if let Some(workflow) = studio.analysis.workflow.as_ref() {
-                studio.analysis.workflow_compile_error =
-                    app_core::preview_workflow_compile(&workflow.definition)
-                        .err()
-                        .map(|error| error.to_string());
-                studio.shell.notice = Some(
-                    studio
-                        .analysis
-                        .workflow_compile_error
-                        .clone()
-                        .unwrap_or_else(|| "Workflow compiles to a valid DAG.".to_string()),
-                );
-            }
+            refresh_workflow_snapshot(studio.analysis);
+            studio.shell.notice = Some(
+                studio
+                    .analysis
+                    .workflow_compile_error
+                    .clone()
+                    .unwrap_or_else(|| "Workflow compiles to a valid DAG.".to_string()),
+            );
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::SaveWorkflow) => {
@@ -267,7 +553,7 @@ pub(crate) fn apply_chrome_action(
                 ) {
                     Ok(saved) => {
                         studio.analysis.workflow = Some(saved);
-                        studio.analysis.workflow_compile_error = None;
+                        refresh_workflow_snapshot(studio.analysis);
                         studio.shell.notice = Some("Workflow saved.".to_string());
                     }
                     Err(error) => {
@@ -302,11 +588,13 @@ pub(crate) fn apply_chrome_action(
                         Ok(saved) => {
                             let revision = saved.definition.revision;
                             studio.analysis.workflow = Some(saved);
-                            studio.analysis.workflow_compile_error = None;
+                            refresh_workflow_snapshot(studio.analysis);
                             let mut draft = PlanPreviewDraft {
                                 file_hash: file_hash.clone(),
-                                target: studio.shell.config.analysis_default_target(),
-                                target_overridden: false,
+                                outputs: app_core::AnalysisOutputSelection::from_target(
+                                    studio.shell.config.analysis_default_target(),
+                                ),
+                                outputs_overridden: false,
                                 run_override: app_core::AnalysisExperienceOverride::default(),
                                 effective_settings: None,
                                 engine_preview: Err(
@@ -359,8 +647,7 @@ pub(crate) fn apply_chrome_action(
                 }
             }
         }
-        UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(node_id, stage)) => {
-            studio.analysis.selected_analysis_stage = Some(stage.clone());
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisInspect(node_id, _capability)) => {
             studio.analysis.selected_analysis_node = Some(node_id.clone());
             studio.dialogs.analysis_node_context = None;
             studio.library.library_view = LibraryView::Queue;
@@ -378,9 +665,7 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView) => {
             studio.analysis.analysis_mini_view = !studio.analysis.analysis_mini_view;
-            studio.analysis.analysis_lineage_mode = false;
             studio.analysis.selected_graph_edge = None;
-            studio.dialogs.artifact_lineage = None;
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
             invalidated.invalidate(UiDirtyRegion::Analysis);
@@ -404,22 +689,11 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.analysis_graph_fit_active = true;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::SetAnalysisModelCategory(category)) => {
-            studio.analysis.analysis_model_category = *category;
-            studio.dialogs.open_settings_select = None;
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
         UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph(_)) => {
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
             studio.analysis.analysis_graph_scroll_offset = 0.0;
             studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
-        UiCommand::Analysis(AnalysisCommand::FocusAnalysisGraphNode(scroll, stage_id)) => {
-            studio.analysis.analysis_graph_scroll_offset = (*scroll).max(0) as f32;
-            studio.analysis.selected_analysis_stage = Some(stage_id.clone());
-            studio.analysis.selected_analysis_node = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext) => {
@@ -440,7 +714,6 @@ pub(crate) fn apply_chrome_action(
                 Ok(()) => {
                     studio.analysis.analysis_history.clear();
                     studio.analysis.selected_analysis_history = None;
-                    studio.analysis.selected_analysis_stage = None;
                     studio.analysis.selected_analysis_node = None;
                     studio.shell.notice = Some("Analysis history deleted.".into());
                 }
@@ -561,10 +834,70 @@ pub(crate) fn apply_chrome_action(
                     studio.shell.notice = None;
                     invalidated.invalidate(action.0.dirty_region());
                 }
+                Some(PendingLeave::Library(view)) => {
+                    studio.editor.editor = None;
+                    let view_changed = studio.library.library_view != view;
+                    studio.library.library_view = view;
+                    studio.library.library_status = None;
+                    studio.library.library_search = None;
+                    studio.library.library_facet = None;
+                    studio.shell.route = StudioRoute::Library;
+                    studio.dialogs.song_context = None;
+                    studio.dialogs.activity_open = false;
+                    studio.dialogs.about_open = false;
+                    studio.dialogs.search_open = false;
+                    studio.shell.notice = None;
+                    if view_changed {
+                        studio.library.library_scroll_offset = 0.0;
+                        studio.analysis.analysis_graph_scroll_offset = 0.0;
+                        studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+                        if view == LibraryView::Queue {
+                            studio.analysis.analysis_graph_needs_fit = true;
+                            studio.analysis.analysis_graph_fit_active = true;
+                        }
+                    }
+                    studio.library.refresh();
+                    invalidated.invalidate(action.0.dirty_region());
+                }
+                Some(PendingLeave::OpenSongAnalysis(file_hash)) => {
+                    studio.editor.editor = None;
+                    open_song_analysis(&mut studio, &file_hash);
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
+                }
+                Some(PendingLeave::OpenSongModelSelection(file_hash)) => {
+                    studio.editor.editor = None;
+                    open_song_model_selection(&mut studio, &file_hash);
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
+                }
+                Some(PendingLeave::OpenProcessingStudio(file_hash)) => {
+                    studio.editor.editor = None;
+                    open_processing_studio(&mut studio, file_hash.as_deref());
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
+                }
                 None => {}
             }
         }
         UiCommand::Library(LibraryCommand::SetLibraryView(view)) => {
+            if let Some(pending_leave) = pending_editor_leave(
+                studio.shell.route,
+                studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty),
+                PendingLeave::Library(*view),
+            ) {
+                studio.dialogs.pending_leave = Some(pending_leave);
+                invalidated.invalidate(action.0.dirty_region());
+                return true;
+            }
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
             let view_changed = studio.library.library_view != *view;
             studio.library.library_view = *view;
             studio.library.library_status = None;
@@ -717,49 +1050,6 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::DismissAnalysisArtifactContext) => {
-            studio.dialogs.analysis_artifact_context = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::DismissAnalysisExportContext) => {
-            studio.dialogs.analysis_export_context = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisLineageMode) => {
-            if !studio.analysis.analysis_mini_view {
-                studio.analysis.analysis_lineage_mode = false;
-                studio.dialogs.artifact_lineage = None;
-            } else {
-                studio.analysis.analysis_lineage_mode = !studio.analysis.analysis_lineage_mode;
-                if !studio.analysis.analysis_lineage_mode {
-                    studio.dialogs.artifact_lineage = None;
-                }
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ValidateExportNode(file_hash, kind)) => {
-            studio.dialogs.analysis_export_context = None;
-            studio.shell.notice = Some(match app_core::validate_export_node(file_hash, *kind) {
-                Ok(message) => message,
-                Err(error) => error,
-            });
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RevealLastExport(file_hash, kind)) => {
-            studio.dialogs.analysis_export_context = None;
-            studio.shell.notice = Some(match app_core::last_export_destination(file_hash, *kind) {
-                Some(path) if path.is_file() => {
-                    let target = path.parent().unwrap_or(path.as_path());
-                    match open::that_detached(target) {
-                        Ok(()) => format!("Revealed {}", path.display()),
-                        Err(error) => format!("Could not reveal {}: {error}", path.display()),
-                    }
-                }
-                Some(path) => format!("last export is missing: {}", path.display()),
-                None => "No last export is tracked yet.".to_string(),
-            });
-            invalidated.invalidate(action.0.dirty_region());
-        }
         UiCommand::App(AppCommand::Documentation) => {
             let origin = studio.shell.route;
             if origin != StudioRoute::Documentation {
@@ -827,164 +1117,7 @@ pub(crate) fn apply_chrome_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::SelectArtifactInspectorTab(tab)) => {
-            studio.analysis.selected_artifact_inspector_tab = *tab;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ToggleArtifactPinned(reference)) => {
-            match app_core::inspect_artifact(reference) {
-                Ok(inspection) => {
-                    let target = !inspection.pinned;
-                    studio.shell.notice = match app_core::set_artifact_pinned(reference, target) {
-                        Ok(()) => Some(if target {
-                            "Artifact revision pinned. It is protected from deletion.".to_string()
-                        } else {
-                            "Artifact revision unpinned.".to_string()
-                        }),
-                        Err(error) => Some(error),
-                    };
-                }
-                Err(error) => studio.shell.notice = Some(error),
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ShowArtifactLineage(reference)) => {
-            match app_core::artifact_lineage(reference) {
-                Ok(lineage) => {
-                    studio.analysis.analysis_lineage_mode = true;
-                    studio.dialogs.artifact_lineage = Some(ArtifactLineagePanel {
-                        lineage,
-                        scope: studio.analysis.analysis_lineage_scope,
-                        selected: reference.clone(),
-                    });
-                }
-                Err(error) => studio.shell.notice = Some(error),
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::SetArtifactLineageScope(scope)) => {
-            studio.analysis.analysis_lineage_scope = *scope;
-            if let Some(panel) = studio.dialogs.artifact_lineage.as_mut() {
-                panel.scope = *scope;
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::SelectArtifactLineageRevision(reference)) => {
-            if let Some(panel) = studio.dialogs.artifact_lineage.as_mut() {
-                panel.selected = reference.clone();
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CloseArtifactLineage) => {
-            studio.dialogs.artifact_lineage = None;
-            studio.analysis.analysis_lineage_mode = false;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ShowArtifactImpact(reference)) => {
-            match app_core::preview_artifact_downstream_impact(reference) {
-                Ok(impact) => studio.dialogs.artifact_impact = Some(impact),
-                Err(error) => studio.shell.notice = Some(error),
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CloseArtifactImpact) => {
-            studio.dialogs.artifact_impact = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ConfirmArtifactImpact) => {
-            if studio.dialogs.artifact_impact.is_some() {
-                studio.shell.notice = Some(
-                    "The exact Engine v1 request contract cannot consume this precomputed artifact impact yet. Nothing was queued; keep the preview for reference or open Run Analysis."
-                        .to_string(),
-                );
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::OpenArtifactCompatibleEditor(reference)) => {
-            match reference.kind {
-                app_core::ArtifactKind::LyricsInput
-                | app_core::ArtifactKind::RecognizedText
-                | app_core::ArtifactKind::TimedTranscript
-                | app_core::ArtifactKind::AsrSegments => {
-                    match app_core::begin_artifact_edit(reference) {
-                        Ok(draft) => {
-                            let (mode, initial_text) = match &draft.working_copy {
-                                app_core::ArtifactDraftContent::Text(text) => {
-                                    (LyricsInputMode::Plain, text.clone())
-                                }
-                                app_core::ArtifactDraftContent::Json(value) => (
-                                    LyricsInputMode::StructuredTimedTranscript,
-                                    serde_json::to_string_pretty(value).unwrap_or_default(),
-                                ),
-                            };
-                            studio.library.selected_song = Some(reference.file_hash.clone());
-                            studio.shell.route = StudioRoute::SongDetail;
-                            studio.dialogs.lyrics_editor = Some(NativeLyricsEditor {
-                                file_hash: reference.file_hash.clone(),
-                                mode,
-                                separate_stems: true,
-                                initial_text,
-                                candidates: Vec::new(),
-                                candidate_index: 0,
-                                searching: false,
-                                artifact_draft: Some(draft),
-                                waveform: app_core::ChartWaveform::default(),
-                            });
-                            if mode == LyricsInputMode::StructuredTimedTranscript {
-                                let _ = audio.0.stop();
-                                start_lyrics_waveform_job(
-                                    &reference.file_hash,
-                                    &mut studio.jobs.lyrics_waveform_job,
-                                );
-                            }
-                            studio.shell.notice = Some(
-                                    "Opened an immutable artifact revision as an editable working copy."
-                                        .to_string(),
-                                );
-                        }
-                        Err(error) => studio.shell.notice = Some(error),
-                    }
-                }
-                app_core::ArtifactKind::CandidateChart
-                | app_core::ArtifactKind::AuthoredChart
-                | app_core::ArtifactKind::PitchTrack
-                | app_core::ArtifactKind::PitchNoteCandidates => {
-                    studio.library.selected_song = Some(reference.file_hash.clone());
-                    studio.editor.editor = None;
-                    studio.shell.route = StudioRoute::Editor;
-                    studio.shell.notice = Some(start_editor_revision_load_job(
-                        reference.clone(),
-                        Arc::clone(&audio.0),
-                        &mut studio.jobs.editor_load_job,
-                    ));
-                }
-                _ => {
-                    studio.shell.notice = Some(
-                        "No compatible in-app editor exists for this artifact kind.".to_string(),
-                    );
-                }
-            }
-            invalidated.invalidate(if studio.shell.route == StudioRoute::Editor {
-                UiDirtyRegion::Editor
-            } else {
-                action.0.dirty_region()
-            });
-        }
-        UiCommand::Analysis(AnalysisCommand::MergeCandidateChart(candidate, authored, mode)) => {
-            studio.library.selected_song = Some(candidate.file_hash.clone());
-            studio.editor.editor = None;
-            studio.shell.route = StudioRoute::Editor;
-            studio.shell.notice = Some(start_editor_merge_load_job(
-                candidate.clone(),
-                authored.clone(),
-                *mode,
-                Arc::clone(&audio.0),
-                &mut studio.jobs.editor_load_job,
-            ));
-            invalidated.invalidate(UiDirtyRegion::Editor);
-        }
         UiCommand::Analysis(AnalysisCommand::MergeSelectedCandidatePhrase(candidate, authored)) => {
-            studio.dialogs.analysis_artifact_context = None;
             match merge_mode_from_editor_selection(studio.editor.editor.as_ref(), true) {
                 Ok(mode) => {
                     studio.library.selected_song = Some(candidate.file_hash.clone());
@@ -1007,7 +1140,6 @@ pub(crate) fn apply_chrome_action(
             });
         }
         UiCommand::Analysis(AnalysisCommand::MergeSelectedCandidateRange(candidate, authored)) => {
-            studio.dialogs.analysis_artifact_context = None;
             match merge_mode_from_editor_selection(studio.editor.editor.as_ref(), false) {
                 Ok(mode) => {
                     studio.library.selected_song = Some(candidate.file_hash.clone());
@@ -1030,7 +1162,6 @@ pub(crate) fn apply_chrome_action(
             });
         }
         UiCommand::Analysis(AnalysisCommand::KeepAuthoredChart) => {
-            studio.dialogs.analysis_artifact_context = None;
             studio.dialogs.pending_chart_replace = None;
             studio.shell.notice =
                 Some("Authored chart kept. The candidate revision was not applied.".to_string());
@@ -1040,4 +1171,45 @@ pub(crate) fn apply_chrome_action(
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_editor_requires_confirmation_before_library_navigation() {
+        assert_eq!(
+            pending_editor_leave(
+                StudioRoute::Editor,
+                true,
+                PendingLeave::Library(LibraryView::Completed)
+            ),
+            Some(PendingLeave::Library(LibraryView::Completed))
+        );
+        assert_eq!(
+            pending_editor_leave(
+                StudioRoute::Editor,
+                false,
+                PendingLeave::Library(LibraryView::Completed)
+            ),
+            None
+        );
+        assert_eq!(
+            pending_editor_leave(
+                StudioRoute::Library,
+                true,
+                PendingLeave::Library(LibraryView::Completed)
+            ),
+            None
+        );
+        assert_eq!(
+            pending_editor_leave(
+                StudioRoute::Editor,
+                true,
+                PendingLeave::OpenProcessingStudio(Some("song".to_string()))
+            ),
+            Some(PendingLeave::OpenProcessingStudio(Some("song".to_string())))
+        );
+    }
 }

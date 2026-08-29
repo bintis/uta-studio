@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use bevy::prelude::Component;
 
 use super::{
-    ArtifactInspectorTab, CacheClearScope, EditorAction, EditorDockSelectKind, LibraryFacet,
-    LibrarySelectKind, LibraryView, LineageScope, ProblemsFilter, SettingsSelectKind, SettingsTab,
+    ArtifactAuditionSlot, CacheClearScope, EditorAction, EditorDockSelectKind, LibraryFacet,
+    LibrarySelectKind, LibraryView, ProblemsFilter, SettingsSelectKind, SettingsTab,
     TranscriptBoundaryEdge, TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle,
     WordSelection,
 };
@@ -59,6 +59,7 @@ pub(crate) enum LibraryCommand {
     ConfirmRemoveFolder,
     OpenSong(String),
     AnalyzeSong(String),
+    ChooseEditorFile,
     OpenEditor(String),
     ExportUtz(String),
     ExportUltraStar(String),
@@ -66,7 +67,6 @@ pub(crate) enum LibraryCommand {
     RevealSource(PathBuf),
     DismissSongContext,
     PlayLibrarySong(String),
-    PlayArtifactRevision(PathBuf),
     ToggleLibraryPlayback,
     SeekLibraryRelative(i8),
     PreviousLibrarySong,
@@ -75,6 +75,8 @@ pub(crate) enum LibraryCommand {
     CycleLibraryRepeat,
     AdjustLibraryVolume(i8),
     ToggleLibraryMute,
+    ToggleLibraryAudioSourceMenu,
+    SelectLibraryAudioSource(String),
     ToggleLibraryQueue,
 }
 
@@ -82,9 +84,12 @@ pub(crate) enum LibraryCommand {
 pub(crate) enum SettingsCommand {
     SettingsTab(SettingsTab),
     RefreshRuntimeStatus,
+    OpenModelDownloads,
+    CloseModelDownloads,
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
     SetModelBackend(String, Option<String>),
+    SetModelDevice(String, Option<String>),
     SetAnalysisQuality(app_core::AnalysisQualityProfile),
     TogglePreserveContinuousPitch,
     ToggleAnalysisQuantization,
@@ -100,52 +105,32 @@ pub(crate) enum SettingsCommand {
     RequestClearCache(CacheClearScope),
     CancelClearCache,
     ConfirmClearCache,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum AnalysisModelCategory {
-    #[default]
-    Bgm,
-    Vocals,
-    Lyrics,
-    Pitch,
+    ChooseFusionAgentAdapter,
+    ClearFusionAgentAdapter,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AnalysisCommand {
     StartAnalysis(String),
-    StopAnalysis(String),
-    SelectArtifactInspectorTab(ArtifactInspectorTab),
-    ToggleArtifactPinned(app_core::ArtifactRef),
-    OpenArtifactCompatibleEditor(app_core::ArtifactRef),
-    MergeCandidateChart(
-        app_core::ArtifactRef,
-        app_core::ArtifactRef,
-        app_core::ChartRevisionMergeMode,
-    ),
+    StartQueuedAnalysis(String),
     MergeSelectedCandidatePhrase(app_core::ArtifactRef, app_core::ArtifactRef),
     MergeSelectedCandidateRange(app_core::ArtifactRef, app_core::ArtifactRef),
     KeepAuthoredChart,
-    ShowArtifactLineage(app_core::ArtifactRef),
-    ShowArtifactImpact(app_core::ArtifactRef),
-    SetArtifactLineageScope(LineageScope),
-    SelectArtifactLineageRevision(app_core::ArtifactRef),
-    CloseArtifactLineage,
-    CloseArtifactImpact,
-    ConfirmArtifactImpact,
-    DismissAnalysisArtifactContext,
-    #[allow(dead_code)] // retained for the registered command API; MINI keeps this control hidden
-    ToggleAnalysisLineageMode,
-    DismissAnalysisExportContext,
-    ValidateExportNode(String, app_core::ExportPackageKind),
-    RevealLastExport(String, app_core::ExportPackageKind),
     SelectAnalysisHistory(Option<i64>),
     OpenSongAnalysis(String),
     OpenSongModelSelection(String),
     OpenProcessingStudio(String),
+    AnalyzeNow(String),
+    OpenEmptyProcessingStudio,
     SelectWorkflowNode(String),
     MoveWorkflowNode(String, bool),
     DuplicateWorkflowNode(String),
+    RemoveWorkflowNode(String),
+    SetWorkflowNodeModel(String, String),
+    SetWorkflowSeparationStrategy(String, app_core::SeparationStrategyV1),
+    AddWorkflowProcessor(String, String, String, Option<String>),
+    AddOptionalWorkflowCard(String, String, app_core::OptionalWorkflowCardV1),
+    SetWorkflowParameter(String, String, serde_json::Value),
     SetWorkflowPolicy(String, app_core::ExecutionPolicy),
     AdjustWorkflowPriority(String, i32),
     RebindWorkflowAnalyzer(String, String, String),
@@ -158,61 +143,30 @@ pub(crate) enum AnalysisCommand {
     ToggleAnalysisMiniView,
     ToggleAnalysisModelPanel,
     CloseAnalysisModelPanel,
-    SetAnalysisModelCategory(AnalysisModelCategory),
     FitAnalysisGraph(i32),
-    FocusAnalysisGraphNode(i32, String),
     DismissAnalysisNodeContext,
     RequestClearAnalysisHistory,
     CancelClearAnalysisHistory,
     ConfirmClearAnalysisHistory,
-    RealignSong(String),
-    ReanalyzeTranscript(String),
-    ForceTranscribe(String),
-    ReanalyzePitch(String),
-    ReanalyzeFull(String),
     CompareNodeAttemptWithPrevious(String, String, i64),
-    OpenPlanPreview(String),
     ClosePlanPreview,
     QueueExactPreview,
-    SetPlanPreviewTarget(app_core::AnalysisDefaultTarget),
-    ResetPlanPreviewTarget,
+    TogglePlanPreviewOutput(app_core::AnalysisOutputKind),
+    ResetPlanPreviewOutputs,
     SetPlanPreviewQuality(app_core::AnalysisQualityProfile),
     ResetPlanPreviewQuality,
-    SetSongAnalysisQuality {
-        file_hash: String,
-        quality: Option<app_core::AnalysisQualityProfile>,
-    },
-    SetSongAnalysisTarget {
-        file_hash: String,
-        target: Option<app_core::AnalysisDefaultTarget>,
-    },
     OpenAnalysisLogViewer(String, String),
     CloseAnalysisLogViewer,
-    OpenAnalysisLogFile,
-    ToggleAnalysisCompoundNode(String),
     RequestDeleteSongCache(String),
     CancelAnalysisRun(String),
     CancelDeleteSongCache,
     ConfirmDeleteSongCache,
+    RequestDeleteAuthoredChart(String),
+    CancelDeleteAuthoredChart,
+    ConfirmDeleteAuthoredChart,
     RequestReplaceAuthoredChart(String),
     CancelReplaceAuthoredChart,
     ConfirmReplaceAuthoredChart,
-    SyncArtifactRevisions(String),
-    SetActiveArtifactRevision(Box<app_core::ArtifactRevision>),
-    CancelSetActiveArtifactRevision,
-    ConfirmSetActiveArtifactRevision,
-    OpenArtifactRevision(PathBuf),
-    PreviewArtifactRevision(PathBuf),
-    RevealArtifactRevision(PathBuf),
-    RequestDeleteArtifactRevision(Box<app_core::ArtifactRevision>),
-    CancelDeleteArtifactRevision,
-    ConfirmDeleteArtifactRevision,
-    RequestInvalidateArtifactRevision(Box<app_core::ArtifactRevision>),
-    CancelInvalidateArtifactRevision,
-    ConfirmInvalidateArtifactRevision,
-    InspectArtifactProvenance(Box<app_core::ArtifactRevision>),
-    CompareArtifactRevisions(Box<app_core::ArtifactRevision>, app_core::ArtifactRef),
-    CloseArtifactDiff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,6 +176,7 @@ pub(crate) enum EditorCommand {
     ToggleLyricsInputMode,
     ToggleLyricsSeparateStems,
     SearchLrclibLyrics,
+    ExtractLyrics,
     PreviousLrclibCandidate,
     NextLrclibCandidate,
     UseLrclibPlain,
@@ -260,6 +215,9 @@ pub(crate) enum EditorCommand {
     DismissLyricContext,
     DismissNoteContext,
     SelectWaveformSource(WaveformSource),
+    SelectArtifactAudition(ArtifactAuditionSlot, app_core::ArtifactRef),
+    ActivateArtifactAudition(ArtifactAuditionSlot),
+    SelectArtifactWaveform(app_core::ArtifactRef),
     SelectWaveformStyle(WaveformStyle),
     DismissWaveformContext,
     ToggleEvidence(app_core::EvidenceKind),
@@ -291,6 +249,7 @@ impl UiCommand {
             Self::Library(
                 LibraryCommand::SetLibraryView(_)
                 | LibraryCommand::OpenSong(_)
+                | LibraryCommand::ChooseEditorFile
                 | LibraryCommand::OpenEditor(_),
             ) => UiDirtyRegion::Chrome,
             Self::Library(_) => UiDirtyRegion::Library,
@@ -304,39 +263,26 @@ impl UiCommand {
                 AnalysisCommand::OpenAnalysisInspect(_, _)
                 | AnalysisCommand::OpenSongAnalysis(_)
                 | AnalysisCommand::OpenProcessingStudio(_)
+                | AnalysisCommand::OpenEmptyProcessingStudio
                 | AnalysisCommand::OpenSongModelSelection(_),
             ) => UiDirtyRegion::Chrome,
             Self::Analysis(
                 AnalysisCommand::StartAnalysis(_)
-                | AnalysisCommand::OpenPlanPreview(_)
                 | AnalysisCommand::ClosePlanPreview
                 | AnalysisCommand::QueueExactPreview
-                | AnalysisCommand::SetPlanPreviewTarget(_)
-                | AnalysisCommand::ResetPlanPreviewTarget
+                | AnalysisCommand::TogglePlanPreviewOutput(_)
+                | AnalysisCommand::ResetPlanPreviewOutputs
                 | AnalysisCommand::SetPlanPreviewQuality(_)
                 | AnalysisCommand::ResetPlanPreviewQuality
+                | AnalysisCommand::OpenAnalysisLogViewer(_, _)
+                | AnalysisCommand::CloseAnalysisLogViewer
                 | AnalysisCommand::DismissAnalysisNodeContext
-                | AnalysisCommand::ShowArtifactLineage(_)
-                | AnalysisCommand::SetArtifactLineageScope(_)
-                | AnalysisCommand::SelectArtifactLineageRevision(_)
-                | AnalysisCommand::CloseArtifactLineage
-                | AnalysisCommand::ShowArtifactImpact(_)
-                | AnalysisCommand::CloseArtifactImpact
-                | AnalysisCommand::ConfirmArtifactImpact
+                | AnalysisCommand::RequestDeleteAuthoredChart(_)
+                | AnalysisCommand::CancelDeleteAuthoredChart
+                | AnalysisCommand::ConfirmDeleteAuthoredChart
                 | AnalysisCommand::RequestReplaceAuthoredChart(_)
                 | AnalysisCommand::CancelReplaceAuthoredChart
-                | AnalysisCommand::ConfirmReplaceAuthoredChart
-                | AnalysisCommand::SetActiveArtifactRevision(_)
-                | AnalysisCommand::CancelSetActiveArtifactRevision
-                | AnalysisCommand::ConfirmSetActiveArtifactRevision
-                | AnalysisCommand::RequestDeleteArtifactRevision(_)
-                | AnalysisCommand::CancelDeleteArtifactRevision
-                | AnalysisCommand::ConfirmDeleteArtifactRevision
-                | AnalysisCommand::RequestInvalidateArtifactRevision(_)
-                | AnalysisCommand::CancelInvalidateArtifactRevision
-                | AnalysisCommand::ConfirmInvalidateArtifactRevision
-                | AnalysisCommand::CompareArtifactRevisions(_, _)
-                | AnalysisCommand::CloseArtifactDiff,
+                | AnalysisCommand::ConfirmReplaceAuthoredChart,
             ) => UiDirtyRegion::Dialog,
             Self::Analysis(_) => UiDirtyRegion::Analysis,
             Self::Editor(
@@ -359,6 +305,7 @@ impl UiCommand {
                 | EditorCommand::ToggleLyricsInputMode
                 | EditorCommand::ToggleLyricsSeparateStems
                 | EditorCommand::SearchLrclibLyrics
+                | EditorCommand::ExtractLyrics
                 | EditorCommand::PreviousLrclibCandidate
                 | EditorCommand::NextLrclibCandidate
                 | EditorCommand::UseLrclibPlain
@@ -441,26 +388,20 @@ mod tests {
     #[test]
     fn commands_that_only_change_persistent_overlays_are_dialog_scoped() {
         assert_eq!(
-            UiCommand::Analysis(AnalysisCommand::CancelDeleteArtifactRevision).dirty_region(),
-            UiDirtyRegion::Dialog
-        );
-        assert_eq!(
-            UiCommand::Analysis(AnalysisCommand::CloseArtifactDiff).dirty_region(),
-            UiDirtyRegion::Dialog
-        );
-        assert_eq!(
             UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext).dirty_region(),
             UiDirtyRegion::Dialog
         );
         for command in [
             AnalysisCommand::StartAnalysis("song".to_string()),
-            AnalysisCommand::OpenPlanPreview("song".to_string()),
+            AnalysisCommand::StartAnalysis("song".to_string()),
             AnalysisCommand::ClosePlanPreview,
             AnalysisCommand::QueueExactPreview,
-            AnalysisCommand::SetPlanPreviewTarget(app_core::AnalysisDefaultTarget::Transcript),
-            AnalysisCommand::ResetPlanPreviewTarget,
+            AnalysisCommand::TogglePlanPreviewOutput(app_core::AnalysisOutputKind::Transcript),
+            AnalysisCommand::ResetPlanPreviewOutputs,
             AnalysisCommand::SetPlanPreviewQuality(app_core::AnalysisQualityProfile::Maximum),
             AnalysisCommand::ResetPlanPreviewQuality,
+            AnalysisCommand::OpenAnalysisLogViewer("song".to_string(), "pitch.extract".to_string()),
+            AnalysisCommand::CloseAnalysisLogViewer,
         ] {
             assert_eq!(
                 UiCommand::Analysis(command).dirty_region(),
@@ -479,6 +420,7 @@ mod tests {
             AnalysisCommand::OpenAnalysisInspect("pitch.extract".to_string(), "pitch".to_string()),
             AnalysisCommand::OpenSongAnalysis("song".to_string()),
             AnalysisCommand::OpenProcessingStudio("song".to_string()),
+            AnalysisCommand::OpenEmptyProcessingStudio,
             AnalysisCommand::OpenSongModelSelection("song".to_string()),
         ] {
             assert_eq!(

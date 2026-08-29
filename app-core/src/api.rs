@@ -114,6 +114,27 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Read one catalog model's files, backends, license, and integrity"
     ),
     capability!(
+        "models & runtime",
+        "fusion_agent_adapter_status",
+        "read",
+        true,
+        "Read Runtime Manager-owned Fusion Agent Adapter readiness and verified identity"
+    ),
+    capability!(
+        "models & runtime",
+        "configure_fusion_agent_adapter",
+        "mutation",
+        false,
+        "Persist one user-selected, manifest-verified Fusion Agent Adapter through Runtime Manager"
+    ),
+    capability!(
+        "models & runtime",
+        "clear_fusion_agent_adapter",
+        "mutation",
+        false,
+        "Clear the Runtime Manager-owned Fusion Agent Adapter selection without deleting the executable"
+    ),
+    capability!(
         "models",
         "install_audio_model",
         "external",
@@ -135,20 +156,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Remove one installed catalog audio model without touching songs or cache"
     ),
     capability!(
-        "analysis",
-        "validate_audio_processing_profile",
-        "read",
-        true,
-        "Validate purpose-oriented audio-processing settings and preview the frozen plan"
-    ),
-    capability!(
-        "analysis",
-        "preview_effective_audio_params",
-        "read",
-        true,
-        "Resolve global, song, and run audio parameters with explicit sources"
-    ),
-    capability!(
         "storage",
         "calculate_cache_stats",
         "read",
@@ -157,17 +164,10 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "storage",
-        "clear_models_command",
-        "destructive",
-        false,
-        "Delete downloaded models"
-    ),
-    capability!(
-        "storage",
         "clear_all",
         "destructive",
         false,
-        "Delete generated cache and models"
+        "Delete generated cache while preserving installed models"
     ),
     capability!(
         "library",
@@ -396,20 +396,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
-        "get_analysis_graph",
-        "read",
-        true,
-        "Load the static analysis DAG node/edge definition"
-    ),
-    capability!(
-        "analysis",
-        "preview_analysis_plan",
-        "read",
-        true,
-        "Preview which nodes a targeted analysis request would run, reuse, freeze, or block"
-    ),
-    capability!(
-        "analysis",
         "preview_engine_run",
         "read",
         true,
@@ -420,7 +406,28 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "queue_exact_preview",
         "mutation",
         false,
-        "Persist and queue the exact validated Engine request snapshot confirmed by Plan Preview"
+        "Persist and start the exact validated Engine request snapshot confirmed by Plan Preview"
+    ),
+    capability!(
+        "analysis",
+        "stage_exact_preview",
+        "mutation",
+        false,
+        "Add an exact validated Engine request to the processing queue without starting it"
+    ),
+    capability!(
+        "analysis",
+        "preview_and_stage_engine_run",
+        "mutation",
+        false,
+        "Compile and add one exact Engine request to the processing queue without opening Plan Preview or starting it"
+    ),
+    capability!(
+        "analysis",
+        "start_queued_analysis",
+        "mutation",
+        false,
+        "Explicitly start one staged processing-queue request"
     ),
     capability!(
         "analysis",
@@ -476,21 +483,21 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "get_song_analysis_profile",
         "read",
         true,
-        "Load a song's saved analysis parameter override, if one exists"
+        "Load a song's saved product-level analysis intent override, if one exists"
     ),
     capability!(
         "analysis",
         "set_song_analysis_profile",
         "mutation",
         false,
-        "Save a per-song override of analysis model/algorithm/device parameters"
+        "Save a per-song product-level analysis intent override"
     ),
     capability!(
         "analysis",
         "reset_song_analysis_profile",
         "mutation",
         false,
-        "Remove a song's parameter override, falling back to global defaults"
+        "Remove a song's analysis intent override, falling back to global defaults"
     ),
     capability!(
         "workflow",
@@ -504,7 +511,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "load_song_workflow",
         "read",
         true,
-        "Load a song workflow or a non-persisting legacy migration"
+        "Load a song Workflow or the current default Workflow without persisting it"
     ),
     capability!(
         "workflow",
@@ -515,6 +522,27 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "workflow",
+        "remove_workflow_node",
+        "mutation",
+        true,
+        "Delete an optional workflow card and safely rewrite its typed dataflow"
+    ),
+    capability!(
+        "workflow",
+        "set_workflow_node_model",
+        "mutation",
+        true,
+        "Select a compatible model provider for a workflow card"
+    ),
+    capability!(
+        "workflow",
+        "set_workflow_separation_strategy",
+        "mutation",
+        true,
+        "Select a typed Vocal/BGM provider strategy and exact invocation topology"
+    ),
+    capability!(
+        "workflow",
         "preview_workflow_compile",
         "read",
         true,
@@ -522,10 +550,17 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "authoring",
+        "delete_authored_chart",
+        "destructive",
+        false,
+        "Remove only the active authored chart after explicit confirmation; retain source, Candidate/evidence and recoverable immutable revisions"
+    ),
+    capability!(
+        "authoring",
         "replace_authored_chart_with_fresh_analysis",
         "destructive",
         false,
-        "Explicitly discard the authored chart so it rebuilds from the latest analyzer output"
+        "Compatibility alias for explicitly removing the active authored chart selection"
     ),
     capability!(
         "analysis",
@@ -540,13 +575,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "read",
         true,
         "Resolve which single primary action a song's detail page should surface"
-    ),
-    capability!(
-        "analysis",
-        "preview_full_analysis_plan",
-        "read",
-        true,
-        "Preview which DAG nodes a full chart-build run would run, reuse, or block for a song"
     ),
     capability!(
         "authoring",
@@ -824,20 +852,6 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
-        "preview_artifact_downstream_impact",
-        "read",
-        true,
-        "Preview downstream DAG impact while preserving the authored chart"
-    ),
-    capability!(
-        "analysis",
-        "preview_node_downstream_impact",
-        "read",
-        true,
-        "Preview transitive consumers of one DAG node"
-    ),
-    capability!(
-        "analysis",
         "compare_artifacts_typed",
         "read",
         true,
@@ -876,14 +890,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "preview_artifact_edit_impact",
         "read",
         true,
-        "Preview the downstream plan and explicit Authored Chart preservation for an artifact draft"
-    ),
-    capability!(
-        "analysis",
-        "preview_frozen_downstream_impact",
-        "read",
-        true,
-        "Preview run/reuse/stale/blocked groups from one frozen AnalysisPlan including profile, Pin, Freeze, and Bypass"
+        "Preview current Workflow consumers and explicit Authored Chart preservation for an artifact draft"
     ),
     capability!(
         "analysis",

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::RuntimeManagerResult;
 use crate::resource::{ResourceKind, ResourceRef};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub struct StorePaths {
     ggml_models_root: Option<PathBuf>,
     runtime_overrides: Vec<(String, PathBuf)>,
     tool_overrides: Vec<(String, PathBuf)>,
+    tool_fallbacks: Vec<(String, PathBuf)>,
 }
 
 impl StorePaths {
@@ -35,6 +37,7 @@ impl StorePaths {
             ggml_models_root,
             runtime_overrides: Vec::new(),
             tool_overrides: Vec::new(),
+            tool_fallbacks: Vec::new(),
         };
         let executable_directory = std::env::current_exe()
             .ok()
@@ -60,11 +63,6 @@ impl StorePaths {
                 "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH",
                 "uta-qwen-align-worker",
             ),
-            (
-                "native_analyzer",
-                "UTA_STUDIO_NATIVE_ANALYZER_PATH",
-                "uta-native-analyzer",
-            ),
         ] {
             let configured = std::env::var_os(variable).map(PathBuf::from);
             let packaged = executable_directory
@@ -76,6 +74,23 @@ impl StorePaths {
         }
         if let Some(path) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH").map(PathBuf::from) {
             paths = paths.with_tool_override("ffmpeg", path);
+        }
+        let configured_fusion_adapter = std::env::var_os("UTA_STUDIO_FUSION_AGENT_ADAPTER_PATH")
+            .or_else(|| std::env::var_os("UTA_STUDIO_FUSION_AGENT_CLI_PATH"))
+            .map(PathBuf::from);
+        if let Some(path) = configured_fusion_adapter {
+            paths = paths.with_tool_override("fusion_agent_adapter", path);
+        } else {
+            let discovered = executable_directory
+                .as_deref()
+                .and_then(|directory| sibling_executable(directory, "uta-fusion-agent-adapter"))
+                .filter(|candidate| {
+                    crate::external_tool::fusion_adapter_manifest(candidate).is_ok()
+                })
+                .or_else(discover_fusion_adapter_on_path);
+            if let Some(path) = discovered {
+                paths = paths.with_tool_fallback("fusion_agent_adapter", path);
+            }
         }
         paths
     }
@@ -159,12 +174,56 @@ impl StorePaths {
             .filter(|path| executable_file(path))
     }
 
-    pub fn tool_executable(&self, tool_id: &str) -> Option<PathBuf> {
+    pub(crate) fn tool_override_path(&self, tool_id: &str) -> Option<PathBuf> {
         self.tool_overrides
             .iter()
             .rev()
             .find(|(id, _)| id == tool_id)
             .map(|(_, path)| path.clone())
+    }
+
+    pub fn configured_tool_path(&self, tool_id: &str) -> Option<PathBuf> {
+        self.configured_tool_path_result(tool_id).ok().flatten()
+    }
+
+    pub(crate) fn configured_tool_path_result(
+        &self,
+        tool_id: &str,
+    ) -> RuntimeManagerResult<Option<PathBuf>> {
+        crate::external_tool::configured_tool_path(self, tool_id)
+    }
+
+    pub(crate) fn tool_fallback_path(&self, tool_id: &str) -> Option<PathBuf> {
+        self.tool_fallbacks
+            .iter()
+            .rev()
+            .find(|(id, _)| id == tool_id)
+            .map(|(_, path)| path.clone())
+    }
+
+    fn with_tool_fallback(mut self, tool_id: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        self.tool_fallbacks.push((tool_id.into(), path.into()));
+        self
+    }
+
+    pub fn tool_candidate_path(&self, tool_id: &str) -> Option<PathBuf> {
+        self.tool_candidate_path_result(tool_id).ok().flatten()
+    }
+
+    pub(crate) fn tool_candidate_path_result(
+        &self,
+        tool_id: &str,
+    ) -> RuntimeManagerResult<Option<PathBuf>> {
+        if let Some(path) = self.tool_override_path(tool_id) {
+            return Ok(Some(path));
+        }
+        Ok(self
+            .configured_tool_path_result(tool_id)?
+            .or_else(|| self.tool_fallback_path(tool_id)))
+    }
+
+    pub fn tool_executable(&self, tool_id: &str) -> Option<PathBuf> {
+        self.tool_candidate_path(tool_id)
             .filter(|path| executable_file(path))
     }
 
@@ -230,6 +289,31 @@ fn sibling_executable(directory: &Path, executable_name: &str) -> Option<PathBuf
     };
     let path = directory.join(filename);
     executable_file(&path).then_some(path)
+}
+
+fn discover_fusion_adapter_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let names = if cfg!(windows) {
+        [
+            "uta-fusion-agent-adapter.exe",
+            "uta-fusion-agent-pi.exe",
+            "uta-fusion-agent-codex.exe",
+            "uta-fusion-agent-claude.exe",
+        ]
+    } else {
+        [
+            "uta-fusion-agent-adapter",
+            "uta-fusion-agent-pi",
+            "uta-fusion-agent-codex",
+            "uta-fusion-agent-claude",
+        ]
+    };
+    std::env::split_paths(&path)
+        .flat_map(|directory| names.map(move |name| directory.join(name)))
+        .find(|candidate| {
+            executable_file(candidate)
+                && crate::external_tool::fusion_adapter_manifest(candidate).is_ok()
+        })
 }
 
 #[cfg(unix)]
@@ -318,6 +402,42 @@ mod tests {
             Some(path.as_path())
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_tool_selection_wins_over_automatic_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-runtime-tool-fallback-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let extension = if cfg!(windows) { ".exe" } else { "" };
+        let selected = root.join(format!("selected-adapter{extension}"));
+        let discovered = root.join(format!("discovered-adapter{extension}"));
+        std::fs::write(&selected, b"adapter").unwrap();
+        std::fs::write(&discovered, b"adapter").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&discovered, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let configured_paths = StorePaths::new(&root);
+        crate::external_tool::configure_tool_path(
+            &configured_paths,
+            "fusion_agent_adapter",
+            &selected,
+        )
+        .unwrap();
+        let paths =
+            StorePaths::new(&root).with_tool_fallback("fusion_agent_adapter", discovered.clone());
+        assert_eq!(
+            paths.tool_candidate_path("fusion_agent_adapter").as_deref(),
+            Some(selected.as_path())
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

@@ -14,7 +14,6 @@ pub(crate) enum UiDirtyRegion {
     Settings,
     Documentation,
     Chrome,
-    All,
 }
 
 impl UiDirtyRegion {
@@ -27,7 +26,6 @@ impl UiDirtyRegion {
             Self::Settings => 1 << 4,
             Self::Documentation => 1 << 5,
             Self::Chrome => 1 << 6,
-            Self::All => u8::MAX,
         }
     }
 }
@@ -41,27 +39,16 @@ impl UiDirtyRegions {
     }
 
     pub(crate) fn contains(self, region: UiDirtyRegion) -> bool {
-        if region == UiDirtyRegion::All {
-            self.0 == u8::MAX
-        } else {
-            self.0 & region.mask() != 0
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.0 == 0
+        self.0 & region.mask() != 0
     }
 
     pub(crate) fn requires_full_rebuild(self) -> bool {
-        self.contains(UiDirtyRegion::All) || self.contains(UiDirtyRegion::Chrome)
+        self.contains(UiDirtyRegion::Chrome)
     }
 }
 
 impl fmt::Debug for UiDirtyRegions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.contains(UiDirtyRegion::All) {
-            return formatter.write_str("all");
-        }
         let mut list = formatter.debug_list();
         for (region, name) in [
             (UiDirtyRegion::Library, "library"),
@@ -80,29 +67,24 @@ impl fmt::Debug for UiDirtyRegions {
     }
 }
 
-/// Transitional scoped dirty state. Existing call sites that set `.0`
-/// directly still request a safe full rebuild; migrated call sites identify
-/// their region so rebuild traces expose where incremental rendering has the
-/// highest payoff.
 #[derive(Resource, Default)]
-pub(crate) struct UiInvalidated(pub(crate) bool, UiDirtyRegions);
+pub(crate) struct UiInvalidated {
+    dirty: bool,
+    regions: UiDirtyRegions,
+}
 
 impl UiInvalidated {
     pub(crate) fn invalidate(&mut self, region: UiDirtyRegion) {
-        self.0 = true;
-        self.1.insert(region);
+        self.dirty = true;
+        self.regions.insert(region);
     }
 
     pub(crate) fn take(&mut self) -> Option<UiDirtyRegions> {
-        if !self.0 {
+        if !self.dirty {
             return None;
         }
-        self.0 = false;
-        let mut regions = std::mem::take(&mut self.1);
-        if regions.is_empty() {
-            regions.insert(UiDirtyRegion::All);
-        }
-        Some(regions)
+        self.dirty = false;
+        Some(std::mem::take(&mut self.regions))
     }
 }
 
@@ -148,16 +130,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_invalidation_is_reported_as_full() {
-        let mut invalidated = UiInvalidated {
-            0: true,
-            ..UiInvalidated::default()
-        };
-        assert_eq!(invalidated.take(), Some(UiDirtyRegions(u8::MAX)));
-        assert!(invalidated.take().is_none());
-    }
-
-    #[test]
     fn scoped_invalidations_are_coalesced() {
         let mut invalidated = UiInvalidated::default();
         invalidated.invalidate(UiDirtyRegion::Analysis);
@@ -185,15 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn chrome_and_legacy_invalidations_still_request_a_safe_full_rebuild() {
+    fn chrome_invalidations_request_a_full_rebuild() {
         let mut chrome = UiInvalidated::default();
         chrome.invalidate(UiDirtyRegion::Chrome);
         assert!(chrome.take().unwrap().requires_full_rebuild());
-
-        let mut legacy = UiInvalidated {
-            0: true,
-            ..UiInvalidated::default()
-        };
-        assert!(legacy.take().unwrap().requires_full_rebuild());
     }
 }

@@ -199,6 +199,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 打开已分析歌曲并选择**编辑谱面**。编辑器支持波形、音高依据、歌词/乐句边界、音符条、多轨道和具名撤销历史。
 
+使用波形上下文菜单可将不可变的工作流音频版本分别绑定到 **A** 和 **B**，在不重置播放位置或播放/暂停状态的情况下切换试听，并可独立选择任一版本查看波形。源媒体和产物版本始终保持只读。
+
 常用操作包括：
 
 - 播放、暂停、定位和试听所选内容；
@@ -243,8 +245,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 **设置 → 存储**会按歌曲、模型和其他数据报告生成数据用量。
 
-- **清除生成缓存**会删除该操作覆盖的生成分轨、谱面/预览和临时制作数据，不会删除源媒体。
-- **清除模型**会删除已下载模型；再次运行设置前，运行环境状态会将其报告为缺失。
+- **清除生成缓存**会删除该操作覆盖的生成分轨、谱面/预览和临时制作数据，不会删除源媒体或已安装模型。
+- 仅在**设置 → 模型与运行环境**中安装、修复或移除单个模型成果物。
 
 默认设置/数据根目录为 `~/.uta-studio`，除非另行配置数据位置。迁移或重装前：
 
@@ -263,7 +265,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 - **应用日志 → 查看日志**：在日志存在时打开当前日志。
 - **功能 API 诊断 → 运行检查**：验证本地 API、原生音频以及真实的临时 UTZ/UltraStar 导出；诊断完成后会删除临时目录。
 
-每次分析运行都会在 `analysis-logs/` 下写入一个详细 JSONL 文件。DAG 节点的**查看日志**会打开所选运行并按 `node_id` 过滤；旧版运行会明确提示没有独立日志。分析进度、模型输出和 traceback 不会进入 `app.log`。确认清空分析历史时，只会同步删除 `analysis-logs/` 内由记录引用的日志文件。
+每次分析运行都会在 `analysis-logs/` 下写入一个详细 JSONL 文件。DAG 节点的**查看日志**会打开应用内 Console 并按 `node_id` 过滤；运行期间会实时跟随新增输出。向上滚动可暂停跟随，回到底部后自动恢复。旧版运行会明确提示没有独立日志。分析进度、模型输出和 traceback 不会进入 `app.log`。确认清空分析历史时，只会同步删除 `analysis-logs/` 内由记录引用的日志文件。
 
 提交问题时，请包含应用版本、平台、所选运行环境、相关日志片段和可复现步骤。没有授权时，不要附带受版权保护的源媒体。
 
@@ -428,5 +430,11 @@ Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证
 ## Processing Studio 与证据复核
 
 从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；当前可执行音频 lane 是 Vocal、BGM、Lead 与 Vocal Residual。Backing 和 Harmony 在未来音频分流能力实现前仍是制谱轨角色。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
+
+Stage 1 将**主唱分离**、**降噪**和**去混响**显示为彼此独立的开/关预处理开关；新建默认工作流中的三项均为关。关闭表示透明旁路：当分析需要时，OriginalMix 仍会生成人声，分析器使用该 Vocal，而不会把它错误标记为 LeadVocal。显式请求 LeadVocal 输出会强制执行主唱分离。Plan Preview 会在入队前显示精确的分析器路径和每个开关状态。
+
+Stage 4 的**决策模式**默认使用 **Algorithm**，也就是确定性的 candidate graph / HSMM 解码。**AI judgment** 是显式的替代模式：配置好的 Fusion Agent Adapter 可以访问外部 AI provider，并只接收有边界的 Fusion Candidate 元数据，从真实 Engine Candidate 中选择最终路径。它不能凭空生成音符几何或测量证据，Engine 会在生成 Candidate 谱面前再次验证返回结果。请在**设置 → 模型与运行环境**中配置 adapter。adapter/provider 缺失、超时、返回无效结果或验证失败都会使本次分析失败；Uta! Studio 不会静默回退到 Algorithm。Plan Preview 会显示请求的决策模式和 adapter readiness，但不会在预览时联系 provider。
+
+在**模型与运行环境 → Fusion Agent Adapter**中，Runtime Manager 会自动扫描 `PATH` 中带有有效清单的 `uta-fusion-agent-adapter`、`uta-fusion-agent-pi`、`uta-fusion-agent-codex` 和 `uta-fusion-agent-claude` 集成。安装后可点击**重新扫描**，也可以手动选择其他兼容 adapter。它必须带有该可执行文件专属的 `<adapter-executable>.uta-fusion-adapter.json` sidecar，并声明 contract `uta.fusion_agent_adapter`、adapter ID `fusion_agent_adapter` 和 Fusion 协议版本 `3`。共享目录清单或普通的 `pi`、`codex`、`claude` 及其他编程智能体可执行文件均不会被接受。Uta! Studio 只验证本地清单，不会启动 adapter 或联系其 provider；**清除**只移除已保存的选择，不会删除可执行文件。sidecar 只证明协议兼容性，并不证明发布者可信；adapter 会以当前用户的系统权限运行。Provider 凭据仍由 adapter/provider 机制管理。
 
 完成的运行会生成可替换的 Candidate revision。编辑器始终让人工音符保持最高视觉与语义优先级，并提供只读 Evidence 和 disagreement-first Review queue。接受建议会进入正常 undo 历史；重新分析绝不会静默替换 Authored revision。出现新 Candidate 时请使用 Compare 或 Merge。

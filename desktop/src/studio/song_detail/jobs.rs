@@ -226,25 +226,6 @@ pub(crate) fn calculate_key_shift(original_key: &str, offset: i32) -> (String, f
 }
 
 /// Queue one exact Engine-backed action and surface request-specific blockers.
-pub(crate) fn run_analysis_action_checked(
-    file_hash: &str,
-    action: impl FnOnce() -> Result<(), String>,
-) -> String {
-    let Some(song) = app_core::load_song_by_hash(file_hash).ok().flatten() else {
-        return format!("Song not found: {file_hash}");
-    };
-    if matches!(
-        song.transcript_source,
-        Some(app_core::TranscriptSource::Usdx)
-    ) {
-        return "This action is unavailable for imported USDX charts.".to_string();
-    }
-    match action() {
-        Ok(()) => format!("Queued analysis for “{}”.", song.title),
-        Err(error) => format!("Could not queue analysis: {error}"),
-    }
-}
-
 pub(crate) fn handle_song_detail_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     shell: Res<ShellState>,

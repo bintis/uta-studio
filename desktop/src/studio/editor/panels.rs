@@ -213,6 +213,38 @@ pub(crate) fn spawn_editor_inspector(
                 if editor.word_edit_focus == Some(selection) {
                     input.insert(AutoFocus);
                 }
+                if editor.document.lyric_uses_cjk_script(selection) {
+                    spawn_text(inspector, font.clone(), "Reading", 8.0, theme.primary);
+                    inspector.spawn((
+                        EditorWordReadingInput(selection),
+                        EditableText {
+                            max_characters: Some(160),
+                            visible_width: Some(22.0),
+                            ..EditableText::new(
+                                selected_editor_word_reading(&editor.document, selection)
+                                    .unwrap_or_default(),
+                            )
+                        },
+                        Node {
+                            width: percent(100),
+                            min_height: px(36),
+                            padding: UiRect::axes(px(9), px(7)),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(5)),
+                            ..default()
+                        },
+                        ui_text_font(font.clone(), 11.0),
+                        TextColor(theme.foreground),
+                        TextCursorStyle {
+                            color: theme.primary,
+                            selected_text_color: Some(theme.primary_foreground),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.4)),
+                        BorderColor::all(theme.border.with_alpha(0.6)),
+                        TabIndex(0),
+                    ));
+                }
                 spawn_wrapped_text(
                     inspector,
                     font.clone(),
@@ -257,6 +289,48 @@ pub(crate) fn spawn_editor_inspector(
                     theme,
                     "Add lyric at playhead",
                     EditorAction::AddLyric,
+                );
+            }
+
+            // Technique evidence point detail is independent of note/word
+            // selection — clicking a chip and selecting a note are different
+            // things, so this block is gated on its own selection state.
+            if let Some(point) = editor.selected_technique_point.and_then(|index| {
+                editor
+                    .evidence
+                    .tracks
+                    .iter()
+                    .find(|track| track.kind == app_core::EvidenceKind::StarsTechnique)
+                    .and_then(|track| track.points.get(index))
+            }) {
+                inspector.spawn(Node {
+                    width: percent(100),
+                    height: px(1),
+                    margin: UiRect::vertical(px(6)),
+                    ..default()
+                });
+                spawn_text(
+                    inspector,
+                    font.clone(),
+                    "TECHNIQUE EVIDENCE",
+                    8.0,
+                    theme.primary,
+                );
+                let class = point
+                    .label
+                    .as_deref()
+                    .and_then(|label| label.split(" · ").next())
+                    .unwrap_or("technique");
+                spawn_text(inspector, font.clone(), class, 17.0, theme.foreground);
+                spawn_wrapped_text(
+                    inspector,
+                    font.clone(),
+                    format!(
+                        "{:.3}s · source-local score {:.3} · uncalibrated",
+                        point.time, point.value
+                    ),
+                    9.0,
+                    theme.muted_foreground,
                 );
             }
 

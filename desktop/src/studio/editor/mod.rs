@@ -14,8 +14,9 @@ mod view;
 pub(crate) use action_input::{handle_editor_keyboard, handle_editor_ui_action};
 pub(crate) use actions::{EditorAction, EditorActionContext, spawn_editor_action_button};
 pub(crate) use audition::{
-    poll_editor_load_job, set_editor_waveform_source, start_editor_load_job,
-    start_editor_merge_load_job, start_editor_revision_load_job, sync_editor_audio,
+    activate_editor_artifact_audition, confirm_waveform_status, poll_editor_load_job,
+    select_editor_artifact_audition, set_editor_artifact_waveform, set_editor_waveform_source,
+    start_editor_load_job, start_editor_merge_load_job, sync_editor_audio,
 };
 pub(crate) use commands::{
     can_extend_editor_lyric, extend_editor_lyric, next_extendable_editor_note,

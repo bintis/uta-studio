@@ -779,15 +779,11 @@ implicit discovery
 
 ---
 
-## 12.4 SHA-256 必填
+## 12.4 Source identity metadata
 
-Engine 在 decode 前必须验证 caller 给定 SHA-256。
+兼容 wire 中的 `sha256` 字段承载 caller 已持久化的 source identity / provenance metadata。Engine 不在 decode 前重新计算或比较 source hash，也不以 hash 一致性作为接受/拒绝 gate。
 
-不一致：
-
-```text
-input_hash_mismatch
-```
+仍然必须验证：授权本地路径、普通文件、路径 confinement、可解码性、声明的语义角色、canonical timeline 与 decoded facts。
 
 ---
 
@@ -1525,6 +1521,12 @@ lead_with_support
 unknown
 ```
 
+当前 Engine 实现由 `audio-quality-gates-v2` 在任何 GAME/F0/Fusion 结果被当作可信单旋律结果之前生成这项 evidence。它使用独立解码的 lead 与、若 Harmony 路由存在、`vocal_residual` 的短窗 profile；不会从 `singing.is_some()` 推断 foreground 或 topology。未分离的 caller vocal 输入以及证据不足都必须输出 `unknown`、降低结果状态，并把受影响范围写入 typed review regions。当前 heuristic 未经校准，所以 `confidence` 保持 `null`。
+
+separator 的 `vocal_residual` 本身不是独立 singer/foreground identity evidence。仅凭 lead/residual 能量交替的窗口仍输出 `lead_with_support` foreground/support ambiguity 并降级；`alternating_multi_lead` 保留给未来具备合格 part/identity evidence 的 expert，不能由 residual 自动升级。
+
+`overlap_regions[]` / `support_regions[]` 使用 canonical integer timeline。Engine 通过当前 evaluation context 约束普通 gate region，并保持既有 report v1 wire shape（旧 `audio-quality-gates-v1` report 仍可读取）；Studio 再验证唯一 primary source、canonical timebase、Plan source-route/role binding，并以 app-owned source duration 与请求的 primary-source start 独立约束范围，而不信任 Engine 自报 duration 来放宽范围。所有普通 gate region 和 topology region 都必须有序、无重叠并位于 canonical source range 内。它们可以标记需要复核或 challenger evidence 的范围，但不会自动命名 Singer A/B，也不会生成 BackingVocal/HarmonyVocal stem；`audio.lead_partition` 仍是 future/optional capability。
+
 ---
 
 # 34. Duet：交替唱
@@ -2042,7 +2044,7 @@ Intel Arc/Xe validation
 license audit
 ```
 
-在完成这些 gate 前，STARS 保持 `Experimental` / `BenchmarkCandidate`，不能因为 CKPT 成功导出就自动升级。
+STARS 不得仅因 CKPT 成功导出而自动升级。当前仓库已通过显式的 repository-owner catalog release policy 将其有效非 CPU 路线纳入 `ProductionPinned`；数值/语义 parity、运行稳定性、provenance、license 与广泛质量限制仍必须作为可见证据或 advisory caveat 保留，安装、runtime、结构与输出校验继续 fail-closed。
 
 ---
 
@@ -2380,9 +2382,13 @@ voice topology constraint
 
 ---
 
-# 60. HSMM / Viterbi
+# 60. Exact second-order HSMM path decoder
 
-最终 note semantic track 推荐 segment-level HSMM。
+最终 note semantic track 使用有界、确定性的 segment-level second-order dynamic programming，从真实 Candidate Pool 中选择完整路径。
+
+在当前产品设计中，这一节定义 **Algorithm** 决策模式的确定性默认实现。用户显式选择的 **AI judgment** 是同一完整 Candidate Pool（包含规范化 caller-hard boundary set）之上的受约束替代 selector，必须遵守 `UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md`：只能选择真实候选、Runtime Manager 管理 adapter tool、允许显式联网、失败不回退 Algorithm，并保留独立的非确定性决策 provenance。两个 selector 必须经过同一 membership、exact voiced-component coverage、hard-boundary 和 canonical output validation。
+
+完整 Candidate Pool 和解码工作量有精确上限：扩展后最多 `100000` 个 Candidate state；每个 duration state 最多 `64` 个不同 pitch proposal；metadata clone 前、以及 pitch-state 扩展后（包含复制的嵌套证据）均最多 `10000000` 个 Candidate-to-boundary/word/technique evidence relation；通过排序区间索引保守计算的 Candidate-to-local-F0/Acoustic/Basic-Pitch frame visit 最多 `10000000` 个；整个图最多检查 `65536` 个 second-order pair state 和 `2000000` 个 pair transition。AI adapter 请求另有独立的 `8 MiB` 序列化上限。到达上限允许执行，超过一项即 fail closed；这些预算跨全部 disconnected voiced component 累计，不能由不可达或分离的子图绕过。
 
 原因：
 
@@ -2397,6 +2403,7 @@ voice topology constraint
 argmin
 ObservationCost
 + TransitionCost
++ SecondOrderMelodyCoherenceCost
 + DurationCost
 + ConstraintCost
 ```
@@ -2421,7 +2428,7 @@ separator quality
 cleanup quality
 ```
 
-所有输入必须是 calibrated / normalized evidence。
+所有输入必须保留 typed measured / unknown 语义；未经校准的跨模型 raw score 不得伪装成可直接比较的概率。
 
 ---
 
@@ -2453,13 +2460,15 @@ lower penalty
 intermediate note transition high penalty
 ```
 
-### Alignment hard barrier
+### Caller-authored hard barrier
 
-跨 barrier：
+只有 caller 明确声明为 `Hard` 的规范化 pool-level boundary 才是结构 barrier。跨 barrier：
 
 ```text
 infinite / forbidden
 ```
+
+Alignment、onset、voicing transition 等模型/上下文证据可以影响分数或重置 melody prior，但不会自行升级为结构 barrier。
 
 ---
 
@@ -2750,7 +2759,6 @@ unsupported_contract_version
 invalid_contract
 invalid_audio_role
 multiple_primary_sources
-input_hash_mismatch
 decode_failed
 timeline_invalid
 invalid_constraints

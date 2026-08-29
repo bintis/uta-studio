@@ -1,9 +1,12 @@
 {
   description = "Uta! Studio AI chart editor and multi-format song exporter";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane";
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, crane }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -12,6 +15,7 @@
         let
           pname = "uta-studio";
           version = (builtins.fromTOML (builtins.readFile ./desktop/Cargo.toml)).package.version;
+          craneLib = crane.mkLib pkgs;
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
@@ -41,13 +45,11 @@
             stdenv.cc.cc
             zlib
           ];
-        in {
-          default = self.packages.${pkgs.stdenv.hostPlatform.system}."uta-studio";
 
-          "uta-studio" = pkgs.rustPlatform.buildRustPackage {
-            inherit pname version src;
+          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker";
 
-            cargoLock = { lockFile = ./Cargo.lock; };
+          commonArgs = {
+            inherit pname version src cargoExtraArgs;
 
             nativeBuildInputs = with pkgs; [
               makeWrapper
@@ -64,19 +66,28 @@
               vulkan-loader
               openssl
             ]);
+          };
 
-            buildPhase = ''
-              runHook preBuild
-              cargo build --release --locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
-              runHook postBuild
-            '';
+          # Dependency-only derivation, keyed on Cargo.toml/Cargo.lock via
+          # craneLib.cleanCargoSource rather than the full source tree.
+          # Editing app code, native-inference scripts, or desktop assets
+          # does not change this derivation's input hash, so `nix build`
+          # reuses the prebuilt dependency crates instead of recompiling
+          # the whole dependency graph from scratch every time.
+          cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+            src = craneLib.cleanCargoSource src;
+          });
+        in {
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}."uta-studio";
+
+          "uta-studio" = craneLib.buildPackage (commonArgs // {
+            inherit cargoArtifacts;
 
             preCheck = ''
               export PATH="$PWD/target/release:$PATH"
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/release/uta-analyze"
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/release/uta-runtime"
-              export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/release/uta-native-analyzer"
               export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/release/uta-openvino-worker"
               export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/release/uta-ggml-worker"
               export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/release/uta-qwen-asr-worker"
@@ -87,9 +98,7 @@
               runHook preInstall
               install -Dm755 target/release/uta-studio $out/bin/.uta-studio-unwrapped
               install -Dm755 target/release/uta-runtime $out/bin/.uta-runtime-unwrapped
-              install -Dm755 target/release/uta-analysis-engine $out/bin/.uta-analysis-engine-unwrapped
               install -Dm755 target/release/uta-analyze $out/bin/.uta-analyze-unwrapped
-              install -Dm755 target/release/uta-native-analyzer $out/bin/uta-native-analyzer
               install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
               install -Dm755 target/release/uta-ggml-worker $out/bin/uta-ggml-worker
               install -Dm755 target/release/uta-qwen-asr-worker $out/bin/uta-qwen-asr-worker
@@ -137,7 +146,6 @@
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               runtimeWrapperArgs=(
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg
-                --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer
                 --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker
                 --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker
@@ -146,14 +154,12 @@
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
               )
               makeWrapper $out/bin/.uta-runtime-unwrapped $out/bin/uta-runtime "''${runtimeWrapperArgs[@]}"
-              makeWrapper $out/bin/.uta-analysis-engine-unwrapped $out/bin/uta-analysis-engine "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-analyze-unwrapped $out/bin/uta-analyze "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-studio-unwrapped $out/bin/uta-studio \
                 --set UTA_STUDIO_ASSET_PATH $out/share/uta-studio \
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg \
                 --set UTA_STUDIO_ANALYSIS_CLI_PATH $out/bin/uta-analyze \
                 --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
-                --set UTA_STUDIO_NATIVE_ANALYZER_PATH $out/bin/uta-native-analyzer \
                 --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker \
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker \
                 --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker \
@@ -172,7 +178,7 @@
               mainProgram = "uta-studio";
               platforms = platforms.linux;
             };
-          };
+          });
         });
       devShells = forAllSystems (pkgs:
         let
@@ -215,10 +221,17 @@
               if [ -d "$HOME/.cargo/bin" ]; then
                 export PATH="$HOME/.cargo/bin:$PATH"
               fi
+              # Settings > Models & runtime scans for locally installed AI
+              # agent CLIs (claude, codex, gemini, ...) instead of asking the
+              # user to browse for one by hand. A binary launched from a
+              # desktop icon does not inherit this dev shell's PATH, so it
+              # cannot see tools this shell adds (e.g. via ~/.cargo/bin or a
+              # nix profile) unless that PATH is captured explicitly here and
+              # read back by the scanner as a preferred search path.
+              export UTA_STUDIO_AGENT_SEARCH_PATH="$PATH"
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
-              export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
               export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
               export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
               export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"

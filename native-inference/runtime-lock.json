@@ -2,12 +2,12 @@
   "schema_version": 1,
   "policy": {
     "generic_native_models": {
-      "preferred": "openvino",
+      "preferred": "model_pinned_native_backend",
       "fallback": "none",
       "on_no_validated_backend": "fail_closed",
-      "cpu": "reference_diagnostics_or_manifest_pinned_product_islands",
+      "cpu": "reference_diagnostics_only",
       "python": "forbidden_production_fallback",
-      "notes": "OpenVINO remains the pinned production route for non-Qwen models. Every existing IR route also exposes an explicit CPU-only diagnostic mode with no automatic fallback. Exact GGUF RoFormer artifacts may use the separate GGML/Vulkan experimental worker; that route is never selected implicitly. Qwen components keep their independent pinned GGML/Vulkan runtimes."
+      "notes": "Every model has one manifest-pinned Production backend: Vulkan for GGUF RoFormer and Qwen components, OpenVINO for current IR components. CPU routes are explicit diagnostics only and are never an automatic Production fallback."
     },
     "pinned_exceptions": [
       "qwen3_asr_1_7b",
@@ -24,7 +24,7 @@
       "production_backend": "openvino_gpu_with_manifest_pinned_cpu_islands",
       "cpu_plugin": true,
       "script_bindings": false,
-      "status": "validated_rmvpe_component"
+      "status": "production_ir_runtime"
     },
     "ggml_vulkan_v1": {
       "runtime_repository": "ggerganov/ggml",
@@ -33,9 +33,9 @@
       "build_recipe_sha256": "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a",
       "backend": "vulkan",
       "model_format": "gguf",
-      "validation": "experimental",
+      "validation": "production_pinned",
       "cpu_fallback": false,
-      "status": "explicit_non_production_candidate"
+      "status": "production_admitted"
     },
     "qwen3_forced_aligner_0_6b": {
       "runtime_repository": "predict-woo/qwen3-asr.cpp",
@@ -57,13 +57,7 @@
       "gguf_size_bytes": 1842216416,
       "gguf_format": "gguf_f16",
       "gguf_origin": "local_conversion",
-      "converter_repository": "predict-woo/qwen3-asr.cpp",
-      "converter_commit": "6dcc586e5073fd6e85ee5728e75f0903d6c70c6c",
-      "converter_script": "scripts/convert_hf_to_gguf.py",
-      "converter_patch": "native-inference/qwen-worker/patches/predict-woo-forced-aligner-flat-hf-converter.patch",
-      "converter_patch_sha256": "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6",
-      "converter_command": "PYTHONPATH=<pinned-llama.cpp>/gguf-py python3 scripts/convert_hf_to_gguf.py --input <Qwen3-ForcedAligner-0.6B-hf> --output qwen3-forced-aligner-predict-woo-f16.gguf --type f16",
-      "converter_expected_tensor_count": 708,
+      "conversion_recipe_digest": "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6",
       "text_normalization_profile": "qwen-align-text-preserve-v1",
       "language_normalization_profile": "qwen-align-language-v1",
       "supported_language_codes": [
@@ -84,8 +78,8 @@
       "local_import_receipt": "uta.runtime.install-manifest/v1",
       "notices": "native-inference/qwen-worker/THIRD_PARTY_NOTICES.md",
       "historical_evidence_id": "validation:qwen-vulkan-workers-2026-08-22",
-      "notes": "Canonical safetensors and locally converted GGUF identities are separate. Conversion uses the pinned upstream script plus the vendored flat-layout/classifier patch. Historical Vulkan evidence is bounded and does not establish current Production quality/stability policy.",
-      "status": "blocked_requires_vulkan_authorization"
+      "notes": "Canonical safetensors and locally converted GGUF identities are separate. Conversion uses the pinned upstream script plus the vendored flat-layout/classifier patch. The manifest-pinned Vulkan route is admitted under the repository owner's current Production policy; historical evidence remains bounded and visible.",
+      "status": "pinned_runtime_recipe"
     },
     "qwen3_asr_1_7b": {
       "runtime_repository": "handy-computer/transcribe.cpp",

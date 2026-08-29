@@ -13,7 +13,6 @@ use crate::cache::{
     CachePaths, normalized_target_path, relocate_directory_contents, songs_cache_dir,
     uta_studio_dir, vendor_dir,
 };
-use crate::native_runtime::{RUNTIME_LOCK_SHA256, native_runtime_lock};
 
 pub fn resolve_data_path_input(input: &str) -> Result<PathBuf, String> {
     normalized_target_path(PathBuf::from(input))
@@ -65,17 +64,12 @@ pub(crate) fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 pub(crate) fn runtime_client() -> Result<RuntimeCliClient, String> {
     RuntimeCliClient::discover()
-        .map(|client| {
-            client
-                .with_legacy_models(crate::cache::models_dir())
-                .with_policy(RuntimePolicyWireV1::Experimental)
-        })
+        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
         .map_err(|error| error.to_string())
 }
 
 pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<RuntimeResourceRefWireV1> {
     match target {
-        ModelDownloadTarget::SharedRuntime => RuntimeResourceRefWireV1::runtime("native_analyzer"),
         ModelDownloadTarget::RoFormer => RuntimeResourceRefWireV1::bundle("roformer"),
         ModelDownloadTarget::FireRed => RuntimeResourceRefWireV1::model("firered_asr2_aed"),
         ModelDownloadTarget::QwenAsr => RuntimeResourceRefWireV1::model("qwen3_asr_1_7b"),
@@ -93,10 +87,6 @@ pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<Runtime
 
 fn status_copy(target: ModelDownloadTarget) -> (&'static str, &'static str) {
     match target {
-        ModelDownloadTarget::SharedRuntime => (
-            "Native analysis runtime",
-            "Shared local worker and runtime components used by analysis models.",
-        ),
         ModelDownloadTarget::RoFormer => (
             "RoFormer audio processing",
             "Vocal, instrumental, harmony, denoise and dereverb resources.",
@@ -160,8 +150,7 @@ fn validation_label(validation: ValidationStateWireV1) -> &'static str {
     }
 }
 
-const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 10] = [
-    ModelDownloadTarget::SharedRuntime,
+const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 9] = [
     ModelDownloadTarget::RoFormer,
     ModelDownloadTarget::FireRed,
     ModelDownloadTarget::QwenAsr,
@@ -289,35 +278,6 @@ pub fn analysis_strategy_resource_statuses() -> Result<Vec<AnalysisStrategyResou
     analysis_strategy_resource_statuses_with_client(&runtime_client()?)
 }
 
-pub struct ModelAvailabilityParams<'a> {
-    pub _profile: &'a crate::analysis_profile::AnalysisProfileSnapshot,
-}
-pub fn model_availability_params_for_profile(
-    profile: &crate::analysis_profile::AnalysisProfileSnapshot,
-) -> ModelAvailabilityParams<'_> {
-    ModelAvailabilityParams { _profile: profile }
-}
-
-/// Legacy graph presentation only. The exact Analysis Engine plan is the sole
-/// readiness authority, so this bridge must remain allocation-only and must not
-/// launch Runtime Manager processes while the UI is rendering.
-pub fn node_model_availability_for(
-    _params: &ModelAvailabilityParams<'_>,
-) -> std::collections::BTreeMap<crate::analysis_graph::AnalysisNodeId, bool> {
-    use crate::analysis_graph::AnalysisNodeId;
-    [
-        "stems.separate",
-        "stems.vocals",
-        "stems.instrumental",
-        "pitch.extract",
-        "lyrics.transcribe",
-        "lyrics.align",
-    ]
-    .into_iter()
-    .map(|node| (AnalysisNodeId::new(node), true))
-    .collect()
-}
-
 fn find_status<'a>(
     statuses: &'a [RuntimeResourceStatusWireV1],
     resource: &str,
@@ -334,7 +294,6 @@ pub(super) fn analysis_runtime_status_with_clients(
         .and_then(|client| client.list().ok())
         .unwrap_or_default();
     let models = model_install_statuses_from_statuses(&statuses);
-    let runtime_lock_valid = native_runtime_lock().is_ok();
     let ffmpeg_available =
         find_status(&statuses, "tool:ffmpeg").is_some_and(|status| status.usable);
     let runtime_executable_ready = |id: &str| {
@@ -359,29 +318,23 @@ pub(super) fn analysis_runtime_status_with_clients(
     if !ffmpeg_available {
         missing.push("ffmpeg".to_string());
     }
-    if !runtime_lock_valid {
-        missing.push("runtime lock".to_string());
-    }
     AnalysisRuntimeStatus {
-        ready: analysis_ready && runtime_client.is_some() && ffmpeg_available && runtime_lock_valid,
+        ready: analysis_ready && runtime_client.is_some() && ffmpeg_available,
         runtime_contract_current: analysis_ready && runtime_client.is_some(),
         ffmpeg_available,
-        native_analyzer_available: runtime_executable_ready("native_analyzer"),
         openvino_runtime_available: runtime_executable_ready("openvino_2026_3"),
         ggml_vulkan_runtime_available: runtime_executable_ready("ggml_vulkan_v1"),
         qwen_asr_runtime_available: runtime_executable_ready("qwen_asr_runtime"),
         qwen_align_runtime_available: runtime_executable_ready("qwen_align_runtime"),
-        runtime_lock_valid,
         pitch_model_available: find_status(&statuses, "model:rmvpe")
             .is_some_and(|status| status.usable),
         selected_models_available,
         selected_models,
         models,
-        compute_backend: "Runtime Manager testing policy (experimental)".to_string(),
+        compute_backend: "Runtime Manager Production policy".to_string(),
         ffmpeg_path: ffmpeg
             .is_file()
             .then(|| ffmpeg.to_string_lossy().into_owned()),
-        runtime_lock_sha256: RUNTIME_LOCK_SHA256.to_string(),
         missing,
     }
 }
@@ -406,7 +359,7 @@ pub fn invalidate_analysis_runtime_status_cache() {
         cache.refreshed_at = None;
     }
     crate::audio_processing::invalidate_audio_model_catalog_cache();
-    crate::native_runtime::invalidate_native_runtime_registry_cache();
+    crate::runtime_presentation::invalidate_runtime_presentation_cache();
 }
 
 fn compute_analysis_runtime_status() -> AnalysisRuntimeStatus {

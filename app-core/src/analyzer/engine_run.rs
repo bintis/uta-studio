@@ -1,18 +1,30 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path, PathBuf},
+};
 
 use super::*;
-use crate::analysis_artifact::{ArtifactRevision, ArtifactStore, revision_to_row};
+use crate::analysis_artifact::{
+    ArtifactRevision, ArtifactStore, materialize_artifact_revision_compatibility, revision_to_row,
+};
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::backend_cli::{
     ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AUDIO_QUALITY_REPORT_CONTRACT,
-    AUDIO_QUALITY_REPORT_VERSION, AnalysisCancelHandle, AnalysisCliClient, AnalysisPlanWireV1,
-    AnalysisResultManifestWireV1, AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1,
-    AudioRoleWireV1, QualityGateRequirementWireV1, QualityGateStatusWireV1,
+    AUDIO_QUALITY_REPORT_VERSION, AnalysisCancelHandle, AnalysisCliClient,
+    AnalysisLifecycleFrameWireV1, AnalysisPlanWireV1, AnalysisResultManifestWireV1,
+    AnalysisReusePolicyWireV1, AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1,
+    AudioQualityReportWireV1, AudioRoleWireV1, AudioSourceWireV1, BackendCliError,
+    FusionDecisionProvenanceWireV1, FusionModeWireV1, QualityGateRequirementWireV1,
+    QualityGateStatusWireV1, QualityRegionWireV1, VocalTopologyModeWireV1,
 };
 use crate::library_db::EngineQueueIntent;
 
 static ACTIVE_ENGINE_CANCELS: LazyLock<Mutex<HashMap<String, (String, AnalysisCancelHandle)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const SOURCE_DURATION_METADATA_TOLERANCE: u64 = 100_000;
+const SUPPORTED_AUDIO_QUALITY_ALGORITHMS: [&str; 2] =
+    ["audio-quality-gates-v1", "audio-quality-gates-v2"];
 
 pub(crate) fn cancel_active_engine(file_hash: &str) -> Option<Result<(), String>> {
     let guard = ACTIVE_ENGINE_CANCELS.lock().unwrap();
@@ -51,17 +63,20 @@ pub(crate) fn process_engine_queue_intent(
             implementation: "uta-analyze process protocol".to_string(),
             model: "Engine plan".to_string(),
             device: "Resolved by Engine".to_string(),
-            requested_device: "Testing / Experimental".to_string(),
+            requested_device: "Production policy".to_string(),
             fallback_from: None,
             fallback_reason: None,
             backend_fallback_from: None,
             backend_fallback_reason: None,
             stage_routes: Vec::new(),
             node_id: None,
+            engine_node_id: None,
+            capability_id: None,
             node_event: Some("started".to_string()),
             artifact_reused_reason: None,
             analysis_log_path: log_path.clone(),
             engine: Some(engine_projection),
+            engine_error: None,
         },
     );
     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
@@ -91,7 +106,26 @@ pub(crate) fn process_engine_queue_intent(
             append_analysis_log_path(log_path.as_deref(), &error);
             let cancelled = error.starts_with("cancelled:");
             if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
-                snapshot.detail = error.clone();
+                snapshot.detail = snapshot.engine_error.as_ref().map_or_else(
+                    || error.clone(),
+                    |structured| {
+                        format!(
+                            "{}: {}{}{}",
+                            structured.code,
+                            structured.message,
+                            structured
+                                .capability
+                                .as_deref()
+                                .map(|value| format!(" · capability {value}"))
+                                .unwrap_or_default(),
+                            structured
+                                .resource
+                                .as_deref()
+                                .map(|value| format!(" · resource {value}"))
+                                .unwrap_or_default()
+                        )
+                    },
+                );
                 snapshot.node_event =
                     Some(if cancelled { "cancelled" } else { "failed" }.to_string());
             }
@@ -99,6 +133,7 @@ pub(crate) fn process_engine_queue_intent(
                 finish_analysis_history(file_hash, "cancelled", Some(&error));
                 remove_from_queue(file_hash);
             } else {
+                finish_analysis_history(file_hash, "failed", Some(&error));
                 update_queue_status(file_hash, QueuedStatus::Failed(error));
             }
             LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
@@ -134,11 +169,8 @@ fn execute_exact_intent(
         return Err("persisted Engine request or plan contract is unsupported".to_string());
     }
     let source = crate::analysis_engine_adapter::resolve_true_source(file_hash)?;
-    let primary = request
-        .audio_sources
-        .iter()
-        .find(|source| source.primary)
-        .ok_or_else(|| "persisted Engine request has no primary source".to_string())?;
+    let expected_source_duration = app_owned_source_duration(file_hash)?;
+    let primary = validated_primary_source_binding(&request, &plan)?;
     if source.path != intent.source_path
         || primary.path != source.path
         || primary.role != source.role
@@ -163,17 +195,24 @@ fn execute_exact_intent(
             file_hash.to_string(),
             (intent.request_id.clone(), client.cancellation_handle()),
         );
-        let analysis = client.analyze(&request_value, &intent.request_id, &output_root);
+        let analysis =
+            client.analyze_with_events(&request_value, &intent.request_id, &output_root, |event| {
+                apply_engine_lifecycle_event(file_hash, log_path, event)
+            });
         ACTIVE_ENGINE_CANCELS.lock().unwrap().remove(file_hash);
         let stderr = client.stderr_log();
         if !stderr.is_empty() {
             append_analysis_log_path(log_path, &format!("uta-analyze stderr: {stderr}"));
         }
-        let manifest = analysis.map_err(|error| error.to_string())?;
+        let manifest = analysis.map_err(|error| {
+            preserve_engine_error(file_hash, &error);
+            error.to_string()
+        })?;
         validate_and_publish_engine_result(
             file_hash,
             cache,
             &output_root,
+            expected_source_duration,
             &request,
             &plan,
             &manifest,
@@ -186,10 +225,299 @@ fn execute_exact_intent(
     outcome
 }
 
+fn validated_primary_source_binding<'a>(
+    request: &'a AnalyzeRequestWireV1,
+    plan: &AnalysisPlanWireV1,
+) -> Result<&'a AudioSourceWireV1, String> {
+    let mut primaries = request.audio_sources.iter().filter(|source| source.primary);
+    let primary = primaries
+        .next()
+        .ok_or_else(|| "persisted Engine request has no primary source".to_string())?;
+    if primaries.next().is_some()
+        || primary.timeline.timebase != crate::backend_cli::CANONICAL_TIMEBASE
+        || plan.source_route.primary_source_id != primary.id
+        || plan.source_route.input_role != primary.role
+    {
+        return Err("Engine request and Plan primary-source binding is invalid".to_string());
+    }
+    Ok(primary)
+}
+
+fn audio_role_name(role: AudioRoleWireV1) -> &'static str {
+    match role {
+        AudioRoleWireV1::OriginalMix => "original_mix",
+        AudioRoleWireV1::VocalStem => "vocal_stem",
+        AudioRoleWireV1::GuideVocals => "guide_vocals",
+        AudioRoleWireV1::LeadVocal => "lead_vocal",
+        AudioRoleWireV1::CleanLeadVocal => "clean_lead_vocal",
+        AudioRoleWireV1::Instrumental => "instrumental",
+        AudioRoleWireV1::BackingVocal => "backing_vocal",
+        AudioRoleWireV1::HarmonyVocal => "harmony_vocal",
+    }
+}
+
+fn evaluated_audio_role_matches_plan(plan: &AnalysisPlanWireV1, evaluated_role: &str) -> bool {
+    let baseline_role = if plan
+        .source_route
+        .preparation
+        .iter()
+        .any(|capability| capability.as_str() == "audio.lead_isolate")
+    {
+        AudioRoleWireV1::LeadVocal
+    } else if plan
+        .source_route
+        .preparation
+        .iter()
+        .any(|capability| capability.as_str() == "audio.extract_vocals")
+    {
+        AudioRoleWireV1::GuideVocals
+    } else {
+        plan.source_route.input_role
+    };
+    evaluated_role == audio_role_name(baseline_role)
+        || (matches!(
+            baseline_role,
+            AudioRoleWireV1::VocalStem
+                | AudioRoleWireV1::GuideVocals
+                | AudioRoleWireV1::LeadVocal
+                | AudioRoleWireV1::CleanLeadVocal
+        ) && workflow_analysis_route_uses_cleanup(plan)
+            && evaluated_role == audio_role_name(AudioRoleWireV1::CleanLeadVocal))
+}
+
+fn workflow_analysis_route_uses_cleanup(plan: &AnalysisPlanWireV1) -> bool {
+    let Some(workflow) = plan.workflow_execution.as_ref() else {
+        return plan
+            .execution_nodes
+            .iter()
+            .any(|node| matches!(node.capability.as_str(), "audio.denoise" | "audio.dereverb"));
+    };
+    let analyzer_roots = workflow.nodes.iter().flat_map(|node| {
+        node.input_bindings.iter().filter_map(|binding| {
+            (node.execution_state == crate::backend_cli::WorkflowNodeExecutionStateWireV1::Ready
+                && binding.execution_active
+                && binding.analyzer_attachment
+                && binding.semantic_type == "audio")
+                .then_some(binding.from_node.as_str())
+        })
+    });
+    let terminal_audio_roots = workflow
+        .terminal_outputs
+        .iter()
+        .filter(|output| output.semantic_type == "audio")
+        .map(|output| output.node.as_str());
+    analyzer_roots
+        .chain(terminal_audio_roots)
+        .any(|node| workflow_path_uses_cleanup(workflow, node, &mut BTreeSet::new()))
+}
+
+fn workflow_path_uses_cleanup(
+    workflow: &crate::backend_cli::WorkflowExecutionPlanWireV1,
+    analysis_node: &str,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    if !visited.insert(analysis_node.to_string()) {
+        return false;
+    }
+    let Some(node) = workflow
+        .nodes
+        .iter()
+        .find(|node| node.analysis_node == analysis_node)
+    else {
+        return false;
+    };
+    if node.execution_state != crate::backend_cli::WorkflowNodeExecutionStateWireV1::Ready {
+        return false;
+    }
+    if node
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "audio.denoise" | "audio.dereverb"))
+    {
+        return true;
+    }
+    node.input_bindings.iter().any(|binding| {
+        binding.execution_active
+            && !binding.analyzer_attachment
+            && binding.semantic_type == "audio"
+            && workflow_path_uses_cleanup(workflow, &binding.from_node, visited)
+    })
+}
+
+fn app_owned_source_duration(file_hash: &str) -> Result<u64, String> {
+    let song = crate::library_db::load_song_by_hash(file_hash)
+        .map_err(|error| format!("could not load app-owned source duration: {error}"))?
+        .ok_or_else(|| "app-owned source duration is unavailable".to_string())?;
+    let duration = song.duration_secs * f64::from(crate::backend_cli::CANONICAL_TIMEBASE);
+    if !duration.is_finite() || duration < 1.0 || duration >= u64::MAX as f64 {
+        return Err("app-owned source duration is invalid".to_string());
+    }
+    Ok(duration.round() as u64)
+}
+
+fn preserve_engine_error(file_hash: &str, error: &BackendCliError) {
+    let BackendCliError::Domain {
+        code,
+        message,
+        retryable,
+        request_id,
+        capability,
+        resource,
+    } = error
+    else {
+        return;
+    };
+    if let Some(snapshot) = LIVE_ANALYSIS.lock().unwrap().get_mut(file_hash) {
+        snapshot.engine_error = Some(EngineErrorHistoryProjection {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+            request_id: request_id.clone(),
+            capability: capability.clone(),
+            resource: resource.clone(),
+        });
+    }
+}
+
+fn apply_engine_lifecycle_event(
+    file_hash: &str,
+    log_path: Option<&Path>,
+    event: AnalysisLifecycleFrameWireV1,
+) {
+    append_analysis_lifecycle_log(log_path, &event);
+    let presentation_node_id = event
+        .presentation_node_id
+        .clone()
+        .unwrap_or_else(|| event.node_id.clone());
+    let message = event
+        .message
+        .clone()
+        .unwrap_or_else(|| event.capability_id.clone());
+    let model = event
+        .model_id
+        .clone()
+        .unwrap_or_else(|| "Engine native".to_string());
+    let measured_progress = event
+        .work_units_completed
+        .zip(event.work_units_total)
+        .zip(event.worker_task_id.as_deref())
+        .and_then(|((completed, total), task_id)| {
+            (total > 0 && completed <= total && !task_id.trim().is_empty())
+                .then_some(((completed.saturating_mul(100) / total).min(100)) as usize)
+        });
+    let terminal = matches!(event.frame_type.as_str(), "node_completed" | "node_failed");
+    let started = matches!(
+        event.frame_type.as_str(),
+        "node_started" | "node_progress" | "artifact"
+    );
+
+    let mut live = LIVE_ANALYSIS.lock().unwrap();
+    let Some(snapshot) = live.get_mut(file_hash) else {
+        return;
+    };
+    if matches!(event.frame_type.as_str(), "warning" | "degraded") {
+        snapshot.detail = message;
+        snapshot.node_event = Some(event.frame_type);
+        return;
+    }
+    let previous_measured_progress = snapshot
+        .stage_routes
+        .iter()
+        .rev()
+        .find(|route| {
+            route.node_id.as_deref() == Some(presentation_node_id.as_str())
+                && route.engine_node_id.as_deref() == Some(event.node_id.as_str())
+                && route.node_event.as_deref() == Some("node_progress")
+        })
+        .map(|route| route.stage_progress);
+    snapshot.stage = event.capability_id.clone();
+    snapshot.stage_progress = if event.frame_type == "node_completed" {
+        100
+    } else if event.frame_type == "node_progress" {
+        measured_progress.unwrap_or(0)
+    } else if event.frame_type == "node_started" {
+        0
+    } else {
+        previous_measured_progress.unwrap_or(0)
+    };
+    snapshot.operation = message.clone();
+    snapshot.detail = format!("{} · {}", event.capability_id, model);
+    snapshot.implementation = event.implementation.clone();
+    snapshot.model = model.clone();
+    snapshot.device = "Engine-resolved; see Plan/Result provenance".to_string();
+    snapshot.requested_device = "Production policy".to_string();
+    snapshot.node_id = Some(presentation_node_id.clone());
+    snapshot.engine_node_id = Some(event.node_id.clone());
+    snapshot.capability_id = Some(event.capability_id.clone());
+    snapshot.node_event = Some(event.frame_type.clone());
+
+    let route_exists = snapshot.stage_routes.iter().any(|route| {
+        route.node_id.as_deref() == Some(presentation_node_id.as_str())
+            && route.engine_node_id.as_deref() == Some(event.node_id.as_str())
+    });
+    if !route_exists {
+        snapshot.stage_routes.push(AnalysisStageRoute {
+            stage: event.capability_id.clone(),
+            node_id: Some(presentation_node_id),
+            engine_node_id: Some(event.node_id),
+            capability_id: Some(event.capability_id),
+            node_event: None,
+            binding_kind: None,
+            committed_outputs: Vec::new(),
+            input_revision_ids: Vec::new(),
+            operation: message,
+            implementation: event.implementation,
+            model,
+            stage_progress: 0,
+            requested_device: "Production policy".to_string(),
+            actual_device: "Engine-resolved".to_string(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
+            event_at_ms: None,
+            work_units_completed: None,
+            work_units_total: None,
+            worker_task_id: None,
+        });
+    }
+    let current_node_id = snapshot.node_id.clone();
+    let current_engine_node_id = snapshot.engine_node_id.clone();
+    let route = snapshot
+        .stage_routes
+        .iter_mut()
+        .find(|route| {
+            route.node_id == current_node_id && route.engine_node_id == current_engine_node_id
+        })
+        .expect("the lifecycle route was found or inserted");
+    if event.frame_type != "artifact" {
+        route.node_event = Some(event.frame_type.clone());
+    }
+    route.operation = snapshot.operation.clone();
+    route.implementation = snapshot.implementation.clone();
+    route.model = snapshot.model.clone();
+    route.stage_progress = snapshot.stage_progress;
+    route.event_at_ms = Some(event.event_at_ms);
+    if event.frame_type == "node_progress" {
+        route.work_units_completed = event.work_units_completed;
+        route.work_units_total = event.work_units_total;
+        route.worker_task_id = event.worker_task_id;
+    }
+    if started && route.started_at_ms.is_none() {
+        route.started_at_ms = Some(event.event_at_ms);
+    }
+    if terminal {
+        route.finished_at_ms = Some(event.event_at_ms);
+    }
+}
+
 fn validate_and_publish_engine_result(
     file_hash: &str,
     cache: &CacheDir,
     output_root: &Path,
+    expected_source_duration: u64,
     request: &AnalyzeRequestWireV1,
     plan: &AnalysisPlanWireV1,
     manifest: &AnalysisResultManifestWireV1,
@@ -222,7 +550,6 @@ fn validate_and_publish_engine_result(
     for version in [
         &manifest.provenance.calibration_version,
         &manifest.provenance.fusion_version,
-        &manifest.provenance.hsmm_version,
         &manifest.provenance.quantization_version,
         &manifest.provenance.audio_quality_version,
         &manifest.provenance.postprocess_version,
@@ -231,8 +558,9 @@ fn validate_and_publish_engine_result(
             return Err("Engine result algorithm provenance is incomplete".to_string());
         }
     }
+    validate_fusion_decision_result(plan, manifest)?;
     validate_quantization_result(request, manifest)?;
-    validate_audio_quality_result(request, plan, manifest)?;
+    validate_audio_quality_result(request, plan, manifest, expected_source_duration)?;
     for resource in &manifest.provenance.resources {
         for field in [
             "resource",
@@ -308,6 +636,7 @@ fn validate_and_publish_engine_result(
     let store = ArtifactStore::new(&cache.path)?;
     let mut revisions = Vec::new();
     let mut activations = Vec::new();
+    let mut complete_chart_revisions = Vec::new();
     let created_at_ms = unix_time_ms();
     for (semantic, artifact, kind, producer) in artifacts {
         let expected_media = declared
@@ -319,6 +648,7 @@ fn validate_and_publish_engine_result(
             return Err(format!("Engine artifact {semantic} media type mismatch"));
         }
         let path = validate_artifact(&output_root, artifact)?;
+        validate_semantic_artifact(&semantic, &path)?;
         let (immutable_path, content_hash, byte_size) = store.capture(file_hash, kind, &path)?;
         let revision = ArtifactRevision {
             id: format!("{file_hash}:{semantic}:{content_hash}"),
@@ -341,16 +671,126 @@ fn validate_and_publish_engine_result(
             serde_json::to_string(&kind).unwrap_or_default(),
             revision.id.clone(),
         ));
+        if kind == ArtifactKind::CandidateChart {
+            complete_chart_revisions.push(revision.clone());
+        }
         revisions.push(revision_to_row(&revision));
     }
-    crate::library_db::analysis_artifacts_publish_batch(&revisions, &activations)
-        .map_err(|error| error.to_string())
+    let analyzed_file_hashes = (!complete_chart_revisions.is_empty())
+        .then(|| file_hash.to_string())
+        .into_iter()
+        .collect::<Vec<_>>();
+    crate::library_db::analysis_artifacts_publish_batch(
+        &revisions,
+        &activations,
+        &analyzed_file_hashes,
+    )
+    .map_err(|error| error.to_string())?;
+    for revision in &complete_chart_revisions {
+        if let Err(error) = materialize_artifact_revision_compatibility(&cache.path, revision) {
+            warn!(
+                "[analyzer] Published chart {} but could not refresh compatibility output: {error}",
+                revision.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn valid_decision_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_fusion_decision_result(
+    plan: &AnalysisPlanWireV1,
+    manifest: &AnalysisResultManifestWireV1,
+) -> Result<(), String> {
+    let candidate_graph_planned = plan
+        .execution_nodes
+        .iter()
+        .any(|node| node.capability.as_str() == "fusion.candidate_graph");
+    let Some(decision) = manifest.provenance.fusion_decision.as_ref() else {
+        return if candidate_graph_planned {
+            Err("Engine result omitted final fusion decision provenance".to_string())
+        } else {
+            Ok(())
+        };
+    };
+    if !candidate_graph_planned {
+        return Err("Engine result reported a fusion decision for an unplanned stage".to_string());
+    }
+    let planned_mode = plan
+        .workflow_execution
+        .as_ref()
+        .map_or(FusionModeWireV1::Algorithm, |workflow| workflow.fusion_mode);
+    let (candidate_set_digest, selected_candidate_ids) = match decision {
+        FusionDecisionProvenanceWireV1::Algorithm {
+            selector,
+            selector_version,
+            candidate_set_digest,
+            selected_candidate_ids,
+            reuse_policy,
+        } => {
+            if planned_mode != FusionModeWireV1::Algorithm
+                || selector != "hsmm_viterbi"
+                || selector_version != "hsmm-v15"
+                || *reuse_policy != AnalysisReusePolicyWireV1::Deterministic
+            {
+                return Err(
+                    "Engine algorithmic fusion provenance does not match the exact plan"
+                        .to_string(),
+                );
+            }
+            (candidate_set_digest, selected_candidate_ids)
+        }
+        FusionDecisionProvenanceWireV1::AiJudgment {
+            adapter_resource,
+            adapter_protocol,
+            adapter_protocol_version,
+            adapter_identity,
+            adapter_version,
+            candidate_set_digest,
+            selected_candidate_ids,
+            response_digest,
+            reuse_policy,
+        } => {
+            if planned_mode != FusionModeWireV1::AiJudgment
+                || adapter_resource != "tool:fusion_agent_adapter"
+                || adapter_protocol != "uta.fusion_agent_request/uta.fusion_agent_response"
+                || *adapter_protocol_version != 3
+                || adapter_identity.trim().is_empty()
+                || adapter_version.trim().is_empty()
+                || !valid_decision_digest(response_digest)
+                || *reuse_policy != AnalysisReusePolicyWireV1::PreservedRevisionOnly
+            {
+                return Err(
+                    "Engine AI judgment provenance does not match the exact plan and adapter contract"
+                        .to_string(),
+                );
+            }
+            (candidate_set_digest, selected_candidate_ids)
+        }
+    };
+    let mut unique_ids = BTreeSet::new();
+    if !valid_decision_digest(candidate_set_digest)
+        || selected_candidate_ids.is_empty()
+        || selected_candidate_ids
+            .iter()
+            .any(|id| id.trim().is_empty() || !unique_ids.insert(id))
+    {
+        return Err("Engine fusion decision candidate identity is invalid".to_string());
+    }
+    Ok(())
 }
 
 fn validate_audio_quality_result(
     request: &AnalyzeRequestWireV1,
     plan: &AnalysisPlanWireV1,
     manifest: &AnalysisResultManifestWireV1,
+    expected_source_duration: u64,
 ) -> Result<(), String> {
     const GATE_ORDER: &[&str] = &[
         "timeline_valid",
@@ -359,23 +799,36 @@ fn validate_audio_quality_result(
         "silence_ratio",
         "energy_ratio",
         "lead_purity",
+        "vocal_leakage",
+        "musical_damage",
         "cleanup_consistency",
         "vocal_topology",
     ];
     let report = manifest.diagnostics.audio_quality.as_ref().ok_or_else(|| {
         "Engine omitted audio quality diagnostics for an executable Plan".to_string()
     })?;
+    let primary = validated_primary_source_binding(request, plan)?;
+    let source_start = primary.timeline.source_start;
+    let source_end = source_start
+        .checked_add(expected_source_duration)
+        .ok_or_else(|| "App-owned source timeline overflows".to_string())?;
+    let report_end = source_start
+        .checked_add(report.duration)
+        .ok_or_else(|| "Engine audio quality timeline overflows".to_string())?;
     if report.contract != AUDIO_QUALITY_REPORT_CONTRACT
         || report.version != AUDIO_QUALITY_REPORT_VERSION
+        || !SUPPORTED_AUDIO_QUALITY_ALGORITHMS.contains(&report.algorithm.as_str())
         || report.algorithm != manifest.provenance.audio_quality_version
         || report.profile != request.analysis.profile
-        || report.evaluated_audio_role.trim().is_empty()
+        || !evaluated_audio_role_matches_plan(plan, &report.evaluated_audio_role)
         || report.duration == 0
+        || report.duration.abs_diff(expected_source_duration) > SOURCE_DURATION_METADATA_TOLERANCE
         || report.planned_gates != plan.quality_gates
         || report.outcomes.len() != plan.quality_gates.len()
     {
         return Err("Engine audio quality report identity or Plan binding is invalid".to_string());
     }
+    validate_vocal_topology_result(request, plan, report, expected_source_duration)?;
     let mut previous_order = None;
     let mut degrading_uncertainty = false;
     for (planned, outcome) in plan.quality_gates.iter().zip(&report.outcomes) {
@@ -412,16 +865,87 @@ fn validate_audio_quality_result(
                 return Err("Engine audio quality metric is invalid".to_string());
             }
         }
-        if outcome
+        if outcome.regions.iter().any(|region| {
+            region.start < source_start
+                || region.end > source_end
+                || region.end > report_end
+                || region.start >= region.end
+                || region.reason.trim().is_empty()
+        }) || outcome
             .regions
-            .iter()
-            .any(|region| region.start >= region.end || region.reason.trim().is_empty())
+            .windows(2)
+            .any(|pair| pair[0].end > pair[1].start)
         {
             return Err("Engine audio quality region is invalid".to_string());
         }
     }
     if degrading_uncertainty && manifest.status != AnalysisStatusWireV1::OkDegraded {
         return Err("Engine audio quality uncertainty was not surfaced as degraded".to_string());
+    }
+    Ok(())
+}
+
+fn validate_vocal_topology_result(
+    request: &AnalyzeRequestWireV1,
+    plan: &AnalysisPlanWireV1,
+    report: &AudioQualityReportWireV1,
+    expected_source_duration: u64,
+) -> Result<(), String> {
+    let required = plan
+        .quality_gates
+        .iter()
+        .any(|gate| gate == "vocal_topology");
+    let Some(topology) = report.vocal_topology.as_ref() else {
+        return if required {
+            Err("Engine omitted planned typed vocal topology evidence".to_string())
+        } else {
+            Ok(())
+        };
+    };
+    let source_start = validated_primary_source_binding(request, plan)?
+        .timeline
+        .source_start;
+    let source_end = source_start
+        .checked_add(expected_source_duration)
+        .ok_or_else(|| "App-owned vocal topology timeline overflows".to_string())?;
+    let topology_end = source_start
+        .checked_add(topology.duration)
+        .ok_or_else(|| "Engine vocal topology timeline overflows".to_string())?;
+    let valid_regions = |regions: &[QualityRegionWireV1]| {
+        regions.iter().all(|region| {
+            region.start >= source_start
+                && region.end <= source_end
+                && region.end <= topology_end
+                && region.start < region.end
+                && !region.reason.trim().is_empty()
+        }) && regions.windows(2).all(|pair| pair[0].end <= pair[1].start)
+    };
+    let mode_shape_valid = match topology.mode {
+        VocalTopologyModeWireV1::SingleLead | VocalTopologyModeWireV1::Unknown => {
+            topology.overlap_regions.is_empty() && topology.support_regions.is_empty()
+        }
+        VocalTopologyModeWireV1::AlternatingMultiLead => topology.overlap_regions.is_empty(),
+        VocalTopologyModeWireV1::OverlappingMultiLead => !topology.overlap_regions.is_empty(),
+        VocalTopologyModeWireV1::LeadWithSupport => !topology.support_regions.is_empty(),
+    };
+    if topology.contract != "uta.analysis-engine.vocal-topology-estimate"
+        || topology.version != 1
+        || topology.timebase != 1_000_000
+        || topology.source_start != source_start
+        || topology.duration != report.duration
+        || topology.evidence_sources.is_empty()
+        || topology
+            .evidence_sources
+            .iter()
+            .any(|source| source.trim().is_empty())
+        || topology
+            .confidence
+            .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+        || !valid_regions(&topology.overlap_regions)
+        || !valid_regions(&topology.support_regions)
+        || !mode_shape_valid
+    {
+        return Err("Engine typed vocal topology evidence is invalid".to_string());
     }
     Ok(())
 }
@@ -542,6 +1066,28 @@ fn result_artifacts(
     result
 }
 
+fn validate_semantic_artifact(semantic: &str, path: &Path) -> Result<(), String> {
+    if semantic != "candidate_vocal_chart" {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(path).map_err(|error| format!("could not read Candidate chart: {error}"))?,
+    )
+    .map_err(|error| format!("Engine Candidate chart is not valid JSON: {error}"))?;
+    let chart = if value.get("contract").and_then(serde_json::Value::as_str)
+        == Some("uta.analysis-engine.candidate-vocal-chart")
+    {
+        crate::vocal_chart::migrate_engine_candidate_chart(&value)
+            .map_err(|error| format!("Engine Candidate projection is invalid: {error}"))?
+    } else {
+        serde_json::from_value::<utz::VocalChartV1>(value)
+            .map_err(|error| format!("Engine Candidate VocalChart is invalid: {error}"))?
+    };
+    chart
+        .validate()
+        .map_err(|error| format!("Engine Candidate VocalChart failed validation: {error}"))
+}
+
 fn validate_artifact(output_root: &Path, artifact: &ArtifactRefWireV1) -> Result<PathBuf, String> {
     if artifact.path.is_absolute()
         || artifact.path.as_os_str().is_empty()
@@ -634,6 +1180,47 @@ mod tests {
     }
 
     #[test]
+    fn candidate_semantics_are_validated_before_artifact_capture() {
+        let root = temp_root("candidate-semantics");
+        let valid = serde_json::json!({
+            "format":"uta.vocal-chart","format_version":"0.3.0","timebase":1000000,
+            "language":"ja","tracks":[{
+                "id":"lead","role":"lead","phrases":[{
+                    "id":"phrase-1","notes":[{
+                        "id":"note-1","start":0,"duration":500000,
+                        "pitch":{"midi":69,"cents":0},"vocal_mode":"pitched",
+                        "bonus":"normal","scoring":{"mode":"pitch","weight":1.0},
+                        "lyrics":[{"id":"lyric-1","text":"歌","join_before":"none"}]
+                    }]
+                }]
+            }]
+        });
+        let valid_path = root.join("valid.json");
+        std::fs::write(&valid_path, serde_json::to_vec(&valid).unwrap()).unwrap();
+        validate_semantic_artifact("candidate_vocal_chart", &valid_path).unwrap();
+
+        let invalid_path = root.join("invalid.json");
+        std::fs::write(
+            &invalid_path,
+            br#"{"contract":"uta.analysis-engine.candidate-vocal-chart","version":1}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_semantic_artifact("candidate_vocal_chart", &invalid_path)
+                .unwrap_err()
+                .contains("projection is invalid")
+        );
+        let malformed_path = root.join("malformed.json");
+        std::fs::write(&malformed_path, b"{").unwrap();
+        assert!(
+            validate_semantic_artifact("candidate_vocal_chart", &malformed_path)
+                .unwrap_err()
+                .contains("not valid JSON")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn quantization_wire_result_matches_exact_request_intent() {
         let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"quantized",
@@ -701,7 +1288,50 @@ mod tests {
             "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"},
             "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":[]
         })).unwrap();
-        validate_audio_quality_result(&request, &plan, &manifest).unwrap();
+        validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).unwrap();
+
+        let mut unsupported_algorithm = manifest.clone();
+        unsupported_algorithm
+            .diagnostics
+            .audio_quality
+            .as_mut()
+            .unwrap()
+            .algorithm = "audio-quality-gates-v3".to_string();
+        unsupported_algorithm.provenance.audio_quality_version =
+            "audio-quality-gates-v3".to_string();
+        assert!(
+            validate_audio_quality_result(&request, &plan, &unsupported_algorithm, 1_000_000,)
+                .is_err()
+        );
+
+        let mut invalid_timebase = request.clone();
+        invalid_timebase.audio_sources[0].timeline.timebase = 1_000;
+        assert!(
+            validate_audio_quality_result(&invalid_timebase, &plan, &manifest, 1_000_000).is_err()
+        );
+        let mut duplicate_primary = request.clone();
+        let mut duplicate = duplicate_primary.audio_sources[0].clone();
+        duplicate.id = "duplicate".to_string();
+        duplicate_primary.audio_sources.push(duplicate);
+        assert!(
+            validate_audio_quality_result(&duplicate_primary, &plan, &manifest, 1_000_000).is_err()
+        );
+        let mut mismatched_plan = plan.clone();
+        mismatched_plan.source_route.primary_source_id = "other".to_string();
+        assert!(
+            validate_audio_quality_result(&request, &mismatched_plan, &manifest, 1_000_000)
+                .is_err()
+        );
+        let mut mismatched_role = manifest.clone();
+        mismatched_role
+            .diagnostics
+            .audio_quality
+            .as_mut()
+            .unwrap()
+            .evaluated_audio_role = "original_mix".to_string();
+        assert!(
+            validate_audio_quality_result(&request, &plan, &mismatched_role, 1_000_000).is_err()
+        );
 
         manifest
             .diagnostics
@@ -710,7 +1340,7 @@ mod tests {
             .unwrap()
             .planned_gates
             .pop();
-        assert!(validate_audio_quality_result(&request, &plan, &manifest).is_err());
+        assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
         manifest
             .diagnostics
             .audio_quality
@@ -724,9 +1354,402 @@ mod tests {
             .unwrap()
             .outcomes[2];
         clipping.status = QualityGateStatusWireV1::Unknown;
-        assert!(validate_audio_quality_result(&request, &plan, &manifest).is_err());
+        assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
         manifest.status = AnalysisStatusWireV1::OkDegraded;
-        validate_audio_quality_result(&request, &plan, &manifest).unwrap();
+        validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).unwrap();
+        let report = manifest.diagnostics.audio_quality.as_mut().unwrap();
+        report.duration = 1_100_000;
+        report.outcomes[2].regions.push(QualityRegionWireV1 {
+            start: 1_000_000,
+            end: 1_050_000,
+            reason: "outside_app_owned_source".to_string(),
+        });
+        assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
+        let report = manifest.diagnostics.audio_quality.as_mut().unwrap();
+        report.outcomes[2].regions.clear();
+        report.duration = 1_100_001;
+        assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
+        let report = manifest.diagnostics.audio_quality.as_mut().unwrap();
+        report.duration = 1_000_000;
+        report.outcomes[2].regions = vec![
+            QualityRegionWireV1 {
+                start: 100,
+                end: 300,
+                reason: "first".to_string(),
+            },
+            QualityRegionWireV1 {
+                start: 200,
+                end: 400,
+                reason: "overlap".to_string(),
+            },
+        ];
+        assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
+    }
+
+    #[test]
+    fn clean_evaluated_role_requires_a_bound_workflow_cleanup_route() {
+        let mut plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"role-route",
+            "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+            "requested_outputs":["pitch_evidence"],"required_capabilities":[],
+            "optional_capabilities":["audio.denoise"],
+            "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+            "resolved_resources":[],"execution_nodes":[],"quality_gates":[],
+            "fallback_policy":[],"artifact_declarations":[],
+            "workflow_execution":{
+                "identity":{"contract":"uta.workflow-execution-plan","version":1,
+                    "workflow_schema_version":1,"workflow_id":"role-route","workflow_revision":1,
+                    "definition_digest":"fixture"},
+                "nodes":[
+                    {"instance_id":"source","analysis_node":"workflow.source",
+                        "capabilities":["audio.source"],"execution_policy":"always",
+                        "execution_state":"ready","priority":100,"input_bindings":[]},
+                    {"instance_id":"cleanup","analysis_node":"workflow.cleanup",
+                        "capabilities":["audio.denoise"],"execution_policy":"always",
+                        "execution_state":"ready","priority":90,"input_bindings":[{
+                            "from_node":"workflow.source","from_port":"lead","to_node":"workflow.cleanup",
+                            "to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal",
+                            "execution_active":true,"analyzer_attachment":false}]},
+                    {"instance_id":"pitch","analysis_node":"workflow.pitch",
+                        "capabilities":["pitch.track"],"execution_policy":"always",
+                        "execution_state":"ready","priority":80,"input_bindings":[{
+                            "from_node":"workflow.source","from_port":"lead","to_node":"workflow.pitch",
+                            "to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal",
+                            "execution_active":true,"analyzer_attachment":true}]}
+                ],
+                "terminal_outputs":[],
+                "fusion_mode":"algorithm"
+            }
+        }))
+        .unwrap();
+        assert!(evaluated_audio_role_matches_plan(&plan, "lead_vocal"));
+        assert!(!evaluated_audio_role_matches_plan(
+            &plan,
+            "clean_lead_vocal"
+        ));
+
+        {
+            let workflow = plan.workflow_execution.as_mut().unwrap();
+            let pitch = workflow
+                .nodes
+                .iter_mut()
+                .find(|node| node.analysis_node == "workflow.pitch")
+                .unwrap();
+            pitch.input_bindings[0].from_node = "workflow.cleanup".to_string();
+            pitch.input_bindings[0].from_port = "audio".to_string();
+        }
+        assert!(evaluated_audio_role_matches_plan(&plan, "clean_lead_vocal"));
+
+        {
+            let workflow = plan.workflow_execution.as_mut().unwrap();
+            let pitch = workflow
+                .nodes
+                .iter_mut()
+                .find(|node| node.analysis_node == "workflow.pitch")
+                .unwrap();
+            pitch.input_bindings[0].from_node = "workflow.intermediate".to_string();
+            let intermediate: crate::backend_cli::WorkflowExecutionNodePlanWireV1 =
+                serde_json::from_value(serde_json::json!({
+                    "instance_id":"intermediate","analysis_node":"workflow.intermediate",
+                    "capabilities":["audio.refine"],"execution_policy":"disabled",
+                    "execution_state":"profile_skipped","priority":85,"input_bindings":[{
+                        "from_node":"workflow.cleanup","from_port":"audio",
+                        "to_node":"workflow.intermediate","to_port":"audio",
+                        "semantic_type":"audio","audio_role":"lead_vocal",
+                        "execution_active":true,"analyzer_attachment":false}]
+                }))
+                .unwrap();
+            workflow.nodes.push(intermediate);
+        }
+        assert!(!evaluated_audio_role_matches_plan(
+            &plan,
+            "clean_lead_vocal"
+        ));
+
+        {
+            let workflow = plan.workflow_execution.as_mut().unwrap();
+            workflow
+                .nodes
+                .iter_mut()
+                .find(|node| node.analysis_node == "workflow.pitch")
+                .unwrap()
+                .execution_state =
+                crate::backend_cli::WorkflowNodeExecutionStateWireV1::NotRequested;
+            workflow
+                .nodes
+                .iter_mut()
+                .find(|node| node.analysis_node == "workflow.cleanup")
+                .unwrap()
+                .execution_state = crate::backend_cli::WorkflowNodeExecutionStateWireV1::Disabled;
+            workflow
+                .terminal_outputs
+                .push(crate::workflow::WorkflowTerminalOutputWireV1 {
+                    node: "workflow.cleanup".to_string(),
+                    port: "audio".to_string(),
+                    semantic_type: "audio".to_string(),
+                    audio_role: None,
+                });
+        }
+        assert!(!evaluated_audio_role_matches_plan(
+            &plan,
+            "clean_lead_vocal"
+        ));
+    }
+
+    #[test]
+    fn optional_technique_artifact_is_committed_when_present_and_omitted_when_absent() {
+        let root = temp_root("technique-commit");
+        let _db_guard = crate::library_db::reconnect_for_test(&root.join("db"));
+        let cache = CacheDir {
+            path: root.join("cache"),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        let gates = vec!["timeline_valid"];
+        for present in [false, true] {
+            let request_id = if present {
+                "technique-present"
+            } else {
+                "technique-absent"
+            };
+            let file_hash = format!("file-{request_id}");
+            let output = cache.path.join(request_id);
+            std::fs::create_dir_all(&output).unwrap();
+            let request: AnalyzeRequestWireV1 =
+                serde_json::from_value(serde_json::json!({
+                    "contract":"uta.analysis-engine.request","version":1,
+                    "request_id":request_id,
+                    "audio_sources":[{
+                        "id":"main","kind":"local_file","path":"song.flac",
+                        "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "role":"lead_vocal","primary":true,
+                        "timeline":{"timebase":1000000,"source_start":0}
+                    }],
+                    "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+                    "analysis":{"profile":"maximum","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":false},
+                    "requested_artifacts":{"pitch_evidence":true},
+                    "execution_policy":{},"extensions":{}
+                }))
+                .unwrap();
+            let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+                "schema":"uta.analysis-engine.plan","schema_version":1,
+                "request_id":request_id,
+                "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+                "requested_outputs":["pitch_evidence"],
+                "required_capabilities":[],"optional_capabilities":["technique.analyze"],
+                "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+                "resolved_resources":[],"execution_nodes":[],"quality_gates":gates,
+                "fallback_policy":[],
+                "artifact_declarations":[{
+                    "semantic_type":"technique_evidence","required":false,
+                    "media_type":"application/vnd.uta.technique-evidence+json;version=1"
+                }]
+            }))
+            .unwrap();
+            let technique = serde_json::to_vec(&serde_json::json!({
+                "contract":"uta.analysis-engine.technique-evidence","version":1,
+                "model_id":"stars","taxonomy":["breathy"],
+                "calibration":"uncalibrated_source_local",
+                "intervals":[],"style_scope":"global","styles":[],
+                "provenance":{"expert_id":"stars","task":"technique"}
+            }))
+            .unwrap();
+            if present {
+                std::fs::write(output.join("technique.json"), &technique).unwrap();
+            }
+            let technique_ref = present.then(|| ArtifactRefWireV1 {
+                path: PathBuf::from("technique.json"),
+                media_type: "application/vnd.uta.technique-evidence+json;version=1".to_string(),
+                sha256: "b".repeat(64),
+                bytes: technique.len() as u64,
+            });
+            let manifest: AnalysisResultManifestWireV1 =
+                serde_json::from_value(serde_json::json!({
+                    "contract":"uta.analysis-engine.result","version":1,
+                    "request_id":request_id,"status":"ok",
+                    "artifacts":{"technique_evidence":technique_ref},
+                    "diagnostics":{"audio_quality":{
+                        "contract":"uta.analysis-engine.audio-quality-report","version":1,
+                        "algorithm":"audio-quality-gates-v1","profile":"maximum",
+                        "evaluated_audio_role":"lead_vocal","duration":1000000,
+                        "planned_gates":gates,
+                        "outcomes":[{
+                            "gate":"timeline_valid","requirement":"required",
+                            "status":"passed","summary":"measured","metrics":[],"regions":[]
+                        }]
+                    }},
+                    "provenance":{
+                        "resources":[],"calibration_version":"c","fusion_version":"f",
+                        "hsmm_version":"h","quantization_version":"q",
+                        "audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"
+                    },
+                    "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "degraded_reasons":[]
+                }))
+                .unwrap();
+
+            if present {
+                let mut wrong_media = manifest.clone();
+                wrong_media
+                    .artifacts
+                    .technique_evidence
+                    .as_mut()
+                    .unwrap()
+                    .media_type = "application/json".to_string();
+                assert!(
+                    validate_and_publish_engine_result(
+                        &file_hash,
+                        &cache,
+                        &output,
+                        1_000_000,
+                        &request,
+                        &plan,
+                        &wrong_media,
+                    )
+                    .unwrap_err()
+                    .contains("media type mismatch")
+                );
+            }
+            validate_and_publish_engine_result(
+                &file_hash, &cache, &output, 1_000_000, &request, &plan, &manifest,
+            )
+            .unwrap();
+            let revisions = crate::analysis_artifact::load_artifact_revisions(
+                &file_hash,
+                ArtifactKind::TechniqueEvidence,
+            );
+            assert_eq!(revisions.len(), usize::from(present));
+            assert!(revisions.iter().all(|revision| {
+                revision.active && revision.producer_node.as_str() == "stars-technique"
+            }));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_vocal_topology_wire_is_plan_bound_and_fails_closed_on_shape_conflict() {
+        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.request","version":1,"request_id":"topology",
+            "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":2000000}}],
+            "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+            "analysis":{"profile":"balanced","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":false},
+            "requested_artifacts":{"pitch_evidence":true},"execution_policy":{},"extensions":{}
+        }))
+        .unwrap();
+        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"topology",
+            "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+            "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
+            "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+            "resolved_resources":[],"execution_nodes":[],"quality_gates":["vocal_topology"],
+            "fallback_policy":[],"artifact_declarations":[]
+        }))
+        .unwrap();
+        let mut report: AudioQualityReportWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.audio-quality-report","version":1,
+            "algorithm":"audio-quality-gates-v2","profile":"balanced",
+            "evaluated_audio_role":"lead_vocal","duration":1000000,
+            "planned_gates":["vocal_topology"],"outcomes":[],
+            "vocal_topology":{
+                "contract":"uta.analysis-engine.vocal-topology-estimate","version":1,
+                "timebase":1000000,"source_start":2000000,"duration":1000000,
+                "mode":"unknown","overlap_regions":[],"support_regions":[],
+                "evidence_sources":["caller_or_unpartitioned_vocal_input"]
+            }
+        }))
+        .unwrap();
+        validate_vocal_topology_result(&request, &plan, &report, 1_000_000).unwrap();
+
+        report.vocal_topology.as_mut().unwrap().mode =
+            VocalTopologyModeWireV1::OverlappingMultiLead;
+        assert!(validate_vocal_topology_result(&request, &plan, &report, 1_000_000).is_err());
+        report.vocal_topology = None;
+        assert!(
+            validate_vocal_topology_result(&request, &plan, &report, 1_000_000)
+                .unwrap_err()
+                .contains("omitted")
+        );
+    }
+
+    #[test]
+    fn artifact_event_does_not_erase_last_measured_node_progress() {
+        let file_hash = "engine-lifecycle-progress-fixture";
+        let snapshot: AnalysisProgressSnapshot = serde_json::from_value(serde_json::json!({
+            "stage":"Preparing","overall_progress":0,"stage_progress":0,
+            "operation":"Preparing","detail":"","implementation":"uta-analysis-engine",
+            "model":"Engine native","device":"Engine-resolved",
+            "requested_device":"Production policy","fallback_from":null,
+            "fallback_reason":null,"backend_fallback_from":null,
+            "backend_fallback_reason":null,"stage_routes":[]
+        }))
+        .unwrap();
+        LIVE_ANALYSIS
+            .lock()
+            .unwrap()
+            .insert(file_hash.to_string(), snapshot);
+        let event = |frame_type: &str,
+                     progress: Option<f32>,
+                     work_units: Option<(u64, u64)>,
+                     artifact: Option<&str>| {
+            AnalysisLifecycleFrameWireV1 {
+                frame_type: frame_type.to_string(),
+                schema_version: 1,
+                request_id: "request".to_string(),
+                node_id: "pitch.track".to_string(),
+                presentation_node_id: Some("workflow.f0_rmvpe".to_string()),
+                capability_id: "pitch.track".to_string(),
+                model_id: Some("rmvpe".to_string()),
+                implementation: "openvino".to_string(),
+                progress,
+                work_units_completed: work_units.map(|(completed, _)| completed),
+                work_units_total: work_units.map(|(_, total)| total),
+                worker_task_id: work_units.map(|_| "rmvpe-task-7".to_string()),
+                artifact: artifact.map(str::to_string),
+                message: None,
+                event_at_ms: 1,
+            }
+        };
+        apply_engine_lifecycle_event(file_hash, None, event("node_started", None, None, None));
+        apply_engine_lifecycle_event(
+            file_hash,
+            None,
+            event("node_progress", Some(0.42), Some((21, 50)), None),
+        );
+        apply_engine_lifecycle_event(
+            file_hash,
+            None,
+            event("artifact", None, None, Some("pitch_evidence")),
+        );
+        let snapshot = LIVE_ANALYSIS.lock().unwrap().remove(file_hash).unwrap();
+        assert_eq!(snapshot.stage_progress, 42);
+        assert_eq!(snapshot.node_event.as_deref(), Some("artifact"));
+        assert_eq!(snapshot.stage_routes.len(), 1);
+        assert_eq!(snapshot.stage_routes[0].stage_progress, 42);
+        assert_eq!(snapshot.stage_routes[0].work_units_completed, Some(21));
+        assert_eq!(snapshot.stage_routes[0].work_units_total, Some(50));
+        assert_eq!(
+            snapshot.stage_routes[0].worker_task_id.as_deref(),
+            Some("rmvpe-task-7")
+        );
+        assert_eq!(
+            snapshot.stage_routes[0].node_event.as_deref(),
+            Some("node_progress")
+        );
+
+        LIVE_ANALYSIS
+            .lock()
+            .unwrap()
+            .insert(file_hash.to_string(), snapshot);
+        apply_engine_lifecycle_event(
+            file_hash,
+            None,
+            event("node_progress", Some(0.9), None, None),
+        );
+        let unitless = LIVE_ANALYSIS.lock().unwrap().remove(file_hash).unwrap();
+        assert_eq!(unitless.stage_progress, 0);
+        assert_eq!(unitless.stage_routes[0].stage_progress, 0);
+        assert_eq!(unitless.stage_routes[0].work_units_completed, None);
+        assert_eq!(unitless.stage_routes[0].work_units_total, None);
+        assert_eq!(unitless.stage_routes[0].worker_task_id, None);
     }
 
     #[cfg(unix)]

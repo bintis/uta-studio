@@ -402,40 +402,53 @@ pub(crate) fn spawn_editor_timeline(
                         .iter()
                         .find(|track| track.kind == app_core::EvidenceKind::StarsTechnique)
                 {
-                    for group in track.points.chunks(9) {
-                        let Some(point) = group
+                    for (chunk_index, group) in track.points.chunks(9).enumerate() {
+                        let Some((position, point)) = group
                             .iter()
-                            .filter(|point| {
+                            .enumerate()
+                            .filter(|(_, point)| {
                                 point.time >= editor.viewport_start
                                     && point.time <= editor.viewport_end()
                             })
-                            .max_by(|left, right| left.value.total_cmp(&right.value))
+                            .max_by(|(_, left), (_, right)| left.value.total_cmp(&right.value))
                         else {
                             continue;
                         };
+                        let flat_index = chunk_index * 9 + position;
                         let class = point
                             .label
                             .as_deref()
                             .and_then(|label| label.split(" · ").next())
                             .unwrap_or("technique");
-                        canvas.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: percent(time_percent(point.time, editor)),
-                                top: px(18),
-                                max_width: px(108),
-                                padding: UiRect::axes(px(4), px(2)),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(4)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.card.with_alpha(0.82)),
-                            BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
-                            Text::new(format!("{class} · local {:.3} · uncal.", point.value)),
-                            ui_text_font(font.clone(), 7.0),
-                            TextColor(theme.muted_foreground),
-                            Pickable::IGNORE,
-                        ));
+                        canvas
+                            .spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: percent(time_percent(point.time, editor)),
+                                    top: px(18),
+                                    max_width: px(108),
+                                    padding: UiRect::axes(px(4), px(2)),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(4)),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.card.with_alpha(0.82)),
+                                BorderColor::all(theme.pitch_contour.with_alpha(0.52)),
+                                Text::new(format!("{class} · local {:.3} · uncal.", point.value)),
+                                ui_text_font(font.clone(), 7.0),
+                                TextColor(theme.muted_foreground),
+                            ))
+                            .observe(
+                                move |mut event: On<Pointer<Click>>,
+                                      mut editor_state: ResMut<EditorUiState>,
+                                      mut invalidated: ResMut<UiInvalidated>| {
+                                    event.propagate(false);
+                                    if let Some(editor) = editor_state.editor.as_mut() {
+                                        editor.selected_technique_point = Some(flat_index);
+                                        invalidated.invalidate(UiDirtyRegion::Editor);
+                                    }
+                                },
+                            );
                     }
                 }
                 // Other tracks read as context: visible enough to place a
@@ -758,15 +771,17 @@ pub(crate) fn spawn_waveform_context_menu(
         BackgroundColor(Color::NONE),
         ZIndex(40),
     ));
-    let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(190.0, 230.0));
+    let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(280.0, 420.0));
     parent
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: px(left),
                 top: px(top),
-                width: px(190),
+                width: px(280),
+                max_height: px(420),
                 flex_direction: FlexDirection::Column,
+                overflow: Overflow::scroll_y(),
                 padding: UiRect::all(px(6)),
                 row_gap: px(1),
                 border: UiRect::all(px(1)),
@@ -802,6 +817,85 @@ pub(crate) fn spawn_waveform_context_menu(
                     available,
                     UiAction::from(EditorCommand::SelectWaveformSource(source)),
                 );
+            }
+            if let Some(context) = editor.source_context.as_ref()
+                && !context.audio_artifacts.is_empty()
+            {
+                menu.spawn((
+                    Node {
+                        height: px(1),
+                        margin: UiRect::vertical(px(4)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.border.with_alpha(0.5)),
+                ));
+                spawn_text(
+                    menu,
+                    font.clone(),
+                    "ARTIFACT A/B & WAVEFORM",
+                    8.0,
+                    theme.muted_foreground,
+                );
+                for (slot, label, available) in [
+                    (
+                        ArtifactAuditionSlot::A,
+                        "Switch to A",
+                        editor.artifact_audition.a.is_some(),
+                    ),
+                    (
+                        ArtifactAuditionSlot::B,
+                        "Switch to B",
+                        editor.artifact_audition.b.is_some(),
+                    ),
+                ] {
+                    spawn_menu_check_row(
+                        menu,
+                        font.clone(),
+                        theme,
+                        label,
+                        editor.artifact_audition.active == Some(slot),
+                        available,
+                        UiAction::from(EditorCommand::ActivateArtifactAudition(slot)),
+                    );
+                }
+                for artifact in &context.audio_artifacts {
+                    for (slot, prefix, selected) in [
+                        (
+                            ArtifactAuditionSlot::A,
+                            "A",
+                            editor.artifact_audition.a.as_ref() == Some(&artifact.revision),
+                        ),
+                        (
+                            ArtifactAuditionSlot::B,
+                            "B",
+                            editor.artifact_audition.b.as_ref() == Some(&artifact.revision),
+                        ),
+                    ] {
+                        spawn_menu_check_row(
+                            menu,
+                            font.clone(),
+                            theme,
+                            &format!("{prefix} · {}", artifact.label),
+                            selected,
+                            true,
+                            UiAction::from(EditorCommand::SelectArtifactAudition(
+                                slot,
+                                artifact.revision.clone(),
+                            )),
+                        );
+                    }
+                    spawn_menu_check_row(
+                        menu,
+                        font.clone(),
+                        theme,
+                        &format!("Waveform · {}", artifact.label),
+                        editor.artifact_audition.waveform.as_ref() == Some(&artifact.revision),
+                        true,
+                        UiAction::from(EditorCommand::SelectArtifactWaveform(
+                            artifact.revision.clone(),
+                        )),
+                    );
+                }
             }
             menu.spawn((
                 Node {

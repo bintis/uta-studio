@@ -1,5 +1,5 @@
 //! Durable per-node records for a completed or failed analysis run
-//! (docs/analysis-dag-redesign.md, phase plan §2.3). One row per real node
+//! (the immutable artifact contract, phase plan §2.3). One row per real node
 //! id a run's `AnalysisStageRoute`s carried a `node_id` for -- routes from
 //! a pre-Phase-3 call site (no `node_id`) don't produce a row here, the
 //! same "Legacy Adapter" boundary Phase 3 already draws elsewhere.

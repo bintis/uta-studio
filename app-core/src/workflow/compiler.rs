@@ -6,10 +6,9 @@ use crate::analysis_graph::{
 };
 
 use super::{
-    CapabilityClass, CompiledArtifactBinding, CompiledNodeBinding, ExecutionPolicy,
-    ResolvedRuntimeKind, WorkflowDefinition, WorkflowExecutionSnapshot, WorkflowPortType,
-    builtin_capabilities, resolved_workflow_output_types, validate_workflow,
-    workflow_definition_digest,
+    CompiledArtifactBinding, CompiledNodeBinding, ExecutionPolicy, WorkflowDefinition,
+    WorkflowExecutionSnapshot, WorkflowPortType, builtin_capabilities, effective_workflow_source,
+    resolved_workflow_output_types, validate_workflow, workflow_definition_digest,
 };
 
 #[derive(Debug, Clone)]
@@ -51,45 +50,6 @@ fn artifact_kind(port: &WorkflowPortType) -> ArtifactKind {
     }
 }
 
-fn resolved_runtime(
-    runtimes: &BTreeMap<String, crate::native_runtime::NativeModelRuntime>,
-    capability_class: &CapabilityClass,
-    model_id: Option<&str>,
-) -> (ResolvedRuntimeKind, Option<String>) {
-    let Some(model_id) = model_id else {
-        return match capability_class {
-            CapabilityClass::Analyzer | CapabilityClass::AudioTransformation => {
-                (ResolvedRuntimeKind::Unresolved, None)
-            }
-            CapabilityClass::Source | CapabilityClass::Fusion | CapabilityClass::Finalization => {
-                (ResolvedRuntimeKind::NativeDsp, None)
-            }
-        };
-    };
-    let Some(model) = runtimes.get(model_id) else {
-        return (ResolvedRuntimeKind::Unresolved, None);
-    };
-    let recipe = model.runtime_recipe_digest.clone();
-    let runtime = match model.pinned_backend {
-        Some(crate::native_runtime::NativeBackend::OpenVino) => ResolvedRuntimeKind::OpenVino,
-        Some(crate::native_runtime::NativeBackend::Vulkan) if model_id == "qwen3_asr_1_7b" => {
-            ResolvedRuntimeKind::PinnedQwenAsrVulkan
-        }
-        Some(crate::native_runtime::NativeBackend::Vulkan)
-            if model_id == "qwen3_forced_aligner_0_6b" =>
-        {
-            ResolvedRuntimeKind::PinnedQwenAlignVulkan
-        }
-        Some(crate::native_runtime::NativeBackend::Vulkan) => ResolvedRuntimeKind::Vulkan,
-        Some(crate::native_runtime::NativeBackend::NativeDsp) => ResolvedRuntimeKind::NativeDsp,
-        Some(crate::native_runtime::NativeBackend::CpuReference) => {
-            ResolvedRuntimeKind::CpuReference
-        }
-        None => ResolvedRuntimeKind::Unresolved,
-    };
-    (runtime, recipe)
-}
-
 fn compiled_node_id(workflow_id: &str) -> AnalysisNodeId {
     let safe = workflow_id
         .chars()
@@ -114,13 +74,6 @@ pub fn compile_workflow(
     let registry = builtin_capabilities()
         .into_iter()
         .map(|capability| (capability.id.clone(), capability))
-        .collect::<BTreeMap<_, _>>();
-    // Runtime Manager is a process boundary and can be comparatively expensive.
-    // Resolve its testing-policy projection once per compile, then reuse it for
-    // every workflow node instead of launching list/show subprocesses per node.
-    let runtimes = crate::native_runtime::native_runtime_registry()
-        .into_iter()
-        .map(|model| (model.model_id.clone(), model))
         .collect::<BTreeMap<_, _>>();
     let node_ids = definition
         .nodes
@@ -165,17 +118,14 @@ pub fn compile_workflow(
             algorithm_version: "workflow-v1".to_string(),
             compound_children: Vec::new(),
         });
-        let (runtime, runtime_recipe_digest) =
-            resolved_runtime(&runtimes, &capability.class, node.model_id.as_deref());
         bindings.push(CompiledNodeBinding {
             workflow_node: node.instance_id.clone(),
             capability_id: node.capability_id.clone(),
             analysis_node: id,
             model_id: node.model_id.clone(),
+            separation_strategy: node.separation_strategy,
             execution_policy: node.execution_policy.clone(),
             priority: node.priority,
-            runtime,
-            runtime_recipe_digest,
         });
     }
 
@@ -194,67 +144,73 @@ pub fn compile_workflow(
         .edges
         .iter()
         .map(|edge| {
+            let destination_active = execution_active[&edge.to.node];
+            let source = if destination_active {
+                effective_workflow_source(definition, &registry, &edge.from)
+            } else {
+                edge.from.clone()
+            };
+            let source_instance = definition
+                .nodes
+                .iter()
+                .find(|node| node.instance_id == source.node)
+                .expect("validated effective edge source exists");
             let capability = registry
-                .get(
-                    &definition
-                        .nodes
-                        .iter()
-                        .find(|node| node.instance_id == edge.from.node)
-                        .expect("validated edge source exists")
-                        .capability_id,
-                )
-                .expect("validated edge capability exists");
+                .get(&source_instance.capability_id)
+                .expect("validated effective edge capability exists");
             let port_type = resolved_outputs
-                .get(&(edge.from.node.clone(), edge.from.port.clone()))
+                .get(&(source.node.clone(), source.port.clone()))
                 .cloned()
                 .unwrap_or_else(|| {
                     capability
-                        .output(&edge.from.port)
-                        .expect("validated edge output exists")
+                        .output(&source.port)
+                        .expect("validated effective edge output exists")
                         .port_type
                         .clone()
                 });
             CompiledArtifactBinding {
-                from_node: node_ids[&edge.from.node].clone(),
-                from_port: edge.from.port.clone(),
+                from_node: node_ids[&source.node].clone(),
+                from_port: source.port,
                 to_node: node_ids[&edge.to.node].clone(),
                 to_port: edge.to.port.clone(),
                 port_type,
-                execution_active: execution_active[&edge.from.node]
-                    && execution_active[&edge.to.node],
+                execution_active: execution_active[&source.node] && destination_active,
                 analyzer_attachment: false,
             }
         })
         .collect::<Vec<_>>();
     artifact_bindings.extend(definition.analyzer_bindings.iter().map(|binding| {
+        let analyzer_active = execution_active[&binding.analyzer_node];
+        let source = if analyzer_active {
+            effective_workflow_source(definition, &registry, &binding.source)
+        } else {
+            binding.source.clone()
+        };
+        let source_instance = definition
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == source.node)
+            .expect("validated effective analyzer source exists");
         let capability = registry
-            .get(
-                &definition
-                    .nodes
-                    .iter()
-                    .find(|node| node.instance_id == binding.source.node)
-                    .expect("validated analyzer source exists")
-                    .capability_id,
-            )
-            .expect("validated analyzer source capability exists");
+            .get(&source_instance.capability_id)
+            .expect("validated effective analyzer source capability exists");
         let port_type = resolved_outputs
-            .get(&(binding.source.node.clone(), binding.source.port.clone()))
+            .get(&(source.node.clone(), source.port.clone()))
             .cloned()
             .unwrap_or_else(|| {
                 capability
-                    .output(&binding.source.port)
-                    .expect("validated analyzer output exists")
+                    .output(&source.port)
+                    .expect("validated effective analyzer output exists")
                     .port_type
                     .clone()
             });
         CompiledArtifactBinding {
-            from_node: node_ids[&binding.source.node].clone(),
-            from_port: binding.source.port.clone(),
+            from_node: node_ids[&source.node].clone(),
+            from_port: source.port,
             to_node: node_ids[&binding.analyzer_node].clone(),
             to_port: binding.analyzer_input.clone(),
             port_type,
-            execution_active: execution_active[&binding.source.node]
-                && execution_active[&binding.analyzer_node],
+            execution_active: execution_active[&source.node] && analyzer_active,
             analyzer_attachment: true,
         }
     }));

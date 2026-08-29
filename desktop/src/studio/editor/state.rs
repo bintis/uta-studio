@@ -58,6 +58,99 @@ pub(crate) enum AuditionMode {
 /// `audio_source` (what plays back) — the waveform is an alignment aid, so
 /// it's picked separately, right-click on the waveform itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactAuditionSlot {
+    A,
+    B,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ArtifactAuditionSelection {
+    pub(crate) a: Option<app_core::ArtifactRef>,
+    pub(crate) b: Option<app_core::ArtifactRef>,
+    pub(crate) active: Option<ArtifactAuditionSlot>,
+    pub(crate) waveform: Option<app_core::ArtifactRef>,
+    pub(crate) waveform_fallback_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ArtifactAuditionReconcile {
+    pub(crate) active_invalidated: bool,
+    pub(crate) waveform_cleared: bool,
+}
+
+impl ArtifactAuditionSelection {
+    pub(crate) fn bind(&mut self, slot: ArtifactAuditionSlot, artifact: app_core::ArtifactRef) {
+        match slot {
+            ArtifactAuditionSlot::A => self.a = Some(artifact),
+            ArtifactAuditionSlot::B => self.b = Some(artifact),
+        }
+    }
+
+    pub(crate) fn bound(&self, slot: ArtifactAuditionSlot) -> Option<&app_core::ArtifactRef> {
+        match slot {
+            ArtifactAuditionSlot::A => self.a.as_ref(),
+            ArtifactAuditionSlot::B => self.b.as_ref(),
+        }
+    }
+
+    pub(crate) fn activate(
+        &mut self,
+        slot: ArtifactAuditionSlot,
+    ) -> Result<app_core::ArtifactRef, String> {
+        let artifact = self
+            .bound(slot)
+            .cloned()
+            .ok_or_else(|| "That artifact audition slot is not bound yet".to_string())?;
+        self.active = Some(slot);
+        Ok(artifact)
+    }
+
+    pub(crate) fn active_artifact(&self) -> Option<&app_core::ArtifactRef> {
+        match self.active {
+            Some(ArtifactAuditionSlot::A) => self.a.as_ref(),
+            Some(ArtifactAuditionSlot::B) => self.b.as_ref(),
+            None => None,
+        }
+    }
+
+    pub(crate) fn reconcile(
+        &mut self,
+        authorized: &[app_core::ArtifactRef],
+    ) -> ArtifactAuditionReconcile {
+        let active_before = self.active_artifact().cloned();
+        self.a = self
+            .a
+            .take()
+            .filter(|artifact| authorized.contains(artifact));
+        self.b = self
+            .b
+            .take()
+            .filter(|artifact| authorized.contains(artifact));
+        let waveform_before = self.waveform.is_some();
+        self.waveform = self
+            .waveform
+            .take()
+            .filter(|artifact| authorized.contains(artifact));
+        self.waveform_fallback_pending |= waveform_before && self.waveform.is_none();
+        if self.active_artifact().is_none() {
+            self.active = if self.a.is_some() {
+                Some(ArtifactAuditionSlot::A)
+            } else if self.b.is_some() {
+                Some(ArtifactAuditionSlot::B)
+            } else {
+                None
+            };
+        }
+        ArtifactAuditionReconcile {
+            active_invalidated: active_before
+                .as_ref()
+                .is_some_and(|artifact| !authorized.contains(artifact)),
+            waveform_cleared: waveform_before && self.waveform.is_none(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaveformSource {
     Instrumental,
     Vocals,
@@ -148,6 +241,10 @@ pub(crate) struct NativeEditor {
     pub(crate) evidence: app_core::SingingEvidenceBundle,
     pub(crate) visible_evidence: BTreeSet<app_core::EvidenceKind>,
     pub(crate) review_index: Option<usize>,
+    /// Flat index into the STARS technique evidence track's points, set by
+    /// clicking a technique chip on the timeline. Independent of note/word
+    /// selection — clicking a chip and selecting a note are different things.
+    pub(crate) selected_technique_point: Option<usize>,
     pub(crate) suggestions: Vec<app_core::EditorSuggestion>,
     /// The authoritative UTZ 0.2 chart under edit. Every note and lyric change
     /// goes through it; nothing is re-derived from analyzer JSON on save.
@@ -176,6 +273,9 @@ pub(crate) struct NativeEditor {
     pub(crate) problems_cache: (u64, app_core::ProblemReport),
     pub(crate) waveform: app_core::ChartWaveform,
     pub(crate) waveform_source: WaveformSource,
+    /// Explicit A/B and waveform bindings for immutable analysis artifacts.
+    /// These never promote a revision or mutate the chart/audio source.
+    pub(crate) artifact_audition: ArtifactAuditionSelection,
     pub(crate) waveform_style: WaveformStyle,
     /// The right-click waveform menu, open at a screen position.
     pub(crate) waveform_context: Option<WaveformContextMenu>,
@@ -373,6 +473,7 @@ impl NativeEditor {
             .into_iter()
             .collect(),
             review_index: None,
+            selected_technique_point: None,
             suggestions: Vec::new(),
             document,
             pitch_frames,
@@ -382,6 +483,7 @@ impl NativeEditor {
             problems_cache,
             waveform,
             waveform_source,
+            artifact_audition: ArtifactAuditionSelection::default(),
             waveform_style: WaveformStyle::default(),
             waveform_context: None,
             audio_source: audio_source.into(),
@@ -581,6 +683,7 @@ pub(crate) struct ChartLyricView {
     /// Flattened indices of any notes that hold this syllable through a
     /// pitch change past `note` — see `app_core::ChartLyric::continuation_notes`.
     pub(crate) continuation_notes: Vec<usize>,
+    pub(crate) reading: Option<String>,
 }
 
 #[derive(Resource)]
@@ -711,6 +814,9 @@ pub(crate) struct EditorAllLyricsInput;
 pub(crate) struct EditorWordInput(pub(crate) WordSelection);
 
 #[derive(Component)]
+pub(crate) struct EditorWordReadingInput(pub(crate) WordSelection);
+
+#[derive(Component)]
 pub(crate) struct InlineEditorWordInput;
 
 /// The whole-line lyric field: the phrase it edits.
@@ -807,6 +913,17 @@ pub(crate) fn selected_editor_word(
     selection: WordSelection,
 ) -> Option<(String, f64, f64)> {
     document.lyric(selection)
+}
+
+pub(crate) fn selected_editor_word_reading(
+    document: &app_core::EditorDocument,
+    selection: WordSelection,
+) -> Option<String> {
+    document
+        .lyrics()
+        .into_iter()
+        .find(|lyric| lyric.address == selection)
+        .and_then(|lyric| lyric.reading)
 }
 
 pub(crate) fn all_editor_word_selections(
@@ -975,6 +1092,7 @@ pub(crate) fn chart_lyrics(document: &app_core::EditorDocument) -> Vec<ChartLyri
                 guided: lyric.guided,
                 note: lyric.note,
                 continuation_notes: lyric.continuation_notes,
+                reading: lyric.reading,
             }
         })
         .collect()
@@ -1127,6 +1245,59 @@ pub(crate) fn nearest_note_boundary(
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
         .map(|(_, boundary)| boundary)
+}
+
+#[cfg(test)]
+mod artifact_audition_tests {
+    use super::*;
+
+    fn artifact(revision_id: &str) -> app_core::ArtifactRef {
+        app_core::ArtifactRef {
+            file_hash: "song".to_string(),
+            kind: app_core::ArtifactKind::AudioStem,
+            revision_id: revision_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn artifact_a_b_and_waveform_bindings_are_independent() {
+        let mut selection = ArtifactAuditionSelection::default();
+        selection.bind(ArtifactAuditionSlot::A, artifact("a"));
+        selection.bind(ArtifactAuditionSlot::B, artifact("b"));
+        selection.waveform = Some(artifact("b"));
+        assert_eq!(
+            selection.activate(ArtifactAuditionSlot::A).unwrap(),
+            artifact("a")
+        );
+        assert_eq!(selection.active, Some(ArtifactAuditionSlot::A));
+        assert_eq!(selection.a.as_ref().unwrap().revision_id, "a");
+        assert_eq!(selection.b.as_ref().unwrap().revision_id, "b");
+        assert_eq!(selection.waveform.as_ref().unwrap().revision_id, "b");
+        selection.waveform = Some(artifact("a"));
+        assert_eq!(selection.a.as_ref().unwrap().revision_id, "a");
+        assert_eq!(selection.b.as_ref().unwrap().revision_id, "b");
+    }
+
+    #[test]
+    fn artifact_audition_reconcile_prunes_stale_slots_and_normalizes_active() {
+        let mut selection = ArtifactAuditionSelection {
+            a: Some(artifact("stale-a")),
+            b: Some(artifact("current-b")),
+            active: Some(ArtifactAuditionSlot::A),
+            waveform: Some(artifact("stale-waveform")),
+            waveform_fallback_pending: false,
+        };
+        let authorized = vec![artifact("current-b")];
+        let result = selection.reconcile(&authorized);
+        assert!(result.active_invalidated);
+        assert!(result.waveform_cleared);
+        assert!(selection.a.is_none());
+        assert_eq!(selection.b, Some(artifact("current-b")));
+        assert_eq!(selection.active, Some(ArtifactAuditionSlot::B));
+        assert_eq!(selection.active_artifact(), Some(&artifact("current-b")));
+        assert!(selection.waveform.is_none());
+        assert!(selection.waveform_fallback_pending);
+    }
 }
 
 #[cfg(test)]

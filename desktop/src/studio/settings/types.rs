@@ -6,7 +6,7 @@ use crate::studio::*;
 
 pub(crate) const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
 pub(crate) const SETTINGS_CONTENT_HORIZONTAL_PADDING: f32 = 40.0;
-pub(crate) const SETTINGS_CONTENT_VERTICAL_PADDING: f32 = 34.0;
+pub(crate) const SETTINGS_CONTENT_VERTICAL_PADDING: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
@@ -31,21 +31,7 @@ impl SettingsTab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsSelectKind {
     UiLanguage,
-    Separator,
-    #[allow(dead_code)]
-    // retained only for loading legacy settings; canonical Analysis UI retired it
-    AsrEngine,
-    WhisperModel,
-    AlignBackend,
-    PitchModel,
     AnalysisTarget,
-    AudioVocalModel,
-    AudioAccompanimentModel,
-    AudioKaraokeModel,
-    AudioVocalPostprocess1,
-    AudioVocalPostprocess2,
-    AudioBgmPostprocess1,
-    AudioBgmPostprocess2,
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +42,6 @@ pub(crate) struct SetupRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CacheClearScope {
     Generated,
-    Models,
 }
 
 #[derive(Resource, Default)]

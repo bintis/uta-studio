@@ -25,6 +25,10 @@ pub enum LyricsAuthority {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptHypothesis {
     pub expert_id: String,
+    /// Stable provider preference used only after exact-consensus count and
+    /// comparable calibrated confidence. It is not a model score.
+    #[serde(default)]
+    pub preference_rank: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     pub text: String,
@@ -123,7 +127,12 @@ pub fn fuse_transcripts(hypotheses: &[TranscriptHypothesis]) -> Result<Canonical
         .map(|(normalized, mut members)| {
             members.sort_by(|left, right| left.expert_id.cmp(&right.expert_id));
             let score = calibrated_group_score(&members)?;
-            Ok((normalized, members, score))
+            let preference_rank = members
+                .iter()
+                .map(|hypothesis| hypothesis.preference_rank)
+                .min()
+                .unwrap_or(u32::MAX);
+            Ok((normalized, members, score, preference_rank))
         })
         .collect::<Result<Vec<_>, String>>()?;
     ranked.sort_by(|left, right| {
@@ -135,9 +144,10 @@ pub fn fuse_transcripts(hypotheses: &[TranscriptHypothesis]) -> Result<Canonical
                 (Some(left_score), Some(right_score)) => right_score.total_cmp(&left_score),
                 _ => std::cmp::Ordering::Equal,
             })
+            .then_with(|| left.3.cmp(&right.3))
             .then_with(|| left.0.cmp(&right.0))
     });
-    let (_, winners, confidence) = ranked
+    let (_, winners, confidence, _) = ranked
         .first()
         .ok_or_else(|| "transcript fusion produced no candidates".to_string())?;
     let representative = winners
@@ -153,7 +163,7 @@ pub fn fuse_transcripts(hypotheses: &[TranscriptHypothesis]) -> Result<Canonical
     let alternatives = ranked
         .iter()
         .skip(1)
-        .map(|(_, members, _)| hypothesis_text(members[0]))
+        .map(|(_, members, _, _)| hypothesis_text(members[0]))
         .collect();
     Ok(CanonicalLyrics {
         text: hypothesis_text(representative),

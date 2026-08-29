@@ -29,6 +29,7 @@ pub enum ResourceOrigin {
     Managed,
     Legacy,
     EnvironmentOverride,
+    ExternalConfiguration,
     Derived,
 }
 
@@ -76,9 +77,9 @@ impl RuntimePolicy {
                 ValidationState::ProductionPinned | ValidationState::BenchmarkCandidate,
             ) => true,
             (Self::Benchmark, _) => false,
-            // Experimental is the explicit integration/testing policy. It keeps
-            // integrity, dependency and worker checks, but does not veto a route
-            // merely because its validation label has not yet been promoted.
+            // Experimental admits explicitly experimental routes while retaining
+            // the invariant that Unsupported can never resolve.
+            (Self::Experimental, ValidationState::Unsupported) => false,
             (Self::Experimental, _) => true,
         }
     }
@@ -96,6 +97,7 @@ pub enum ReadinessReason {
     RuntimeMissing,
     ExecutableMissing,
     WorkerCapabilityMissing,
+    ProtocolMismatch,
     BackendUnvalidated,
     CpuProductionForbidden,
     UnsupportedPlatform,
@@ -124,6 +126,12 @@ pub struct ResourceStatus {
     pub runtime_resource: Option<ResourceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_protocol_version: Option<u32>,
 }
 
 #[cfg(test)]
@@ -139,6 +147,6 @@ mod tests {
         assert!(RuntimePolicy::Experimental.allows(ValidationState::Experimental));
         assert!(!RuntimePolicy::Production.allows(ValidationState::Unsupported));
         assert!(!RuntimePolicy::Benchmark.allows(ValidationState::Unsupported));
-        assert!(RuntimePolicy::Experimental.allows(ValidationState::Unsupported));
+        assert!(!RuntimePolicy::Experimental.allows(ValidationState::Unsupported));
     }
 }

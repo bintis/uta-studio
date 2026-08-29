@@ -152,19 +152,18 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
     let package = utz::UtzPackage::from_bytes(&encoded_utz)
         .map_err(|error| format!("UTZ validation failed: {error}"))?;
     let manifest = package.manifest();
-    let manifest = manifest.as_v0_2().ok_or_else(|| {
-        format!(
+    if !manifest.format_version().starts_with("0.3.") {
+        return Err(format!(
             "Unexpected UTZ format version: {}",
             manifest.format_version()
-        )
-    })?;
+        ));
+    }
     if manifest.format != utz::FORMAT_ID {
         return Err(format!("Unexpected UTZ format: {}", manifest.format));
     }
     let vocal_chart = package
         .vocal_chart()
-        .map_err(|error| format!("UTZ vocal chart is unreadable: {error}"))?
-        .ok_or_else(|| "UTZ package has no vocal chart".to_string())?;
+        .map_err(|error| format!("UTZ vocal chart is unreadable: {error}"))?;
     vocal_chart
         .validate()
         .map_err(|error| format!("UTZ vocal chart is invalid: {error}"))?;
@@ -181,7 +180,7 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
             if !manifest
                 .optional_features
                 .iter()
-                .any(|feature| feature == "pitch-evidence/1")
+                .any(|feature| feature == "pitch-evidence/0.3")
             {
                 return Err("UTZ pitch evidence is undeclared".to_string());
             }
@@ -190,13 +189,8 @@ fn smoke_exports(file_hash: &str) -> Result<String, String> {
         Ok(None) => 0,
         Err(error) => return Err(format!("UTZ pitch evidence is unreadable: {error}")),
     };
-    let audio_assets = [
-        Some(&manifest.audio.instrumental),
-        manifest.audio.guide_vocals.as_ref(),
-        manifest.audio.original.as_ref(),
-    ];
     let mut decoded_utz_audio = 0usize;
-    for (index, asset) in audio_assets.into_iter().flatten().enumerate() {
+    for (index, asset) in manifest.audio.assets.values().enumerate() {
         let bytes = package
             .file(&asset.path)
             .ok_or_else(|| format!("UTZ audio asset is missing: {}", asset.path))?;

@@ -26,7 +26,8 @@ pub use document::{
 };
 pub use evidence::{
     EditorAudioArtifact, EditorSourceContext, EvidenceKind, EvidencePoint, EvidenceTrack,
-    ReviewReason, ReviewRegion, ReviewSeverity, SingingEvidenceBundle, technique_evidence_track,
+    ReviewReason, ReviewRegion, ReviewSeverity, SingingEvidenceBundle,
+    singing_analysis_evidence_bundle, technique_evidence_track,
 };
 pub use problems::{ChartProblem, ProblemKind, ProblemReport, Severity};
 pub use suggestions::{EditorSuggestion, EditorSuggestionKind, apply_editor_suggestion};

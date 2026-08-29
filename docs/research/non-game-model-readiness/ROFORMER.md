@@ -11,11 +11,12 @@ BS-RoFormer and MelBand-RoFormer GGUF [R3], but runtime licensing does **not**
 license checkpoint weights.
 
 Current accepted integrations for EP317, Karaoke lead isolation, Inst V2,
-Denoise and Dereverb use model-specific manifest-pinned OpenVINO IR routes.
-Their converters, device placement and Runtime Manager identities are current
-source authority; old GGUF/Vulkan artifacts are historical inputs, not an
-automatic fallback. Every accepted route remains `BenchmarkCandidate` unless
-the catalog explicitly says otherwise.
+Denoise and Dereverb use model-specific manifest-pinned GGUF artifacts on the
+single `ggml_vulkan_v1` Production route. Runtime Manager catalog/manifests are
+current source authority; the OpenVINO conversions and schedules recorded below
+are historical validation evidence and are not selectable fallback routes. The
+exact Vulkan routes are owner-policy-admitted as `ProductionPinned`; unresolved
+quality, calibration, provenance and license findings remain advisory.
 
 Common source configs use 44,100 Hz stereo, FFT/window 2,048, hop 441, periodic
 Hann/reflect-centered STFT behavior, mask application, ISTFT and chunk
@@ -42,8 +43,8 @@ for long audio.
 | Input/preprocessing | 44.1 kHz stereo; chunk 352,800 samples (~8 s); FFT/window 2,048; hop 441; reflect-centered STFT; target config's low-level silence threshold `0.001` [R2][R3]. |
 | Overlap | Config `num_overlap=4`, batch 1 [R2]. Changing overlap is a quality-affecting parameter, not a transparent optimization [R3]. |
 | Output semantics | Target instrument `Vocals`; one predicted vocal stem. Uta maps it to `GuideVocals` for `audio.extract_vocals`. Instrumental/residual semantics are not part of the current one-file native worker output contract. |
-| Local converted artifact | `model-fp16.gguf`, 320,092,800 bytes; installed manifest SHA-256 `8dc288b3…`, backend `vulkan_candidate`. |
-| Evidence | Historical bounded Vulkan successes did not establish Production/general stability. The durable current interpretation is summarized in `docs/KEY_CONCLUSIONS.md`; current source/tests decide present readiness. |
+| Local converted artifact | `model-fp16.gguf`, 320,092,800 bytes; installed manifest SHA-256 `8dc288b3…`, backend `ggml_vulkan_v1`. |
+| Evidence | Historical bounded Vulkan evidence is retained; explicit owner policy admits the exact manifest-pinned route as `ProductionPinned`. Broad quality/stability remains advisory. |
 
 ### Repository discrepancy audit
 
@@ -57,9 +58,9 @@ for long audio.
 | license | REPO PLACEHOLDER | `review_recorded_user_download` is workflow state, not legal terms. |
 | source format | MATCH | PyTorch `.ckpt`. |
 | acquisition | CONFLICT WITH LOCAL STATE | `Unavailable` truthfully means no audited recipe, but the host already has source-derived GGUF. |
-| runtime/backend | MATCH | GGML/Vulkan candidate implementation. No OpenVINO parity. |
-| runtime commit/digest | MISSING IN REPO CATALOG | Historical record supplies source commits; model entry has no runtime recipe digest. |
-| validation evidence | MISSING IN ENTRY | Relevant validation docs exist, but model backend has no evidence ID and remains candidate. |
+| runtime/backend | MATCH | Current Production route is the exact manifest-pinned GGML/Vulkan implementation; no fallback is selectable. |
+| runtime commit/digest | MATCH | Runtime Manager pins `ggml_vulkan_v1`, revision `8c63e709…`, and the model-specific GGUF identity. |
+| validation evidence | POLICY ADMISSION | Historical bounded evidence is retained; owner policy classifies the exact route `ProductionPinned`. |
 
 ### P0 questions
 
@@ -77,7 +78,7 @@ for long audio.
 | 17 | MISSING | Legal clearance, immutable source pin, converter dependencies, output digest, atomic install and runtime recipe are incomplete. |
 | 18 | KNOWN | Validation records and `/tmp` logs located. |
 | 19 | KNOWN | Existing manifests/logs identify this exact GGUF/model graph, while old XPU evidence is a different obsolete backend. |
-| 20 | KNOWN | Yes. Current Production justification requires new graph-specific safety/quality evidence; under current worker that would require a separately authorized Vulkan lane, or a newly implemented/validated OpenVINO route. |
+| 20 | KNOWN | The exact manifest-pinned Vulkan route is owner-policy-admitted as `ProductionPinned`; further graph-specific safety/quality evidence remains advisory. |
 
 ## P0 — `melband_roformer_harmony`
 
@@ -94,16 +95,18 @@ for long audio.
 | Product mapping | Uta maps the neural target to `LeadVocal`. The exact deterministic complement is `vocal_residual = all_vocals - lead_vocal`; framework authority intentionally does not relabel that residual as a pure Backing/Harmony stem. |
 | Prior separator dependency | Planner feeds EP317's all-vocals output into this stage for original mixes. This matches UVR's documented vocal-split workflow, which auto-processes a generated vocal stem with a Karaoke model [R10]. Direct original-mix input is rejected by the Worker semantic contract. |
 | Backing/harmony output | The Worker emits typed `lead_vocal` and `vocal_residual`; Engine validates both but only publishes the requested lead in v1. Pure backing/harmony export remains the separate future `audio.lead_partition` capability. |
-| Accepted artifact | OpenVINO schema-2 split generation `ed73768dd348d6357423adf4486007f65f67dc2b3c46dd816d21b13e8dea0590`: 21 ordered islands and 42 hash-pinned XML/BIN files. The source checkpoint/config and historical FP16 GGUF remain separate identities. |
+| Current artifact | FP16 GGUF, manifest SHA-256 `d463c06a…`, on `ggml_vulkan_v1`. Historical OpenVINO schema-2 split generation `ed73768d…a0590` remains validation evidence only and is not a selectable route. |
 
 The former output-interpretation blocker is resolved by the UVR vocal-split
 contract rather than by filename convention alone. The neural output is lead;
 the complement is a deterministic vocal residual and must not be presented as
 a pure backing or harmony stem without a separate partition capability.
 
-### Accepted OpenVINO topology and safety schedule
+### Historical OpenVINO topology and safety schedule
 
-The exact dim-384/depth-6 model is split into CPU BandSplit, six time and six
+This superseded conversion is retained as graph-specific validation evidence; it
+is not a current product route or fallback. The exact dim-384/depth-6 model was
+split into CPU BandSplit, six time and six
 frequency Transformer GPU islands, and eight bounded CPU Mask groups. Time
 attention keeps all 801 frames while microbatching only ten independent bands;
 frequency attention keeps all 60 bands while microbatching only 64 independent
@@ -136,7 +139,7 @@ passed supervised cancellation followed by restart in the same Engine process.
 | display/purpose/output semantics | REFINED | UVR defines Karaoke vocal splitting as lead removal. Uta exposes the primary as lead and conservatively names the complement `vocal_residual`. |
 | input dependency | MATCH | UVR documents applying Karaoke/BV split models to generated vocal stems; Uta uses EP317 all-vocals output. |
 | acquisition | REFINED | Runtime Manager LocalImport accepts only the schema-2 split manifest and verifies every ordered island path, size and hash; the source release still lacks immutable asset identity. |
-| runtime/evidence | MATCH | `openvino_2026_3` resolves generation `ed73768d…a0590` under Benchmark policy; Worker and Engine evidence match that exact generation. |
+| runtime/evidence | SUPERSEDED ROUTE | Historical `openvino_2026_3` evidence matches generation `ed73768d…a0590`; current Runtime Manager resolves the exact GGUF on `ggml_vulkan_v1` as `ProductionPinned`. |
 
 ### P0 questions
 
@@ -153,7 +156,7 @@ passed supervised cancellation followed by restart in the same Engine process.
 | 16 | KNOWN | Source-controlled split converter and strict Runtime Manager LocalImport wrapper are implemented. |
 | 17 | PARTIAL | Conversion/install/runtime identity is closed; checkpoint license and immutable upstream asset revision remain missing. |
 | 18–19 | KNOWN | Exact split generation, parity, long-input Worker and real Engine evidence match. |
-| 20 | KNOWN | Integration safety, semantics and cancellation are accepted on the exact OpenVINO schedule. Broader quality/latency, packaging, Benchmark promotion and checkpoint license identity remain Production gates. |
+| 20 | KNOWN | Historical OpenVINO safety/semantics evidence is retained, while current execution uses the exact Production-pinned Vulkan route. Broader quality/latency, packaging and license identity remain advisory or release-pass concerns. |
 
 ## P0 requested-output resource — `melband_roformer_inst_v2`
 
@@ -169,7 +172,7 @@ Candidate request without that requested output.
 | Architecture/input | MelBand-RoFormer, dim 384, depth 12, 60 bands, one target; 44.1 kHz stereo; chunk 485,100 (~11 s); FFT/window 2,048; hop 441; overlap 2; batch 1 [R2]. |
 | Output | Target instrument `Instrumental`; source config lists `Instrumental` then `Vocals`. Current one-stem worker publishes the instrumental target. |
 | Local artifact | FP16 GGUF 787,918,656 bytes; manifest SHA-256 `e2b39b97…`. |
-| Evidence | Short candidate matrix and one historical full-track pass; not Production quality/stability promotion. |
+| Evidence | Short matrix and one historical full-track pass; owner policy admits the exact GGUF Vulkan route as `ProductionPinned`, while broader quality/stability remains advisory. |
 
 ### Repository discrepancy audit
 
@@ -179,7 +182,7 @@ Candidate request without that requested output.
 | revision | REPO PLACEHOLDER | Catalog says `main`; exact source revision is `f86cd9e…`. |
 | license | REPO PLACEHOLDER | No upstream grant found. |
 | acquisition/local state | CONFLICT WITH LOCAL STATE | Local GGUF exists; audited recipe absent. |
-| runtime/evidence | MISSING IN ENTRY | Candidate backend exists but no runtime digest/evidence ID. |
+| runtime/evidence | POLICY ADMISSION | Runtime Manager pins the GGUF identity and `ggml_vulkan_v1` recipe as the single `ProductionPinned` route. |
 
 ### P0 questions
 
@@ -190,29 +193,29 @@ Candidate request without that requested output.
 | 7–16 | KNOWN | Published hash, source format, runtime identity, 44.1 kHz stereo, feature/pre/post and instrumental semantics, and converter route known. |
 | 17 | MISSING | License plus production converter/install/runtime pin and output digest are incomplete. |
 | 18–19 | KNOWN | Exact local artifact/evidence located. |
-| 20 | KNOWN | Yes for Production; current runtime needs separately authorized graph-specific Vulkan safety/quality validation, or a validated OpenVINO replacement. |
+| 20 | KNOWN | The exact Vulkan route is owner-policy-admitted as `ProductionPinned`; further graph-specific safety/quality validation remains advisory. |
 
 ## P1 optional cleanup models
 
 | Resource | Exact source identity | License/hash | Semantics and state |
 | --- | --- | --- | --- |
-| `melband_roformer_denoise_aufr33` | `poiqazwsx/melband-roformer-denoise@4e39bc34…`, `denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt`, 913,097,300 bytes [R6] | License **MISSING**; published SHA-256 `7c1c3919…` | Optional Maximum-profile cleanup. Local FP16 GGUF/hash and short/full historical evidence exist, but unsafe async Vulkan and graph-specific conditions prevent Production generalization. |
-| `melband_roformer_dereverb_anvuew` | `anvuew/dereverb_mel_band_roformer@cef05ad…`, `dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt`, 913,107,578 bytes [R7] | Card says GPL-3.0; published SHA-256 `9262877b…`. Weight-vs-code scope still needs packaging review. | Vocal dereverb. Source warns this checkpoint was trained with an alignment bug and may also remove separation residue/string content and some non-center harmony. Historical exact safe-looking Vulkan schedule is graph-specific and not current authorization. |
+| `melband_roformer_denoise_aufr33` | `poiqazwsx/melband-roformer-denoise@4e39bc34…`, `denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt`, 913,097,300 bytes [R6] | License **MISSING**; published SHA-256 `7c1c3919…` | Optional Maximum-profile cleanup. Its exact FP16 GGUF/Vulkan route is `ProductionPinned`; unsafe historical schedules and broad quality remain advisory. |
+| `melband_roformer_dereverb_anvuew` | `anvuew/dereverb_mel_band_roformer@cef05ad…`, `dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt`, 913,107,578 bytes [R7] | Card says GPL-3.0; published SHA-256 `9262877b…`. Weight-vs-code scope still needs packaging review. | Vocal dereverb on its exact `ProductionPinned` FP16 GGUF/Vulkan route. The alignment-bug warning and graph-specific historical safety evidence remain advisory. |
 
 Both are optional only for the Maximum profile when lead analysis is needed.
 They must not block Fast/Balanced baseline routes.
 
 ## Deterministic RoFormer handoff facts
 
-EP317, Karaoke lead isolation and Inst V2 now have model-specific source/config
-identity, manifest-pinned split OpenVINO generations, strict Runtime Manager
-validation, exact-context parity, typed Worker protocols, long-input evidence,
-cancellation/restart and real Engine routes. Denoise and Dereverb have their own
-accepted model-specific OpenVINO contracts. No route may substitute another
-model's gathered-band layout or output semantics.
+EP317, Karaoke lead isolation, Inst V2, Denoise and Dereverb have model-specific
+source/config identity and exact manifest-pinned FP16 GGUF identities on the
+single `ggml_vulkan_v1` Production route. Historical OpenVINO conversions,
+exact-context parity, typed Worker protocols, long-input evidence and
+cancellation/restart records remain useful validation evidence but do not define
+a selectable route. No model may substitute another model's graph, artifact or
+output semantics.
 
-These integrations remain non-Production where the catalog says
-`BenchmarkCandidate`. Remaining Production work is model-specific but includes
-broader representative quality/latency, packaged-runtime acceptance and exact
-checkpoint license identity where still unresolved. Historical GGUF availability
-or a short accelerator success does not satisfy those gates.
+The catalog owner-policy-admits these exact routes as `ProductionPinned`, with
+no automatic fallback. Broader representative quality/latency, packaged-runtime
+acceptance and unresolved checkpoint license identity remain explicit advisory
+or release-pass concerns.

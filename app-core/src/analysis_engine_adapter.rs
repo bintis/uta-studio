@@ -8,14 +8,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
-use crate::analysis_experience::{AnalysisDefaultTarget, EffectiveAnalysisExperience};
+use crate::analysis_experience::{
+    AnalysisDefaultTarget, AnalysisOutputSelection, EffectiveAnalysisExperience,
+};
 use crate::backend_cli::{
     ANALYZE_REQUEST_CONTRACT, ANALYZE_REQUEST_VERSION, AnalysisCliClient, AnalysisPlanWireV1,
     AnalysisProfileWireV1, AnalysisSpecWireV1, AnalyzeRequestWireV1, AudioRoleWireV1,
     AudioSourceKindWireV1, AudioSourceWireV1, CANONICAL_TIMEBASE, ContextAuthorityWireV1,
-    ExecutionPolicyWireV1, LyricTokenWireV1, LyricsModeWireV1, LyricsWireV1, MusicalContextWireV1,
-    NativeBackendWireV1, QuantizationGridWireV1, RequestedArtifactsWireV1, RuntimePolicyWireV1,
-    RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1, TrackTargetWireV1,
+    DeviceClassWireV1, ExecutionPolicyWireV1, LyricTokenWireV1, LyricsModeWireV1, LyricsWireV1,
+    MusicalContextWireV1, NativeBackendWireV1, QuantizationGridWireV1, RequestedArtifactsWireV1,
+    RuntimePolicyWireV1, RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1,
+    TrackTargetWireV1,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +115,10 @@ pub fn project_lyrics_context(
     context: &StudioLyricsContext,
     target: AnalysisDefaultTarget,
 ) -> StudioLyricsContextProjection {
-    project_lyrics_context_for_request(context, &requested_artifacts(target))
+    project_lyrics_context_for_request(
+        context,
+        &requested_artifacts(AnalysisOutputSelection::from_target(target)),
+    )
 }
 
 fn project_lyrics_context_for_request(
@@ -141,9 +147,15 @@ pub struct AnalysisRequestIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_override: Option<AnalysisDefaultTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_outputs: Option<AnalysisOutputSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_backend: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_device_class: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_device_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,9 +167,15 @@ pub struct EngineRunDraft {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_override: Option<AnalysisDefaultTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_outputs: Option<AnalysisOutputSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_backend: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_device_class: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_device_overrides: BTreeMap<String, String>,
     #[serde(default)]
     pub run_override: crate::analysis_experience::AnalysisExperienceOverride,
 }
@@ -187,8 +205,11 @@ pub fn preview_and_queue_engine_run(
             request_id: automatic_request_id(),
             lyrics: StudioLyricsContext::default(),
             target_override,
+            requested_outputs: None,
             compute_backend: config.compute_backend.clone(),
             model_backend_overrides: config.model_backend_overrides.clone(),
+            default_device_class: config.default_device_class.clone(),
+            model_device_overrides: config.model_device_overrides.clone(),
             run_override: Default::default(),
         },
         &config.analysis_experience,
@@ -200,6 +221,35 @@ pub fn preview_and_queue_engine_run(
         ));
     }
     queue_exact_preview(&preview)
+}
+
+pub fn preview_and_stage_engine_run(
+    file_hash: &str,
+    target_override: Option<AnalysisDefaultTarget>,
+) -> Result<QueuedEngineRun, String> {
+    let config = crate::config::AppConfig::load();
+    let preview = preview_engine_run(
+        EngineRunDraft {
+            file_hash: file_hash.to_string(),
+            request_id: automatic_request_id(),
+            lyrics: StudioLyricsContext::default(),
+            target_override,
+            requested_outputs: None,
+            compute_backend: config.compute_backend.clone(),
+            model_backend_overrides: config.model_backend_overrides.clone(),
+            default_device_class: config.default_device_class.clone(),
+            model_device_overrides: config.model_device_overrides.clone(),
+            run_override: Default::default(),
+        },
+        &config.analysis_experience,
+    )?;
+    if !preview.ready {
+        return Err(format!(
+            "exact Engine preview is blocked: {}",
+            preview.blockers.join("; ")
+        ));
+    }
+    stage_exact_preview(&preview)
 }
 
 pub fn preview_engine_run(
@@ -218,8 +268,11 @@ pub fn preview_engine_run(
     let target = draft
         .target_override
         .unwrap_or(effective.default_target.value);
+    let requested_outputs = draft
+        .requested_outputs
+        .unwrap_or_else(|| AnalysisOutputSelection::from_target(target));
     let lyrics = if draft.lyrics == StudioLyricsContext::default() {
-        lyrics_context_for_song(&draft.file_hash, target)?
+        lyrics_context_for_song(&draft.file_hash, requested_outputs)?
     } else {
         draft.lyrics
     };
@@ -229,8 +282,11 @@ pub fn preview_engine_run(
             source: source.clone(),
             lyrics,
             target_override: draft.target_override,
+            requested_outputs: Some(requested_outputs),
             compute_backend: draft.compute_backend,
             model_backend_overrides: draft.model_backend_overrides,
+            default_device_class: draft.default_device_class,
+            model_device_overrides: draft.model_device_overrides,
         },
         &effective,
     )?;
@@ -285,7 +341,7 @@ fn attach_song_execution_context(
 
 fn lyrics_context_for_song(
     file_hash: &str,
-    target: AnalysisDefaultTarget,
+    requested_outputs: AnalysisOutputSelection,
 ) -> Result<StudioLyricsContext, String> {
     let song = crate::library_db::load_song_by_hash(file_hash)
         .map_err(|error| format!("could not load lyrics context for {file_hash}: {error}"))?
@@ -315,17 +371,12 @@ fn lyrics_context_for_song(
     if matches!(
         song.transcript_source,
         Some(crate::song::TranscriptSource::Lrc | crate::song::TranscriptSource::Usdx)
-    ) && matches!(
-        target,
-        AnalysisDefaultTarget::FullCandidate | AnalysisDefaultTarget::Alignment
-    ) {
+    ) && (requested_outputs.candidate_chart || requested_outputs.alignment)
+    {
         return Err("Timed lyrics cannot be represented as exact Engine v1 alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
     }
     if song.transcript_source == Some(crate::song::TranscriptSource::Lyrics)
-        && matches!(
-            target,
-            AnalysisDefaultTarget::FullCandidate | AnalysisDefaultTarget::Alignment
-        )
+        && (requested_outputs.candidate_chart || requested_outputs.alignment)
     {
         return Err("Known lyrics were selected, but their canonical text is unavailable. Restore the lyrics before rebuilding the preview.".to_string());
     }
@@ -346,13 +397,26 @@ pub fn compile_analyze_request_v1(
     if !valid_identifier(&intent.request_id) {
         return Err("analysis request_id contains unsupported characters".to_string());
     }
+    let diagnostic_policy = intent.compute_backend.as_deref() == Some("diagnostic_cpu")
+        || intent
+            .model_backend_overrides
+            .values()
+            .any(|backend| backend == "diagnostic_cpu");
     let target = intent
         .target_override
         .unwrap_or(effective.default_target.value);
+    let outputs = intent
+        .requested_outputs
+        .unwrap_or_else(|| AnalysisOutputSelection::from_target(target));
+    if outputs.is_empty() {
+        return Err("select at least one analysis output".to_string());
+    }
     let lyrics = compile_lyrics(intent.lyrics)?;
-    let mut requested_artifacts = requested_artifacts(target);
-    if target == AnalysisDefaultTarget::FullCandidate && lyrics.mode == LyricsModeWireV1::Canonical
-    {
+    let mut requested_artifacts = requested_artifacts(outputs);
+    if outputs.candidate_chart && !effective.preserve_continuous_pitch.value {
+        requested_artifacts.pitch_evidence = false;
+    }
+    if outputs.candidate_chart && lyrics.mode == LyricsModeWireV1::Canonical {
         requested_artifacts.transcript = false;
     }
     Ok(AnalyzeRequestWireV1 {
@@ -394,7 +458,11 @@ pub fn compile_analyze_request_v1(
         },
         requested_artifacts,
         execution_policy: ExecutionPolicyWireV1 {
-            runtime_policy: RuntimePolicyWireV1::Experimental,
+            runtime_policy: if diagnostic_policy {
+                RuntimePolicyWireV1::Experimental
+            } else {
+                RuntimePolicyWireV1::Production
+            },
             requested_backend: match intent.compute_backend.as_deref() {
                 None | Some("auto" | "openvino") => None,
                 Some("vulkan") => Some(NativeBackendWireV1::Vulkan),
@@ -422,6 +490,35 @@ pub fn compile_analyze_request_v1(
                         }
                     };
                     Ok((model_id, backend))
+                })
+                .collect::<Result<_, String>>()?,
+            requested_device: match intent.default_device_class.as_deref() {
+                None => None,
+                Some("cpu") => Some(DeviceClassWireV1::Cpu),
+                Some("gpu") => Some(DeviceClassWireV1::Gpu),
+                Some("integrated_gpu") => Some(DeviceClassWireV1::IntegratedGpu),
+                Some(other) => {
+                    return Err(format!("unsupported analysis device class: {other}"));
+                }
+            },
+            model_device_overrides: intent
+                .model_device_overrides
+                .into_iter()
+                .map(|(model_id, device)| {
+                    if !valid_identifier(&model_id) {
+                        return Err(format!("invalid model device override id: {model_id}"));
+                    }
+                    let device = match device.as_str() {
+                        "cpu" => DeviceClassWireV1::Cpu,
+                        "gpu" => DeviceClassWireV1::Gpu,
+                        "integrated_gpu" => DeviceClassWireV1::IntegratedGpu,
+                        other => {
+                            return Err(format!(
+                                "unsupported device class {other} for model {model_id}"
+                            ));
+                        }
+                    };
+                    Ok((model_id, device))
                 })
                 .collect::<Result<_, String>>()?,
         },
@@ -462,27 +559,25 @@ fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWireV1, String> {
     })
 }
 
-fn requested_artifacts(target: AnalysisDefaultTarget) -> RequestedArtifactsWireV1 {
+fn requested_artifacts(outputs: AnalysisOutputSelection) -> RequestedArtifactsWireV1 {
     let mut requested = RequestedArtifactsWireV1 {
-        vocal_chart: false,
-        pitch_evidence: false,
-        singing_analysis: false,
-        transcript: false,
-        alignment: false,
-        stems: Vec::new(),
+        vocal_chart: outputs.candidate_chart,
+        pitch_evidence: outputs.pitch_evidence,
+        singing_analysis: outputs.candidate_chart,
+        transcript: outputs.transcript,
+        alignment: outputs.alignment,
+        stems: outputs
+            .instrumental
+            .then_some(AudioRoleWireV1::Instrumental)
+            .into_iter()
+            .collect(),
     };
-    match target {
-        AnalysisDefaultTarget::FullCandidate => {
-            requested.vocal_chart = true;
-            requested.pitch_evidence = true;
-            requested.singing_analysis = true;
-            requested.transcript = true;
-            requested.alignment = true;
-        }
-        AnalysisDefaultTarget::Transcript => requested.transcript = true,
-        AnalysisDefaultTarget::Alignment => requested.alignment = true,
-        AnalysisDefaultTarget::PitchEvidence => requested.pitch_evidence = true,
-        AnalysisDefaultTarget::Instrumental => requested.stems.push(AudioRoleWireV1::Instrumental),
+    // Candidate compilation needs all singing evidence. These are Engine
+    // dependencies, not hidden run-sheet selections.
+    if outputs.candidate_chart {
+        requested.pitch_evidence = true;
+        requested.transcript = true;
+        requested.alignment = true;
     }
     requested
 }
@@ -536,7 +631,9 @@ pub fn preview_analyze_request_v1(
     let requirements = client
         .requirements(&request_value, &request.request_id)
         .map_err(|error| error.to_string())?;
-    let capabilities = client.capabilities().map_err(|error| error.to_string())?;
+    let capabilities = client
+        .capabilities(request.execution_policy.runtime_policy)
+        .map_err(|error| error.to_string())?;
     let plan = client
         .plan(&request_value, &request.request_id)
         .map_err(|error| error.to_string())?;
@@ -561,27 +658,7 @@ pub fn preview_analyze_request_v1(
             )),
         }
     }
-    for resource in &plan.resolved_resources {
-        if !resource.requirement.required {
-            continue;
-        }
-        match resource.status.as_ref() {
-            Some(status) if testing_resource_ready(status) => {}
-            Some(status) => blockers.push(format!(
-                "{} is not runnable for local testing ({})",
-                resource.requirement.resource,
-                runtime_status_reason(status)
-            )),
-            None => blockers.push(format!(
-                "{} could not be resolved ({})",
-                resource.requirement.resource,
-                resource
-                    .resolution_error
-                    .as_deref()
-                    .unwrap_or("no status returned")
-            )),
-        }
-    }
+    blockers.extend(plan_resource_blockers(&plan));
     blockers.sort();
     blockers.dedup();
     let created_at_ms = std::time::SystemTime::now()
@@ -603,8 +680,34 @@ pub fn preview_analyze_request_v1(
     })
 }
 
-fn testing_resource_ready(status: &RuntimeResourceStatusWireV1) -> bool {
-    status.usable || (status.runnable && status.executable_ready)
+fn plan_resource_blockers(plan: &AnalysisPlanWireV1) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for resource in &plan.resolved_resources {
+        if !resource.requirement.required {
+            continue;
+        }
+        match resource.status.as_ref() {
+            Some(status) if resource_ready(status) => {}
+            Some(status) => blockers.push(format!(
+                "{} is not runnable under the requested policy ({})",
+                resource.requirement.resource,
+                runtime_status_reason(status)
+            )),
+            None => blockers.push(format!(
+                "{} could not be resolved ({})",
+                resource.requirement.resource,
+                resource
+                    .resolution_error
+                    .as_deref()
+                    .unwrap_or("no status returned")
+            )),
+        }
+    }
+    blockers
+}
+
+fn resource_ready(status: &RuntimeResourceStatusWireV1) -> bool {
+    status.usable
 }
 
 fn runtime_status_reason(status: &RuntimeResourceStatusWireV1) -> String {
@@ -629,26 +732,30 @@ pub struct QueuedEngineRun {
     pub status: String,
 }
 
-/// Persist and enqueue the exact request snapshot confirmed by Plan Preview.
-pub fn queue_exact_preview(preview: &EngineRunPreview) -> Result<QueuedEngineRun, String> {
-    if preview.invalidated {
-        return Err("analysis preview was invalidated; rebuild it before queueing".to_string());
-    }
-    if !preview.ready {
-        return Err("analysis preview is blocked and cannot be queued".to_string());
-    }
-    if preview.request_json.trim().is_empty() {
-        return Err("analysis preview has no request snapshot".to_string());
-    }
-    let current_source = resolve_true_source(&preview.source.library_file_hash)?;
-    let intent = exact_queue_intent(preview, &current_source)?;
-    crate::analyzer::enqueue_engine_intent(&intent)?;
-    Ok(QueuedEngineRun {
+fn queued_engine_run(preview: &EngineRunPreview) -> QueuedEngineRun {
+    QueuedEngineRun {
         file_hash: preview.source.library_file_hash.clone(),
         request_id: preview.request_id.clone(),
         request_digest: preview.request_digest.clone(),
         status: "queued".to_string(),
-    })
+    }
+}
+
+/// Persist and enqueue the exact request snapshot confirmed by Plan Preview.
+pub fn queue_exact_preview(preview: &EngineRunPreview) -> Result<QueuedEngineRun, String> {
+    let current_source = resolve_true_source(&preview.source.library_file_hash)?;
+    let intent = exact_queue_intent(preview, &current_source)?;
+    crate::analyzer::enqueue_engine_intent(&intent)?;
+    Ok(queued_engine_run(preview))
+}
+
+/// Persist an exact request in the visible processing queue without starting
+/// the analysis worker. The user starts it explicitly from the queue.
+pub fn stage_exact_preview(preview: &EngineRunPreview) -> Result<QueuedEngineRun, String> {
+    let current_source = resolve_true_source(&preview.source.library_file_hash)?;
+    let intent = exact_queue_intent(preview, &current_source)?;
+    crate::analyzer::stage_engine_intent(&intent)?;
+    Ok(queued_engine_run(preview))
 }
 
 fn exact_queue_intent(
@@ -725,9 +832,24 @@ pub(crate) fn validate_workflow_plan_identity(
                 || identity.workflow_schema_version != request_workflow.workflow_schema_version
                 || identity.workflow_id != request_workflow.workflow_id
                 || identity.workflow_revision != request_workflow.workflow_revision
+                || identity.definition_digest != request_workflow.definition_digest
             {
                 return Err(
                     "Analysis CLI workflow identity does not match the exact request snapshot"
+                        .to_string(),
+                );
+            }
+            let requested_fusion_mode = match request_workflow.fusion_mode {
+                crate::workflow::WorkflowFusionModeWireV1::Algorithm => {
+                    crate::backend_cli::FusionModeWireV1::Algorithm
+                }
+                crate::workflow::WorkflowFusionModeWireV1::AiJudgment => {
+                    crate::backend_cli::FusionModeWireV1::AiJudgment
+                }
+            };
+            if planned.fusion_mode != requested_fusion_mode {
+                return Err(
+                    "Analysis CLI workflow decision mode does not match the exact request snapshot"
                         .to_string(),
                 );
             }
@@ -789,8 +911,7 @@ pub(crate) fn validate_workflow_plan_identity(
                             requested.instance_id
                         )
                     })?;
-                if node.analysis_node != requested.analysis_node
-                    || node.execution_policy != requested.execution_policy
+                if node.execution_policy != requested.execution_policy
                     || node.priority != requested.priority
                 {
                     return Err(format!(
@@ -927,15 +1048,18 @@ mod tests {
                         StudioLyricsContext::default()
                     },
                     target_override: Some(target),
+                    requested_outputs: None,
                     compute_backend: None,
                     model_backend_overrides: BTreeMap::new(),
+                    default_device_class: None,
+                    model_device_overrides: BTreeMap::new(),
                 },
                 &effective(target),
             )
             .unwrap();
             assert_eq!(
                 request.execution_policy.runtime_policy,
-                RuntimePolicyWireV1::Experimental
+                RuntimePolicyWireV1::Production
             );
             assert!(!request.analysis.enable_quantization);
             match target {
@@ -959,6 +1083,77 @@ mod tests {
     }
 
     #[test]
+    fn request_compiler_preserves_independent_multi_output_run_sheet() {
+        let outputs = AnalysisOutputSelection {
+            candidate_chart: false,
+            pitch_evidence: false,
+            transcript: true,
+            alignment: false,
+            instrumental: true,
+        };
+        let request = compile_analyze_request_v1(
+            AnalysisRequestIntent {
+                request_id: "multi-output".to_string(),
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWireV1::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: None,
+                requested_outputs: Some(outputs),
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
+            },
+            &effective(AnalysisDefaultTarget::FullCandidate),
+        )
+        .unwrap();
+        assert!(request.requested_artifacts.transcript);
+        assert_eq!(
+            request.requested_artifacts.stems,
+            [AudioRoleWireV1::Instrumental]
+        );
+        assert!(!request.requested_artifacts.vocal_chart);
+        assert!(!request.requested_artifacts.pitch_evidence);
+        assert!(!request.requested_artifacts.alignment);
+        assert!(!request.requested_artifacts.singing_analysis);
+    }
+
+    #[test]
+    fn request_compiler_rejects_an_empty_run_sheet() {
+        let error = compile_analyze_request_v1(
+            AnalysisRequestIntent {
+                request_id: "empty-output-sheet".to_string(),
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWireV1::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: None,
+                requested_outputs: Some(AnalysisOutputSelection {
+                    candidate_chart: false,
+                    pitch_evidence: false,
+                    transcript: false,
+                    alignment: false,
+                    instrumental: false,
+                }),
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
+            },
+            &effective(AnalysisDefaultTarget::FullCandidate),
+        )
+        .unwrap_err();
+        assert_eq!(error, "select at least one analysis output");
+    }
+
+    #[test]
     fn request_compiler_preserves_explicit_cpu_and_vulkan_selection() {
         for (configured, expected) in [
             ("diagnostic_cpu", NativeBackendWireV1::CpuReference),
@@ -975,13 +1170,24 @@ mod tests {
                     },
                     lyrics: StudioLyricsContext::default(),
                     target_override: Some(AnalysisDefaultTarget::PitchEvidence),
+                    requested_outputs: None,
                     compute_backend: Some(configured.to_string()),
                     model_backend_overrides: BTreeMap::new(),
+                    default_device_class: None,
+                    model_device_overrides: BTreeMap::new(),
                 },
                 &effective(AnalysisDefaultTarget::PitchEvidence),
             )
             .unwrap();
             assert_eq!(request.execution_policy.requested_backend, Some(expected));
+            assert_eq!(
+                request.execution_policy.runtime_policy,
+                if configured == "diagnostic_cpu" {
+                    RuntimePolicyWireV1::Experimental
+                } else {
+                    RuntimePolicyWireV1::Production
+                }
+            );
         }
     }
 
@@ -998,16 +1204,23 @@ mod tests {
                 },
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::Instrumental),
+                requested_outputs: None,
                 compute_backend: None,
                 model_backend_overrides: BTreeMap::from([
                     ("bs_roformer_vocals_ep317".to_string(), "vulkan".to_string()),
                     ("rmvpe".to_string(), "diagnostic_cpu".to_string()),
                 ]),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
             },
             &effective(AnalysisDefaultTarget::Instrumental),
         )
         .unwrap();
         assert_eq!(request.execution_policy.requested_backend, None);
+        assert_eq!(
+            request.execution_policy.runtime_policy,
+            RuntimePolicyWireV1::Experimental
+        );
         assert_eq!(
             request
                 .execution_policy
@@ -1046,8 +1259,11 @@ mod tests {
                     }],
                 },
                 target_override: Some(AnalysisDefaultTarget::FullCandidate),
+                requested_outputs: None,
                 compute_backend: None,
                 model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
             },
             &effective(AnalysisDefaultTarget::FullCandidate),
         )
@@ -1061,6 +1277,36 @@ mod tests {
         );
         assert!(projection.alignment_requested);
         assert!(!projection.transcript_requested);
+    }
+
+    #[test]
+    fn disabling_continuous_pitch_omits_only_the_published_pitch_artifact() {
+        let mut settings = effective(AnalysisDefaultTarget::FullCandidate);
+        settings.preserve_continuous_pitch.value = false;
+        let request = compile_analyze_request_v1(
+            AnalysisRequestIntent {
+                request_id: "candidate-without-pitch-artifact".to_string(),
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWireV1::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: Some(AnalysisDefaultTarget::FullCandidate),
+                requested_outputs: None,
+                compute_backend: None,
+                model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
+            },
+            &settings,
+        )
+        .unwrap();
+        assert!(request.requested_artifacts.vocal_chart);
+        assert!(request.requested_artifacts.singing_analysis);
+        assert!(!request.requested_artifacts.pitch_evidence);
+        assert!(!request.analysis.preserve_continuous_pitch);
     }
 
     #[test]
@@ -1095,8 +1341,11 @@ mod tests {
                 source: source.clone(),
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::Transcript),
+                requested_outputs: None,
                 compute_backend: None,
                 model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
             },
             &effective,
         )
@@ -1135,6 +1384,102 @@ mod tests {
             },
             source,
         )
+    }
+
+    #[test]
+    fn exact_plan_rejects_a_fusion_mode_mismatch() {
+        let (preview, source) = exact_preview_fixture();
+        let mut request: AnalyzeRequestWireV1 =
+            serde_json::from_str(&preview.request_json).unwrap();
+        let request_workflow = crate::workflow::WorkflowExecutionWireV1 {
+            contract: "uta.workflow-execution".to_string(),
+            version: 1,
+            workflow_schema_version: 2,
+            workflow_id: "workflow:test".to_string(),
+            workflow_revision: 7,
+            quality_mode: "balanced".to_string(),
+            definition_digest: "digest".to_string(),
+            nodes: Vec::new(),
+            bindings: Vec::new(),
+            terminal_outputs: Vec::new(),
+            fusion_policy: None,
+            fusion_mode: crate::workflow::WorkflowFusionModeWireV1::AiJudgment,
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            serde_json::to_value(&request_workflow).unwrap(),
+        );
+        let mut plan = preview.engine_plan;
+        plan.workflow_execution = Some(crate::backend_cli::WorkflowExecutionPlanWireV1 {
+            identity: crate::backend_cli::WorkflowPlanIdentityWireV1 {
+                contract: request_workflow.contract,
+                version: request_workflow.version,
+                workflow_schema_version: request_workflow.workflow_schema_version,
+                workflow_id: request_workflow.workflow_id,
+                workflow_revision: request_workflow.workflow_revision,
+                definition_digest: request_workflow.definition_digest,
+            },
+            nodes: Vec::new(),
+            terminal_outputs: Vec::new(),
+            fusion_policy: None,
+            fusion_mode: crate::backend_cli::FusionModeWireV1::Algorithm,
+        });
+        assert_eq!(
+            validate_workflow_plan_identity(&request, &plan).unwrap_err(),
+            "Analysis CLI workflow decision mode does not match the exact request snapshot"
+        );
+        std::fs::remove_file(source.path).unwrap();
+    }
+
+    #[test]
+    fn exact_preview_blocks_missing_and_unusable_fusion_adapters() {
+        let (mut preview, source) = exact_preview_fixture();
+        preview.engine_plan.resolved_resources = vec![
+            serde_json::from_value(serde_json::json!({
+                "requirement": {
+                    "resource": "tool:fusion_agent_adapter",
+                    "required": true,
+                    "reason": "fusion.candidate_graph / ai_judgment"
+                },
+                "status": null,
+                "resolution_error": "resource_missing: adapter is not configured"
+            }))
+            .unwrap(),
+        ];
+        assert_eq!(
+            plan_resource_blockers(&preview.engine_plan),
+            [
+                "tool:fusion_agent_adapter could not be resolved (resource_missing: adapter is not configured)"
+            ]
+        );
+
+        preview.engine_plan.resolved_resources[0] = serde_json::from_value(serde_json::json!({
+            "requirement": {
+                "resource": "tool:fusion_agent_adapter",
+                "required": true,
+                "reason": "fusion.candidate_graph / ai_judgment"
+            },
+            "status": {
+                "resource": "tool:fusion_agent_adapter",
+                "install_state": "absent",
+                "origin": "missing",
+                "integrity_verified": false,
+                "runnable": false,
+                "validation_state": "production_pinned",
+                "dependencies_ready": true,
+                "executable_ready": false,
+                "usable": false,
+                "reasons": ["executable_missing"]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            plan_resource_blockers(&preview.engine_plan),
+            [
+                "tool:fusion_agent_adapter is not runnable under the requested policy (executablemissing)"
+            ]
+        );
+        std::fs::remove_file(source.path).unwrap();
     }
 
     #[test]

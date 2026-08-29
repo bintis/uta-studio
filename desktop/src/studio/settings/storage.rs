@@ -173,7 +173,7 @@ pub(crate) fn spawn_storage_usage_row(
                             spawn_wrapped_text(
                                 copy,
                                 font.clone(),
-                                "Cached stems, charts, previews, models, and temporary authoring files.",
+                                "Cached stems, charts, previews, and temporary authoring files. Model lifecycle remains in Models & runtime.",
                                 10.0,
                                 theme.muted_foreground,
                             );
@@ -189,16 +189,12 @@ pub(crate) fn spawn_storage_usage_row(
                         header,
                         font.clone(),
                         theme,
-                        vec![
-                            (
-                                "Clear generated cache".to_string(),
-                                UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Generated)),
-                            ),
-                            (
-                                "Clear models".to_string(),
-                                UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Models)),
-                            ),
-                        ],
+                        vec![(
+                            "Clear generated cache".to_string(),
+                            UiAction::from(SettingsCommand::RequestClearCache(
+                                CacheClearScope::Generated,
+                            )),
+                        )],
                     );
                 });
 

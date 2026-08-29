@@ -1,6 +1,6 @@
 # Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta! Studio 0.6.0
+**Applies to:** Uta! Studio 0.7.0
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,11 +27,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.6.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release 0.7.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
 
 #### Windows
 
-1. Download `uta-studio-0.6.0-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-0.7.0-x86_64-windows.zip` and its checksum file.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,20 +41,20 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.6.0-1_amd64.deb
+sudo apt install ./uta-studio_0.7.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.6.0-x86_64-linux.bin
-./uta-studio-0.6.0-x86_64-linux.bin
+chmod +x uta-studio-0.7.0-x86_64-linux.bin
+./uta-studio-0.7.0-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -64,7 +64,7 @@ The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayla
 Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
 
 ```sh
-sha256sum -c uta-studio-0.6.0-linux-deb.sha256
+sha256sum -c uta-studio-0.7.0-linux-deb.sha256
 ```
 
 Use the checksum file matching the package type you downloaded.
@@ -197,7 +197,7 @@ From a song, open the lyrics action to:
 - enter timed LRC;
 - search LRCLIB;
 - review a candidate before saving;
-- optionally queue alignment after saving.
+- save without automatically starting analysis; queue alignment later from the song’s Analysis controls when needed.
 
 Always verify spelling, repeated lines, punctuation, and omitted vocalizations before alignment.
 
@@ -210,6 +210,8 @@ This setting affects the song’s recognition/alignment pipeline. It does not ch
 ### 8. Chart editor
 
 Open an analyzed song and select **Edit chart**. The editor supports waveform and pitch evidence, lyric/phrase boundaries, note bars, multiple tracks, and named undo history.
+
+Use the waveform context menu to bind immutable workflow audio revisions to **A** and **B**, switch audition between them without resetting the playhead or play/pause state, and select either revision for waveform inspection independently. Source media and artifact revisions remain read-only.
 
 Common operations include:
 
@@ -255,8 +257,8 @@ Exports UTF-8 UltraStar 1.1 text plus sibling media. Export preserves normal, go
 
 **Settings → Storage** reports generated storage by songs, models, and other data.
 
-- **Clear generated cache** removes generated stems, charts/previews, and temporary authoring data covered by that cache action. It does not delete source media.
-- **Clear models** removes downloaded model artifacts and makes runtime status report them as missing until setup is run again.
+- **Clear generated cache** removes generated stems, charts/previews, and temporary authoring data covered by that cache action. It does not delete source media or installed models.
+- Install, repair, and remove individual model artifacts only from **Settings → Models & runtime**.
 
 The default settings/data root is `~/.uta-studio`, unless a different data location is configured. Before migrating or reinstalling:
 
@@ -275,7 +277,7 @@ In **Settings → General**:
 - **Application log → View log** opens the current log when one exists.
 - **Feature API diagnostics → Run checks** verifies local APIs, native audio, and real temporary UTZ/UltraStar exports. The diagnostic temporary folder is removed after the check.
 
-Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens that run and filters by `node_id`; legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
+Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens an in-app console filtered by `node_id`; while a run is active, the console follows new output in real time. Scroll up to pause live tailing and return to the bottom to resume it. Legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
 
 Include the application version, platform, selected runtime, relevant log excerpt, and reproducible steps in a bug report. Do not attach copyrighted source media unless you have permission.
 
@@ -441,6 +443,12 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 Open **Processing Studio** from a song page to edit the machine workflow. Audio transformations rewrite real typed dataflow; the executable audio lanes are Vocal, BGM, Lead, and Vocal Residual. Backing and Harmony remain chart-authoring roles until a future audio partition capability exists. Analyzer attachments choose a concrete audio artifact, while analyzer order only changes ready-node priority. Invalid types, missing hard dependencies, and cycles cannot be saved. **Advanced Graph** displays the exact compiled DAG.
 
+Stage 1 presents **Lead isolation**, **Denoise**, and **Dereverb** as independent On/Off preprocessing switches. All three are Off in a new default workflow. Off is a transparent bypass: an OriginalMix still produces Vocal when analysis needs it, and analyzers consume that Vocal rather than a falsely labeled LeadVocal. Requesting an explicit LeadVocal output forces lead isolation. Plan Preview shows the exact analyzer route and each switch state before queueing.
+
+Stage 4 **Decision mode** defaults to **Algorithm**, the deterministic candidate-graph/HSMM decoder. **AI judgment** is an explicit alternative: a configured Fusion Agent Adapter may contact an external AI provider and receives bounded fusion candidate metadata so it can choose among real Engine candidates. It cannot invent note geometry or measured evidence, and Engine validates the returned selection before creating the Candidate chart. Configure the adapter under **Settings → Models & runtime**. If the adapter/provider is missing, times out, returns an invalid response, or fails validation, the analysis fails; Uta! Studio never silently falls back to Algorithm. Plan Preview shows the requested decision mode and adapter readiness without contacting the provider.
+
+In **Models & runtime → Fusion Agent Adapter**, Runtime Manager automatically scans `PATH` for `uta-fusion-agent-adapter`, `uta-fusion-agent-pi`, `uta-fusion-agent-codex`, and `uta-fusion-agent-claude` integrations with a protocol-compatible sidecar manifest. Use **Scan again** after installing one, or choose another compatible adapter executable manually. It must have an executable-specific `<adapter-executable>.uta-fusion-adapter.json` sidecar declaring contract `uta.fusion_agent_adapter`, adapter ID `fusion_agent_adapter`, and Fusion protocol version `3`. A shared directory manifest or a plain `pi`, `codex`, `claude`, or other coding-agent executable is not accepted. Uta! Studio verifies this local manifest without launching the adapter or contacting its provider; **Clear** removes only the saved selection, not the executable. The sidecar proves protocol compatibility, not publisher trust; the adapter runs with your OS permissions. Provider credentials remain owned by the adapter/provider mechanism.
+
 A completed run creates a replaceable Candidate revision. The Editor keeps authored notes visually and semantically dominant, exposes read-only evidence and a disagreement-first Review queue, and applies accepted suggestions through normal undo history. Re-analysis never silently replaces an Authored revision. Use Compare or Merge when a newer Candidate is available.
 
 ---
@@ -462,11 +470,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.6.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.7.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
 
 #### Windows
 
-1. 下载 `uta-studio-0.6.0-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-0.7.0-x86_64-windows.zip` 及对应校验文件。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -476,20 +484,20 @@ Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.6.0-1_amd64.deb
+sudo apt install ./uta-studio_0.7.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.6.0-x86_64-linux.bin
-./uta-studio-0.6.0-x86_64-linux.bin
+chmod +x uta-studio-0.7.0-x86_64-linux.bin
+./uta-studio-0.7.0-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -499,7 +507,7 @@ Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWa
 从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
 
 ```sh
-sha256sum -c uta-studio-0.6.0-linux-deb.sha256
+sha256sum -c uta-studio-0.7.0-linux-deb.sha256
 ```
 
 校验文件必须与下载的包类型一致。
@@ -646,6 +654,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 打开已分析歌曲并选择**编辑谱面**。编辑器支持波形、音高依据、歌词/乐句边界、音符条、多轨道和具名撤销历史。
 
+使用波形上下文菜单可将不可变的工作流音频版本分别绑定到 **A** 和 **B**，在不重置播放位置或播放/暂停状态的情况下切换试听，并可独立选择任一版本查看波形。源媒体和产物版本始终保持只读。
+
 常用操作包括：
 
 - 播放、暂停、定位和试听所选内容；
@@ -690,8 +700,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 **设置 → 存储**会按歌曲、模型和其他数据报告生成数据用量。
 
-- **清除生成缓存**会删除该操作覆盖的生成分轨、谱面/预览和临时制作数据，不会删除源媒体。
-- **清除模型**会删除已下载模型；再次运行设置前，运行环境状态会将其报告为缺失。
+- **清除生成缓存**会删除该操作覆盖的生成分轨、谱面/预览和临时制作数据，不会删除源媒体或已安装模型。
+- 仅在**设置 → 模型与运行环境**中安装、修复或移除单个模型成果物。
 
 默认设置/数据根目录为 `~/.uta-studio`，除非另行配置数据位置。迁移或重装前：
 
@@ -710,7 +720,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 - **应用日志 → 查看日志**：在日志存在时打开当前日志。
 - **功能 API 诊断 → 运行检查**：验证本地 API、原生音频以及真实的临时 UTZ/UltraStar 导出；诊断完成后会删除临时目录。
 
-每次分析运行都会在 `analysis-logs/` 下写入一个详细 JSONL 文件。DAG 节点的**查看日志**会打开所选运行并按 `node_id` 过滤；旧版运行会明确提示没有独立日志。分析进度、模型输出和 traceback 不会进入 `app.log`。确认清空分析历史时，只会同步删除 `analysis-logs/` 内由记录引用的日志文件。
+每次分析运行都会在 `analysis-logs/` 下写入一个详细 JSONL 文件。DAG 节点的**查看日志**会打开应用内 Console 并按 `node_id` 过滤；运行期间会实时跟随新增输出。向上滚动可暂停跟随，回到底部后自动恢复。旧版运行会明确提示没有独立日志。分析进度、模型输出和 traceback 不会进入 `app.log`。确认清空分析历史时，只会同步删除 `analysis-logs/` 内由记录引用的日志文件。
 
 提交问题时，请包含应用版本、平台、所选运行环境、相关日志片段和可复现步骤。没有授权时，不要附带受版权保护的源媒体。
 
@@ -876,6 +886,12 @@ Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证
 
 从歌曲页打开 **Processing Studio** 编辑机器工作流。音频 Transformation 会重写真实的类型化数据流；当前可执行音频 lane 是 Vocal、BGM、Lead 与 Vocal Residual。Backing 和 Harmony 在未来音频分流能力实现前仍是制谱轨角色。Analyzer attachment 选择具体音频 Artifact，而 Analyzer 排序只改变 ready-node 优先级。类型不匹配、缺少 hard dependency 或 cycle 的工作流不能保存。**Advanced Graph** 显示精确的 compiled DAG。
 
+Stage 1 将**主唱分离**、**降噪**和**去混响**显示为彼此独立的开/关预处理开关；新建默认工作流中的三项均为关。关闭表示透明旁路：当分析需要时，OriginalMix 仍会生成人声，分析器使用该 Vocal，而不会把它错误标记为 LeadVocal。显式请求 LeadVocal 输出会强制执行主唱分离。Plan Preview 会在入队前显示精确的分析器路径和每个开关状态。
+
+Stage 4 的**决策模式**默认使用 **Algorithm**，也就是确定性的 candidate graph / HSMM 解码。**AI judgment** 是显式的替代模式：配置好的 Fusion Agent Adapter 可以访问外部 AI provider，并只接收有边界的 Fusion Candidate 元数据，从真实 Engine Candidate 中选择最终路径。它不能凭空生成音符几何或测量证据，Engine 会在生成 Candidate 谱面前再次验证返回结果。请在**设置 → 模型与运行环境**中配置 adapter。adapter/provider 缺失、超时、返回无效结果或验证失败都会使本次分析失败；Uta! Studio 不会静默回退到 Algorithm。Plan Preview 会显示请求的决策模式和 adapter readiness，但不会在预览时联系 provider。
+
+在**模型与运行环境 → Fusion Agent Adapter**中，Runtime Manager 会自动扫描 `PATH` 中带有有效清单的 `uta-fusion-agent-adapter`、`uta-fusion-agent-pi`、`uta-fusion-agent-codex` 和 `uta-fusion-agent-claude` 集成。安装后可点击**重新扫描**，也可以手动选择其他兼容 adapter。它必须带有该可执行文件专属的 `<adapter-executable>.uta-fusion-adapter.json` sidecar，并声明 contract `uta.fusion_agent_adapter`、adapter ID `fusion_agent_adapter` 和 Fusion 协议版本 `3`。共享目录清单或普通的 `pi`、`codex`、`claude` 及其他编程智能体可执行文件均不会被接受。Uta! Studio 只验证本地清单，不会启动 adapter 或联系其 provider；**清除**只移除已保存的选择，不会删除可执行文件。sidecar 只证明协议兼容性，并不证明发布者可信；adapter 会以当前用户的系统权限运行。Provider 凭据仍由 adapter/provider 机制管理。
+
 完成的运行会生成可替换的 Candidate revision。编辑器始终让人工音符保持最高视觉与语义优先级，并提供只读 Evidence 和 disagreement-first Review queue。接受建议会进入正常 undo 历史；重新分析绝不会静默替换 Authored revision。出现新 Candidate 时请使用 Compare 或 Merge。
 
 ---
@@ -897,11 +913,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.6.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.7.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
 
 #### Windows
 
-1. `uta-studio-0.6.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-0.7.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -911,20 +927,20 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.6.0-1_amd64.deb
+sudo apt install ./uta-studio_0.7.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.6.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.6.0-x86_64-linux.bin
-./uta-studio-0.6.0-x86_64-linux.bin
+chmod +x uta-studio-0.7.0-x86_64-linux.bin
+./uta-studio-0.7.0-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -934,7 +950,7 @@ Linux デスクトップ版は Wayland ネイティブです。X11 バックエ�
 ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
 
 ```sh
-sha256sum -c uta-studio-0.6.0-linux-deb.sha256
+sha256sum -c uta-studio-0.7.0-linux-deb.sha256
 ```
 
 ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
@@ -1081,6 +1097,8 @@ NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認�
 
 解析済み楽曲を開いて**譜面を編集**を選びます。波形、ピッチ根拠、歌詞/フレーズ境界、ノートバー、複数トラック、名前付き Undo 履歴を利用できます。
 
+波形のコンテキストメニューで不変のワークフロー音声リビジョンを **A** と **B** に割り当て、再生位置や再生・一時停止状態をリセットせずに試聴を切り替えられます。波形表示に使うリビジョンも独立して選択できます。ソースメディアと成果物リビジョンは常に読み取り専用です。
+
 主な操作：
 
 - 再生、一時停止、シーク、選択範囲の試聴。
@@ -1125,8 +1143,8 @@ UTF-8 UltraStar 1.1 テキストと同階層のメディアを書き出します
 
 **設定 → ストレージ**では生成データを楽曲、モデル、その他に分けて表示します。
 
-- **生成キャッシュを消去**は対象の生成ステム、譜面/プレビュー、一時制作データを削除します。元メディアは削除しません。
-- **モデルを消去**はダウンロード済みモデルを削除します。再セットアップまでランタイム状態では不足として表示されます。
+- **生成キャッシュを消去**は対象の生成ステム、譜面/プレビュー、一時制作データを削除します。元メディアやインストール済みモデルは削除しません。
+- 個別モデル成果物のインストール、修復、削除は**設定 → モデルとランタイム**でのみ行います。
 
 既定の設定/データルートは `~/.uta-studio` です。別のデータ場所を設定した場合はそちらが使われます。移行・再インストール前には：
 
@@ -1310,5 +1328,11 @@ Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールには�
 ## Processing Studio とエビデンス確認
 
 曲ページから **Processing Studio** を開き、機械処理ワークフローを編集します。音声 Transformation は実際の型付きデータフローを書き換え、現在実行可能な音声 lane は Vocal、BGM、Lead、Vocal Residual です。Backing と Harmony は将来の音声分割機能が実装されるまで譜面トラックの役割です。Analyzer attachment は具体的な音声 Artifact を選択し、Analyzer の並び順は ready-node の優先度だけを変更します。型不一致、hard dependency の欠落、cycle を含むワークフローは保存できません。**Advanced Graph** は正確な compiled DAG を表示します。
+
+Stage 1 では、**リード分離**、**ノイズ除去**、**残響除去**を個別のオン／オフ前処理スイッチとして表示します。新しい既定ワークフローでは 3 つともオフです。オフは透過的なバイパスです。解析に必要な場合、OriginalMix から Vocal は引き続き生成され、解析器は誤って LeadVocal とラベル付けされた音声ではなく、その Vocal を使います。LeadVocal 出力を明示的に要求するとリード分離が必須になります。Plan Preview はキュー投入前に、正確な解析器ルートと各スイッチの状態を表示します。
+
+Stage 4 の**決定モード**は、決定論的な candidate graph / HSMM デコーダである **Algorithm** が既定です。**AI judgment** は明示的に選ぶ代替モードです。設定済みの Fusion Agent Adapter は外部 AI provider に接続でき、境界を限定した Fusion Candidate メタデータだけを受け取り、実在する Engine Candidate から最終パスを選択します。音符ジオメトリや測定エビデンスを新しく捏造することはできず、Candidate 譜面を作る前に Engine が返却結果を再検証します。Adapter は**設定 → モデルとランタイム**で構成します。Adapter/provider が見つからない、タイムアウトする、無効な応答を返す、または検証に失敗した場合、その解析は失敗します。Uta! Studio が暗黙に Algorithm へフォールバックすることはありません。Plan Preview は要求された決定モードと Adapter の readiness を表示しますが、Preview 中に provider へ接続しません。
+
+**モデルとランタイム → Fusion Agent Adapter** では、Runtime Manager が `PATH` 上のマニフェスト検証済み `uta-fusion-agent-adapter`、`uta-fusion-agent-pi`、`uta-fusion-agent-codex`、`uta-fusion-agent-claude` 連携を自動検出します。インストール後は **再スキャン** を使うか、別の互換 Adapter 実行ファイルを手動で選択できます。その実行ファイル専用の `<adapter-executable>.uta-fusion-adapter.json` sidecar が必要で、contract `uta.fusion_agent_adapter`、Adapter ID `fusion_agent_adapter`、Fusion プロトコルバージョン `3` を宣言していなければなりません。共有ディレクトリのマニフェストや、通常の `pi`、`codex`、`claude`、その他のコーディングエージェント実行ファイルは受け付けません。Uta! Studio は Adapter を起動したり provider に接続したりせず、このローカルマニフェストだけを検証します。**消去**は保存した選択だけを削除し、実行ファイル自体は削除しません。sidecar が示すのはプロトコル互換性であり、発行者の信頼性ではありません。Adapter は現在のユーザーの OS 権限で実行されます。Provider の認証情報は引き続き Adapter/provider の仕組みが所有します。
 
 完了した実行は再生成可能な Candidate revision を作成します。エディターでは人が編集した音符が常に最優先で、読み取り専用 Evidence と disagreement-first Review queue を利用できます。提案の適用は通常の undo 履歴に入り、再解析が Authored revision を暗黙に置き換えることはありません。新しい Candidate は Compare または Merge で確認します。

@@ -75,35 +75,83 @@ pub(crate) fn spawn_sidebar(
                 });
 
             spawn_section_label(sidebar, font.clone(), theme, "BROWSE");
+            spawn_sidebar_filter_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                Some(UiIcon::Home),
+                "All music",
+                session.meta.songs_count,
+                UiAction::from(LibraryCommand::SetLibraryView(LibraryView::All)),
+                session.route == StudioRoute::Library && session.library_view == LibraryView::All,
+            );
+
+            let selected_song = session.selected_song.as_deref();
             let analysis_count = active_analysis_task_count(session.analysis_tasks);
-            for (view, icon, label, count) in [
-                (
-                    LibraryView::All,
-                    UiIcon::Home,
-                    "All music",
-                    session.meta.songs_count,
-                ),
-                (
-                    LibraryView::Queue,
-                    UiIcon::Queue,
-                    "Analysis",
-                    analysis_count,
-                ),
-            ] {
+            spawn_section_label(sidebar, font.clone(), theme, "ANALYSIS");
+            if analysis_count > 0 {
                 spawn_sidebar_filter_item(
                     sidebar,
                     font.clone(),
                     icons.clone(),
                     theme,
-                    Some(icon),
-                    label,
-                    count,
-                    UiAction::from(LibraryCommand::SetLibraryView(view)),
-                    (session.route == StudioRoute::Library && session.library_view == view)
-                        || (view == LibraryView::Queue
-                            && session.route == StudioRoute::AnalysisInspect),
+                    Some(UiIcon::Queue),
+                    "Processing Queue",
+                    analysis_count,
+                    UiAction::from(AppCommand::ToggleActivity),
+                    session.activity_open,
                 );
             }
+            spawn_sidebar_nav_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                UiIcon::Sparkles,
+                "Processing Studio",
+                Some(selected_song.map_or_else(
+                    || UiAction::from(AnalysisCommand::OpenEmptyProcessingStudio),
+                    |file_hash| {
+                        UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.to_string()))
+                    },
+                )),
+                session.route == StudioRoute::ProcessingStudio,
+            );
+            let advanced_graph_action = selected_song.map_or_else(
+                || UiAction::from(LibraryCommand::SetLibraryView(LibraryView::Queue)),
+                view_song_analysis_action,
+            );
+            spawn_sidebar_filter_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                Some(UiIcon::Grid),
+                "DAG Graph",
+                0,
+                advanced_graph_action,
+                (session.route == StudioRoute::Library
+                    && session.library_view == LibraryView::Queue)
+                    || session.route == StudioRoute::AnalysisInspect,
+            );
+
+            spawn_section_label(sidebar, font.clone(), theme, "EDIT");
+            spawn_sidebar_nav_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                UiIcon::Scissors,
+                "Editor",
+                Some(UiAction::from(LibraryCommand::SetLibraryView(
+                    LibraryView::Completed,
+                ))),
+                session.route == StudioRoute::Editor
+                    || (session.route == StudioRoute::Library
+                        && session.library_view == LibraryView::Completed),
+            );
+
             spawn_section_label(sidebar, font.clone(), theme, "MY LIBRARY");
             for (view, icon, label, count) in [
                 (
@@ -167,7 +215,7 @@ pub(crate) fn spawn_sidebar(
                 theme,
                 UiIcon::Folder,
                 "Folders",
-                UiAction::from(AppCommand::Folders),
+                Some(UiAction::from(AppCommand::Folders)),
                 session.route == StudioRoute::Folders,
             );
             sidebar.spawn(Node {
@@ -334,52 +382,57 @@ pub(crate) fn spawn_sidebar_nav_item(
     theme: &StudioTheme,
     icon: UiIcon,
     label: &'static str,
-    action: UiAction,
+    action: Option<UiAction>,
     active: bool,
 ) {
-    parent
-        .spawn((
-            Button,
-            action,
-            Node {
-                width: percent(100),
-                height: px(32),
-                align_items: AlignItems::Center,
-                padding: UiRect::horizontal(px(8)),
-                border: UiRect::left(px(1)),
-                ..default()
+    let enabled = action.is_some();
+    let mut item = parent.spawn((
+        Node {
+            width: percent(100),
+            height: px(32),
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(8)),
+            border: UiRect::left(px(1)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(if active { theme.primary } else { Color::NONE }),
+    ));
+    if let Some(action) = action {
+        item.insert((Button, action));
+    }
+    item.with_children(|row| {
+        spawn_icon(
+            row,
+            icons,
+            icon,
+            15.0,
+            if active {
+                theme.primary
+            } else if enabled {
+                theme.sidebar_foreground.with_alpha(0.62)
+            } else {
+                theme.sidebar_foreground.with_alpha(0.28)
             },
-            BackgroundColor(Color::NONE),
-            BorderColor::all(if active { theme.primary } else { Color::NONE }),
-        ))
-        .with_children(|row| {
-            spawn_icon(
-                row,
-                icons,
-                icon,
-                15.0,
-                if active {
-                    theme.primary
-                } else {
-                    theme.sidebar_foreground.with_alpha(0.62)
-                },
-            );
-            row.spawn(Node {
-                width: px(9),
-                ..default()
-            });
-            spawn_text(
-                row,
-                font,
-                label,
-                12.0,
-                if active {
-                    theme.sidebar_foreground.with_alpha(0.68)
-                } else {
-                    theme.sidebar_foreground
-                },
-            );
+        );
+        row.spawn(Node {
+            width: px(9),
+            ..default()
         });
+        spawn_text(
+            row,
+            font,
+            label,
+            12.0,
+            if active {
+                theme.sidebar_foreground.with_alpha(0.68)
+            } else if enabled {
+                theme.sidebar_foreground
+            } else {
+                theme.sidebar_foreground.with_alpha(0.38)
+            },
+        );
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -407,7 +460,16 @@ pub(crate) fn spawn_workspace(
             BackgroundColor(theme.background),
         ))
         .with_children(|workspace| {
-            spawn_top_bar(workspace, font.clone(), icons.clone(), session, theme);
+            spawn_top_bar(
+                workspace,
+                font.clone(),
+                icons.clone(),
+                asset_server,
+                images,
+                local_images,
+                session,
+                theme,
+            );
             spawn_analysis_boundary_progress(workspace, session, theme);
             match session.route {
                 StudioRoute::Library
@@ -428,7 +490,6 @@ pub(crate) fn spawn_workspace(
                 StudioRoute::Library => spawn_library(
                     workspace,
                     font.clone(),
-                    icons.clone(),
                     asset_server,
                     images,
                     local_images,
@@ -438,15 +499,9 @@ pub(crate) fn spawn_workspace(
                 StudioRoute::Folders => {
                     spawn_folders(workspace, font.clone(), icons.clone(), session, theme)
                 }
-                StudioRoute::SongDetail => spawn_song_detail(
-                    workspace,
-                    font.clone(),
-                    asset_server,
-                    images,
-                    local_images,
-                    session,
-                    theme,
-                ),
+                StudioRoute::SongDetail => {
+                    spawn_song_detail(workspace, font.clone(), session, theme)
+                }
                 StudioRoute::Documentation => {
                     spawn_documentation(workspace, font.clone(), session, theme)
                 }
@@ -495,6 +550,7 @@ fn spawn_analysis_boundary_progress(
     if !analysis_boundary_progress_open(session) {
         return;
     }
+    let indeterminate = analysis_overall_progress_is_indeterminate(session);
     let progress = current_analysis_header(session)
         .map(|(_, _, progress)| progress.clamp(0, 100))
         .unwrap_or(0);
@@ -512,35 +568,277 @@ fn spawn_analysis_boundary_progress(
         .with_children(|rail| {
             rail.spawn((
                 Node {
-                    width: percent(progress as f32),
-                    min_width: if progress > 0 { px(2) } else { px(0) },
+                    width: percent(if indeterminate {
+                        100.0
+                    } else {
+                        progress as f32
+                    }),
+                    min_width: if progress > 0 || indeterminate {
+                        px(2)
+                    } else {
+                        px(0)
+                    },
                     height: percent(100),
                     ..default()
                 },
-                BackgroundColor(theme.primary),
+                BackgroundColor(if indeterminate {
+                    theme.primary.with_alpha(0.38)
+                } else {
+                    theme.primary
+                }),
             ));
         });
 }
 
-pub(crate) fn spawn_top_bar(
+struct WorkspaceTitle {
+    eyebrow: String,
+    title: String,
+    subtitle: String,
+}
+
+fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
+    match session.route {
+        StudioRoute::Library if session.library_view == LibraryView::Queue => {
+            let current = current_analysis_header(session);
+            WorkspaceTitle {
+                eyebrow: current_analysis_eyebrow(session).to_string(),
+                title: current
+                    .as_ref()
+                    .map(|(title, _, _)| title.clone())
+                    .unwrap_or_else(|| "Analysis".to_string()),
+                subtitle: current
+                    .map(|(_, artist, progress)| {
+                        if analysis_overall_progress_is_indeterminate(session) {
+                            format!("{artist} · In progress · overall work units unavailable")
+                        } else {
+                            format!("{artist} · {progress}%")
+                        }
+                    })
+                    .unwrap_or_else(|| "No analysis is running".to_string()),
+            }
+        }
+        StudioRoute::Library => WorkspaceTitle {
+            eyebrow: if session.library_facet.is_some() {
+                "MY LIBRARY".to_string()
+            } else {
+                session.library_view.eyebrow().to_string()
+            },
+            title: session
+                .library_search
+                .as_deref()
+                .map(|query| format!("Results for “{query}”"))
+                .unwrap_or_else(|| session.library_title().to_string()),
+            subtitle: format!(
+                "{} tracks · analysis workspace{}",
+                session.songs.processed_count,
+                if session.scanning { " · scanning" } else { "" }
+            ),
+        },
+        StudioRoute::SongDetail => {
+            let song = session.selected_song();
+            WorkspaceTitle {
+                eyebrow: "SONG".to_string(),
+                title: song
+                    .as_ref()
+                    .map(|song| song.title.clone())
+                    .unwrap_or_else(|| "Song".to_string()),
+                subtitle: song
+                    .map(|song| {
+                        if song.album.is_empty() {
+                            song.artist
+                        } else {
+                            format!("{} · {}", song.artist, song.album)
+                        }
+                    })
+                    .unwrap_or_else(|| "Choose a song from the library".to_string()),
+            }
+        }
+        StudioRoute::Folders => WorkspaceTitle {
+            eyebrow: "MY LIBRARY".to_string(),
+            title: "Folders".to_string(),
+            subtitle: "Browse watched source locations and open the configured output folder. Uta! Studio never moves or deletes source media.".to_string(),
+        },
+        StudioRoute::ProcessingStudio => WorkspaceTitle {
+            eyebrow: "PROCESSING STUDIO".to_string(),
+            title: if session.selected_song.is_some() {
+                "Audio & singing workflow"
+            } else {
+                "Choose a song to begin"
+            }
+            .to_string(),
+            subtitle: if session.selected_song.is_some() {
+                "Edit capability topology, role-preserving transform order, typed conditions, and artifact routing. Models & runtime owns installation; exact provider/backend readiness appears in Plan Preview."
+            } else {
+                "Select a song before configuring its processing workflow."
+            }
+            .to_string(),
+        },
+        StudioRoute::Documentation => WorkspaceTitle {
+            eyebrow: "HELP".to_string(),
+            title: "Documentation".to_string(),
+            subtitle: match effective_ui_locale(session.config) {
+                UiLocale::English => "Offline user guide · English",
+                UiLocale::SimplifiedChinese => "离线使用说明 · 简体中文",
+                UiLocale::Japanese => "オフラインユーザーガイド · 日本語",
+            }
+            .to_string(),
+        },
+        StudioRoute::AnalysisInspect => {
+            let node_label = session
+                .selected_analysis_node
+                .as_deref()
+                .unwrap_or("Workflow");
+            WorkspaceTitle {
+                eyebrow: "INSPECT VIEW".to_string(),
+                title: current_analysis_header(session)
+                    .map(|(title, _, _)| format!("{title} · {node_label}"))
+                    .unwrap_or_else(|| node_label.to_string()),
+                subtitle: "Inspect node inputs, outputs, and evidence.".to_string(),
+            }
+        }
+        StudioRoute::Settings => WorkspaceTitle {
+            eyebrow: "UTA! STUDIO".to_string(),
+            title: "Settings".to_string(),
+            subtitle: match session.settings_tab {
+                SettingsTab::General => "General",
+                SettingsTab::Storage => "Storage",
+                SettingsTab::Models => "Models & runtime",
+                SettingsTab::Analysis => "Analysis",
+            }
+            .to_string(),
+        },
+        StudioRoute::Editor => WorkspaceTitle {
+            eyebrow: "EDITOR".to_string(),
+            title: "Editor".to_string(),
+            subtitle: String::new(),
+        },
+    }
+}
+
+fn workspace_toolbar_open(session: &StudioSessionView<'_>) -> bool {
+    match session.route {
+        StudioRoute::Library if session.library_view == LibraryView::Queue => {
+            current_analysis_file_hash(session).is_some()
+        }
+        StudioRoute::Library => true,
+        StudioRoute::SongDetail => false,
+        StudioRoute::Folders | StudioRoute::Documentation | StudioRoute::Settings => true,
+        StudioRoute::ProcessingStudio => session.workflow.is_some(),
+        StudioRoute::AnalysisInspect => current_analysis_file_hash(session).is_some(),
+        _ => false,
+    }
+}
+
+fn spawn_workspace_toolbar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
+    match session.route {
+        StudioRoute::Library if session.library_view == LibraryView::Queue => {
+            if let Some(file_hash) = current_analysis_file_hash(session) {
+                spawn_analysis_header_toolbar(parent, font, icons, theme, session, &file_hash);
+            }
+        }
+        StudioRoute::Library => {
+            spawn_library_header_toolbar(parent, font, icons, session, theme);
+        }
+        StudioRoute::Folders => {
+            spawn_toolbar_button(
+                parent,
+                font.clone(),
+                icons.clone(),
+                theme,
+                UiIcon::Repeat,
+                "Rescan all",
+                UiAction::from(LibraryCommand::RescanLibrary),
+                false,
+            );
+            spawn_toolbar_button(
+                parent,
+                font,
+                icons,
+                theme,
+                UiIcon::Add,
+                "Add folder",
+                UiAction::from(LibraryCommand::ChooseFolder),
+                false,
+            );
+        }
+        StudioRoute::Documentation => {
+            spawn_documentation_header_actions(parent, font, session, theme);
+        }
+        StudioRoute::Settings => {
+            spawn_settings_header_toolbar(parent, font, session, theme);
+        }
+        StudioRoute::AnalysisInspect => {
+            if let Some(file_hash) = current_analysis_file_hash(session) {
+                spawn_analysis_header_toolbar(parent, font, icons, theme, session, &file_hash);
+            }
+        }
+        StudioRoute::ProcessingStudio => {
+            spawn_compact_action_button(
+                parent,
+                font.clone(),
+                theme,
+                "Validate",
+                UiAction::from(AnalysisCommand::PreviewWorkflow),
+            );
+            spawn_compact_action_button(
+                parent,
+                font.clone(),
+                theme,
+                "Save workflow",
+                UiAction::from(AnalysisCommand::SaveWorkflow),
+            );
+            spawn_compact_action_button(
+                parent,
+                font,
+                theme,
+                "Preview run…",
+                UiAction::from(AnalysisCommand::RunWorkflow),
+            );
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn should_show_workspace_eyebrow(subtitle: &str) -> bool {
+    subtitle.is_empty()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_top_bar(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    local_images: &mut LocalImages,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+) {
+    let title = workspace_title(session);
+    let selected_song = (session.route == StudioRoute::SongDetail)
+        .then(|| session.selected_song())
+        .flatten();
+    let cover = selected_song
+        .as_ref()
+        .map(|song| album_art_handle(song, asset_server, images, local_images));
+    let toolbar_open = workspace_toolbar_open(session);
     parent
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(56),
+                min_height: px(WORKSPACE_TOP_BAR_MIN_HEIGHT),
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
-                padding: UiRect {
-                    left: px(12),
-                    right: px(12),
-                    ..default()
-                },
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: px(0),
+                row_gap: px(6),
+                padding: UiRect::axes(px(12), px(8)),
                 border: if analysis_boundary_progress_open(session) {
                     UiRect::ZERO
                 } else {
@@ -563,106 +861,221 @@ pub(crate) fn spawn_top_bar(
                     false,
                     34.0,
                 );
-            } else {
-                bar.spawn(Node {
-                    width: px(34),
-                    height: px(34),
-                    flex_shrink: 0.0,
-                    ..default()
-                });
             }
             bar.spawn(Node {
-                flex_grow: 1.0,
-                ..default()
-            });
-            if let Some(title) = match session.route {
-                StudioRoute::Folders => Some("Folders"),
-                StudioRoute::SongDetail => Some("Song"),
-                StudioRoute::Editor => Some("Editor"),
-                StudioRoute::ProcessingStudio => Some("Processing"),
-                StudioRoute::Documentation => Some("Documentation"),
-                StudioRoute::AnalysisInspect => Some("Inspect view"),
-                StudioRoute::Library | StudioRoute::Settings => None,
-            } {
-                spawn_text(bar, font.clone(), title, 11.0, theme.muted_foreground);
-            }
-            bar.spawn(Node {
-                position_type: PositionType::Relative,
-                width: px(34),
-                height: px(34),
+                width: px(10),
                 flex_shrink: 0.0,
                 ..default()
+            });
+            if let Some(cover) = cover {
+                bar.spawn((
+                    Node {
+                        width: px(46),
+                        height: px(46),
+                        flex_shrink: 0.0,
+                        overflow: Overflow::clip(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(5)),
+                        margin: UiRect::right(px(12)),
+                        ..default()
+                    },
+                    ImageNode::new(cover),
+                    BorderColor::all(theme.border.with_alpha(0.9)),
+                ));
+            }
+            bar.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                overflow: Overflow::clip(),
+                ..default()
             })
-            .with_children(|search| {
-                spawn_icon_button(
-                    search,
-                    icons.clone(),
-                    theme,
-                    UiIcon::Search,
-                    UiAction::from(AppCommand::ToggleGlobalSearch),
-                    session.search_open || session.library_search.is_some(),
-                    false,
-                    34.0,
-                );
-                if session.search_open {
-                    search
-                        .spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                right: px(0),
-                                top: px(40),
-                                width: px(410),
-                                flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(px(12)),
-                                row_gap: px(9),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(7)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.card.with_alpha(0.98)),
-                            BorderColor::all(theme.border.with_alpha(0.86)),
-                            BoxShadow::new(
-                                Color::srgba(0.0, 0.0, 0.0, 0.24),
-                                px(0),
-                                px(14),
-                                px(30),
-                                px(-10),
-                            ),
-                            ZIndex(75),
-                        ))
-                        .with_children(|popover| {
-                            popover.spawn((
-                                LibrarySearchInput,
-                                EditableText {
-                                    visible_width: Some(38.0),
-                                    max_characters: Some(120),
-                                    ..EditableText::new(
-                                        session.library_search.as_deref().unwrap_or(""),
-                                    )
+            .with_children(|copy| {
+                if should_show_workspace_eyebrow(&title.subtitle) {
+                    spawn_text(copy, font.clone(), title.eyebrow, 8.0, theme.primary);
+                }
+                spawn_text(copy, font.clone(), title.title, 18.0, theme.foreground);
+                if !title.subtitle.is_empty() {
+                    copy.spawn(Node {
+                        width: percent(100),
+                        min_width: px(0),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    })
+                    .with_children(|line| {
+                        spawn_text(
+                            line,
+                            font.clone(),
+                            title.subtitle,
+                            8.5,
+                            theme.muted_foreground,
+                        );
+                    });
+                }
+            });
+            bar.spawn(Node {
+                min_width: px(0),
+                flex_shrink: 1.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexEnd,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: px(6),
+                row_gap: px(6),
+                ..default()
+            })
+            .with_children(|actions| {
+                if toolbar_open {
+                    actions
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_shrink: 1.0,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::FlexEnd,
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: px(8),
+                            row_gap: px(6),
+                            ..default()
+                        })
+                        .with_children(|toolbar| {
+                            spawn_workspace_toolbar(
+                                toolbar,
+                                font.clone(),
+                                icons.clone(),
+                                session,
+                                theme,
+                            );
+                        });
+                }
+                actions
+                    .spawn(Node {
+                        position_type: PositionType::Relative,
+                        width: px(34),
+                        height: px(34),
+                        flex_shrink: 0.0,
+                        ..default()
+                    })
+                    .with_children(|search| {
+                        spawn_icon_button(
+                            search,
+                            icons.clone(),
+                            theme,
+                            UiIcon::Search,
+                            UiAction::from(AppCommand::ToggleGlobalSearch),
+                            session.search_open
+                                || if session.route == StudioRoute::Documentation {
+                                    !session.documentation.query.trim().is_empty()
+                                } else {
+                                    session.library_search.is_some()
                                 },
-                                Node {
-                                    width: percent(100),
-                                    height: px(42),
-                                    align_items: AlignItems::Center,
-                                    padding: UiRect::horizontal(px(12)),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: BorderRadius::all(px(5)),
-                                    ..default()
-                                },
-                                ui_text_font(font.clone(), 12.0),
-                                TextColor(theme.foreground),
-                                TextLayout::no_wrap(),
-                                TextCursorStyle {
-                                    color: theme.primary,
-                                    selected_text_color: Some(theme.primary_foreground),
-                                    ..default()
-                                },
-                                BackgroundColor(theme.background.with_alpha(0.72)),
-                                BorderColor::all(theme.border.with_alpha(0.68)),
-                                TabIndex(0),
-                                AutoFocus,
-                            ));
-                            popover
+                            false,
+                            34.0,
+                        );
+                        if session.search_open {
+                            search
+                                .spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        right: px(0),
+                                        top: px(40),
+                                        width: px(410),
+                                        max_width: Val::Vw(90.0),
+                                        flex_direction: FlexDirection::Column,
+                                        padding: UiRect::all(px(12)),
+                                        row_gap: px(9),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(7)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.card.with_alpha(0.98)),
+                                    BorderColor::all(theme.border.with_alpha(0.86)),
+                                    BoxShadow::new(
+                                        Color::srgba(0.0, 0.0, 0.0, 0.24),
+                                        px(0),
+                                        px(14),
+                                        px(30),
+                                        px(-10),
+                                    ),
+                                    ZIndex(75),
+                                ))
+                                .with_children(|popover| {
+                                    if session.route == StudioRoute::Documentation {
+                                        popover.spawn((
+                                            DocumentationSearchInput,
+                                            EditableText {
+                                                visible_width: Some(38.0),
+                                                max_characters: Some(120),
+                                                ..EditableText::new(
+                                                    session.documentation.query.as_str(),
+                                                )
+                                            },
+                                            Node {
+                                                width: percent(100),
+                                                height: px(42),
+                                                align_items: AlignItems::Center,
+                                                padding: UiRect::horizontal(px(12)),
+                                                border: UiRect::all(px(1)),
+                                                border_radius: BorderRadius::all(px(5)),
+                                                ..default()
+                                            },
+                                            ui_text_font(font.clone(), 12.0),
+                                            TextColor(theme.foreground),
+                                            TextLayout::no_wrap(),
+                                            TextCursorStyle {
+                                                color: theme.primary,
+                                                selected_text_color: Some(
+                                                    theme.primary_foreground,
+                                                ),
+                                                ..default()
+                                            },
+                                            BackgroundColor(
+                                                theme.background.with_alpha(0.72),
+                                            ),
+                                            BorderColor::all(theme.border.with_alpha(0.68)),
+                                            TabIndex(0),
+                                            AutoFocus,
+                                        ));
+                                        spawn_wrapped_text(
+                                            popover,
+                                            font.clone(),
+                                            "Search the offline user guide · results update as you type",
+                                            9.0,
+                                            theme.muted_foreground,
+                                        );
+                                        return;
+                                    }
+                                    popover.spawn((
+                                        LibrarySearchInput,
+                                        EditableText {
+                                            visible_width: Some(38.0),
+                                            max_characters: Some(120),
+                                            ..EditableText::new(
+                                                session.library_search.as_deref().unwrap_or(""),
+                                            )
+                                        },
+                                        Node {
+                                            width: percent(100),
+                                            height: px(42),
+                                            align_items: AlignItems::Center,
+                                            padding: UiRect::horizontal(px(12)),
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(5)),
+                                            ..default()
+                                        },
+                                        ui_text_font(font.clone(), 12.0),
+                                        TextColor(theme.foreground),
+                                        TextLayout::no_wrap(),
+                                        TextCursorStyle {
+                                            color: theme.primary,
+                                            selected_text_color: Some(theme.primary_foreground),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.background.with_alpha(0.72)),
+                                        BorderColor::all(theme.border.with_alpha(0.68)),
+                                        TabIndex(0),
+                                        AutoFocus,
+                                    ));
+                                    popover
                                 .spawn(Node {
                                     width: percent(100),
                                     align_items: AlignItems::Center,
@@ -700,22 +1113,25 @@ pub(crate) fn spawn_top_bar(
                                         UiAction::from(LibraryCommand::ApplyLibrarySearch),
                                     );
                                 });
-                        });
-                }
+                                });
+                        }
+                    });
+                let has_active_analysis = session.analysis_tasks.iter().any(|task| {
+                    matches!(
+                        task.status,
+                        app_core::QueuedStatus::Staged
+                            | app_core::QueuedStatus::Queued
+                            | app_core::QueuedStatus::Analyzing(_)
+                    )
+                });
+                spawn_activity_button(
+                    actions,
+                    icons.clone(),
+                    theme,
+                    session.activity_open,
+                    has_active_analysis,
+                );
             });
-            let has_active_analysis = session.analysis_tasks.iter().any(|task| {
-                matches!(
-                    task.status,
-                    app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
-                )
-            });
-            spawn_activity_button(
-                bar,
-                icons.clone(),
-                theme,
-                session.activity_open,
-                has_active_analysis,
-            );
         });
 }
 

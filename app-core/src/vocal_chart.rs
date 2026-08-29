@@ -1,8 +1,10 @@
-//! UTZ 0.2 vocal-chart authoring model and analyzer import.
+//! UTZ 0.3 vocal-chart authoring model and analyzer import.
 
 use serde_json::Value;
 
 use crate::{
+    analysis_artifact::{load_active_artifact, validate_artifact_revision_file},
+    analysis_graph::ArtifactKind,
     authoring::{load_pitch_guide, load_transcript},
     cache::CacheDir,
 };
@@ -39,13 +41,7 @@ struct MigratedNote {
 /// Only a song that has never been edited falls back to migrating analyzer
 /// output.
 pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChartV1, UtaStudioError> {
-    let cache = CacheDir::new();
-    let path = cache.vocal_chart_path(file_hash);
-    if path.is_file() {
-        let chart: VocalChartV1 = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-        chart
-            .validate()
-            .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+    if let Some(chart) = load_saved_or_candidate_chart(file_hash)? {
         return Ok(chart);
     }
 
@@ -56,6 +52,266 @@ pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChartV1, UtaS
         .get("notes")
         .ok_or_else(|| UtaStudioError::Other("pitch guide has no notes".into()))?;
     migrate_analyzer_chart(&transcript, notes)
+}
+
+/// Resolves a complete chart without falling back to the legacy
+/// transcript-plus-pitch-note bundle. Active immutable revisions are read
+/// directly so an Engine publication does not depend on compatibility files.
+pub(crate) fn load_saved_or_candidate_chart(
+    file_hash: &str,
+) -> Result<Option<VocalChartV1>, UtaStudioError> {
+    let cache = CacheDir::new();
+
+    if let Some(chart) = load_active_chart(file_hash, ArtifactKind::AuthoredChart)? {
+        return Ok(Some(chart));
+    }
+    let authored_path = cache.vocal_chart_path(file_hash);
+    if authored_path.is_file() {
+        return load_chart_path(&authored_path).map(Some);
+    }
+
+    if let Some(chart) = load_active_chart(file_hash, ArtifactKind::CandidateChart)? {
+        return Ok(Some(chart));
+    }
+    let candidate_path = cache.candidate_chart_path(file_hash);
+    if candidate_path.is_file() {
+        return load_chart_path(&candidate_path).map(Some);
+    }
+
+    Ok(None)
+}
+
+fn load_active_chart(
+    file_hash: &str,
+    kind: ArtifactKind,
+) -> Result<Option<VocalChartV1>, UtaStudioError> {
+    let Some(revision) = load_active_artifact(file_hash, kind) else {
+        return Ok(None);
+    };
+    if revision.invalidated {
+        return Err(UtaStudioError::Other(format!(
+            "active {kind:?} revision is invalidated"
+        )));
+    }
+    validate_artifact_revision_file(&revision).map_err(UtaStudioError::Other)?;
+    load_chart_path(&revision.path).map(Some)
+}
+
+pub(crate) fn validate_candidate_chart_path(path: &std::path::Path) -> Result<(), UtaStudioError> {
+    load_chart_path(path).map(|_| ())
+}
+
+fn load_chart_path(path: &std::path::Path) -> Result<VocalChartV1, UtaStudioError> {
+    let mut value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    if value.get("contract").and_then(Value::as_str)
+        == Some("uta.analysis-engine.candidate-vocal-chart")
+    {
+        return migrate_engine_candidate_chart(&value);
+    }
+    if value.get("format").and_then(Value::as_str) == Some(utz::VOCAL_CHART_FORMAT)
+        && value
+            .get("format_version")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version.starts_with("0.2."))
+    {
+        value["format_version"] = Value::String(utz::VOCAL_CHART_VERSION.to_string());
+        value["timebase"] = Value::from(utz::UTZ_TIMEBASE);
+    }
+    let chart: VocalChartV1 = serde_json::from_value(value)?;
+    chart
+        .validate()
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+    Ok(chart)
+}
+
+/// Projects the Engine-owned canonical candidate into the strict UTZ 0.3
+/// authoring chart. Canonical regions without a word remain analysis evidence;
+/// UTZ notes must own real lyric tokens, so they are not fabricated as lyrics.
+pub(crate) fn migrate_engine_candidate_chart(
+    candidate: &Value,
+) -> Result<VocalChartV1, UtaStudioError> {
+    if candidate.get("contract").and_then(Value::as_str)
+        != Some("uta.analysis-engine.candidate-vocal-chart")
+        || candidate.get("version").and_then(Value::as_u64) != Some(1)
+        || candidate.get("timebase").and_then(Value::as_u64) != Some(utz::UTZ_TIMEBASE)
+    {
+        return Err(UtaStudioError::Other(
+            "Engine candidate chart contract is invalid".to_string(),
+        ));
+    }
+    let words = candidate
+        .get("words")
+        .and_then(Value::as_array)
+        .ok_or_else(|| UtaStudioError::Other("Engine candidate words are missing".into()))?;
+    let canonical_notes = candidate
+        .get("notes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| UtaStudioError::Other("Engine candidate notes are missing".into()))?;
+
+    let mut notes_by_word = std::collections::BTreeMap::<String, Vec<&Value>>::new();
+    for note in canonical_notes {
+        if let Some(word_id) = note
+            .get("word_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        {
+            notes_by_word
+                .entry(word_id.to_string())
+                .or_default()
+                .push(note);
+        }
+    }
+    let mut notes = Vec::new();
+    for word in words {
+        let word_id = required_string(word, "word_id", "Engine candidate word")?;
+        let text = required_string(word, "text", "Engine candidate word")?;
+        let range = required_range(word, "Engine candidate word")?;
+        let lyric_id = format!("lyric-{word_id}");
+        let mut word_notes = notes_by_word.remove(&word_id).unwrap_or_default();
+        word_notes.sort_by_key(|note| {
+            note.get("range")
+                .and_then(|range| range.get("start"))
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX)
+        });
+        if word_notes.is_empty() {
+            notes.push(VocalNote {
+                id: format!("note-{word_id}"),
+                start: range.0,
+                duration: range.1 - range.0,
+                pitch: None,
+                vocal_mode: VocalMode::Spoken,
+                bonus: NoteBonus::Normal,
+                scoring: NoteScoring {
+                    mode: ScoringMode::Rhythm,
+                    weight: 1.0,
+                },
+                lyrics: vec![LyricToken::Text(LyricTextToken {
+                    id: lyric_id,
+                    text: text.clone(),
+                    join_before: lyric_join_for(&notes, &text),
+                    reading: None,
+                    phonemes: None,
+                })],
+            });
+            continue;
+        }
+        for (index, note) in word_notes.into_iter().enumerate() {
+            let note_range = required_range(note, "Engine candidate note")?;
+            let midi = note
+                .get("midi_note")
+                .and_then(Value::as_u64)
+                .filter(|midi| *midi <= 127)
+                .ok_or_else(|| UtaStudioError::Other("Engine candidate MIDI is invalid".into()))?
+                as u8;
+            let cents = note
+                .get("center_offset_cents")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+                .round()
+                .clamp(-99.0, 99.0) as i8;
+            let lyrics = if index == 0 {
+                vec![LyricToken::Text(LyricTextToken {
+                    id: lyric_id.clone(),
+                    text: text.clone(),
+                    join_before: lyric_join_for(&notes, &text),
+                    reading: None,
+                    phonemes: None,
+                })]
+            } else {
+                vec![LyricToken::Continuation {
+                    continuation_of: lyric_id.clone(),
+                }]
+            };
+            notes.push(VocalNote {
+                id: required_string(note, "id", "Engine candidate note")?,
+                start: note_range.0,
+                duration: note_range.1 - note_range.0,
+                pitch: Some(NotePitch { midi, cents }),
+                vocal_mode: VocalMode::Pitched,
+                bonus: NoteBonus::Normal,
+                scoring: NoteScoring {
+                    mode: ScoringMode::Pitch,
+                    weight: 1.0,
+                },
+                lyrics,
+            });
+        }
+    }
+    notes.sort_by_key(|note| note.start);
+    if notes.is_empty() {
+        return Err(UtaStudioError::Other(
+            "Engine candidate contains no lyric-owned notes".to_string(),
+        ));
+    }
+    let mut chart = VocalChartV1::new(vec![VocalTrack {
+        id: "lead".into(),
+        role: VocalTrackRole::Lead,
+        part: None,
+        singer: None,
+        scoring_enabled: true,
+        phrases: vec![VocalPhrase {
+            id: "phrase-1".into(),
+            notes,
+        }],
+    }]);
+    chart.language = candidate
+        .get("transcript")
+        .and_then(|value| value.get("language"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    chart
+        .validate()
+        .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+    Ok(chart)
+}
+
+fn required_string(value: &Value, field: &str, label: &str) -> Result<String, UtaStudioError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| UtaStudioError::Other(format!("{label} has invalid {field}")))
+}
+
+fn required_range(value: &Value, label: &str) -> Result<(u64, u64), UtaStudioError> {
+    let range = value
+        .get("range")
+        .and_then(Value::as_object)
+        .ok_or_else(|| UtaStudioError::Other(format!("{label} has no range")))?;
+    let start = range.get("start").and_then(Value::as_u64);
+    let end = range.get("end").and_then(Value::as_u64);
+    match (start, end) {
+        (Some(start), Some(end)) if end > start => Ok((start, end)),
+        _ => Err(UtaStudioError::Other(format!(
+            "{label} has an invalid range"
+        ))),
+    }
+}
+
+fn lyric_join_for(existing: &[VocalNote], text: &str) -> LyricJoin {
+    let previous_is_ascii_word = existing
+        .iter()
+        .rev()
+        .flat_map(|note| note.lyrics.iter().rev())
+        .find_map(|token| match token {
+            LyricToken::Text(token) => Some(token.text.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character.is_ascii_punctuation()
+            })),
+            LyricToken::Continuation { .. } => None,
+        })
+        == Some(true);
+    let current_is_ascii_word = text
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation());
+    if previous_is_ascii_word && current_is_ascii_word {
+        LyricJoin::Space
+    } else {
+        LyricJoin::None
+    }
 }
 
 pub fn migrate_analyzer_chart(
@@ -118,6 +374,10 @@ pub fn migrate_analyzer_chart(
         }
     }
 
+    // UTZ 0.3 notes own lyric tokens. Analyzer-only pitch regions that do not
+    // overlap any lyric are evidence, not chart notes; the separate pitch
+    // evidence asset preserves their continuous F0 without inventing text.
+    notes.retain(|note| !note.note.lyrics.is_empty());
     notes.sort_by_key(|note| note.note.start);
     assign_orphan_phrases(&mut notes, segments);
     ensure_non_overlapping(&notes)?;
@@ -212,7 +472,7 @@ pub fn migrate_pitch_evidence(track: &Value) -> Option<utz::PitchEvidenceV1> {
 
     let evidence = utz::PitchEvidenceV1 {
         format: utz::PITCH_EVIDENCE_FORMAT.to_string(),
-        format_version: "1.0.0".to_string(),
+        format_version: utz::PITCH_EVIDENCE_VERSION.to_string(),
         timebase: DEFAULT_TIMEBASE,
         start,
         hop,
@@ -399,7 +659,7 @@ fn units_to_seconds_with_timebase(value: u64, timebase: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{migrate_analyzer_chart, migrate_pitch_evidence};
+    use super::{migrate_analyzer_chart, migrate_engine_candidate_chart, migrate_pitch_evidence};
     use utz::{DEFAULT_TIMEBASE, LyricToken, ScoringMode};
 
     #[test]
@@ -426,6 +686,39 @@ mod tests {
         assert!(notes[1].pitch.is_none());
         assert_eq!(notes[1].scoring.mode, ScoringMode::Rhythm);
         chart.validate().unwrap();
+    }
+
+    #[test]
+    fn engine_candidate_projects_only_lyric_owned_regions_to_strict_utz() {
+        let candidate = serde_json::json!({
+            "contract": "uta.analysis-engine.candidate-vocal-chart",
+            "version": 1,
+            "timebase": 1_000_000,
+            "transcript": {"language": "en"},
+            "words": [
+                {"word_id": "word-1", "text": "hello", "range": {"start": 1_000_000, "end": 2_000_000}},
+                {"word_id": "word-2", "text": "world", "range": {"start": 3_000_000, "end": 4_000_000}}
+            ],
+            "notes": [
+                {"id": "evidence-only", "range": {"start": 0, "end": 500_000}, "midi_note": 50, "center_offset_cents": 0.0, "word_id": null},
+                {"id": "hello-1", "range": {"start": 1_000_000, "end": 1_500_000}, "midi_note": 60, "center_offset_cents": 12.0, "word_id": "word-1"},
+                {"id": "hello-2", "range": {"start": 1_500_000, "end": 2_000_000}, "midi_note": 62, "center_offset_cents": -8.0, "word_id": "word-1"}
+            ]
+        });
+        let chart = migrate_engine_candidate_chart(&candidate).unwrap();
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 3);
+        assert!(notes.iter().all(|note| note.id != "evidence-only"));
+        assert!(matches!(
+            notes[1].lyrics[0],
+            LyricToken::Continuation { .. }
+        ));
+        assert!(notes[2].pitch.is_none());
+        let LyricToken::Text(world) = &notes[2].lyrics[0] else {
+            panic!("the unpitched word must own text")
+        };
+        assert_eq!(world.join_before, utz::LyricJoin::Space);
     }
 
     #[test]

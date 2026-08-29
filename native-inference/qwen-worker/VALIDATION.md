@@ -41,9 +41,10 @@ suppresses required language evidence. A protocol-1 Engine fixture exercises the
 schema-2 worker boundary and rejects any Engine-generated ASR config containing a
 `language` key.
 
-The ASR catalog remains `BenchmarkCandidate`. These repairs were verified by
-CPU-only contract/integration tests; no new Vulkan inference or Production
-quality/stability claim is inferred.
+The exact manifest-pinned ASR Vulkan route is policy-admitted as
+`ProductionPinned`. These repairs were verified by CPU-only contract/integration
+tests and do not add broader Vulkan quality/stability evidence; that limitation
+remains an explicit advisory caveat rather than an alternate route or fallback.
 
 ## Forced Aligner static contract closure
 
@@ -80,8 +81,9 @@ converter patch, model recipe, and runtime recipe in LocalImport receipts.
 
 The historical runtime manifest/recipe remains an exact native-engine identity.
 No new runtime quality or safety evidence is inferred from static closure. The
-catalog now truthfully marks the aligner runtime/model `BenchmarkCandidate`, with
-Production blocked as `BLOCKED_REQUIRES_VULKAN_AUTHORIZATION`.
+exact manifest-pinned aligner Vulkan route is nevertheless owner-policy-admitted
+as `ProductionPinned`; the retained long-form quality evidence remains an
+explicit advisory caveat, not an automatic fallback or second backend.
 
 ## Historical real worker smoke
 
@@ -110,7 +112,7 @@ No network request, Python process, script runtime, CPU inference fallback, or
 user-data mutation participated in either smoke.
 
 This forced-aligner evidence remains bounded historical implementation evidence;
-it does not establish the current Production quality/stability/safety gates.
-Qwen3 Forced Aligner and Qwen3-ASR-1.7B remain Benchmark candidates. Each needs
-its own separately authorized Vulkan quality/stability acceptance before any
-Production promotion.
+it does not establish broad quality/stability coverage. Qwen3 Forced Aligner and
+Qwen3-ASR-1.7B are owner-policy-admitted as `ProductionPinned` on their exact
+manifest-pinned Vulkan routes. Further Vulkan quality/stability work remains
+advisory, and the separately reserved release/package acceptance still applies.

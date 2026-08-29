@@ -180,29 +180,6 @@ pub(crate) struct NativeLyricsWaveformJob {
 
 type LyricsWaveformResult = (String, Result<app_core::ChartWaveform, String>);
 
-pub(crate) fn start_lyrics_waveform_job(file_hash: &str, job: &mut NativeLyricsWaveformJob) {
-    if job.receiver.is_some() {
-        return;
-    }
-    let file_hash = file_hash.to_string();
-    let worker_hash = file_hash.clone();
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = (|| {
-            let chart = app_core::load_chart(&worker_hash).map_err(|error| error.to_string())?;
-            let source = chart
-                .audio
-                .vocals
-                .as_deref()
-                .unwrap_or(&chart.audio.instrumental);
-            app_core::decode_chart_waveform(std::path::Path::new(source))
-                .map_err(|error| error.to_string())
-        })();
-        let _ = sender.send((worker_hash, result));
-    });
-    job.receiver = Some(Mutex::new(receiver));
-}
-
 pub(crate) struct AuthoringEvent {
     pub(crate) result: Result<app_core::ShiftResult, String>,
     pub(crate) kind: &'static str,

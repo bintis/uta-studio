@@ -51,13 +51,17 @@
                 export PATH="$HOME/.cargo/bin:$PATH"
               fi
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
-              export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
-              export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
-              export UTA_STUDIO_NATIVE_ANALYZER_PATH="$PWD/target/debug/uta-native-analyzer"
-              export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
-              export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
-              export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"
-              export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/debug/uta-qwen-align-worker"
+              # Machine-protocol executables are discovered beside the Studio
+              # binary. Do not pin them to target/debug here: doing so makes a
+              # release Studio launched from this shell inherit a debug analyzer
+              # and miss otherwise-present release workers. Individual tests may
+              # still set an explicit override on their command line.
+              unset UTA_STUDIO_ANALYSIS_CLI_PATH
+              unset UTA_STUDIO_RUNTIME_CLI_PATH
+              unset UTA_STUDIO_OPENVINO_RUNTIME_PATH
+              unset UTA_STUDIO_GGML_RUNTIME_PATH
+              unset UTA_STUDIO_QWEN_ASR_RUNTIME_PATH
+              unset UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH
               export WINIT_UNIX_BACKEND=wayland
               export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"

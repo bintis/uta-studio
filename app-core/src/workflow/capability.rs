@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{AudioRole, CapabilityId, WorkflowPortSpec, WorkflowPortType};
+use super::{AudioRole, CapabilityId, SeparationStrategyV1, WorkflowPortSpec, WorkflowPortType};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +34,157 @@ impl NodeCapability {
 
     pub fn output(&self, id: &str) -> Option<&WorkflowPortSpec> {
         self.outputs.iter().find(|port| port.id == id)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowModelOption {
+    pub model_id: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparationOutputRoleV1 {
+    Vocal,
+    Instrumental,
+}
+
+impl SeparationOutputRoleV1 {
+    pub const fn output_port(self) -> &'static str {
+        match self {
+            Self::Vocal => "vocal",
+            Self::Instrumental => "instrumental",
+        }
+    }
+
+    pub const fn engine_capability(self) -> &'static str {
+        match self {
+            Self::Vocal => "audio.extract_vocals",
+            Self::Instrumental => "audio.extract_instrumental",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeparationProviderExecutionV1 {
+    pub provider_id: &'static str,
+    pub output_roles: &'static [SeparationOutputRoleV1],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeparationStrategyOptionV1 {
+    pub strategy: SeparationStrategyV1,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub executions: &'static [SeparationProviderExecutionV1],
+}
+
+const EP317_DUAL_ROLES: &[SeparationOutputRoleV1] = &[
+    SeparationOutputRoleV1::Vocal,
+    SeparationOutputRoleV1::Instrumental,
+];
+const VOCAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Vocal];
+const INSTRUMENTAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Instrumental];
+const EP317_DUAL_EXECUTIONS: &[SeparationProviderExecutionV1] = &[SeparationProviderExecutionV1 {
+    provider_id: "bs_roformer_vocals_ep317",
+    output_roles: EP317_DUAL_ROLES,
+}];
+const SPECIALIST_EXECUTIONS: &[SeparationProviderExecutionV1] = &[
+    SeparationProviderExecutionV1 {
+        provider_id: "bs_roformer_vocals_ep317",
+        output_roles: VOCAL_ROLE,
+    },
+    SeparationProviderExecutionV1 {
+        provider_id: "melband_roformer_inst_v2",
+        output_roles: INSTRUMENTAL_ROLE,
+    },
+];
+const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[
+    SeparationStrategyOptionV1 {
+        strategy: SeparationStrategyV1::Ep317VocalResidual,
+        label: "EP317 vocal + residual Instrumental",
+        description: "One EP317 inference estimates GuideVocals; the same native invocation publishes SourceMix − GuideVocals as the deterministic Instrumental residual.",
+        executions: EP317_DUAL_EXECUTIONS,
+    },
+    SeparationStrategyOptionV1 {
+        strategy: SeparationStrategyV1::IndependentSpecialists,
+        label: "Independent vocal + Instrumental specialists",
+        description: "EP317 extracts GuideVocals and MelBand Inst V2 independently extracts Instrumental, with separate progress and logs.",
+        executions: SPECIALIST_EXECUTIONS,
+    },
+];
+
+pub fn separation_strategy_options() -> &'static [SeparationStrategyOptionV1] {
+    SEPARATION_STRATEGIES
+}
+
+pub fn separation_strategy_descriptor(
+    strategy: SeparationStrategyV1,
+) -> &'static SeparationStrategyOptionV1 {
+    SEPARATION_STRATEGIES
+        .iter()
+        .find(|option| option.strategy == strategy)
+        .expect("every typed separation strategy has a descriptor")
+}
+
+pub fn workflow_model_label(model_id: &str) -> &str {
+    match model_id {
+        "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317",
+        "melband_roformer_inst_v2" => "MelBand-RoFormer Inst V2",
+        "melband_roformer_harmony" => "MelBand-RoFormer Lead Isolation",
+        "melband_roformer_denoise_aufr33" => "MelBand-RoFormer Denoise",
+        "melband_roformer_dereverb_anvuew" => "MelBand-RoFormer Dereverb",
+        "qwen3_asr_1_7b" => "Qwen3-ASR 1.7B",
+        "firered_asr2_aed" => "FireRedASR2-AED",
+        "qwen3_forced_aligner_0_6b" => "Qwen3 Forced Aligner 0.6B",
+        "rmvpe" => "RMVPE",
+        "fcpe" => "FCPE",
+        "game" => "GAME",
+        "basic_pitch" => "Basic Pitch",
+        "rosvot" => "ROSVOT",
+        "stars" => "STARS",
+        other => other,
+    }
+}
+
+/// Exact Engine-v1 provider choices that are interchangeable inside one
+/// Processing Studio capability card. Fixed-role and single-provider
+/// capabilities return no choices so the desktop does not render a fake selector.
+pub fn workflow_model_options(capability_id: &CapabilityId) -> &'static [WorkflowModelOption] {
+    const PITCH: &[WorkflowModelOption] = &[
+        WorkflowModelOption {
+            model_id: "rmvpe",
+            label: "RMVPE",
+        },
+        WorkflowModelOption {
+            model_id: "fcpe",
+            label: "FCPE",
+        },
+    ];
+    const NOTE_BOUNDARY: &[WorkflowModelOption] = &[
+        WorkflowModelOption {
+            model_id: "game",
+            label: "GAME",
+        },
+        WorkflowModelOption {
+            model_id: "basic_pitch",
+            label: "Basic Pitch",
+        },
+        WorkflowModelOption {
+            model_id: "rosvot",
+            label: "ROSVOT",
+        },
+        WorkflowModelOption {
+            model_id: "stars",
+            label: "STARS",
+        },
+    ];
+    const EMPTY: &[WorkflowModelOption] = &[];
+
+    match capability_id.as_str() {
+        "analysis.pitch_f0" => PITCH,
+        "analysis.note_boundary" => NOTE_BOUNDARY,
+        _ => EMPTY,
     }
 }
 
@@ -153,7 +304,7 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
             id,
             label,
             Analyzer,
-            vec![port("audio", Audio(LeadVocal), true)],
+            vec![port("audio", Audio(Vocal), true)],
             vec![port(output_id, output_type, false)],
         );
         item.allows_multiple_instances = true;
@@ -188,7 +339,7 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
         "Forced alignment",
         Analyzer,
         vec![
-            port("audio", Audio(LeadVocal), true),
+            port("audio", Audio(Vocal), true),
             port("lyrics", Lyrics, true),
         ],
         vec![port("alignment", AlignmentEvidence, false)],
@@ -210,7 +361,7 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
             WorkflowPortSpec {
                 id: "boundaries".to_string(),
                 port_type: BoundaryEvidence,
-                required: true,
+                required: false,
                 multiple: true,
             },
             port("alignment", AlignmentEvidence, true),
@@ -221,7 +372,6 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
     );
     evidence_fusion.hard_dependencies = vec![
         CapabilityId::new("analysis.pitch_f0"),
-        CapabilityId::new("analysis.note_boundary"),
         CapabilityId::new("analysis.forced_alignment"),
     ];
     result.push(evidence_fusion);

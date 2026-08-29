@@ -3,7 +3,6 @@ use crate::{
     analysis_artifact::{
         load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
     },
-    analysis_graph::baseline_graph_spec,
     cache::CacheDir,
 };
 
@@ -84,7 +83,7 @@ pub(crate) fn capture_analysis_run_artifacts_in(
         .map(|attempt| (attempt.node_id.clone(), attempt))
         .collect::<BTreeMap<_, _>>();
     migrate_artifact_revisions_to_store(cache, file_hash)?;
-    let graph = baseline_graph_spec();
+    let graph = current_workflow_graph(file_hash)?;
     let order = graph.topo_order().map_err(|e| e.to_string())?;
     let mut latest = load_analysis_artifacts(file_hash)
         .into_iter()

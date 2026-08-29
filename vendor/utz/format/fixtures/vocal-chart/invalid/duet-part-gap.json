@@ -1,0 +1,71 @@
+{
+  "format": "uta.vocal-chart",
+  "format_version": "0.3.0",
+  "timebase": 1000000,
+  "tracks": [
+    {
+      "id": "p1-lead",
+      "role": "lead",
+      "part": 1,
+      "phrases": [
+        {
+          "id": "phrase-1",
+          "notes": [
+            {
+              "id": "note-1",
+              "start": 0,
+              "duration": 500000,
+              "pitch": {
+                "midi": 69
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-1",
+                  "text": "a",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p3-lead",
+      "role": "lead",
+      "part": 3,
+      "phrases": [
+        {
+          "id": "phrase-2",
+          "notes": [
+            {
+              "id": "note-2",
+              "start": 0,
+              "duration": 500000,
+              "pitch": {
+                "midi": 72
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-2",
+                  "text": "b",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

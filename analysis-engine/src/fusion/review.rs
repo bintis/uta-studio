@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{CanonicalSingingTrack, TimeRange};
+use super::{BoundaryCandidateRole, CanonicalSingingTrack, TimeRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +15,15 @@ pub enum SingingReviewReason {
     WordNoteMismatch,
     VoicingConflict,
     LeadHarmonyLeak,
+    VocalTopologyUnknown,
+    ForegroundOverlap,
+    SupportVocalActivity,
     TechniqueAmbiguous,
+    F0SegmentationFallback,
+    TranscriptLowConfidence,
+    TranscriptReferenceMismatch,
+    TranscriptLanguageMismatch,
+    TranscriptCoverageMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,7 +46,7 @@ fn minimum_known(left: Option<f32>, right: Option<f32>) -> Option<f32> {
     }
 }
 
-fn merge_regions(mut regions: Vec<SingingReviewRegion>) -> Vec<SingingReviewRegion> {
+pub(crate) fn merge_regions(mut regions: Vec<SingingReviewRegion>) -> Vec<SingingReviewRegion> {
     regions.sort_by_key(|region| region.range.start);
     let mut merged: Vec<SingingReviewRegion> = Vec::new();
     for region in regions {
@@ -65,25 +73,36 @@ pub fn build_review_regions(track: &CanonicalSingingTrack) -> Vec<SingingReviewR
     let mut regions = Vec::new();
     for note in &track.notes {
         let mut reasons = Vec::new();
+        if note.evidence.boundary_kind == crate::fusion::BoundaryEvidenceKind::F0Derived {
+            reasons.push(SingingReviewReason::F0SegmentationFallback);
+        }
         let unknown_confidence = note.confidence.is_none();
         if note.confidence.is_some_and(|confidence| confidence < 0.65) {
             reasons.push(SingingReviewReason::LowConfidence);
         }
-        if !note.alternatives.is_empty() {
+        if note
+            .alternatives
+            .iter()
+            .any(|alternative| alternative.cents_from_target.abs() > 50.0)
+        {
             reasons.push(SingingReviewReason::PitchDisagreement);
         }
-        if note
-            .evidence
-            .rmvpe_voiced_ratio
-            .is_some_and(|ratio| ratio < 0.5)
-        {
+        let (voiced_ratio, pitch_mad_cents) =
+            match note.evidence.decision_trace.continuous_f0_source.as_str() {
+                "rmvpe" => (
+                    note.evidence.rmvpe_voiced_ratio,
+                    note.evidence.rmvpe_pitch_mad_cents,
+                ),
+                "fcpe" => (
+                    note.evidence.fcpe_observed_ratio,
+                    note.evidence.fcpe_pitch_mad_cents,
+                ),
+                _ => (None, None),
+            };
+        if voiced_ratio.is_some_and(|ratio| ratio < 0.5) {
             reasons.push(SingingReviewReason::LowPitchCoverage);
         }
-        if note
-            .evidence
-            .rmvpe_pitch_mad_cents
-            .is_some_and(|mad| mad > 60.0)
-        {
+        if pitch_mad_cents.is_some_and(|mad| mad > 60.0) {
             reasons.push(SingingReviewReason::PitchInstability);
         }
         if note
@@ -104,6 +123,17 @@ pub fn build_review_regions(track: &CanonicalSingingTrack) -> Vec<SingingReviewR
         }
         if note
             .evidence
+            .boundary_alternatives
+            .iter()
+            .any(|alternative| alternative.materially_disagrees_with(note.range, note.midi_note))
+        {
+            reasons.push(SingingReviewReason::BoundaryDisagreement);
+        }
+        if note.evidence.boundary_role == BoundaryCandidateRole::Challenger {
+            reasons.push(SingingReviewReason::BoundaryDisagreement);
+        }
+        if note
+            .evidence
             .acoustic
             .as_ref()
             .is_some_and(|features| features.mean_periodicity < 0.1)
@@ -113,8 +143,18 @@ pub fn build_review_regions(track: &CanonicalSingingTrack) -> Vec<SingingReviewR
         if note.word_id.is_none() {
             reasons.push(SingingReviewReason::WordNoteMismatch);
         }
-        if note.techniques.vibrato.is_some_and(|value| value >= 0.55)
-            && note.techniques.glissando.is_some_and(|value| value >= 0.55)
+        let source_local_technique_conflict =
+            note.evidence.technique_evidence.iter().any(|evidence| {
+                evidence
+                    .vibrato_activation
+                    .is_some_and(|value| value >= 0.55)
+                    && evidence
+                        .glissando_activation
+                        .is_some_and(|value| value >= 0.55)
+            });
+        if source_local_technique_conflict
+            || (note.techniques.vibrato.is_some_and(|value| value >= 0.55)
+                && note.techniques.glissando.is_some_and(|value| value >= 0.55))
         {
             reasons.push(SingingReviewReason::TechniqueAmbiguous);
         }

@@ -14,7 +14,7 @@
 - [x] caller identity vs Engine-decoded facts
 - [x] exactly one primary source
 - [x] local-file-only v1
-- [x] mandatory SHA-256
+- [x] persisted source identity/provenance metadata without hash verification
 - [x] explicit audio roles
 - [x] canonical integer timebase = 1,000,000 units/s
 - [x] `source_start`
@@ -169,9 +169,9 @@
 # I. Fusion
 
 - [x] canonical evidence timeline
-- [x] versioned confidence calibration
+- [x] calibrated confidence is accepted only with a version; currently uncalibrated experts remain `None`
 - [x] raw scores not directly comparable
-- [x] correlation discounting
+- [x] correlation discounting is executed for dependency/correlation groups, not only declared
 - [x] dependency provenance
 - [x] context-aware weights
 - [x] vibrato context
@@ -182,10 +182,15 @@
 - [x] segment pitch candidates
 - [x] octave alternatives
 - [x] candidate graph
-- [x] global segment decoding
-- [x] HSMM/Viterbi
+- [x] global segment decoding (Algorithm path)
+- [x] HSMM/Viterbi deterministic default
 - [x] observation/transition/duration/constraint terms
 - [x] rhythm quantization after semantic note inference
+- [x] AI-judgment mode uses Runtime Manager-resolved `tool:fusion_agent_adapter`, not a Studio/AnalyzeRequest raw path (21E)
+- [x] AI adapter may select only verbatim real candidates; no fabricated evidence/geometry (21E)
+- [x] AI timeout/protocol/provider/validation failure is hard failure with no Algorithm fallback (21E)
+- [x] AI decision provenance and non-deterministic cache semantics are explicit (21E)
+- [x] network candidate-metadata disclosure plus EN/zh-CN/ja/user-guide parity is complete (21E)
 
 主文档：§49–65。
 
@@ -250,7 +255,7 @@
 
 # M. Fingerprint / reproducibility
 
-- [x] input SHA
+- [x] persisted input identity metadata
 - [x] request contract/version
 - [x] role/timeline
 - [x] lyric/constraint hash
