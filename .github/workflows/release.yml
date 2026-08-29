@@ -152,7 +152,7 @@ jobs:
         run: >-
           cargo build --release --locked
           -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
-          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
+          -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Verify native executable linkage
         shell: bash
@@ -195,8 +195,6 @@ jobs:
             "$root/usr/bin/uta-analyze"
           install -Dm755 target/release/uta-runtime \
             "$root/usr/bin/uta-runtime"
-          install -Dm755 target/release/uta-native-analyzer \
-            "$root/usr/bin/uta-native-analyzer"
           install -Dm755 target/release/uta-openvino-worker \
             "$root/usr/bin/uta-openvino-worker"
           install -Dm755 target/release/uta-ggml-worker \
@@ -238,7 +236,6 @@ jobs:
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
           export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
           export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
-          export UTA_STUDIO_NATIVE_ANALYZER_PATH=/usr/bin/uta-native-analyzer
           export UTA_STUDIO_OPENVINO_RUNTIME_PATH=/usr/bin/uta-openvino-worker
           export UTA_STUDIO_GGML_RUNTIME_PATH=/usr/bin/uta-ggml-worker
           export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH=/usr/bin/uta-qwen-asr-worker
@@ -361,7 +358,7 @@ jobs:
         run: >-
           cargo build --release --locked
           -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
-          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
+          -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Verify native executable linkage
         shell: bash
@@ -407,8 +404,6 @@ jobs:
             "$payload/usr/bin/uta-analyze"
           install -Dm755 target/release/uta-runtime \
             "$payload/usr/bin/uta-runtime"
-          install -Dm755 target/release/uta-native-analyzer \
-            "$payload/usr/bin/uta-native-analyzer"
           install -Dm755 target/release/uta-openvino-worker \
             "$payload/usr/bin/uta-openvino-worker"
           install -Dm755 target/release/uta-ggml-worker \
@@ -448,7 +443,6 @@ jobs:
           export UTA_STUDIO_ASSET_PATH=/usr/share/uta-studio
           export UTA_STUDIO_ANALYSIS_CLI_PATH=/usr/bin/uta-analyze
           export UTA_STUDIO_RUNTIME_CLI_PATH=/usr/bin/uta-runtime
-          export UTA_STUDIO_NATIVE_ANALYZER_PATH=/usr/bin/uta-native-analyzer
           export UTA_STUDIO_OPENVINO_RUNTIME_PATH=/usr/bin/uta-openvino-worker
           export UTA_STUDIO_GGML_RUNTIME_PATH=/usr/bin/uta-ggml-worker
           export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH=/usr/bin/uta-qwen-asr-worker
@@ -557,7 +551,7 @@ jobs:
         run: >-
           cargo build --release --locked
           -p uta-studio-desktop -p uta-analysis-engine -p uta-runtime-manager
-          -p uta-native-analyzer -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
+          -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker
 
       - name: Assemble portable ZIP
         shell: pwsh
@@ -570,7 +564,6 @@ jobs:
           Copy-Item target/release/uta-studio.exe "$root/bin/uta-studio.exe"
           Copy-Item target/release/uta-analyze.exe "$root/bin/uta-analyze.exe"
           Copy-Item target/release/uta-runtime.exe "$root/bin/uta-runtime.exe"
-          Copy-Item target/release/uta-native-analyzer.exe "$root/bin/uta-native-analyzer.exe"
           Copy-Item target/release/uta-openvino-worker.exe "$root/bin/uta-openvino-worker.exe"
           Copy-Item target/release/uta-ggml-worker.exe "$root/bin/uta-ggml-worker.exe"
           Copy-Item target/release/uta-qwen-asr-worker.exe "$root/bin/uta-qwen-asr-worker.exe"

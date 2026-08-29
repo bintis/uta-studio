@@ -1,0 +1,392 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bintis/utz/main/format/manifest-v0.3.schema.json",
+  "title": "Uta song package manifest 0.3",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "package_id",
+    "revision",
+    "song",
+    "audio",
+    "charts",
+    "required_features"
+  ],
+  "properties": {
+    "format": {
+      "const": "uta.song"
+    },
+    "format_version": {
+      "type": "string",
+      "pattern": "^0\\.3\\.(0|[1-9][0-9]*)$"
+    },
+    "package_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "song": {
+      "$ref": "#/$defs/song"
+    },
+    "audio": {
+      "$ref": "#/$defs/audio"
+    },
+    "charts": {
+      "type": "object",
+      "required": [
+        "vocal"
+      ],
+      "properties": {
+        "vocal": {
+          "$ref": "#/$defs/asset"
+        }
+      },
+      "additionalProperties": false
+    },
+    "analysis": {
+      "type": "object",
+      "properties": {
+        "pitch_evidence": {
+          "$ref": "#/$defs/asset"
+        }
+      },
+      "additionalProperties": false
+    },
+    "visuals": {
+      "type": "object",
+      "properties": {
+        "assets": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/visualRole"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/asset"
+          },
+          "default": {},
+          "maxProperties": 128
+        },
+        "timing": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/visualRole"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/visualTiming"
+          },
+          "default": {},
+          "maxProperties": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "scoring": {
+      "description": "Optional advisory scoring-engine hint. Required scoring semantics belong in required_features.",
+      "type": "object",
+      "required": [
+        "engine",
+        "version"
+      ],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parameters": {
+          "description": "Engine-specific advisory parameters.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "required_features": {
+      "type": "array",
+      "contains": {
+        "const": "vocal-chart/0.3"
+      },
+      "items": {
+        "$ref": "#/$defs/feature"
+      },
+      "uniqueItems": true,
+      "description": "Features required to interpret the package correctly. Extension keys may and, when present, MUST be classified in exactly one of required_features or optional_features."
+    },
+    "optional_features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/feature"
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Safely ignorable features. An extension key MUST appear in exactly one of the required/optional feature lists."
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/feature"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/asset"
+      },
+      "default": {},
+      "maxProperties": 128
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "generator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rights": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "representations": {
+      "description": "Optional alternate representations of the same song, such as MIDI, KAR, UST/USTX, MusicXML, UltraStar, LRC or SRT. They are never authoritative over the UTZ vocal chart.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/representationId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/asset"
+      },
+      "default": {},
+      "maxProperties": 128
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "feature": {
+      "description": "Pre-1.0 uses 0.<minor>; stable formats use the major number.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*/(?:0\\.[1-9][0-9]*|[1-9][0-9]*)$"
+    },
+    "lufs": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -70,
+      "maximum": 0
+    },
+    "asset": {
+      "type": "object",
+      "required": [
+        "path",
+        "media_type",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "audio": {
+      "type": "object",
+      "required": [
+        "assets"
+      ],
+      "properties": {
+        "assets": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/audioRole"
+          },
+          "required": [
+            "instrumental"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/asset"
+          },
+          "maxProperties": 128
+        },
+        "loudness_lufs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/audioRole"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/lufs"
+          },
+          "default": {},
+          "maxProperties": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "song": {
+      "type": "object",
+      "required": [
+        "title",
+        "artist",
+        "duration"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artist": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration": {
+          "description": "Song duration in the canonical UTZ timebase (1,000,000 units per second).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bpm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "title",
+                "artist",
+                "duration",
+                "language",
+                "bpm",
+                "key",
+                "metadata"
+              ]
+            }
+          },
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "visualTiming": {
+      "type": "object",
+      "required": [
+        "timebase",
+        "offset"
+      ],
+      "properties": {
+        "timebase": {
+          "const": 1000000
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "representationId": {
+      "description": "Conventional representation identifier/variant, or a producer-defined reverse-DNS-style identifier.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:midi|kar|ust|ustx|musicxml|ultrastar|lrc|srt)(?:\\.[a-z0-9][a-z0-9_-]*)*$"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*(?:\\.[a-z0-9][a-z0-9_-]*){2,}$"
+        }
+      ]
+    },
+    "audioRole": {
+      "description": "Standard unnamespaced audio role, or a producer-defined reverse-DNS-style role with at least three dot-separated components.",
+      "oneOf": [
+        {
+          "enum": [
+            "instrumental",
+            "guide_vocals",
+            "original",
+            "lead_vocal",
+            "backing_vocal",
+            "harmony_vocal"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*(?:\\.[a-z0-9][a-z0-9_-]*){2,}$"
+        }
+      ]
+    },
+    "visualRole": {
+      "description": "Standard unnamespaced visual role, or a producer-defined reverse-DNS-style role with at least three dot-separated components.",
+      "oneOf": [
+        {
+          "enum": [
+            "cover",
+            "background",
+            "video",
+            "thumbnail"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*(?:\\.[a-z0-9][a-z0-9_-]*){2,}$"
+        }
+      ]
+    }
+  }
+}

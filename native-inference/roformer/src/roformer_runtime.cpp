@@ -66,7 +66,7 @@ std::vector<float> GetWindow(int size, int fade_size);
 
 std::vector<float> GetWindow(int size, int fade_size) {
     std::vector<float> window(size, 1.0f);
-    // Match Python: torch.linspace(0, 1, fade_size) and torch.linspace(1, 0, fade_size)
+    // Use inclusive linear fade-in and fade-out ramps.
     // linspace includes both endpoints, so we divide by (fade_size - 1)
     for (int i = 0; i < fade_size; ++i) {
         // fadein[i] = i / (fade_size - 1), ranges from 0.0 to 1.0 inclusive
@@ -391,7 +391,7 @@ void RoformerRuntime::PostProcessAndISTFT(const std::vector<float>& mask_output,
 std::vector<std::vector<float>> RoformerRuntime::Process(const std::vector<float>& input_audio,
                                                    int chunk_size,
                                                    int num_overlap,
-                                                   std::function<void(float)> progress_callback,
+                                                   std::function<void(int, int)> progress_callback,
                                                    CancelCallback cancel_callback,
                                                    int batch_size,
                                                    bool serial_pipeline) {
@@ -670,7 +670,7 @@ private:
 std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAddPipelined(const std::vector<float>& input_audio,
                                                          int chunk_size,
                                                          int num_overlap,
-                                                         std::function<void(float)> progress_callback,
+                                                         std::function<void(int, int)> progress_callback,
                                                          CancelCallback cancel_callback,
                                                          int batch_size) {
     if (input_audio.empty()) return {};
@@ -678,7 +678,7 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAddPipelined(cons
         throw std::runtime_error("Error: Input audio must be interleaved stereo (even number of samples).");
     }
 
-    // Parameters matches Python demix_track
+    // Parameters match the pinned demix contract.
     int channels = 2;
     int C = chunk_size;
 
@@ -885,8 +885,7 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAddPipelined(cons
                     ChunkDetails(state->sequence, state->total_chunks, state->id));
 
                 if (!cancel_requested.load(std::memory_order_acquire) && progress_callback) {
-                    float progress = (float)std::min(state->id + step, n_padded_samples) / n_padded_samples;
-                    progress_callback(progress);
+                    progress_callback(state->sequence + 1, state->total_chunks);
                 }
             }
         } catch (...) {
@@ -1013,14 +1012,14 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
                                                 int chunk_size,
                                                 int num_overlap,
                                                 ModelCallback model_func,
-                                                std::function<void(float)> progress_callback,
+                                                std::function<void(int, int)> progress_callback,
                                                 CancelCallback cancel_callback) {
     if (input_audio.empty()) return {};
     if (input_audio.size() % 2 != 0) {
         throw std::runtime_error("Error: Input audio must be interleaved stereo (even number of samples).");
     }
 
-    // Parameters matches Python demix_track
+    // Parameters match the pinned demix contract.
     int channels = 2;
     int C = chunk_size;
 
@@ -1072,6 +1071,8 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
 
     int i = 0;
     int total_length = n_padded_samples;
+    const int total_chunks = (total_length + step - 1) / step;
+    int completed_chunks = 0;
 
     while (i < total_length) {
         if (cancel_callback && cancel_callback()) {
@@ -1079,7 +1080,7 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
         }
 
         int remaining = total_length - i;
-        int part_len = std::min(C, remaining); // Logic matches Python slice [i:i+C]
+        int part_len = std::min(C, remaining); // Clamp the final chunk to the remaining samples.
 
         std::vector<float> chunk_in(C * channels, 0.0f);
 
@@ -1141,9 +1142,9 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
         }
 
         i += step;
+        ++completed_chunks;
         if (progress_callback) {
-             float progress = (float)std::min(i, total_length) / total_length;
-             progress_callback(progress);
+             progress_callback(completed_chunks, total_chunks);
         }
     }
 

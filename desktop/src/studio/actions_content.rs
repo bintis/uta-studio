@@ -39,18 +39,86 @@ pub(crate) fn apply_content_action(
         }
         UiCommand::Library(LibraryCommand::AnalyzeSong(file_hash)) => {
             studio.dialogs.song_context = None;
-            let mut draft = PlanPreviewDraft {
-                file_hash: file_hash.clone(),
-                target: studio.shell.config.analysis_default_target(),
-                target_overridden: false,
-                run_override: app_core::AnalysisExperienceOverride::default(),
-                effective_settings: None,
-                engine_preview: Err("Preview has not been compiled yet.".to_string()),
-            };
-            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
-            studio.dialogs.plan_preview_draft = Some(draft);
-            studio.shell.notice = None;
-            invalidated.invalidate(UiDirtyRegion::Dialog);
+            studio.shell.notice = Some(
+                match app_core::preview_and_stage_engine_run(file_hash, None) {
+                    Ok(queued) => format!(
+                        "Added to the processing queue · request {}. Start it when ready from Processing Queue.",
+                        queued.request_id
+                    ),
+                    Err(error) => {
+                        format!("Could not add this song to the processing queue: {error}")
+                    }
+                },
+            );
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.library.refresh();
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
+        UiCommand::Analysis(AnalysisCommand::AnalyzeNow(file_hash)) => {
+            studio.shell.notice = Some(
+                match app_core::preview_and_queue_engine_run(file_hash, None) {
+                    Ok(queued) => format!("Analysis started · request {}.", queued.request_id),
+                    Err(error) => format!("Could not start analysis: {error}"),
+                },
+            );
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.library.refresh();
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
+        UiCommand::Library(LibraryCommand::ChooseEditorFile) => {
+            studio.dialogs.song_context = None;
+            if studio.shell.route == StudioRoute::Editor
+                && studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
+            {
+                studio.shell.notice = Some(
+                    "Save or leave the current chart before opening another file.".to_string(),
+                );
+            } else if let Some(path) = rfd::FileDialog::new()
+                .set_title("Choose a library song to edit")
+                .add_filter(
+                    "Audio and video",
+                    &[
+                        "flac", "mp3", "wav", "ogg", "opus", "m4a", "aac", "wma", "mp4", "mkv",
+                        "avi", "webm", "mov", "m4v",
+                    ],
+                )
+                .pick_file()
+            {
+                match validate_source_path(&path, &studio.shell.config)
+                    .and_then(|_| {
+                        app_core::load_song_by_path(&path)
+                            .map_err(|error| error.to_string())?
+                            .ok_or_else(|| {
+                                "That file is not in the indexed library. Add its folder or rescan the library first."
+                                    .to_string()
+                            })
+                    }) {
+                    Ok(song) => {
+                        let file_hash = song.file_hash;
+                        studio.library.selected_song = Some(file_hash.clone());
+                        studio.editor.editor = None;
+                        studio.shell.route = StudioRoute::Editor;
+                        if studio.playback.library_playback.status.playing
+                            && let Ok(status) = library_audio.0.pause()
+                        {
+                            studio.playback.library_playback.visible_position = status.position_secs;
+                            studio.playback.library_playback.status = status;
+                            studio.playback.library_playback.last_audio_sync = Instant::now();
+                        }
+                        studio.shell.notice = Some(start_editor_load_job(
+                            &file_hash,
+                            Arc::clone(&audio.0),
+                            &mut studio.jobs.editor_load_job,
+                        ));
+                    }
+                    Err(error) => studio.shell.notice = Some(error),
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Library(LibraryCommand::OpenEditor(file_hash)) => {
             studio.dialogs.song_context = None;
@@ -187,6 +255,24 @@ pub(crate) fn apply_content_action(
                 });
                 studio.jobs.lyrics_search_job.receiver = Some(Mutex::new(receiver));
                 studio.shell.notice = Some("Searching LRCLIB…".to_string());
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Editor(EditorCommand::ExtractLyrics) => {
+            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
+                if let Ok(input) = text_inputs.lyrics.single() {
+                    editor.initial_text = input.value().to_string();
+                }
+                match app_core::reanalyze_transcript(&editor.file_hash, None) {
+                    Ok(()) => {
+                        studio.dialogs.lyrics_editor = None;
+                        studio.library.refresh();
+                        studio.shell.notice = Some("Lyrics extraction queued.".to_string());
+                    }
+                    Err(error) => {
+                        studio.shell.notice = Some(format!("Could not queue analysis: {error}"));
+                    }
+                }
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
@@ -365,10 +451,7 @@ pub(crate) fn apply_content_action(
                 let song = app_core::load_song_by_hash(&editor.file_hash)
                     .ok()
                     .flatten();
-                let requires_runtime = editor.mode == LyricsInputMode::Plain
-                    || (editor.mode == LyricsInputMode::TimedLrc
-                        && editor.separate_stems
-                        && song.as_ref().is_some_and(|song| !song.is_analyzed));
+                let plain_lyrics = editor.mode == LyricsInputMode::Plain;
                 let result = if editor.mode == LyricsInputMode::TimedLrc {
                     if song.as_ref().is_some_and(|song| song.is_analyzed) {
                         app_core::apply_timed_lyrics(&editor.file_hash, &value)
@@ -376,7 +459,7 @@ pub(crate) fn apply_content_action(
                         app_core::provide_lrc(&editor.file_hash, &value, editor.separate_stems)
                     }
                 } else {
-                    app_core::save_lyrics_and_realign(
+                    app_core::save_lyrics(
                         &editor.file_hash,
                         value.lines().map(str::to_string).collect(),
                     )
@@ -386,8 +469,8 @@ pub(crate) fn apply_content_action(
                         studio.dialogs.lyrics_editor = None;
                         studio.library.refresh();
                         studio.shell.notice = Some(
-                            if requires_runtime {
-                                "Lyrics saved and alignment queued."
+                            if plain_lyrics {
+                                "Lyrics saved without starting analysis."
                             } else {
                                 "Timed lyrics saved."
                             }
@@ -497,20 +580,6 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::OpenPlanPreview(file_hash)) => {
-            let mut draft = PlanPreviewDraft {
-                file_hash: file_hash.clone(),
-                target: studio.shell.config.analysis_default_target(),
-                target_overridden: false,
-                run_override: app_core::AnalysisExperienceOverride::default(),
-                effective_settings: None,
-                engine_preview: Err("Preview has not been compiled yet.".to_string()),
-            };
-            rebuild_engine_plan_preview(&mut draft, &studio.shell.config);
-            studio.dialogs.plan_preview_draft = Some(draft);
-            studio.shell.notice = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
         UiCommand::Analysis(AnalysisCommand::ClosePlanPreview) => {
             studio.dialogs.plan_preview_draft = None;
             invalidated.invalidate(action.0.dirty_region());
@@ -558,18 +627,18 @@ pub(crate) fn apply_content_action(
             }
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::SetPlanPreviewTarget(target)) => {
+        UiCommand::Analysis(AnalysisCommand::TogglePlanPreviewOutput(output)) => {
             if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
-                draft.target = *target;
-                draft.target_overridden = true;
+                draft.outputs.toggle(*output);
+                draft.outputs_overridden = true;
                 rebuild_engine_plan_preview(draft, &studio.shell.config);
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::ResetPlanPreviewTarget) => {
+        UiCommand::Analysis(AnalysisCommand::ResetPlanPreviewOutputs) => {
             if let Some(draft) = studio.dialogs.plan_preview_draft.as_mut() {
-                draft.target_overridden = false;
+                draft.outputs_overridden = false;
                 rebuild_engine_plan_preview(draft, &studio.shell.config);
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
@@ -591,47 +660,22 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::SetSongAnalysisQuality { file_hash, quality }) => {
-            let existing = app_core::get_song_analysis_profile(file_hash);
-            if existing.is_none() && quality.is_none() {
-                studio.shell.notice = None;
-            } else {
-                let mut profile = existing.unwrap_or_else(|| {
-                    app_core::AnalysisProfileSnapshot::from_app_config(
-                        &studio.shell.config,
-                        file_hash,
-                    )
-                });
-                profile.analysis_experience.quality_profile = *quality;
-                studio.shell.notice = app_core::set_song_analysis_profile(file_hash, &profile)
-                    .err()
-                    .map(|error| format!("Could not save the Song Profile: {error}"));
-            }
-            invalidated.invalidate(UiDirtyRegion::All);
-        }
-        UiCommand::Analysis(AnalysisCommand::SetSongAnalysisTarget { file_hash, target }) => {
-            let existing = app_core::get_song_analysis_profile(file_hash);
-            if existing.is_none() && target.is_none() {
-                studio.shell.notice = None;
-            } else {
-                let mut profile = existing.unwrap_or_else(|| {
-                    app_core::AnalysisProfileSnapshot::from_app_config(
-                        &studio.shell.config,
-                        file_hash,
-                    )
-                });
-                profile.analysis_experience.default_target = *target;
-                studio.shell.notice = app_core::set_song_analysis_profile(file_hash, &profile)
-                    .err()
-                    .map(|error| format!("Could not save the Song Profile: {error}"));
-            }
-            invalidated.invalidate(UiDirtyRegion::All);
+        UiCommand::Analysis(AnalysisCommand::StartQueuedAnalysis(file_hash)) => {
+            studio.shell.notice = Some(match app_core::start_queued_analysis(file_hash) {
+                Ok(()) => "Processing started.".to_string(),
+                Err(error) => format!("Could not start processing: {error}"),
+            });
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::StartAnalysis(file_hash)) => {
             let mut draft = PlanPreviewDraft {
                 file_hash: file_hash.clone(),
-                target: studio.shell.config.analysis_default_target(),
-                target_overridden: false,
+                outputs: app_core::AnalysisOutputSelection::from_target(
+                    studio.shell.config.analysis_default_target(),
+                ),
+                outputs_overridden: false,
                 run_override: app_core::AnalysisExperienceOverride::default(),
                 effective_settings: None,
                 engine_preview: Err("Preview has not been compiled yet.".to_string()),
@@ -642,46 +686,20 @@ pub(crate) fn apply_content_action(
             studio.analysis.selected_analysis_history = None;
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Analysis(AnalysisCommand::StopAnalysis(file_hash)) => {
-            studio.shell.notice = Some(match app_core::stop_analysis_run(file_hash) {
-                Ok(()) => "Stopping analysis; committed outputs will be kept.".to_string(),
-                Err(error) => format!("Could not stop analysis: {error}"),
-            });
-            invalidated.invalidate(action.0.dirty_region());
-        }
         UiCommand::Analysis(AnalysisCommand::OpenAnalysisLogViewer(file_hash, node_id)) => {
             studio.dialogs.analysis_log_viewer = Some(AnalysisLogViewerState {
                 file_hash: file_hash.clone(),
                 node_id: node_id.clone(),
+                follow_tail: true,
+                scroll_offset: 0.0,
+                observed_log_revision: None,
+                log_poll_initialized: false,
             });
             studio.dialogs.analysis_node_context = None;
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::CloseAnalysisLogViewer) => {
             studio.dialogs.analysis_log_viewer = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::OpenAnalysisLogFile) => {
-            let selected_run_id = studio.analysis.selected_analysis_history;
-            let file_hash = studio
-                .dialogs
-                .analysis_log_viewer
-                .as_ref()
-                .map(|state| state.file_hash.as_str())
-                .unwrap_or_default();
-            studio.shell.notice = Some(
-                match app_core::analysis_log_path_for(selected_run_id, file_hash) {
-                    Some(path) => match open::that_detached(&path) {
-                        Ok(()) => localized_message(
-                            &studio.shell.config,
-                            UiMessage::PathOpened,
-                            &[("{path}", &path.display().to_string())],
-                        ),
-                        Err(error) => format!("Could not open {}: {error}", path.display()),
-                    },
-                    None => "The analysis log is not available for this run.".to_string(),
-                },
-            );
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::OpenSongSettings(file_hash)) => {
@@ -765,36 +783,6 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Analysis(AnalysisCommand::RealignSong(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::realign(file_hash, None)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ReanalyzeTranscript(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::reanalyze_transcript(file_hash, None)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ForceTranscribe(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::reanalyze_force_transcribe(file_hash)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ReanalyzePitch(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::reanalyze_pitch(file_hash)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ReanalyzeFull(file_hash)) => {
-            studio.shell.notice = Some(run_analysis_action_checked(file_hash, || {
-                app_core::reanalyze_full(file_hash)
-            }));
-            invalidated.invalidate(action.0.dirty_region());
-        }
         UiCommand::Analysis(AnalysisCommand::CompareNodeAttemptWithPrevious(
             file_hash,
             node_id,
@@ -810,14 +798,6 @@ pub(crate) fn apply_content_action(
                     Err(error) => format!("Could not compare attempts: {error}"),
                 },
             );
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisCompoundNode(node_id)) => {
-            let id = app_core::AnalysisNodeId::new(node_id.clone());
-            if !studio.analysis.expanded_compound_nodes.remove(&id) {
-                studio.analysis.expanded_compound_nodes.insert(id);
-            }
-            studio.dialogs.analysis_node_context = None;
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::RequestDeleteSongCache(file_hash)) => {
@@ -844,8 +824,28 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
+        UiCommand::Analysis(AnalysisCommand::RequestDeleteAuthoredChart(file_hash)) => {
+            studio.dialogs.pending_chart_delete = Some(file_hash.clone());
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::CancelDeleteAuthoredChart) => {
+            studio.dialogs.pending_chart_delete = None;
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::ConfirmDeleteAuthoredChart) => {
+            if let Some(file_hash) = studio.dialogs.pending_chart_delete.take() {
+                studio.shell.notice = Some(match app_core::delete_authored_chart(&file_hash) {
+                    Ok(()) => {
+                        studio.library.refresh();
+                        "Authored chart removed. Source media, CandidateChart, analysis evidence and a recoverable authored revision were retained."
+                            .to_string()
+                    }
+                    Err(error) => format!("Could not delete the chart: {error}"),
+                });
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
         UiCommand::Analysis(AnalysisCommand::RequestReplaceAuthoredChart(file_hash)) => {
-            studio.dialogs.analysis_artifact_context = None;
             studio.dialogs.pending_chart_replace = Some(file_hash.clone());
             invalidated.invalidate(action.0.dirty_region());
         }
@@ -865,125 +865,6 @@ pub(crate) fn apply_content_action(
                     );
                 invalidated.invalidate(action.0.dirty_region());
             }
-        }
-        UiCommand::Analysis(AnalysisCommand::SyncArtifactRevisions(file_hash)) => {
-            let imported = app_core::import_legacy_artifacts(&app_core::CacheDir::new(), file_hash);
-            studio.shell.notice = Some(if imported.is_empty() {
-                "No new artifact revisions found on disk.".to_string()
-            } else {
-                localized_message(
-                    &studio.shell.config,
-                    UiMessage::ArtifactRevisionsRecorded,
-                    &[("{count}", &imported.len().to_string())],
-                )
-            });
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::SetActiveArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_active = Some(revision.as_ref().clone());
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CancelSetActiveArtifactRevision) => {
-            studio.dialogs.pending_artifact_active = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ConfirmSetActiveArtifactRevision) => {
-            let Some(revision) = studio.dialogs.pending_artifact_active.take() else {
-                return;
-            };
-            let cache_root = app_core::CacheDir::new().path;
-            studio.shell.notice = Some(
-                match app_core::set_active_artifact_revision(
-                    &cache_root,
-                    &revision.file_hash,
-                    revision.kind,
-                    &revision.id,
-                ) {
-                    Ok(()) => "Active artifact revision updated.".to_string(),
-                    Err(error) => format!("Could not set active artifact revision: {error}"),
-                },
-            );
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::OpenArtifactRevision(path)) => {
-            studio.shell.notice = Some(open_artifact_entry(path, &studio.shell.config));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::PreviewArtifactRevision(path)) => {
-            studio.shell.notice = Some(preview_artifact_entry(path));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RevealArtifactRevision(path)) => {
-            studio.shell.notice = Some(reveal_artifact_entry(path));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::RequestDeleteArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_delete = Some(revision.as_ref().clone());
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CancelDeleteArtifactRevision) => {
-            studio.dialogs.pending_artifact_delete = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ConfirmDeleteArtifactRevision) => {
-            if let Some(revision) = studio.dialogs.pending_artifact_delete.take() {
-                let cache_root = app_core::CacheDir::new().path;
-                studio.shell.notice = Some(
-                    match app_core::delete_artifact_revision(&cache_root, &revision) {
-                        Ok(()) => "Artifact revision deleted.".to_string(),
-                        Err(error) => format!("Could not delete artifact revision: {error}"),
-                    },
-                );
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Analysis(AnalysisCommand::RequestInvalidateArtifactRevision(revision)) => {
-            studio.dialogs.pending_artifact_invalidate = Some(revision.as_ref().clone());
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CancelInvalidateArtifactRevision) => {
-            studio.dialogs.pending_artifact_invalidate = None;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::ConfirmInvalidateArtifactRevision) => {
-            if let Some(revision) = studio.dialogs.pending_artifact_invalidate.take() {
-                let cache_root = app_core::CacheDir::new().path;
-                studio.shell.notice = Some(
-                        match app_core::invalidate_artifact_revision(
-                            &cache_root,
-                            &revision.file_hash,
-                            revision.kind,
-                            &revision.id,
-                        ) {
-                            Ok(()) => {
-                                "Artifact revision invalidated. It's no longer Active but the file is kept.".to_string()
-                            }
-                            Err(error) => format!("Could not invalidate artifact revision: {error}"),
-                        },
-                    );
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Analysis(AnalysisCommand::InspectArtifactProvenance(revision)) => {
-            studio.shell.notice = Some(format_artifact_provenance(revision));
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CompareArtifactRevisions(revision, other)) => {
-            let left = artifact_ref_from_revision(revision);
-            match app_core::compare_artifacts_typed(&left, other) {
-                Ok(diff) => {
-                    studio.dialogs.artifact_diff = Some(diff);
-                    studio.shell.notice = None;
-                }
-                Err(error) => {
-                    studio.shell.notice = Some(format!("Could not compare revisions: {error}"));
-                }
-            }
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Analysis(AnalysisCommand::CloseArtifactDiff) => {
-            studio.dialogs.artifact_diff = None;
-            invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::ShiftSongKey(file_hash, delta)) => {
             studio.shell.notice = Some(start_key_shift(
@@ -1009,15 +890,6 @@ pub(crate) fn apply_content_action(
             studio.shell.notice = play_library_song(
                 &library_audio.0,
                 file_hash,
-                &mut studio.playback.library_playback,
-            )
-            .err();
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Library(LibraryCommand::PlayArtifactRevision(path)) => {
-            studio.shell.notice = play_artifact_revision(
-                &library_audio.0,
-                path,
                 &mut studio.playback.library_playback,
             )
             .err();
@@ -1107,9 +979,35 @@ pub(crate) fn apply_content_action(
             .err();
             invalidated.invalidate(action.0.dirty_region());
         }
+        UiCommand::Library(LibraryCommand::ToggleLibraryAudioSourceMenu) => {
+            studio.playback.library_playback.audio_source_menu_open =
+                !studio.playback.library_playback.audio_source_menu_open;
+            studio.playback.library_playback.queue_open = false;
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Library(LibraryCommand::SelectLibraryAudioSource(source_id)) => {
+            let file_hash = studio
+                .playback
+                .library_playback
+                .file_hash
+                .clone()
+                .or_else(|| studio.library.selected_song.clone());
+            studio.shell.notice = match file_hash {
+                Some(file_hash) => select_library_audio_source(
+                    &library_audio.0,
+                    &file_hash,
+                    source_id,
+                    &mut studio.playback.library_playback,
+                )
+                .err(),
+                None => Some("Choose a song before selecting an audio source.".to_string()),
+            };
+            invalidated.invalidate(action.0.dirty_region());
+        }
         UiCommand::Library(LibraryCommand::ToggleLibraryQueue) => {
             studio.playback.library_playback.queue_open =
                 !studio.playback.library_playback.queue_open;
+            studio.playback.library_playback.audio_source_menu_open = false;
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::ToggleEditorFileMenu) => {
@@ -1184,8 +1082,48 @@ pub(crate) fn apply_content_action(
                 if *source == WaveformSource::Vocals && editor.chart.audio.vocals.is_none() {
                     notice = Some("This chart has no separate vocal source.".to_string());
                 } else {
-                    set_editor_waveform_source(editor, *source);
+                    notice = set_editor_waveform_source(audio.0.as_ref(), editor, *source).err();
                 }
+                editor.waveform_context = None;
+            }
+            if notice.is_some() {
+                studio.shell.notice = notice;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::SelectArtifactAudition(slot, artifact)) => {
+            let mut notice = None;
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                notice = select_editor_artifact_audition(
+                    audio.0.as_ref(),
+                    editor,
+                    *slot,
+                    artifact.clone(),
+                )
+                .err();
+                editor.waveform_context = None;
+            }
+            if notice.is_some() {
+                studio.shell.notice = notice;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::ActivateArtifactAudition(slot)) => {
+            let mut notice = None;
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                notice = activate_editor_artifact_audition(audio.0.as_ref(), editor, *slot).err();
+                editor.waveform_context = None;
+            }
+            if notice.is_some() {
+                studio.shell.notice = notice;
+            }
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Editor(EditorCommand::SelectArtifactWaveform(artifact)) => {
+            let mut notice = None;
+            if let Some(editor) = studio.editor.editor.as_mut() {
+                notice =
+                    set_editor_artifact_waveform(audio.0.as_ref(), editor, artifact.clone()).err();
                 editor.waveform_context = None;
             }
             if notice.is_some() {

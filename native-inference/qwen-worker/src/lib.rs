@@ -1,6 +1,4 @@
 mod audio;
-#[cfg(test)]
-mod converter_contract;
 mod engine;
 mod protocol;
 mod runtime;
@@ -85,24 +83,41 @@ fn run_task(
     let source = input_artifacts
         .first()
         .ok_or_else(|| "Qwen task has no input audio artifact".to_string())?;
-    emit(WorkerFrame::Progress {
+    emit(WorkerFrame::progress(
         task_id,
-        fraction: 0.02,
-        message: "Validating pinned Qwen runtime and model",
-    })?;
+        0.02,
+        "Validating pinned Qwen runtime and model",
+    ))?;
     let runtime = runtime::validate(kind)?;
-    emit(WorkerFrame::Progress {
+    emit(WorkerFrame::progress(
         task_id,
-        fraction: 0.08,
-        message: "Decoding audio to the pinned Qwen input contract",
-    })?;
+        0.08,
+        "Decoding audio to the pinned Qwen input contract",
+    ))?;
     let decoded = audio::decode_wav(source, output_dir, task_id)?;
-    emit(WorkerFrame::Progress {
+    emit(WorkerFrame::progress(
         task_id,
-        fraction: 0.15,
-        message: "Running pinned Qwen Vulkan engine",
-    })?;
-    let result = engine::run(kind, &runtime, &decoded, output_dir, config);
+        0.15,
+        "Running pinned Qwen Vulkan engine",
+    ))?;
+    let mut report_window_progress = |completed: u64, total: u64, message: &'static str| {
+        let fraction = 0.15 + (completed as f32 / total as f32) * 0.84;
+        emit(WorkerFrame::Progress {
+            task_id,
+            fraction,
+            message,
+            work_units_completed: Some(completed),
+            work_units_total: Some(total),
+        })
+    };
+    let result = engine::run(
+        kind,
+        &runtime,
+        &decoded,
+        output_dir,
+        config,
+        &mut report_window_progress,
+    );
     let _ = std::fs::remove_file(&decoded);
     let output = result?;
     emit(WorkerFrame::Output {

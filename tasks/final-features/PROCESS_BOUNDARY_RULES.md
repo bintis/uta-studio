@@ -77,6 +77,8 @@ UTA_STUDIO_ANALYSIS_CLI_PATH
 UTA_STUDIO_RUNTIME_CLI_PATH
 ```
 
+AI-judgment fusion does not add a Studio-facing CLI variable. Its external executable is Runtime Manager-owned `tool:fusion_agent_adapter`; Studio/AnalyzeRequest carry typed decision intent, not a raw path. Analysis Engine launches the resolved adapter directly, and AI/provider/protocol failure never falls back silently to Algorithm.
+
 Do not introduce a new in-process backend seam, HTTP inference/control service, Python runtime fallback, or automatic CPU model fallback.
 
 ## Artifact authority

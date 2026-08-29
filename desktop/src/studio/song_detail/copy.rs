@@ -1,81 +1,24 @@
 use crate::studio::*;
 
-pub(crate) fn spawn_song_primary_actions(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    song: &Song,
-    session: &StudioSessionView<'_>,
-    theme: &StudioTheme,
-) {
+pub(crate) fn song_analysis_action(song: &Song) -> (String, UiAction) {
     let state = app_core::resolve_song_authoring_state(&song.file_hash)
         .unwrap_or(app_core::SongAuthoringState::AnalyzeSong);
     match state {
-        app_core::SongAuthoringState::InProgress => {
-            let label = session
-                .analysis_tasks
-                .iter()
-                .find(|task| task.file_hash == song.file_hash)
-                .map(|task| match task.status {
-                    app_core::QueuedStatus::Queued => "Queued for analysis".to_string(),
-                    app_core::QueuedStatus::Analyzing(progress) => {
-                        format!("Analyzing · {progress}%")
-                    }
-                    app_core::QueuedStatus::Failed(_) => "Analyzing".to_string(),
-                })
-                .unwrap_or_else(|| "Analyzing".to_string());
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                label,
-                UiAction::from(AppCommand::ToggleActivity),
-            );
-        }
-        app_core::SongAuthoringState::RetryFailedNode => {
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                "Retry failed analysis",
-                UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
-            );
-        }
-        app_core::SongAuthoringState::AnalyzeSong => {
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                "Analyze song",
-                UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
-            );
-        }
-        app_core::SongAuthoringState::OpenEditor => {
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                "Open editor",
-                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
-            );
-        }
-        app_core::SongAuthoringState::FixChartIssues => {
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                "Fix chart issues",
-                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
-            );
-        }
-        app_core::SongAuthoringState::EditChart => {
-            spawn_action_button(
-                parent,
-                font,
-                theme,
-                "Edit chart",
-                UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
-            );
-        }
+        app_core::SongAuthoringState::InProgress => (
+            "View processing queue".to_string(),
+            UiAction::from(AppCommand::ToggleActivity),
+        ),
+        app_core::SongAuthoringState::RetryFailedNode
+        | app_core::SongAuthoringState::AnalyzeSong => (
+            "Add to processing queue".to_string(),
+            UiAction::from(LibraryCommand::AnalyzeSong(song.file_hash.clone())),
+        ),
+        app_core::SongAuthoringState::OpenEditor
+        | app_core::SongAuthoringState::FixChartIssues
+        | app_core::SongAuthoringState::EditChart => (
+            "Open editor".to_string(),
+            UiAction::from(LibraryCommand::OpenEditor(song.file_hash.clone())),
+        ),
     }
 }
 
@@ -86,20 +29,45 @@ pub(crate) fn spawn_detail_heading(
     eyebrow: &'static str,
     title: &'static str,
 ) {
+    spawn_detail_heading_with_action(parent, font, theme, eyebrow, title, None);
+}
+
+pub(crate) fn spawn_detail_heading_with_action(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    eyebrow: &'static str,
+    title: &'static str,
+    action: Option<(&'static str, UiAction)>,
+) {
     parent
         .spawn((
             Node {
                 width: percent(100),
-                padding: UiRect::axes(px(16), px(13)),
-                flex_direction: FlexDirection::Column,
+                min_height: px(56),
+                padding: UiRect::axes(px(16), px(10)),
+                align_items: AlignItems::Center,
+                column_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
             BorderColor::all(theme.border.with_alpha(0.5)),
         ))
         .with_children(|header| {
-            spawn_text(header, font.clone(), eyebrow, 8.0, theme.primary);
-            spawn_text(header, font, title, 13.0, theme.foreground);
+            header
+                .spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_text(copy, font.clone(), eyebrow, 8.0, theme.primary);
+                    spawn_text(copy, font.clone(), title, 13.0, theme.foreground);
+                });
+            if let Some((label, action)) = action {
+                spawn_compact_action_button(header, font, theme, label, action);
+            }
         });
 }
 
@@ -126,11 +94,11 @@ pub(crate) fn spawn_song_detail_section_card(
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_card_radius(),
                 ..default()
             },
-            BackgroundColor(theme.card.with_alpha(0.32)),
-            BorderColor::all(theme.border.with_alpha(0.55)),
+            studio_card_background(theme),
+            studio_card_border(theme),
         ))
         .with_children(build);
 }
@@ -161,8 +129,8 @@ pub(crate) fn spawn_detail_value(
 
 /// Overview section rows (phase plan §8.2's Overview list: authoring
 /// readiness, detected key/confidence, musical BPM/confidence, beat count,
-/// vocal/instrumental/pitch-evidence availability, active analysis
-/// profile, timed-lyrics source, chart assets). Reads real on-disk/DB
+/// vocal/instrumental/pitch-evidence availability, timed-lyrics source,
+/// chart assets). Analysis status/profile live in the Analysis card. Reads real on-disk/DB
 /// state directly (`load_music_analysis`, `cached_artifact_presence_for_song`,
 /// `get_song_analysis_profile`) rather than only `Song`'s cached summary
 /// fields, same accepted pattern as this file's other direct app-core
@@ -170,6 +138,15 @@ pub(crate) fn spawn_detail_value(
 /// count -- that needs the full `ChartDocument`'s `ChartProblem` list,
 /// which only exists once the chart is loaded into the editor, not
 /// something to load and parse on every Song Detail render.
+pub(crate) fn song_analysis_summary_rows(song: &Song) -> [(&'static str, String); 1] {
+    let profile_source = if app_core::get_song_analysis_profile(&song.file_hash).is_some() {
+        "Song override"
+    } else {
+        "Global defaults"
+    };
+    [("Active analysis profile", profile_source.to_string())]
+}
+
 pub(crate) fn song_overview_rows(song: &Song) -> Vec<(&'static str, String)> {
     let media = song
         .path
@@ -185,13 +162,33 @@ pub(crate) fn song_overview_rows(song: &Song) -> Vec<(&'static str, String)> {
     let music_analysis = app_core::load_music_analysis(&app_core::CacheDir::new(), &song.file_hash);
     let presence = app_core::cached_artifact_presence_for_song(&song.file_hash);
     let has_artifact = |kind: app_core::ArtifactKind| app_core::artifact_present(&presence, kind);
-    let profile_source = if app_core::get_song_analysis_profile(&song.file_hash).is_some() {
-        "Song override"
-    } else {
-        "Global defaults"
-    };
 
     let mut rows = vec![
+        ("Artist", song.artist.clone()),
+        (
+            "Album",
+            if song.album.is_empty() {
+                "Unknown".to_string()
+            } else {
+                song.album.clone()
+            },
+        ),
+        ("Duration", format_duration(song.duration_secs)),
+        (
+            "Language",
+            song.language
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
+        ),
+        (
+            "Key",
+            song.override_key
+                .as_ref()
+                .or(song.key.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string()),
+        ),
+        ("Playback speed", format!("{:.1}×", song.tempo)),
         (
             "Media",
             format!(
@@ -199,16 +196,6 @@ pub(crate) fn song_overview_rows(song: &Song) -> Vec<(&'static str, String)> {
                 if song.is_video { "Video" } else { "Audio" }
             ),
         ),
-        (
-            "Analysis",
-            if song.is_analyzed {
-                "Analyzed"
-            } else {
-                "Not analyzed"
-            }
-            .to_string(),
-        ),
-        ("Active analysis profile", profile_source.to_string()),
         ("Lyrics source", transcript),
     ];
 
@@ -312,8 +299,7 @@ pub(crate) fn song_overview_rows(song: &Song) -> Vec<(&'static str, String)> {
 }
 
 /// Pure lookup behind `song_overview_rows`'s "Last successful run" row,
-/// separated out so it's testable without a real DB fixture -- same pattern
-/// as `resolve_song_authoring_state`/`overlay_failed_node_attempts`.
+/// separated out so it is testable without a real database fixture.
 /// `history` is assumed newest-first (`analysis_history_load`'s real
 /// ordering, `ORDER BY finished_at_ms DESC, id DESC`), so the first match
 /// is genuinely the most recent completed run for this song, not merely *a*

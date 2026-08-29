@@ -4,6 +4,7 @@ use super::{
 use std::collections::{BTreeSet, HashSet};
 
 use crate::editor::seconds_to_units;
+use crate::editor::syllabize::{is_han, is_hangul, is_kana};
 use utz::{
     LyricJoin, LyricTextToken, LyricToken, NoteBonus, NoteScoring, ScoringMode, VocalMode,
     VocalNote, VocalPhrase,
@@ -41,6 +42,38 @@ impl EditorDocument {
         token.phonemes = None;
         self.touch();
         true
+    }
+
+    /// Overrides the aligner-recognized reading for a lyric token. Stores
+    /// only — never re-syllabizes. Automatically re-splitting mora on every
+    /// reading edit would silently move note boundaries right after the user
+    /// fixed a typo, which is exactly what "never silently overwrite
+    /// authored content" forbids; re-syllabizing stays an explicit, separate
+    /// user action (`syllabize_lyrics`), same as retyping the text itself.
+    pub fn set_lyric_reading(&mut self, address: LyricAddress, reading: Option<String>) -> bool {
+        let Some(token) = self.token_mut(address) else {
+            return false;
+        };
+        let reading = reading.filter(|value| !value.trim().is_empty());
+        if token.reading == reading {
+            return false;
+        }
+        token.reading = reading;
+        self.touch();
+        true
+    }
+
+    /// Whether the lyric at `address` contains a script `syllables()` treats
+    /// as CJK (Han/kana/Hangul) — i.e. the scripts whose stored `reading`
+    /// actually affects mora splitting. Judged per word, not per chart
+    /// language: a chart tagged as a Latin-script language can still carry
+    /// individual CJK loanwords, which is exactly where this field matters
+    /// most (`syllables()`'s own mixed-script handling proves the case).
+    pub fn lyric_uses_cjk_script(&self, address: LyricAddress) -> bool {
+        self.lyric_text(address).is_some_and(|text| {
+            text.chars()
+                .any(|c| is_han(c) || is_kana(c) || is_hangul(c))
+        })
     }
 
     /// Adds a lyric at the playhead. When the playhead lands on a note without
@@ -131,6 +164,32 @@ impl EditorDocument {
         }));
         self.touch();
         self.address_of_note(note_index)
+    }
+
+    /// Advances inline lyric editing to the next (`forward`) or previous
+    /// eligible slot in the same phrase; if the target note has no lyric yet,
+    /// creates an empty one in place (reusing `add_lyric_to_note`'s
+    /// mechanism). Returns `None` at the start/end of the phrase — Tab never
+    /// crosses a phrase boundary, so moving to a new line stays a visible,
+    /// deliberate step rather than a silent jump.
+    pub fn advance_lyric_edit(
+        &mut self,
+        from: LyricAddress,
+        forward: bool,
+    ) -> Option<LyricAddress> {
+        let note_index = self.resolve(from)?;
+        let (phrase, offset) = self.locate_note(note_index)?;
+        let slots = self.lyric_slots(phrase);
+        let position = slots.iter().position(|candidate| *candidate == offset)?;
+        let next_offset = if forward {
+            slots.get(position + 1).copied()?
+        } else {
+            slots.get(position.checked_sub(1)?).copied()?
+        };
+        let range = self.phrase_flat_range(phrase)?;
+        let target_note = range.start + next_offset;
+        self.address_of_note(target_note)
+            .or_else(|| self.add_lyric_to_note(target_note))
     }
 
     /// Moves the lyric at `word` onto `note_index`, the format's way of

@@ -26,6 +26,17 @@ printf 'Building Uta! Studio with %s (%s)\n' \
 
 cd "$repo_root"
 tools/check-product-identity.sh
-cargo build --release --locked -p uta-studio-desktop --bin uta-studio "$@"
+# Studio discovers packaged machine-protocol executables beside its own
+# binary. Build that complete local set together so a fresh UI cannot talk to
+# stale Runtime Manager / Analysis Engine policy from an earlier build.
+cargo build --release --locked \
+    -p uta-studio-desktop --bin uta-studio \
+    -p uta-runtime-manager --bin uta-runtime \
+    -p uta-analysis-engine --bin uta-analyze \
+    -p uta-ggml-worker --bin uta-ggml-worker \
+    -p uta-openvino-worker --bin uta-openvino-worker \
+    -p uta-qwen-worker --bin uta-qwen-asr-worker \
+    -p uta-qwen-worker --bin uta-qwen-align-worker \
+    "$@"
 
-printf '\nBuilt: %s\n' "$repo_root/target/release/uta-studio"
+printf '\nBuilt Studio and packaged protocols in: %s\n' "$repo_root/target/release"

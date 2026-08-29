@@ -169,12 +169,26 @@ pub enum ConditionalExecution {
     MaximumOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeparationStrategyV1 {
+    /// EP317 estimates GuideVocals and the same native invocation publishes the
+    /// deterministic SourceMix - GuideVocals Instrumental residual.
+    Ep317VocalResidual,
+    /// Independent role-specialized native invocations.
+    IndependentSpecialists,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowNodeInstance {
     pub instance_id: WorkflowNodeId,
     pub capability_id: CapabilityId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    /// Typed separation execution topology. This is authoritative for
+    /// `audio.separate_vocal_bgm`; Desktop must not infer roles from model IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separation_strategy: Option<SeparationStrategyV1>,
     #[serde(default)]
     pub parameters: BTreeMap<String, serde_json::Value>,
     #[serde(default)]

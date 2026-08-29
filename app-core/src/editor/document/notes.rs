@@ -569,6 +569,7 @@ impl EditorDocument {
                         guided: note.pitch.is_some(),
                         note: note_index + offset,
                         continuation_notes,
+                        reading: token.reading.clone(),
                     });
                     word += 1;
                 }

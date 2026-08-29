@@ -258,7 +258,6 @@ fn render_template(locale: UiLocale, key: &str, replacements: &[(&str, &str)]) -
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UiMessage {
     AppVersion,
-    RuntimeMissingComponents,
     PathOpened,
     FontSize,
     LatestScan,
@@ -274,7 +273,6 @@ pub(crate) enum UiMessage {
     TranscriptPreviewing,
     TimingNotNumeric,
     LanguageReprocessQueued,
-    ArtifactRevisionsRecorded,
     FolderStoppedWatching,
     AnalysisEngineSelected,
     DiagnosticsSummary,
@@ -284,7 +282,6 @@ impl UiMessage {
     const fn id(self) -> &'static str {
         match self {
             Self::AppVersion => "message.app_version",
-            Self::RuntimeMissingComponents => "message.runtime_missing_components",
             Self::PathOpened => "message.path_opened",
             Self::FontSize => "message.font_size",
             Self::LatestScan => "message.latest_scan",
@@ -300,7 +297,6 @@ impl UiMessage {
             Self::TranscriptPreviewing => "message.transcript_previewing",
             Self::TimingNotNumeric => "message.timing_not_numeric",
             Self::LanguageReprocessQueued => "message.language_reprocess_queued",
-            Self::ArtifactRevisionsRecorded => "message.artifact_revisions_recorded",
             Self::FolderStoppedWatching => "message.folder_stopped_watching",
             Self::AnalysisEngineSelected => "message.analysis_engine_selected",
             Self::DiagnosticsSummary => "message.diagnostics_summary",
@@ -310,7 +306,6 @@ impl UiMessage {
     const fn english(self) -> &'static str {
         match self {
             Self::AppVersion => "Version {version}",
-            Self::RuntimeMissingComponents => "Missing components: {components}",
             Self::PathOpened => "Opened {path}",
             Self::FontSize => "Font size: {size}",
             Self::LatestScan => "Latest scan: {size}",
@@ -326,7 +321,6 @@ impl UiMessage {
             Self::TranscriptPreviewing => "Previewing transcript at {position}.",
             Self::TimingNotNumeric => "{field} is not numeric",
             Self::LanguageReprocessQueued => "Language set to {language}; reprocessing queued.",
-            Self::ArtifactRevisionsRecorded => "Recorded {count} artifact revision(s) from disk.",
             Self::FolderStoppedWatching => {
                 "Stopped watching {path}. No source media was moved or deleted."
             }
@@ -466,11 +460,191 @@ mod tests {
     }
 
     #[test]
+    fn ai_judgment_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "FUSION AGENT ADAPTER",
+            "Fusion Agent Adapter",
+            "AI judgment",
+            "✓ AI judgment",
+            "AI judgment · Checking local adapter status…",
+            "AI judgment · No adapter is configured in Models & runtime",
+            "AI judgment · Fusion Agent Adapter is unusable in Models & runtime",
+            "AI judgment · Adapter status unavailable",
+            "STEP 4 · FINAL FUSION",
+            "Choose only how the final path is selected. Configure expert participation in Step 3; the Engine owns evidence normalization and candidate construction.",
+            "Algorithm",
+            "✓ Algorithm",
+            "✓ AI judgment · adapter not configured in Models & runtime",
+            "Saved AI mode is selected, but analysis is blocked until an adapter is configured.",
+            "Candidate metadata may be sent to its external AI provider; no source audio or project files are included. Any adapter, provider, timeout, cancellation, or validation failure stops analysis without Algorithm fallback.",
+            "Configured evidence · {evidence}",
+            "Potential evidence · {evidence}",
+            "Planned evidence · {evidence}",
+            "Evidence normalization -> candidate construction -> final path selection -> canonical singing track",
+            "AI judgment may send candidate metadata to the adapter's external AI provider. No source audio or project files are included.",
+            "External tool for explicit AI judgment. Runtime Manager accepts only an executable with a verified Uta Fusion Agent Adapter manifest; a plain Codex, Claude, Gemini, or other coding-agent CLI is not a compatible endpoint. The adapter may contact an external provider and runs with your OS permissions.",
+            "Fusion Agent Adapter · Not required for Algorithm mode.",
+            "Fusion Agent Adapter · Not exercised by this exact run. Preview does not contact the provider.",
+            "Fusion Agent Adapter · Preview checks local readiness only; it does not contact the provider.",
+            "Fusion Agent Adapter timed out after 600 seconds. No Algorithm fallback was used. Check the provider and retry.",
+            "AI judgment was cancelled. No Algorithm fallback was used.",
+            "Fusion Agent Adapter protocol mismatch. Choose a compatible verified adapter in Settings > Models & runtime. No Algorithm fallback was used.",
+            "Fusion Agent Adapter is missing or unusable. Configure it in Settings > Models & runtime. No Algorithm fallback was used.",
+            "Fusion Agent Adapter returned an invalid candidate selection. No Algorithm fallback was used. {message}",
+            "The Fusion Agent Adapter or its external AI provider failed. No Algorithm fallback was used. {message}",
+            "AI judgment failed without an Algorithm fallback. {code}: {message}",
+            "Fusion Agent Adapter configured and verified. AI judgment remains an explicit per-workflow choice.",
+            "Fusion Agent Adapter is configured but unusable: {reasons}",
+            "No readiness reason reported",
+            "Could not configure Fusion Agent Adapter: {error}. Choose an executable with a valid Uta adapter manifest; plain coding-agent CLIs are not compatible.",
+            "Fusion Agent Adapter configuration cleared. AI workflows now fail closed; Algorithm workflows are unaffected.",
+            "Could not clear Fusion Agent Adapter: {error}",
+            "Unknown resource",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn workflow_execution_ux_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "Open local file…",
+            "Execution topology · {topology}",
+            "04 · FINAL FUSION",
+            "Choose Algorithm or AI judgment for final candidate-path selection. Evidence participation is configured in Stage 3.",
+            "Selected strategy · {strategy}\n{providers}",
+            "SEPARATION STRATEGY",
+            "EP317 vocal + residual Instrumental",
+            "Independent vocal + Instrumental specialists",
+            "One EP317 inference estimates GuideVocals; the same native invocation publishes SourceMix − GuideVocals as the deterministic Instrumental residual.",
+            "EP317 extracts GuideVocals and MelBand Inst V2 independently extracts Instrumental, with separate progress and logs.",
+            "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.",
+            "Delete chart",
+            "Delete chart?",
+            "Delete chart…",
+            "This authored chart is pinned. Unpin the artifact revision before deleting it. Source media, CandidateChart and analysis evidence are retained.",
+            "Authored chart removed. Source media, CandidateChart, analysis evidence and a recoverable authored revision were retained.",
+            "Delete the authored chart for {title}? Source media, CandidateChart and analysis evidence are retained. A retained revision can be reactivated later in Artifact Workbench.",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+        assert_eq!(
+            translate_ui(
+                UiLocale::SimplifiedChinese,
+                "Delete the authored chart for Asphodelos? Source media, CandidateChart and analysis evidence are retained. A retained revision can be reactivated later in Artifact Workbench."
+            )
+            .as_deref(),
+            Some(
+                "删除 Asphodelos 的创作谱面？源媒体、候选谱面和分析证据均会保留。之后可在产物工作台中重新激活保留的修订。"
+            )
+        );
+    }
+
+    #[test]
+    fn preprocessing_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "PREPROCESSING SWITCH",
+            "Turn this preprocessing step On or Off. Off is a transparent bypass; the exact analyzer input route is shown in Plan Preview.",
+            "Turn On",
+            "Turn Off",
+            "Analyzer route · {route} → analyzers · Lead isolation Off · Denoise Off · Dereverb Off",
+            "Analyzer route · {route} → analyzers · Lead isolation Off · Denoise Off · Dereverb On",
+            "Analyzer route · {route} → analyzers · Lead isolation Off · Denoise On · Dereverb Off",
+            "Analyzer route · {route} → analyzers · Lead isolation Off · Denoise On · Dereverb On",
+            "Analyzer route · {route} → analyzers · Lead isolation On · Denoise Off · Dereverb Off",
+            "Analyzer route · {route} → analyzers · Lead isolation On · Denoise Off · Dereverb On",
+            "Analyzer route · {route} → analyzers · Lead isolation On · Denoise On · Dereverb Off",
+            "Analyzer route · {route} → analyzers · Lead isolation On · Denoise On · Dereverb On",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+        assert_eq!(
+            translate_ui(
+                UiLocale::SimplifiedChinese,
+                "Analyzer route · OriginalMix → Vocal → analyzers · Lead isolation Off · Denoise Off · Dereverb Off"
+            )
+            .as_deref(),
+            Some("分析器路径 · OriginalMix → Vocal → 分析器 · 主唱分离关闭 · 降噪关闭 · 去混响关闭")
+        );
+    }
+
+    #[test]
+    fn editor_artifact_a_b_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "ARTIFACT A/B & WAVEFORM",
+            "A · {artifact}",
+            "B · {artifact}",
+            "Waveform · {artifact}",
+            "Switch to A",
+            "Switch to B",
+            "That artifact audition slot is not bound yet",
+            "Stop playback before reading an artifact waveform",
+            "Stop playback before reading a waveform",
+            "Active artifact revision is no longer available; playback stopped",
+            "Active artifact revision is no longer available, but playback could not be stopped: {error}",
+            "Active artifact revision is no longer available; playback stopped, but a safe fallback could not be loaded: {error}",
+            "That audio artifact is not bound to this editor session.",
+            "That artifact revision is no longer available.",
+            "Could not decode that artifact waveform without changing playback: {error}",
+            "Could not decode that waveform: {error}",
+            "Could not confirm playback was stopped: {error}",
+            "Could not confirm playback was stopped before reading the initial waveform: {error}",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+    }
+
+    #[test]
     fn exact_static_copy_is_localized() {
         assert_eq!(
             translate_ui(UiLocale::SimplifiedChinese, "Settings").as_deref(),
             Some("设置")
         );
+        assert_eq!(
+            translate_ui(UiLocale::SimplifiedChinese, "Start analysis").as_deref(),
+            Some("开始分析")
+        );
+        assert_eq!(
+            translate_ui(UiLocale::Japanese, "Quick model selection").as_deref(),
+            Some("クイックモデル選択")
+        );
+        assert_eq!(translate_ui(UiLocale::English, "Start analysis"), None);
         assert_eq!(translate_ui(UiLocale::Japanese, "user supplied text"), None);
     }
 

@@ -272,28 +272,32 @@ struct StarsInference {
     styles: Option<Vec<RawGlobalStyle>>,
 }
 
+fn segment_progress(segment_index: usize, segment_count: usize) -> (u64, u64) {
+    ((segment_index + 1) as u64, segment_count as u64)
+}
+
 pub fn infer(
     model_id: &str,
     audio_24k: &[f32],
     audio_16k: &[f32],
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &str),
+    mut progress: impl FnMut(f32, &str, Option<(u64, u64)>),
 ) -> Result<PathBuf, String> {
     let config: TaskConfig = serde_json::from_value(config.clone())
         .map_err(|error| format!("advanced note task config is invalid: {error}"))?;
     validate_task_config(&config, audio_24k)?;
     let model = model_artifact(model_id, &config.model_path)?;
-    progress(0.02, "Validating source-built OpenVINO runtime");
+    progress(0.02, "Validating source-built OpenVINO runtime", None);
     let runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
     let mut core = configured_core(config.device)?;
-    progress(0.05, "Computing the shared singing frontend");
+    progress(0.05, "Computing the shared singing frontend", None);
     let shared = shared_inputs(&mut core, &model, audio_24k, audio_16k, config.device)?;
     let segments = conditioned_segments(&config.words, config.source_start, shared.frames)?;
     if segments.is_empty() {
         return Err("advanced note expert has no TimedTranscript-conditioned frames".to_string());
     }
-    progress(0.35, "Running conditioned singing-note segments");
+    progress(0.35, "Running conditioned singing-note segments", None);
     let (boundary_logits, boundaries, notes, techniques, styles) = if model_id == "stars" {
         let result = run_stars(
             &mut core,
@@ -302,14 +306,15 @@ pub fn infer(
             &segments,
             config.device,
             config.include_technique,
-            |completed| {
+            |completed, total| {
                 progress(
-                    0.35 + 0.6 * completed,
+                    0.35 + 0.6 * completed as f32 / total as f32,
                     if config.include_technique {
                         "Running STARS Stage A/B/C/D/E segments"
                     } else {
                         "Running STARS Stage A/B/C segments"
                     },
+                    Some((completed, total)),
                 );
             },
         )?;
@@ -327,10 +332,11 @@ pub fn infer(
             &shared,
             &segments,
             config.device,
-            |completed| {
+            |completed, total| {
                 progress(
-                    0.35 + 0.6 * completed,
+                    0.35 + 0.6 * completed as f32 / total as f32,
                     "Running ROSVOT frame/pitch segments",
+                    Some((completed, total)),
                 );
             },
         )?;
@@ -415,7 +421,11 @@ pub fn infer(
         styles,
         dependencies,
     };
-    progress(0.97, "Publishing typed advanced-note evidence");
+    progress(
+        0.97,
+        "Publishing typed advanced-note evidence",
+        Some((segments.len() as u64, segments.len() as u64)),
+    );
     atomic_json(output_dir, "advanced-note-evidence.json", &evidence)
 }
 
@@ -814,7 +824,7 @@ fn run_stars(
     segments: &[Segment],
     device: DiagnosticDevice,
     include_technique: bool,
-    mut progress: impl FnMut(f32),
+    mut progress: impl FnMut(u64, u64),
 ) -> Result<StarsInference, String> {
     let mut stage_a = compile(core, model, "stars-stage-a-t256-n32", device)?;
     let conditioned_stage_device = stars_conditioned_stage_device(device);
@@ -988,7 +998,8 @@ fn run_stars(
                 .ok_or_else(|| "STARS style collection is unavailable".to_string())?
                 .push(global_style(segment, &d)?);
         }
-        progress((index + 1) as f32 / segments.len() as f32);
+        let (completed, total) = segment_progress(index, segments.len());
+        progress(completed, total);
     }
     stitch_notes(&mut all_notes);
     Ok(StarsInference {
@@ -1156,7 +1167,7 @@ fn run_rosvot(
     shared: &SharedInputs,
     segments: &[Segment],
     device: DiagnosticDevice,
-    mut progress: impl FnMut(f32),
+    mut progress: impl FnMut(u64, u64),
 ) -> Result<NoteInference, String> {
     let mut frame_graph = compile(core, model, "rosvot-frame-t256-n32", device)?;
     let mut pitch_graph = compile(core, model, "rosvot-pitch-t256-n32", device)?;
@@ -1224,7 +1235,8 @@ fn run_rosvot(
             &ranges,
             &pitch_output[0],
         );
-        progress((index + 1) as f32 / segments.len() as f32);
+        let (completed, total) = segment_progress(index, segments.len());
+        progress(completed, total);
     }
     stitch_notes(&mut all_notes);
     Ok((all_logits, all_boundaries, all_notes))
@@ -1480,6 +1492,12 @@ fn valid_identity(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segment_progress_reports_exact_measured_units() {
+        assert_eq!(segment_progress(0, 5), (1, 5));
+        assert_eq!(segment_progress(4, 5), (5, 5));
+    }
 
     #[test]
     fn fixed_segmentation_preserves_full_timeline_and_skips_only_unconditioned_chunks() {

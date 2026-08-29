@@ -52,6 +52,32 @@ mod tests {
         indices.iter().copied().collect()
     }
 
+    /// Editor documents may temporarily contain a pitched note without lyrics.
+    /// That is an editable incomplete state, not an exportable UTZ 0.3 chart.
+    fn assert_editor_structure(chart: &VocalChartV1) {
+        assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
+        assert_eq!(chart.format_version, utz::VOCAL_CHART_VERSION);
+        assert_eq!(chart.timebase, utz::UTZ_TIMEBASE);
+        for track in &chart.tracks {
+            assert!(!track.id.trim().is_empty());
+            for phrase in &track.phrases {
+                assert!(!phrase.id.trim().is_empty());
+                assert!(
+                    !phrase
+                        .notes
+                        .windows(2)
+                        .any(|pair| pair[0].start + pair[0].duration > pair[1].start)
+                );
+                for note in &phrase.notes {
+                    assert!(!note.id.trim().is_empty());
+                    assert!(note.duration > 0);
+                    assert!(note.scoring.weight.is_finite() && note.scoring.weight >= 0.0);
+                    assert!(note.pitch.is_none_or(|pitch| pitch.midi <= 127));
+                }
+            }
+        }
+    }
+
     #[test]
     fn move_keeps_the_minimum_duration() {
         let mut document = document(&[(1.0, 2.0, 60, "a")]);
@@ -73,7 +99,9 @@ mod tests {
             .map(|note| note.start)
             .collect::<Vec<_>>();
         assert_eq!(starts, [0.0, 1.2, 2.0]);
-        document.to_chart().validate().unwrap();
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -171,7 +199,9 @@ mod tests {
         assert!(!notes[1].pitched);
         assert_eq!(notes[1].lyric.as_deref(), Some("hi"));
         assert!((notes[0].end - notes[1].start).abs() < 1e-9);
-        document.to_chart().validate().unwrap();
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -263,7 +293,9 @@ mod tests {
         assert!(!notes[1].pitched);
         assert_eq!(notes[1].lyric.as_deref(), Some("hi"));
         assert_eq!(document.lyrics()[freed.word].text, "hi");
-        document.to_chart().validate().unwrap();
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -594,7 +626,9 @@ mod tests {
         // Remove the head; the tail's continuation can no longer resolve.
         document.remove_notes(&selection(&[0]));
         assert_eq!(document.note_count(), 1);
-        document.to_chart().validate().unwrap();
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -622,7 +656,9 @@ mod tests {
         assert_eq!(document.note_count(), 2);
         assert_eq!(document.lyrics().len(), 1);
         assert_eq!(next.unwrap().word, 0);
-        document.to_chart().validate().unwrap();
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -909,7 +945,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["just", "this", ""]
         );
-        document.to_chart().validate().expect("valid chart");
+        let chart = document.to_chart();
+        assert!(chart.validate().is_err());
+        assert_editor_structure(&chart);
     }
 
     #[test]
@@ -1179,5 +1217,133 @@ mod tests {
             assert!(notes.windows(2).all(|pair| pair[0].end <= pair[1].start));
             document.to_chart().validate().unwrap();
         }
+    }
+
+    #[test]
+    fn set_lyric_reading_sets_and_normalizes() {
+        let mut document = document(&[(0.0, 1.0, 60, "猫")]);
+        let address = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        let before = document.revision();
+        assert!(document.set_lyric_reading(address, Some("ねこ".to_string())));
+        assert!(document.revision() > before);
+        assert_eq!(document.track_lyrics(0)[0].reading.as_deref(), Some("ねこ"));
+
+        let unchanged = document.revision();
+        assert!(
+            !document.set_lyric_reading(address, Some("ねこ".to_string())),
+            "setting the same value is not a change"
+        );
+        assert_eq!(document.revision(), unchanged);
+
+        let before_clear = document.revision();
+        assert!(document.set_lyric_reading(address, Some("   ".to_string())));
+        assert_eq!(
+            document.track_lyrics(0)[0].reading, None,
+            "a blank string normalizes to None"
+        );
+        assert!(document.revision() > before_clear);
+    }
+
+    #[test]
+    fn lyric_uses_cjk_script_is_judged_per_word_not_per_chart_language() {
+        // The fixture always tags the chart language "en" (Latin), but
+        // per-word CJK detection must not consult that field.
+        let document = document(&[
+            (0.0, 1.0, 60, "猫"),
+            (1.0, 2.0, 62, "ねこ"),
+            (2.0, 3.0, 64, "고양이"),
+            (3.0, 4.0, 65, "cat"),
+        ]);
+        assert!(document.lyric_uses_cjk_script(LyricAddress {
+            segment: 0,
+            word: 0
+        }));
+        assert!(document.lyric_uses_cjk_script(LyricAddress {
+            segment: 0,
+            word: 1
+        }));
+        assert!(document.lyric_uses_cjk_script(LyricAddress {
+            segment: 0,
+            word: 2
+        }));
+        assert!(!document.lyric_uses_cjk_script(LyricAddress {
+            segment: 0,
+            word: 3
+        }));
+    }
+
+    #[test]
+    fn advance_lyric_edit_moves_forward_and_backward_within_a_phrase() {
+        let mut document = document(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 60, "b"), (2.0, 3.0, 60, "c")]);
+        let first = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        let second = document.advance_lyric_edit(first, true).unwrap();
+        assert_eq!(document.resolve(second), Some(1));
+        let back_to_first = document.advance_lyric_edit(second, false).unwrap();
+        assert_eq!(back_to_first, first);
+    }
+
+    #[test]
+    fn advance_lyric_edit_creates_an_empty_lyric_on_a_note_without_one() {
+        let mut document = document(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 60, "b")]);
+        document.chart.tracks[0].phrases[0].notes[1].lyrics = Vec::new();
+        let first = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        let target = document.advance_lyric_edit(first, true).unwrap();
+        assert_eq!(document.resolve(target), Some(1));
+        assert_eq!(document.address_of_note(1), Some(target));
+    }
+
+    #[test]
+    fn advance_lyric_edit_stops_at_phrase_boundaries_without_a_change() {
+        let mut document = document(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 60, "b")]);
+        let first = LyricAddress {
+            segment: 0,
+            word: 0,
+        };
+        let last = LyricAddress {
+            segment: 0,
+            word: 1,
+        };
+        let before = document.revision();
+        assert_eq!(document.advance_lyric_edit(first, false), None);
+        assert_eq!(document.advance_lyric_edit(last, true), None);
+        assert_eq!(document.revision(), before);
+    }
+
+    #[test]
+    fn advance_lyric_edit_skips_a_continuation_only_note() {
+        let mut document = document(&[
+            (0.0, 1.0, 60, "held"),
+            (1.0, 2.0, 60, "x"),
+            (2.0, 3.0, 60, "c"),
+        ]);
+        let held_id = match &document.chart.tracks[0].phrases[0].notes[0].lyrics[0] {
+            LyricToken::Text(token) => token.id.clone(),
+            LyricToken::Continuation { .. } => panic!("expected a text token"),
+        };
+        document.chart.tracks[0].phrases[0].notes[1].lyrics = vec![LyricToken::Continuation {
+            continuation_of: held_id,
+        }];
+        let first = document.address_of_note(0).unwrap();
+        let target = document.advance_lyric_edit(first, true).unwrap();
+        assert_eq!(document.resolve(target), Some(2));
+    }
+
+    #[test]
+    fn advance_lyric_edit_returns_none_when_from_cannot_resolve() {
+        let mut document = document(&[(0.0, 1.0, 60, "a")]);
+        let unresolvable = LyricAddress {
+            segment: 9,
+            word: 9,
+        };
+        assert_eq!(document.advance_lyric_edit(unresolvable, true), None);
     }
 }

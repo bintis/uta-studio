@@ -1,19 +1,43 @@
+use std::collections::HashSet;
+
 use crate::artifact::{
     AcousticEvidenceV1, AdvancedNoteEvidenceV1, AlignmentArtifactV1, AlignmentItemV1,
-    BasicPitchEvidenceV3, GameEvidenceV1, PitchEvidenceV03, TranscriptArtifactV1,
-    TranscriptAuthorityV1, TranscriptTokenV1,
+    BasicPitchEvidenceV3, GameEvidenceV1, PitchEvidenceV03, TechniqueEvidenceV1,
+    TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1,
 };
 use crate::contract::{
-    BoundaryAuthority, BoundaryLevel, CANONICAL_TIMEBASE, EngineError, EngineErrorCode,
-    EngineResult,
+    BoundaryAuthority, BoundaryConstraintV1, BoundaryLevel, CANONICAL_TIMEBASE, EngineError,
+    EngineErrorCode, EngineResult,
 };
+use crate::execution::CancellationToken;
 use crate::fusion::{
-    CanonicalLyrics, CanonicalSingingTrack, CanonicalWordBoundary, EvidenceProvenance, ExpertTask,
-    F0Point, HarmonyMetadata, LyricsAuthority, PitchGrid, SingingFusionEvidence,
-    SingingReviewRegion, TranscriptHypothesis, TranscriptTokenEvidence, WordBoundaryEvidence,
-    build_canonical_singing_track, build_review_regions, decode_candidate_graph,
-    fuse_singing_evidence, fuse_transcripts, fuse_word_boundaries,
+    BoundaryAlternative, BoundaryConstraintEvidenceV1, BoundaryConstraintKindV1,
+    BoundaryEvidenceKind, BoundaryEvidenceSet, BoundarySegmentEvidence, CanonicalLyrics,
+    CanonicalSingingTrack, CanonicalWordBoundary, EvidenceProvenance, ExpertTask, F0Point,
+    HardBoundarySetV1, HarmonyMetadata, LyricsAuthority, PitchGrid, SingingFusionEvidence,
+    SingingReviewReason, SingingReviewRegion, TranscriptHypothesis, TranscriptTokenEvidence,
+    WordBoundaryEvidence, attach_boundary_constraints, build_canonical_singing_track,
+    build_review_regions, decode_candidate_graph_with_boundaries,
+    fuse_singing_evidence_with_challengers, fuse_transcripts, fuse_word_boundaries,
+    persistent_f0_shifts, trustworthy_f0_point, validate_candidate_path_with_boundaries,
+    validate_candidate_pool,
 };
+
+/// How Stage 4 (Expert Fusion) decides the final non-overlapping candidate
+/// path. `Algorithm` is the default, production-pinned HSMM decoder.
+/// `AiJudgment` is an explicit, non-default opt-in that hands the same
+/// candidate pool to the Runtime Manager-resolved Fusion Agent Adapter; see
+/// `crate::execution::agent_client`. Neither mode bypasses
+/// `validate_canonical_singing_track`.
+pub enum FusionDecisionModeV1<'a> {
+    Algorithm,
+    AiJudgment {
+        /// Runtime Manager-resolved, manifest-verified adapter executable.
+        executable: &'a std::path::Path,
+        timeout: std::time::Duration,
+        cancellation: &'a CancellationToken,
+    },
+}
 
 fn output_error(message: impl Into<String>) -> EngineError {
     EngineError::new(EngineErrorCode::OutputValidationFailed, message)
@@ -31,6 +55,128 @@ fn compact_normalized(text: &str) -> String {
         .filter(|character| !character.is_whitespace())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn sequence_units(text: &str) -> Vec<String> {
+    let words = text
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    if words.len() > 1 {
+        words
+    } else {
+        text.chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .map(|character| character.to_string())
+            .collect()
+    }
+}
+
+fn sequence_edit_distance(left: &[String], right: &[String]) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_unit) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_unit) in right.iter().enumerate() {
+            current[right_index + 1] = if left_unit == right_unit {
+                previous[right_index]
+            } else {
+                (previous[right_index] + 1)
+                    .min(previous[right_index + 1] + 1)
+                    .min(current[right_index] + 1)
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn sequence_similarity(left: &str, right: &str) -> f32 {
+    let left = sequence_units(left);
+    let right = sequence_units(right);
+    let maximum = left.len().max(right.len());
+    if maximum == 0 {
+        return 1.0;
+    }
+    1.0 - sequence_edit_distance(&left, &right) as f32 / maximum as f32
+}
+
+pub fn build_transcript_disagreement_regions(
+    transcript: &TranscriptArtifactV1,
+    reference_lyrics: Option<&str>,
+    reference_language: Option<&str>,
+    source_range: crate::fusion::TimeRange,
+) -> Vec<SingingReviewRegion> {
+    if source_range.end <= source_range.start {
+        return Vec::new();
+    }
+    let mut reasons = Vec::new();
+    if transcript
+        .confidence
+        .is_some_and(|confidence| confidence < 0.65)
+        || transcript
+            .tokens
+            .iter()
+            .any(|token| token.confidence.is_some_and(|confidence| confidence < 0.65))
+    {
+        reasons.push(SingingReviewReason::TranscriptLowConfidence);
+    }
+    if let Some(reference) = reference_lyrics
+        .map(str::trim)
+        .filter(|reference| !reference.is_empty())
+    {
+        let transcript_units = sequence_units(&transcript.text).len();
+        let reference_units = sequence_units(reference).len();
+        if normalized(reference) != normalized(&transcript.text) {
+            reasons.push(SingingReviewReason::TranscriptReferenceMismatch);
+        }
+        if transcript_units > 0
+            && reference_units > 0
+            && (transcript_units * 2 < reference_units
+                || reference_units.saturating_mul(2) < transcript_units)
+        {
+            reasons.push(SingingReviewReason::TranscriptCoverageMismatch);
+        }
+    }
+    if let (Some(detected), Some(reference)) = (
+        transcript.language.as_deref(),
+        reference_language
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) && detected.split(['-', '_']).next().is_some_and(|detected| {
+        !detected.eq_ignore_ascii_case(reference.split(['-', '_']).next().unwrap_or(reference))
+    }) {
+        reasons.push(SingingReviewReason::TranscriptLanguageMismatch);
+    }
+    reasons.sort();
+    reasons.dedup();
+    if reasons.is_empty() {
+        return Vec::new();
+    }
+    let mut evidence_experts = transcript.source_experts.clone();
+    if reference_lyrics.is_some() {
+        evidence_experts.push("caller.reference".to_string());
+    }
+    evidence_experts.sort();
+    evidence_experts.dedup();
+    vec![SingingReviewRegion {
+        id: format!(
+            "transcript-review-{}-{}",
+            source_range.start, source_range.end
+        ),
+        range: source_range,
+        confidence: transcript.confidence,
+        reasons,
+        evidence_experts,
+        reviewed: false,
+    }]
 }
 
 fn transcript_tokens(artifact: &TranscriptArtifactV1) -> Vec<TranscriptTokenEvidence> {
@@ -82,8 +228,10 @@ pub fn fuse_transcript_stage(
     } else {
         let hypotheses = evidence
             .iter()
-            .map(|artifact| TranscriptHypothesis {
+            .enumerate()
+            .map(|(preference_rank, artifact)| TranscriptHypothesis {
                 expert_id: artifact.source_experts.join("+"),
+                preference_rank: preference_rank as u32,
                 language: artifact.language.clone(),
                 text: artifact.text.clone(),
                 tokens: transcript_tokens(artifact),
@@ -137,13 +285,48 @@ pub fn fuse_transcript_stage(
         .map(str::trim)
         .filter(|text| !text.is_empty())
         && normalized(reference) != normalized(&artifact.text)
-        && !artifact
+    {
+        let generated = artifact.text.clone();
+        if sequence_similarity(&generated, reference) >= 0.5 {
+            artifact.text = reference.to_string();
+            canonical.text = reference.to_string();
+            // The current ASR contracts do not supply stable token timing for
+            // sequence reconciliation. Do not leave tokens claiming identity
+            // that belonged to the pre-reconciled text.
+            artifact.tokens.clear();
+            canonical.tokens.clear();
+            if !artifact
+                .source_experts
+                .iter()
+                .any(|source| source == "caller.reference")
+            {
+                artifact.source_experts.push("caller.reference".to_string());
+            }
+            if !canonical
+                .source_experts
+                .iter()
+                .any(|source| source == "caller.reference")
+            {
+                canonical
+                    .source_experts
+                    .push("caller.reference".to_string());
+            }
+            if !artifact
+                .alternatives
+                .iter()
+                .any(|item| normalized(item) == normalized(&generated))
+            {
+                artifact.alternatives.push(generated.clone());
+                canonical.alternatives.push(generated);
+            }
+        } else if !artifact
             .alternatives
             .iter()
             .any(|item| normalized(item) == normalized(reference))
-    {
-        artifact.alternatives.push(reference.to_string());
-        canonical.alternatives.push(reference.to_string());
+        {
+            artifact.alternatives.push(reference.to_string());
+            canonical.alternatives.push(reference.to_string());
+        }
     }
     artifact.validate()?;
     Ok((artifact, canonical))
@@ -286,6 +469,132 @@ pub fn project_rmvpe_f0(evidence: &PitchEvidenceV03) -> EngineResult<Vec<F0Point
     project_pitch_f0(evidence)
 }
 
+fn pitch_identity(
+    owner: &str,
+    rmvpe: Option<&PitchEvidenceV03>,
+    fcpe: Option<&PitchEvidenceV03>,
+) -> (Option<String>, Option<String>) {
+    let evidence = if owner == "fcpe" {
+        fcpe.or(rmvpe)
+    } else {
+        rmvpe.or(fcpe)
+    };
+    let manifest = evidence
+        .and_then(|evidence| evidence.model.get("manifest_sha256"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let runtime = evidence
+        .and_then(|evidence| evidence.model.get("runtime_manifest_sha256"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    (manifest, runtime)
+}
+
+fn split_f0_range_at_word_edges(
+    start: u64,
+    end: u64,
+    words: &[CanonicalWordBoundary],
+) -> Vec<(u64, u64)> {
+    let mut cuts = vec![start, end];
+    for word in words {
+        for edge in [word.range.start, word.range.end] {
+            if edge > start && edge < end {
+                cuts.push(edge);
+            }
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .filter_map(|pair| (pair[1] > pair[0]).then_some((pair[0], pair[1])))
+        .collect()
+}
+
+fn derive_f0_length_evidence(
+    curve: &[F0Point],
+    words: &[CanonicalWordBoundary],
+    source_start: u64,
+    source_duration: u64,
+    owner: &str,
+    rmvpe: Option<&PitchEvidenceV03>,
+    fcpe: Option<&PitchEvidenceV03>,
+) -> EngineResult<BoundaryEvidenceSet> {
+    let trustworthy_curve = curve
+        .iter()
+        .filter(|point| trustworthy_f0_point(point))
+        .cloned()
+        .collect::<Vec<_>>();
+    let curve = trustworthy_curve.as_slice();
+    if curve.is_empty() {
+        return Err(output_error(
+            "At least one enabled F0 expert must produce trustworthy voiced evidence before note lengths can be derived",
+        ));
+    }
+    let source_end = source_start
+        .checked_add(source_duration)
+        .ok_or_else(|| output_error("F0-derived length timeline overflows"))?;
+    let mut hops = curve
+        .windows(2)
+        .filter_map(|pair| pair[1].time.checked_sub(pair[0].time))
+        .filter(|hop| *hop > 0)
+        .collect::<Vec<_>>();
+    hops.sort_unstable();
+    let hop = hops.get(hops.len() / 2).copied().unwrap_or(10_000);
+    let max_gap = hop.saturating_mul(3).max(60_000);
+
+    let pitch_split_times = persistent_f0_shifts(curve)
+        .into_iter()
+        .map(|(time, _)| time)
+        .collect::<HashSet<_>>();
+    let mut groups = Vec::<Vec<&F0Point>>::new();
+    let mut current = Vec::<&F0Point>::new();
+    for (index, point) in curve.iter().enumerate() {
+        let gap_split = index > 0 && point.time.saturating_sub(curve[index - 1].time) > max_gap;
+        let pitch_split = pitch_split_times.contains(&point.time);
+        if (gap_split || pitch_split) && !current.is_empty() {
+            groups.push(std::mem::take(&mut current));
+        }
+        current.push(point);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    let segments = groups
+        .into_iter()
+        .filter_map(|group| {
+            let start = group[0].time.max(source_start);
+            let end = group
+                .last()
+                .map(|point| point.time.saturating_add(hop).min(source_end))
+                .unwrap_or(start);
+            (end > start).then_some((start, end))
+        })
+        .flat_map(|(start, end)| split_f0_range_at_word_edges(start, end, words))
+        .map(|(start, end)| {
+            Ok(BoundarySegmentEvidence {
+                range: crate::fusion::TimeRange::new(start, end).map_err(output_error)?,
+                fractional_midi: None,
+                boundary_decision_parameter: None,
+                presence_decision_parameter: None,
+            })
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
+    if segments.is_empty() {
+        return Err(output_error(
+            "Enabled F0 evidence did not contain a usable voiced duration",
+        ));
+    }
+    let (model_hash, runtime_identity) = pitch_identity(owner, rmvpe, fcpe);
+    Ok(BoundaryEvidenceSet {
+        source_expert: format!("{owner}.f0_segmentation"),
+        kind: BoundaryEvidenceKind::F0Derived,
+        model_hash,
+        runtime_identity,
+        segments,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn provenance(
     transcript: &TranscriptArtifactV1,
@@ -293,9 +602,10 @@ fn provenance(
     pitch: Option<&PitchEvidenceV03>,
     fcpe: Option<&PitchEvidenceV03>,
     basic_pitch: Option<&BasicPitchEvidenceV3>,
-    game: &GameEvidenceV1,
-    acoustic: &AcousticEvidenceV1,
+    boundary: &BoundaryEvidenceSet,
+    acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
+    techniques: &[TechniqueEvidenceV1],
 ) -> Vec<EvidenceProvenance> {
     let mut result = vec![
         EvidenceProvenance {
@@ -317,15 +627,28 @@ fn provenance(
             depends_on: vec![transcript.source_experts.join("+")],
         },
         EvidenceProvenance {
-            expert_id: game.model_id.clone(),
+            expert_id: boundary.source_expert.clone(),
             task: ExpertTask::NoteBoundary,
-            model_hash: Some(game.model_manifest_sha256.clone()),
-            runtime_identity: Some(game.runtime_manifest_sha256.clone()),
+            model_hash: boundary.model_hash.clone(),
+            runtime_identity: boundary.runtime_identity.clone(),
             calibration_version: None,
-            correlation_group: None,
-            depends_on: Vec::new(),
+            correlation_group: (boundary.kind == BoundaryEvidenceKind::F0Derived)
+                .then(|| "continuous-pitch-neural".to_string()),
+            depends_on: if boundary.kind == BoundaryEvidenceKind::F0Derived {
+                vec![
+                    boundary
+                        .source_expert
+                        .strip_suffix(".f0_segmentation")
+                        .unwrap_or(&boundary.source_expert)
+                        .to_string(),
+                ]
+            } else {
+                Vec::new()
+            },
         },
-        EvidenceProvenance {
+    ];
+    if let Some(acoustic) = acoustic {
+        result.push(EvidenceProvenance {
             expert_id: acoustic.algorithm.clone(),
             task: ExpertTask::Acoustic,
             model_hash: None,
@@ -333,8 +656,8 @@ fn provenance(
             calibration_version: None,
             correlation_group: None,
             depends_on: Vec::new(),
-        },
-    ];
+        });
+    }
     for (expert_id, evidence) in [("rmvpe", pitch), ("fcpe", fcpe)] {
         if let Some(evidence) = evidence {
             result.push(EvidenceProvenance {
@@ -369,23 +692,235 @@ fn provenance(
     }
     for evidence in advanced_notes {
         result.push(evidence.provenance());
-        if evidence.techniques.is_some() {
-            result.push(evidence.technique_provenance());
-        }
+    }
+    for evidence in techniques {
+        result.push(evidence.provenance.clone());
     }
     result
+}
+
+fn boundary_constraint_events(
+    constraints: &[BoundaryConstraintV1],
+    source_start: u64,
+    source_duration: u64,
+) -> EngineResult<(Vec<BoundaryAlternative>, Vec<BoundaryConstraintEvidenceV1>)> {
+    let source_end = source_start
+        .checked_add(source_duration)
+        .ok_or_else(|| output_error("constraint source timeline overflows"))?;
+    let mut result = Vec::with_capacity(constraints.len());
+    let mut phrase_starts = Vec::new();
+    for constraint in constraints {
+        let end = constraint.end()?;
+        if constraint.start < source_start || end > source_end {
+            return Err(output_error(format!(
+                "boundary constraint from {} is outside the analyzed source timeline",
+                constraint.source
+            )));
+        }
+        let level = match constraint.level {
+            BoundaryLevel::Phrase => "phrase",
+            BoundaryLevel::Word => "word",
+            BoundaryLevel::Syllable => "syllable",
+            BoundaryLevel::Phoneme => "phoneme",
+        };
+        let token = constraint.token_id.as_deref().unwrap_or("timeline");
+        let source_expert = format!("constraint.{}.{}.{}", constraint.source, level, token);
+        result.push(BoundaryAlternative {
+            source_expert: source_expert.clone(),
+            range: crate::fusion::TimeRange::new(constraint.start, end).map_err(output_error)?,
+            kind: if constraint.level == BoundaryLevel::Phrase {
+                BoundaryEvidenceKind::PhraseConstraint
+            } else {
+                BoundaryEvidenceKind::Constraint
+            },
+            fractional_midi: None,
+            source_local_score: Some(constraint.confidence),
+            hard: constraint.authority == BoundaryAuthority::Hard,
+        });
+        if constraint.level == BoundaryLevel::Phrase
+            && constraint.authority == BoundaryAuthority::Soft
+        {
+            phrase_starts.push(BoundaryConstraintEvidenceV1 {
+                source_expert,
+                kind: BoundaryConstraintKindV1::PhraseStart,
+                time: constraint.start,
+                source_local_strength: Some(constraint.confidence),
+                calibrated_confidence: None,
+                calibration_version: None,
+                correlation_group: Some(format!("constraint.{}", constraint.source)),
+                depends_on: Vec::new(),
+            });
+        }
+    }
+    Ok((result, phrase_starts))
+}
+
+fn context_boundary_constraints(
+    words: &[CanonicalWordBoundary],
+    f0_curve: &[F0Point],
+    pitch_owner: &str,
+    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    acoustic: Option<&AcousticEvidenceV1>,
+) -> Vec<BoundaryConstraintEvidenceV1> {
+    let mut constraints = Vec::new();
+
+    for word in words {
+        constraints.push(BoundaryConstraintEvidenceV1 {
+            source_expert: "forced_alignment".to_string(),
+            kind: BoundaryConstraintKindV1::WordStart,
+            time: word.range.start,
+            source_local_strength: None,
+            calibrated_confidence: None,
+            calibration_version: None,
+            correlation_group: None,
+            depends_on: Vec::new(),
+        });
+        constraints.push(BoundaryConstraintEvidenceV1 {
+            source_expert: "forced_alignment".to_string(),
+            kind: BoundaryConstraintKindV1::WordEnd,
+            time: word.range.end,
+            source_local_strength: None,
+            calibrated_confidence: None,
+            calibration_version: None,
+            correlation_group: None,
+            depends_on: Vec::new(),
+        });
+    }
+
+    let trustworthy_f0 = f0_curve
+        .iter()
+        .filter(|point| trustworthy_f0_point(point))
+        .cloned()
+        .collect::<Vec<_>>();
+    if trustworthy_f0.len() >= 2 {
+        let mut hops = trustworthy_f0
+            .windows(2)
+            .filter_map(|pair| pair[1].time.checked_sub(pair[0].time))
+            .filter(|hop| *hop > 0)
+            .collect::<Vec<_>>();
+        hops.sort_unstable();
+        let median_hop = hops.get(hops.len() / 2).copied().unwrap_or(10_000);
+        let voicing_gap = median_hop.saturating_mul(3).max(60_000);
+        for pair in trustworthy_f0.windows(2) {
+            let gap = pair[1].time.saturating_sub(pair[0].time);
+            if gap > voicing_gap {
+                constraints.push(BoundaryConstraintEvidenceV1 {
+                    source_expert: format!("{pitch_owner}_voicing_transition"),
+                    kind: BoundaryConstraintKindV1::VoicingTransition,
+                    time: pair[1].time,
+                    source_local_strength: Some(
+                        ((gap as f32 / voicing_gap as f32) - 1.0).clamp(0.0, 1.0),
+                    ),
+                    calibrated_confidence: None,
+                    calibration_version: Some("f0-transition-source-local-v1".to_string()),
+                    correlation_group: Some("continuous-pitch-neural".to_string()),
+                    depends_on: vec![pitch_owner.to_string()],
+                });
+            }
+        }
+        constraints.extend(persistent_f0_shifts(&trustworthy_f0).into_iter().map(
+            |(time, strength)| BoundaryConstraintEvidenceV1 {
+                source_expert: format!("{pitch_owner}_pitch_discontinuity"),
+                kind: BoundaryConstraintKindV1::PitchDiscontinuity,
+                time,
+                source_local_strength: Some(strength),
+                calibrated_confidence: None,
+                calibration_version: Some("f0-transition-source-local-v2".to_string()),
+                correlation_group: Some("continuous-pitch-neural".to_string()),
+                depends_on: vec![pitch_owner.to_string()],
+            },
+        ));
+    }
+
+    if let Some(basic_pitch) = basic_pitch {
+        constraints.extend(
+            basic_pitch
+                .frames
+                .iter()
+                .filter(|frame| frame.onset_activation.is_finite() && frame.onset_activation >= 0.5)
+                .map(|frame| BoundaryConstraintEvidenceV1 {
+                    source_expert: "basic_pitch".to_string(),
+                    kind: BoundaryConstraintKindV1::BasicPitchOnset,
+                    time: frame.time,
+                    source_local_strength: Some(frame.onset_activation),
+                    calibrated_confidence: None,
+                    calibration_version: Some("basic-pitch-onset-source-local-v1".to_string()),
+                    correlation_group: None,
+                    depends_on: Vec::new(),
+                }),
+        );
+    }
+
+    if let Some(acoustic) = acoustic {
+        let mut fluxes = acoustic
+            .frames
+            .iter()
+            .filter_map(|frame| frame.spectral_flux)
+            .filter(|flux| flux.is_finite() && *flux > 0.0)
+            .collect::<Vec<_>>();
+        if !fluxes.is_empty() {
+            fluxes.sort_by(f32::total_cmp);
+            let threshold_index = ((fluxes.len() - 1) * 9) / 10;
+            let threshold = fluxes[threshold_index].max(0.05);
+            constraints.extend(acoustic.frames.iter().filter_map(|frame| {
+                frame.spectral_flux.and_then(|flux| {
+                    (flux.is_finite() && flux >= threshold).then(|| BoundaryConstraintEvidenceV1 {
+                        source_expert: acoustic.algorithm.clone(),
+                        kind: BoundaryConstraintKindV1::AcousticArticulation,
+                        time: frame.start,
+                        source_local_strength: Some((flux / (threshold * 2.0)).clamp(0.0, 1.0)),
+                        calibrated_confidence: None,
+                        calibration_version: Some(
+                            "acoustic-articulation-source-local-v1".to_string(),
+                        ),
+                        correlation_group: None,
+                        depends_on: Vec::new(),
+                    })
+                })
+            }));
+        }
+    }
+
+    constraints.sort_by(|left, right| {
+        (left.time, &left.source_expert, left.kind as u8).cmp(&(
+            right.time,
+            &right.source_expert,
+            right.kind as u8,
+        ))
+    });
+    constraints.dedup_by(|left, right| {
+        left.time == right.time
+            && left.source_expert == right.source_expert
+            && left.kind == right.kind
+    });
+    constraints
 }
 
 pub struct SingingFusionStageOutput {
     pub fusion: SingingFusionEvidence,
     f0_curve: Vec<F0Point>,
+    continuous_f0_source: String,
     provenance: Vec<EvidenceProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidatePathDecisionV1 {
+    Algorithm {
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+    },
+    AiJudgment {
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+        response_digest: String,
+    },
 }
 
 pub struct SingingStagesOutput {
     pub fusion: SingingFusionEvidence,
     pub track: CanonicalSingingTrack,
     pub review_regions: Vec<SingingReviewRegion>,
+    pub decision: CandidatePathDecisionV1,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -396,12 +931,21 @@ pub fn execute_singing_fusion_stage(
     pitch_evidence: Option<&PitchEvidenceV03>,
     fcpe_evidence: Option<&PitchEvidenceV03>,
     basic_pitch_evidence: Option<&BasicPitchEvidenceV3>,
-    game: &GameEvidenceV1,
-    acoustic: &AcousticEvidenceV1,
+    game: Option<&GameEvidenceV1>,
+    acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
+    technique_evidence: &[TechniqueEvidenceV1],
+    boundary_constraints: &[BoundaryConstraintV1],
     source_start: u64,
     source_duration: u64,
+    pitch_owner: &str,
 ) -> EngineResult<SingingFusionStageOutput> {
+    let source_end = source_start
+        .checked_add(source_duration)
+        .ok_or_else(|| output_error("hard-boundary source timeline overflows"))?;
+    let hard_boundaries =
+        HardBoundarySetV1::from_constraints(boundary_constraints, source_start, source_end)
+            .map_err(output_error)?;
     let rmvpe_grid = pitch_evidence
         .map(|evidence| PitchGrid::new(evidence.start, evidence.hop, evidence.frequency_hz.len()))
         .transpose()
@@ -410,7 +954,7 @@ pub fn execute_singing_fusion_stage(
         .map(|evidence| PitchGrid::new(evidence.start, evidence.hop, evidence.frequency_hz.len()))
         .transpose()
         .map_err(output_error)?;
-    let f0_curve = pitch_evidence
+    let rmvpe_curve = pitch_evidence
         .map(project_rmvpe_f0)
         .transpose()?
         .unwrap_or_default();
@@ -418,35 +962,109 @@ pub fn execute_singing_fusion_stage(
         .map(project_pitch_f0)
         .transpose()?
         .unwrap_or_default();
-    // These conditioned experts are challengers only. Validate their complete
-    // canonical timeline before retaining correlated provenance, but never
-    // substitute their boundaries or pitch for the required GAME baseline.
+    let f0_curve = match pitch_owner {
+        "fcpe" if !fcpe_curve.is_empty() => fcpe_curve.clone(),
+        "fcpe" => {
+            return Err(output_error(
+                "FCPE is selected as the continuous F0 owner but produced no voiced evidence",
+            ));
+        }
+        "rmvpe" if !rmvpe_curve.is_empty() => rmvpe_curve.clone(),
+        "rmvpe" => {
+            return Err(output_error(
+                "RMVPE is selected as the continuous F0 owner but produced no voiced evidence",
+            ));
+        }
+        other => {
+            return Err(output_error(format!(
+                "unsupported continuous F0 owner: {other}"
+            )));
+        }
+    };
+
+    let mut boundary_challengers = Vec::new();
     for evidence in advanced_notes {
-        evidence.canonical_notes(source_start, source_duration)?;
+        for (range, midi) in evidence.canonical_notes(source_start, source_duration)? {
+            boundary_challengers.push(BoundaryAlternative {
+                source_expert: evidence.model_id.clone(),
+                range,
+                kind: BoundaryEvidenceKind::AdvancedNote,
+                fractional_midi: midi.map(f32::from),
+                source_local_score: None,
+                hard: false,
+            });
+        }
     }
-    let fusion = fuse_singing_evidence(
+    let (constraint_challengers, phrase_start_constraints) =
+        boundary_constraint_events(boundary_constraints, source_start, source_duration)?;
+    boundary_challengers.extend(constraint_challengers);
+
+    let game_boundary = game
+        .map(BoundaryEvidenceSet::from_game)
+        .transpose()
+        .map_err(output_error)?;
+    let derived_boundary = game_boundary.is_none().then(|| {
+        derive_f0_length_evidence(
+            &f0_curve,
+            words,
+            source_start,
+            source_duration,
+            pitch_owner,
+            pitch_evidence,
+            fcpe_evidence,
+        )
+    });
+    let derived_boundary = derived_boundary.transpose()?;
+    let boundary_evidence = game_boundary
+        .as_ref()
+        .or(derived_boundary.as_ref())
+        .expect("F0 boundary evidence is constructed when GAME is absent");
+
+    // Stage 3 participation is authoritative. Every available evidence source
+    // contributes onset and non-onset context to the same candidate pool.
+    let acoustic_for_fusion = acoustic;
+    let acoustic_onset_enabled = true;
+    let basic_pitch_for_fusion = basic_pitch_evidence;
+    let mut fusion = fuse_singing_evidence_with_challengers(
         words,
-        game,
-        &f0_curve,
+        boundary_evidence,
+        pitch_owner,
+        &rmvpe_curve,
         rmvpe_grid,
         &fcpe_curve,
         fcpe_grid,
-        acoustic,
-        basic_pitch_evidence,
+        acoustic_for_fusion,
+        acoustic_onset_enabled,
+        basic_pitch_for_fusion,
+        &boundary_challengers,
+        technique_evidence,
     )
     .map_err(output_error)?;
+    fusion.hard_boundaries = hard_boundaries;
+    let mut context_constraints = context_boundary_constraints(
+        words,
+        &f0_curve,
+        pitch_owner,
+        basic_pitch_for_fusion,
+        acoustic_for_fusion,
+    );
+    context_constraints.extend(phrase_start_constraints);
+    attach_boundary_constraints(&mut fusion.candidates, &context_constraints)
+        .map_err(output_error)?;
     Ok(SingingFusionStageOutput {
         fusion,
         f0_curve,
+        continuous_f0_source: pitch_owner.to_string(),
         provenance: provenance(
             transcript_artifact,
             alignment_artifact,
             pitch_evidence,
             fcpe_evidence,
-            basic_pitch_evidence,
-            game,
-            acoustic,
+            basic_pitch_for_fusion,
+            boundary_evidence,
+            acoustic_for_fusion,
             advanced_notes,
+            technique_evidence,
         ),
     })
 }
@@ -455,16 +1073,76 @@ pub fn execute_candidate_graph_stage(
     transcript: CanonicalLyrics,
     words: Vec<CanonicalWordBoundary>,
     singing: SingingFusionStageOutput,
+    mode: FusionDecisionModeV1<'_>,
 ) -> EngineResult<SingingStagesOutput> {
-    let decoded = decode_candidate_graph(&singing.fusion.candidates).map_err(output_error)?;
+    validate_candidate_pool(&singing.fusion.candidates).map_err(output_error)?;
+    // Candidate construction is complete before selector dispatch. Both modes
+    // are therefore bound to this exact, selector-independent pool identity.
+    singing
+        .fusion
+        .hard_boundaries
+        .validate()
+        .map_err(output_error)?;
+    let candidate_set_digest = crate::execution::candidate_set_digest(&singing.fusion)?;
+    let (decoded, decision) = match mode {
+        FusionDecisionModeV1::Algorithm => {
+            let decoded = decode_candidate_graph_with_boundaries(
+                &singing.fusion.candidates,
+                &singing.fusion.hard_boundaries,
+            )
+            .map_err(output_error)?;
+            let decision = CandidatePathDecisionV1::Algorithm {
+                candidate_set_digest: candidate_set_digest.clone(),
+                selected_candidate_ids: decoded
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect(),
+            };
+            (decoded, decision)
+        }
+        FusionDecisionModeV1::AiJudgment {
+            executable,
+            timeout,
+            cancellation,
+        } => {
+            let agent = crate::execution::run_fusion_agent_for_pool(
+                executable,
+                &singing.fusion,
+                timeout,
+                cancellation,
+            )?;
+            if agent.candidate_set_digest != candidate_set_digest {
+                return Err(output_error(
+                    "AI selector candidate-set identity differs from the pre-selector pool",
+                ));
+            }
+            let decision = CandidatePathDecisionV1::AiJudgment {
+                candidate_set_digest: candidate_set_digest.clone(),
+                selected_candidate_ids: agent
+                    .selected
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect(),
+                response_digest: agent.response_digest,
+            };
+            (agent.selected, decision)
+        }
+    };
     if decoded.is_empty() {
-        return Err(output_error("candidate graph selected no GAME note states"));
+        return Err(output_error("candidate graph selected no note states"));
     }
+    validate_candidate_path_with_boundaries(
+        &singing.fusion.candidates,
+        &decoded,
+        &singing.fusion.hard_boundaries,
+    )
+    .map_err(output_error)?;
     let track = build_canonical_singing_track(
         transcript,
         words,
         decoded,
         singing.f0_curve,
+        &singing.continuous_f0_source,
         HarmonyMetadata::default(),
         singing.provenance,
     )
@@ -474,6 +1152,7 @@ pub fn execute_candidate_graph_stage(
         fusion: singing.fusion,
         track,
         review_regions,
+        decision,
     })
 }
 
@@ -484,25 +1163,33 @@ pub fn build_baseline_review_regions(
     alignment_artifact: &AlignmentArtifactV1,
     words: Vec<CanonicalWordBoundary>,
     pitch_evidence: Option<&PitchEvidenceV03>,
+    fcpe_evidence: Option<&PitchEvidenceV03>,
     game: &GameEvidenceV1,
     acoustic: &AcousticEvidenceV1,
     source_start: u64,
     source_duration: u64,
+    pitch_owner: &str,
 ) -> EngineResult<Vec<SingingReviewRegion>> {
     let fusion = execute_singing_fusion_stage(
         transcript_artifact,
         alignment_artifact,
         &words,
         pitch_evidence,
+        fcpe_evidence,
         None,
-        None,
-        game,
-        acoustic,
+        Some(game),
+        Some(acoustic),
+        &[],
+        &[],
         &[],
         source_start,
         source_duration,
+        pitch_owner,
     )?;
-    Ok(execute_candidate_graph_stage(transcript, words, fusion)?.review_regions)
+    Ok(
+        execute_candidate_graph_stage(transcript, words, fusion, FusionDecisionModeV1::Algorithm)?
+            .review_regions,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,438 +1209,21 @@ pub fn execute_singing_stages(
         pitch_evidence,
         None,
         None,
-        game,
-        acoustic,
+        Some(game),
+        Some(acoustic),
+        &[],
+        &[],
         &[],
         0,
         acoustic
             .frames
             .last()
             .map_or(1, |frame| frame.start.saturating_add(acoustic.hop)),
+        "rmvpe",
     )?;
-    execute_candidate_graph_stage(transcript, words, fusion)
+    execute_candidate_graph_stage(transcript, words, fusion, FusionDecisionModeV1::Algorithm)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::*;
-    use crate::artifact::{
-        ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrameV1,
-        GameNoteEvidenceV1,
-    };
-    use crate::fingerprint::ACOUSTIC_DSP_VERSION;
-    use crate::fusion::{LyricsAuthority, SingingReviewReason, TimeRange};
-
-    fn transcript(authority: TranscriptAuthorityV1) -> TranscriptArtifactV1 {
-        let caller = authority == TranscriptAuthorityV1::CallerCanonical;
-        TranscriptArtifactV1 {
-            contract: "uta.analysis-engine.transcript".to_string(),
-            version: 1,
-            authority,
-            language: Some("en".to_string()),
-            text: "sing now".to_string(),
-            tokens: if caller {
-                vec![
-                    TranscriptTokenV1 {
-                        id: "caller-1".to_string(),
-                        text: "sing".to_string(),
-                        confidence: None,
-                    },
-                    TranscriptTokenV1 {
-                        id: "caller-2".to_string(),
-                        text: "now".to_string(),
-                        confidence: None,
-                    },
-                ]
-            } else {
-                Vec::new()
-            },
-            confidence: None,
-            source_experts: vec![if caller {
-                "caller.canonical_lyrics".to_string()
-            } else {
-                "qwen3_asr_1_7b".to_string()
-            }],
-            alternatives: Vec::new(),
-            model_sha256: (!caller).then(|| "a".repeat(64)),
-            runtime_manifest_sha256: (!caller).then(|| "b".repeat(64)),
-            backend: if caller { "caller" } else { "vulkan" }.to_string(),
-        }
-    }
-
-    fn alignment() -> AlignmentArtifactV1 {
-        AlignmentArtifactV1 {
-            contract: "uta.analysis-engine.alignment".to_string(),
-            version: 1,
-            transcript: "sing now".to_string(),
-            language: Some("en".to_string()),
-            items: vec![
-                AlignmentItemV1 {
-                    id: "word-0".to_string(),
-                    text: "sing".to_string(),
-                    level: BoundaryLevel::Word,
-                    start: 100_000,
-                    duration: 300_000,
-                    confidence: None,
-                    authority: BoundaryAuthority::Soft,
-                },
-                AlignmentItemV1 {
-                    id: "word-1".to_string(),
-                    text: "now".to_string(),
-                    level: BoundaryLevel::Word,
-                    start: 500_000,
-                    duration: 400_000,
-                    confidence: None,
-                    authority: BoundaryAuthority::Soft,
-                },
-            ],
-            source_expert: "qwen3_forced_aligner_0_6b".to_string(),
-            model_sha256: "c".repeat(64),
-            runtime_manifest_sha256: "d".repeat(64),
-            backend: "vulkan".to_string(),
-        }
-    }
-
-    fn pitch(octave_disagreement: bool) -> PitchEvidenceV03 {
-        let mut frequency_hz = vec![None; 100];
-        let mut confidence = vec![Some(0.1); 100];
-        for index in 10..40 {
-            frequency_hz[index] = Some(if octave_disagreement { 880.0 } else { 440.0 });
-            confidence[index] = Some(0.9);
-        }
-        for index in 50..90 {
-            frequency_hz[index] = Some(493.88);
-            confidence[index] = Some(0.8);
-        }
-        PitchEvidenceV03 {
-            format: "uta.pitch-evidence".to_string(),
-            format_version: "0.3.0".to_string(),
-            timebase: 1_000_000,
-            start: 0,
-            hop: 10_000,
-            frequency_hz,
-            confidence,
-            model: BTreeMap::new(),
-        }
-    }
-
-    fn game() -> GameEvidenceV1 {
-        GameEvidenceV1 {
-            schema_version: 1,
-            model_id: "game".to_string(),
-            variant: "fixture".to_string(),
-            source_asset_sha256: "e".repeat(64),
-            source_commit: "fixture".to_string(),
-            model_manifest_sha256: "f".repeat(64),
-            runtime_manifest_sha256: "1".repeat(64),
-            backend: "openvino_gpu".to_string(),
-            sample_rate: 44_100,
-            timestep_ms: 10,
-            d3pm_steps: 8,
-            estimator_note_buckets: vec![32],
-            notes: vec![
-                GameNoteEvidenceV1 {
-                    range: TimeRange::new(100_000, 400_000).unwrap(),
-                    midi: 69.25,
-                    boundary_decision_threshold: 0.2,
-                    presence_decision_threshold: 0.2,
-                },
-                GameNoteEvidenceV1 {
-                    range: TimeRange::new(500_000, 900_000).unwrap(),
-                    midi: 71.1,
-                    boundary_decision_threshold: 0.2,
-                    presence_decision_threshold: 0.2,
-                },
-            ],
-        }
-    }
-
-    fn acoustic() -> AcousticEvidenceV1 {
-        AcousticEvidenceV1 {
-            contract: ACOUSTIC_EVIDENCE_CONTRACT.to_string(),
-            version: ACOUSTIC_EVIDENCE_VERSION,
-            algorithm: ACOUSTIC_DSP_VERSION.to_string(),
-            timebase: 1_000_000,
-            start: 0,
-            hop: 10_000,
-            sample_rate: 16_000,
-            window_samples: 512,
-            semantic_audio_role: "lead_vocal".to_string(),
-            decoded_audio_sha256: "2".repeat(64),
-            frames: (0..100)
-                .map(|index| AcousticEvidenceFrameV1 {
-                    start: index * 10_000,
-                    rms: 0.2,
-                    spectral_flux: (index > 0).then_some(if index == 10 || index == 50 {
-                        0.3
-                    } else {
-                        0.01
-                    }),
-                    periodicity: 0.8,
-                    snr_db: 20.0,
-                })
-                .collect(),
-        }
-    }
-
-    fn fused_inputs(
-        octave_disagreement: bool,
-    ) -> (
-        TranscriptArtifactV1,
-        CanonicalLyrics,
-        AlignmentArtifactV1,
-        Vec<CanonicalWordBoundary>,
-        PitchEvidenceV03,
-    ) {
-        let (transcript, lyrics) =
-            fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::Generated)], None).unwrap();
-        let (alignment, words) =
-            fuse_alignment_stage(&lyrics, &[alignment()], 0, 1_000_000).unwrap();
-        (
-            transcript,
-            lyrics,
-            alignment,
-            words,
-            pitch(octave_disagreement),
-        )
-    }
-
-    #[test]
-    fn caller_authority_is_distinct_from_unknown_model_confidence() {
-        let (artifact, canonical) =
-            fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None)
-                .unwrap();
-        assert_eq!(artifact.confidence, None);
-        assert_eq!(canonical.confidence, None);
-        assert_eq!(canonical.authority, LyricsAuthority::CallerCanonical);
-        assert!(artifact.model_sha256.is_none());
-        assert_eq!(canonical.tokens[0].id.as_deref(), Some("caller-1"));
-    }
-
-    #[test]
-    fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
-        let (artifact, canonical) = fuse_transcript_stage(
-            &[transcript(TranscriptAuthorityV1::Generated)],
-            Some("reference only"),
-        )
-        .unwrap();
-        assert_eq!(canonical.text, "sing now");
-        assert_eq!(canonical.confidence, None);
-        assert!(canonical.tokens.is_empty());
-        assert!(artifact.tokens.is_empty());
-        assert_eq!(canonical.alternatives, ["reference only"]);
-        assert_eq!(artifact.model_sha256, Some("a".repeat(64)));
-    }
-
-    #[test]
-    fn alignment_unknown_confidence_is_preserved_and_overlap_fails_closed() {
-        let (_, lyrics) =
-            fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::Generated)], None).unwrap();
-        let (_, words) = fuse_alignment_stage(&lyrics, &[alignment()], 0, 1_000_000).unwrap();
-        assert_eq!(words[0].confidence, None);
-        assert_eq!(words[0].word_id, "word-0");
-        let mut invalid = alignment();
-        invalid.items[1].start = 300_000;
-        assert!(fuse_alignment_stage(&lyrics, &[invalid], 0, 1_000_000).is_err());
-    }
-
-    #[test]
-    fn rmvpe_projection_keeps_voiced_f0_and_unvoiced_gaps() {
-        let evidence = PitchEvidenceV03 {
-            format: "uta.pitch-evidence".to_string(),
-            format_version: "0.3.0".to_string(),
-            timebase: 1_000_000,
-            start: 2_000_000,
-            hop: 10_000,
-            frequency_hz: vec![Some(439.7), None, Some(440.1)],
-            confidence: vec![Some(0.9), Some(0.1), Some(0.8)],
-            model: BTreeMap::new(),
-        };
-        let points = project_rmvpe_f0(&evidence).unwrap();
-        assert_eq!(points.len(), 2);
-        assert_eq!(points[0].time, 2_000_000);
-        assert_eq!(points[1].time, 2_020_000);
-        assert_eq!(points[0].confidence, Some(0.9));
-    }
-
-    #[test]
-    fn full_typed_pipeline_is_deterministic_non_overlapping_and_uses_acoustic() {
-        let (transcript, lyrics, alignment, words, pitch) = fused_inputs(false);
-        let run = || {
-            execute_singing_stages(
-                &transcript,
-                lyrics.clone(),
-                &alignment,
-                words.clone(),
-                Some(&pitch),
-                &game(),
-                &acoustic(),
-            )
-            .unwrap()
-        };
-        let first = run();
-        let second = run();
-        assert_eq!(first.track, second.track);
-        assert_eq!(first.track.notes.len(), 2);
-        assert!(
-            first.review_regions.is_empty(),
-            "unknown confidence alone must not turn every clean note into a review region"
-        );
-        assert!(
-            first
-                .track
-                .notes
-                .windows(2)
-                .all(|pair| pair[0].range.end <= pair[1].range.start)
-        );
-        let note = &first.track.notes[0];
-        assert_eq!(note.midi_note, 69);
-        assert_eq!(note.evidence.game_fractional_midi, 69.25);
-        assert_eq!(note.confidence, None);
-        assert_eq!(note.evidence.rmvpe_voiced_ratio, Some(1.0));
-        assert!(note.evidence.rmvpe_pitch_mad_cents.unwrap().abs() < 0.001);
-        assert_eq!(
-            note.evidence
-                .acoustic
-                .as_ref()
-                .and_then(|features| features.onset_supported),
-            Some(true)
-        );
-        assert_eq!(note.center_pitch_hz, 440.0 * 2.0_f32.powf(0.25 / 12.0));
-        assert!((note.center_offset_cents - 25.0).abs() < 0.001);
-        assert!(!note.f0_curve.is_empty());
-    }
-
-    #[test]
-    fn sparse_rmvpe_coverage_is_reviewed_without_claiming_pitch_disagreement() {
-        let (transcript, lyrics, alignment, words, mut pitch) = fused_inputs(false);
-        for index in 11..40 {
-            pitch.frequency_hz[index] = None;
-        }
-        let output = execute_singing_stages(
-            &transcript,
-            lyrics,
-            &alignment,
-            words,
-            Some(&pitch),
-            &game(),
-            &acoustic(),
-        )
-        .unwrap();
-        let note = &output.track.notes[0];
-        assert!(note.uncertain);
-        assert!((note.evidence.rmvpe_voiced_ratio.unwrap() - (1.0 / 30.0)).abs() < 1.0e-6);
-        assert!(output.review_regions.iter().any(|region| {
-            region
-                .reasons
-                .contains(&SingingReviewReason::LowPitchCoverage)
-                && !region
-                    .reasons
-                    .contains(&SingingReviewReason::PitchDisagreement)
-        }));
-    }
-
-    #[test]
-    fn measured_boundary_disagreement_creates_review_without_fake_probability() {
-        let (transcript, lyrics, alignment, words, pitch) = fused_inputs(false);
-        let mut acoustic = acoustic();
-        for frame in &mut acoustic.frames {
-            frame.spectral_flux = (frame.start > 0).then_some(0.01);
-        }
-        let output = execute_singing_stages(
-            &transcript,
-            lyrics,
-            &alignment,
-            words,
-            Some(&pitch),
-            &game(),
-            &acoustic,
-        )
-        .unwrap();
-        assert_eq!(
-            output.track.notes[0]
-                .evidence
-                .acoustic
-                .as_ref()
-                .and_then(|features| features.onset_supported),
-            Some(false)
-        );
-        assert!(output.review_regions.iter().any(|region| {
-            region
-                .reasons
-                .contains(&SingingReviewReason::BoundaryDisagreement)
-                && region.confidence.is_none()
-        }));
-    }
-
-    #[test]
-    fn octave_disagreement_is_reviewed_without_quantizing_rmvpe_to_a_target() {
-        let (transcript, lyrics, alignment, words, pitch) = fused_inputs(true);
-        let output = execute_singing_stages(
-            &transcript,
-            lyrics,
-            &alignment,
-            words,
-            Some(&pitch),
-            &game(),
-            &acoustic(),
-        )
-        .unwrap();
-        assert_eq!(output.track.notes[0].midi_note, 69);
-        assert_eq!(output.track.notes[0].alternatives[0].center_hz, 880.0);
-        assert!(
-            output
-                .review_regions
-                .iter()
-                .any(|region| { region.reasons.contains(&SingingReviewReason::OctaveRisk) })
-        );
-    }
-
-    #[test]
-    fn missing_game_and_non_finite_pitch_fail_closed() {
-        let (transcript, lyrics, alignment, words, mut pitch) = fused_inputs(false);
-        let mut missing = game();
-        missing.notes.clear();
-        assert!(
-            execute_singing_stages(
-                &transcript,
-                lyrics.clone(),
-                &alignment,
-                words.clone(),
-                Some(&pitch),
-                &missing,
-                &acoustic(),
-            )
-            .is_err()
-        );
-        pitch.frequency_hz[10] = Some(f64::NAN);
-        assert!(
-            execute_singing_stages(
-                &transcript,
-                lyrics.clone(),
-                &alignment,
-                words.clone(),
-                Some(&pitch),
-                &game(),
-                &acoustic(),
-            )
-            .is_err()
-        );
-        let mut malformed_game = game();
-        malformed_game.notes[0].midi = f32::NAN;
-        assert!(
-            execute_singing_stages(
-                &transcript,
-                lyrics,
-                &alignment,
-                words,
-                None,
-                &malformed_game,
-                &acoustic(),
-            )
-            .is_err()
-        );
-    }
-}
+#[path = "candidate_pipeline_tests.rs"]
+mod tests;

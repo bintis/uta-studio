@@ -56,8 +56,8 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         .ok_or_else(invalid_usage)?;
     if matches!(command, "help" | "--help" | "-h") {
         println!(
-            "uta-runtime <list|show|status|paths|plan|setup|install|import|verify|repair|reinstall|remove|doctor|smoke|resolve>\n\
-             resources are positional kind:id values; resolve accepts --backend; mutations require --yes"
+            "uta-runtime <list|show|status|paths|plan|setup|install|import|verify|repair|reinstall|remove|doctor|smoke|resolve|configure-tool|clear-tool>\n\
+             resources are positional kind:id values; resolve accepts models or tools; mutations require --yes"
         );
         return Ok(0);
     }
@@ -201,6 +201,45 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
                     .map_err(CliError::from)?,
             )?
         }
+        "configure-tool" => {
+            let _options = confirmed_mutation_options(&arguments)?;
+            let resource = exactly_one_resource(&arguments)?;
+            if resource.kind != ResourceKind::Tool {
+                return Err(CliError::from(
+                    RuntimeManagerError::new(
+                        "invalid_resource",
+                        "configure-tool accepts one tool resource",
+                    )
+                    .with_resource(resource),
+                ));
+            }
+            let executable = PathBuf::from(required_option(&arguments, "--path")?);
+            print_operation_started(output, command, std::slice::from_ref(&resource))?;
+            serde_json::to_value(
+                manager
+                    .configure_external_tool(&resource, &executable)
+                    .map_err(CliError::from)?,
+            )?
+        }
+        "clear-tool" => {
+            let _options = confirmed_mutation_options(&arguments)?;
+            let resource = exactly_one_resource(&arguments)?;
+            if resource.kind != ResourceKind::Tool {
+                return Err(CliError::from(
+                    RuntimeManagerError::new(
+                        "invalid_resource",
+                        "clear-tool accepts one tool resource",
+                    )
+                    .with_resource(resource),
+                ));
+            }
+            print_operation_started(output, command, std::slice::from_ref(&resource))?;
+            serde_json::to_value(
+                manager
+                    .clear_external_tool(&resource)
+                    .map_err(CliError::from)?,
+            )?
+        }
         "doctor" => serde_json::to_value(manager.doctor())?,
         "smoke" => {
             let resource = exactly_one_resource(&arguments)?;
@@ -208,33 +247,42 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         }
         "resolve" => {
             let resource = exactly_one_resource(&arguments)?;
-            if resource.kind != ResourceKind::Model {
-                return Err(CliError::from(
-                    RuntimeManagerError::new(
-                        "invalid_resource",
-                        "resolve accepts model resources only",
-                    )
-                    .with_resource(resource),
-                ));
+            match resource.kind {
+                ResourceKind::Model => {
+                    let resolved = manager
+                        .resolve_model_with_backend(&resource.id, policy, requested_backend)
+                        .map_err(CliError::from)?;
+                    serde_json::to_value(ResolvedIdentity {
+                        resource,
+                        generation: resolved.generation,
+                        content_digest: resolved.model_content_digest,
+                        model_recipe_digest: resolved.model_recipe_digest,
+                        runtime: resolved.runtime_id,
+                        runtime_generation: resolved.runtime_generation,
+                        runtime_content_digest: resolved.runtime_content_digest,
+                        runtime_recipe_digest: resolved.runtime_recipe_digest,
+                        runtime_executable: resolved.runtime_executable,
+                        backend: resolved.backend,
+                        policy,
+                        validation_state: resolved.validation_state,
+                        readiness_reasons: Vec::new(),
+                    })?
+                }
+                ResourceKind::Tool => serde_json::to_value(
+                    manager
+                        .resolve_tool(&resource.id, policy)
+                        .map_err(CliError::from)?,
+                )?,
+                ResourceKind::Runtime | ResourceKind::Bundle => {
+                    return Err(CliError::from(
+                        RuntimeManagerError::new(
+                            "invalid_resource",
+                            "resolve accepts model or tool resources",
+                        )
+                        .with_resource(resource),
+                    ));
+                }
             }
-            let resolved = manager
-                .resolve_model_with_backend(&resource.id, policy, requested_backend)
-                .map_err(CliError::from)?;
-            serde_json::to_value(ResolvedIdentity {
-                resource,
-                generation: resolved.generation,
-                content_digest: resolved.model_content_digest,
-                model_recipe_digest: resolved.model_recipe_digest,
-                runtime: resolved.runtime_id,
-                runtime_generation: resolved.runtime_generation,
-                runtime_content_digest: resolved.runtime_content_digest,
-                runtime_recipe_digest: resolved.runtime_recipe_digest,
-                runtime_executable: resolved.runtime_executable,
-                backend: resolved.backend,
-                policy,
-                validation_state: resolved.validation_state,
-                readiness_reasons: Vec::new(),
-            })?
         }
         _ => return Err(invalid_usage()),
     };
@@ -344,6 +392,7 @@ fn option_takes_value(argument: &str) -> bool {
             | "--requirements"
             | "--from"
             | "--source"
+            | "--path"
             | "--accept-license"
     )
 }
@@ -557,6 +606,8 @@ fn exit_code_for_error(code: &str) -> i32 {
         "resource_corrupt" | "integrity_mismatch" | "source_identity_mismatch" => 11,
         "resource_unvalidated"
         | "no_validated_backend"
+        | "tool_protocol_mismatch"
+        | "tool_unusable"
         | "runtime_missing"
         | "worker_capability_missing"
         | "unsupported_platform" => 12,

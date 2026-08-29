@@ -1,7 +1,11 @@
-use std::io::Write;
-use std::os::unix::process::CommandExt;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +20,13 @@ const ASR_EXPLICIT_LANGUAGE_HINT_POLICY: &str = "reject";
 const ASR_LANGUAGE_EVIDENCE_SOURCE: &str = "runtime_detected";
 const ASR_LONG_INPUT_POLICY: &str = "qwen-asr-windowed-90s-v1";
 const ASR_WINDOW_MAX_SECONDS: f64 = 90.0;
+// The pinned qwen3_asr decode budget is a fixed per-call generation cap, not a
+// caller-tunable flag (`transcribe-cli --help` exposes no max-tokens option).
+// A dense-text window (e.g. compact CJK lyrics) can exhaust that budget before
+// end-of-stream. Recover deterministically by halving the offending window and
+// retrying, bounded so a pathological window cannot retry forever.
+const ASR_WINDOW_MIN_SECONDS: f64 = 10.0;
+const ASR_MAX_SPLIT_DEPTH: u32 = 4;
 const ALIGN_TEXT_NORMALIZATION_PROFILE: &str = "qwen-align-text-preserve-v1";
 const ALIGN_LANGUAGE_NORMALIZATION_PROFILE: &str = "qwen-align-language-v1";
 const ALIGN_SEMANTICS_PROFILE: &str = "qwen-align-token-word-80ms-v1";
@@ -24,6 +35,8 @@ const ALIGN_WINDOW_TARGET_SECONDS: f64 = 110.0;
 const ALIGN_WINDOW_MAX_SECONDS: f64 = 140.0;
 const ALIGN_TIMESTAMP_TICK_SECONDS: f64 = 0.08;
 const ALIGN_CONTEXT_UNITS: usize = 3;
+const MAX_ENGINE_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+const ENGINE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ASR_RUNTIME_ARGS: &[&str] = &[
     "--backend",
     "vulkan",
@@ -252,28 +265,290 @@ fn model_path(kind: WorkerKind, config: &serde_json::Value) -> Result<PathBuf, S
     Ok(path)
 }
 
+fn read_bounded_engine_pipe(
+    mut pipe: impl Read,
+    total: Arc<AtomicUsize>,
+    oversized: Arc<AtomicBool>,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = match pipe.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let previous = total.fetch_add(count, Ordering::SeqCst);
+        let retained = MAX_ENGINE_OUTPUT_BYTES.saturating_sub(previous).min(count);
+        bytes.extend_from_slice(&buffer[..retained]);
+        if retained < count {
+            oversized.store(true, Ordering::SeqCst);
+            break;
+        }
+    }
+    bytes
+}
+
+/// Owns the platform process-tree boundary for one pinned-engine invocation.
+/// Unix keeps the fresh process-group identity the engine was spawned as
+/// leader of; Windows owns a kill-on-close Job Object the engine was
+/// assigned to before it ever ran user code. Either way, terminating this
+/// guard closes the whole tree — including a descendant the engine spawned
+/// and left running — not just the direct child.
+struct ProcessTreeGuard {
+    #[cfg(unix)]
+    process_group: Option<i32>,
+    #[cfg(windows)]
+    job: Option<windows_sys::Win32::Foundation::HANDLE>,
+}
+
+impl ProcessTreeGuard {
+    fn attach(child: &std::process::Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
+            };
+
+            // SAFETY: all pointers refer to live local values for the
+            // duration of each Win32 call; ownership of the returned handle
+            // is retained by this guard and released exactly once in Drop.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return Err(format!(
+                        "could not create pinned Qwen engine job object: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(limits).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(format!(
+                        "could not configure pinned Qwen engine job object: {error}"
+                    ));
+                }
+                if AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(format!(
+                        "could not assign pinned Qwen engine to its job object: {error}"
+                    ));
+                }
+                return Ok(Self { job: Some(job) });
+            }
+        }
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                process_group: Some(child.id() as i32),
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    fn terminate(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group.take() {
+            // SAFETY: the pinned runtime is spawned as leader of this fresh
+            // process group.
+            unsafe {
+                libc::kill(-process_group, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            // SAFETY: this guard uniquely owns the job object handle.
+            // Closing it terminates every process assigned under
+            // kill-on-close, including any descendant the engine spawned.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+            }
+        }
+    }
+}
+
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+/// The engine is created suspended on Windows so it cannot spawn an
+/// uncontained descendant before job-object assignment. Resume every thread
+/// belonging to the new process (normally just its primary thread) once the
+/// guard is attached.
+#[cfg(windows)]
+fn resume_suspended_engine(child: &std::process::Child) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: the snapshot handle and every thread handle opened from it are
+    // closed on every exit path below.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "could not snapshot threads to resume the pinned Qwen engine: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..THREADENTRY32::default()
+        };
+        let mut found = false;
+        let mut has_entry = Thread32First(snapshot, std::ptr::addr_of_mut!(entry)) != 0;
+        while has_entry {
+            if entry.th32OwnerProcessID == child.id() {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if thread.is_null() {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(snapshot);
+                    return Err(format!(
+                        "could not open the pinned Qwen engine's suspended thread: {error}"
+                    ));
+                }
+                let resumed = ResumeThread(thread);
+                let resume_error = (resumed == u32::MAX).then(std::io::Error::last_os_error);
+                CloseHandle(thread);
+                if let Some(error) = resume_error {
+                    CloseHandle(snapshot);
+                    return Err(format!(
+                        "could not resume the pinned Qwen engine's suspended thread: {error}"
+                    ));
+                }
+                found = true;
+            }
+            has_entry = Thread32Next(snapshot, std::ptr::addr_of_mut!(entry)) != 0;
+        }
+        CloseHandle(snapshot);
+        if !found {
+            return Err("pinned Qwen engine's suspended primary thread was not found".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn run_engine(command: &mut Command) -> Result<Output, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // SAFETY: this closure runs in the child after fork and only calls the
-    // async-signal-safe prctl syscall. It ensures supervisor cancellation or a
-    // worker crash cannot orphan a GPU engine process.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+        // SAFETY: this closure runs in the child after fork and only calls
+        // the async-signal-safe prctl syscall. It ensures supervisor
+        // cancellation or a worker crash cannot orphan a GPU engine process.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
-    let output = command
-        .output()
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Job-object assignment happens after spawn but before this process
+        // can run any of its own code, so a suspended start is required: an
+        // engine that starts running (and possibly spawns a descendant)
+        // before assignment could leave that descendant outside the job's
+        // kill-on-close containment.
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    }
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("could not start pinned Qwen engine: {error}"))?;
-    if output.stdout.len() + output.stderr.len() > 16 * 1024 * 1024 {
+    let mut process_tree = match ProcessTreeGuard::attach(&child) {
+        Ok(process_tree) => process_tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not supervise pinned Qwen engine: {error}"));
+        }
+    };
+    #[cfg(windows)]
+    if let Err(error) = resume_suspended_engine(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "pinned Qwen engine stdout unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "pinned Qwen engine stderr unavailable".to_string())?;
+    let total = Arc::new(AtomicUsize::new(0));
+    let oversized = Arc::new(AtomicBool::new(false));
+    let stdout_total = Arc::clone(&total);
+    let stdout_oversized = Arc::clone(&oversized);
+    let stdout_reader = std::thread::spawn(move || {
+        read_bounded_engine_pipe(stdout, stdout_total, stdout_oversized)
+    });
+    let stderr_total = Arc::clone(&total);
+    let stderr_oversized = Arc::clone(&oversized);
+    let stderr_reader = std::thread::spawn(move || {
+        read_bounded_engine_pipe(stderr, stderr_total, stderr_oversized)
+    });
+
+    let status = loop {
+        if oversized.load(Ordering::SeqCst) {
+            process_tree.terminate();
+            break child
+                .wait()
+                .map_err(|error| format!("pinned Qwen engine wait failed: {error}"))?;
+        }
+        match child
+            .try_wait()
+            .map_err(|error| format!("pinned Qwen engine wait failed: {error}"))?
+        {
+            Some(status) => {
+                process_tree.terminate();
+                break status;
+            }
+            None => std::thread::sleep(ENGINE_POLL_INTERVAL),
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "pinned Qwen engine stdout reader failed".to_string())?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "pinned Qwen engine stderr reader failed".to_string())?;
+    if oversized.load(Ordering::SeqCst) {
         return Err("Qwen engine log exceeded the bounded capture limit".to_string());
     }
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -306,11 +581,12 @@ pub fn run(
     audio: &Path,
     output_dir: &Path,
     config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     let model = model_path(kind, config)?;
     match kind {
-        WorkerKind::Asr => run_asr(runtime, &model, audio, output_dir, config),
-        WorkerKind::Align => run_align(runtime, &model, audio, output_dir, config),
+        WorkerKind::Asr => run_asr(runtime, &model, audio, output_dir, config, progress),
+        WorkerKind::Align => run_align(runtime, &model, audio, output_dir, config, progress),
     }
 }
 
@@ -449,12 +725,98 @@ fn execute_asr_window(
     result
 }
 
+/// The pinned qwen3_asr decode loop reports this exact family of message when
+/// it hits its fixed generation cap before end-of-stream (verified against a
+/// captured production failure). This is a stable, specific two-phrase match,
+/// not a guess: both phrases must appear together.
+fn is_generation_budget_truncation(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("output truncated") && lower.contains("generation budget")
+}
+
+/// Deterministically halve `[start, end)` for a truncation retry, or return
+/// `None` when policy bounds (minimum window width, maximum split depth)
+/// forbid another split. Pure and independent of I/O so the bound is testable
+/// without a real engine invocation.
+fn asr_split_midpoint(start: f64, end: f64, depth: u32) -> Option<f64> {
+    let half = (end - start) / 2.0;
+    if depth >= ASR_MAX_SPLIT_DEPTH || half < ASR_WINDOW_MIN_SECONDS {
+        return None;
+    }
+    Some(start + half)
+}
+
+/// Transcribe `[start, end)`, and on a detected generation-budget truncation,
+/// deterministically split the window and retry each half. Every leaf window
+/// that returns `Ok` is appended to `out` in left-to-right order, so the
+/// concatenation of `out` covers `[start, end)` exactly once with no gaps,
+/// overlaps, or duplication. `slice_index` is shared across the whole
+/// recursion so every sliced file gets a distinct name.
+#[allow(clippy::too_many_arguments)]
+fn run_asr_window_recursive(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    start: f64,
+    end: f64,
+    depth: u32,
+    slice_index: &mut usize,
+    out: &mut Vec<(f64, f64, String, String)>,
+) -> Result<(), String> {
+    let window = audio::slice_wav(audio, output_dir, *slice_index, start, end - start)?;
+    let raw = output_dir.join(format!("qwen-asr-transcript-retry-{:03}.txt", *slice_index));
+    *slice_index += 1;
+    let result = execute_asr_window(runtime, model, &window, &raw);
+    let _ = std::fs::remove_file(&window);
+    match result {
+        Ok((language, text)) => {
+            out.push((start, end, language, text));
+            Ok(())
+        }
+        Err(message) if is_generation_budget_truncation(&message) => {
+            match asr_split_midpoint(start, end, depth) {
+                Some(mid) => {
+                    run_asr_window_recursive(
+                        runtime,
+                        model,
+                        audio,
+                        output_dir,
+                        start,
+                        mid,
+                        depth + 1,
+                        slice_index,
+                        out,
+                    )?;
+                    run_asr_window_recursive(
+                        runtime,
+                        model,
+                        audio,
+                        output_dir,
+                        mid,
+                        end,
+                        depth + 1,
+                        slice_index,
+                        out,
+                    )
+                }
+                None => Err(format!(
+                    "Qwen ASR window [{start:.3}s, {end:.3}s) exceeded the generation budget and \
+                 could not be split further within policy bounds: {message}"
+                )),
+            }
+        }
+        Err(message) => Err(message),
+    }
+}
+
 fn run_asr(
     runtime: &ValidatedRuntime,
     model: &Path,
     audio: &Path,
     output_dir: &Path,
     config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     validate_asr_language_policy(config)?;
     let destination = output_dir.join("qwen-asr-transcript-evidence.json");
@@ -463,6 +825,11 @@ fn run_asr(
     let mut segments = Vec::with_capacity(plans.len());
     let mut texts = Vec::with_capacity(plans.len());
     let mut language_weights = std::collections::BTreeMap::<String, usize>::new();
+    // Progress is real audio-time coverage, not window count: a truncation
+    // retry can split one planned window into several, so the eventual
+    // window count is not known in advance and must never be guessed at.
+    let total_progress_units = (source_duration_seconds * 1000.0).round().max(1.0) as u64;
+    let mut slice_index = plans.len();
     for (index, (start, end)) in plans.iter().copied().enumerate() {
         let window = if plans.len() == 1 {
             audio.to_path_buf()
@@ -474,17 +841,71 @@ fn run_asr(
         if plans.len() > 1 {
             let _ = std::fs::remove_file(&window);
         }
-        let (language, text) = result?;
-        let text_characters = compact_character_count(&text);
-        *language_weights.entry(language.clone()).or_default() += text_characters;
-        texts.push(text);
-        segments.push(AsrSegmentEvidence {
-            index,
-            audio_start_seconds: start,
-            audio_end_seconds: end,
-            detected_language: language,
-            text_characters,
-        });
+        let mut window_results = Vec::with_capacity(1);
+        match result {
+            Ok((language, text)) => window_results.push((start, end, language, text)),
+            Err(message) if is_generation_budget_truncation(&message) => {
+                // This exact window already truncated once; retrying it
+                // unchanged against a deterministic engine would only
+                // truncate again, so split immediately instead of repeating
+                // the failed attempt.
+                match asr_split_midpoint(start, end, 0) {
+                    Some(mid) => {
+                        run_asr_window_recursive(
+                            runtime,
+                            model,
+                            audio,
+                            output_dir,
+                            start,
+                            mid,
+                            1,
+                            &mut slice_index,
+                            &mut window_results,
+                        )?;
+                        run_asr_window_recursive(
+                            runtime,
+                            model,
+                            audio,
+                            output_dir,
+                            mid,
+                            end,
+                            1,
+                            &mut slice_index,
+                            &mut window_results,
+                        )?;
+                    }
+                    None => {
+                        return Err(format!(
+                            "Qwen ASR window [{start:.3}s, {end:.3}s) exceeded the generation \
+                             budget and could not be split further within policy bounds: \
+                             {message}"
+                        ));
+                    }
+                }
+            }
+            Err(message) => return Err(message),
+        }
+        for (window_start, window_end, language, text) in window_results {
+            let completed_units = ((window_end.min(source_duration_seconds) * 1000.0).round()
+                as u64)
+                .min(total_progress_units);
+            progress(
+                completed_units,
+                total_progress_units,
+                "Running pinned Qwen ASR windows",
+            )?;
+            let text_characters = compact_character_count(&text);
+            *language_weights.entry(language.clone()).or_default() += text_characters;
+            texts.push(text);
+            let segment_index = segments.len();
+            segments.push(AsrSegmentEvidence {
+                index: segment_index,
+                audio_start_seconds: window_start,
+                audio_end_seconds: window_end,
+                detected_language: language,
+                text_characters,
+            });
+        }
     }
     let text = texts.join(" ");
     let language = language_weights
@@ -528,8 +949,16 @@ struct AlignmentSegmentPlan {
     target_unit_end: usize,
 }
 
-fn alignment_text_units(transcript: &str) -> Vec<&str> {
-    transcript.split_whitespace().collect()
+fn alignment_text_units(transcript: &str) -> Vec<String> {
+    let whitespace_units = transcript.split_whitespace().collect::<Vec<_>>();
+    if whitespace_units.len() > 1 {
+        return whitespace_units.into_iter().map(str::to_string).collect();
+    }
+    transcript
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .map(|character| character.to_string())
+        .collect()
 }
 
 fn tick_floor(seconds: f64) -> f64 {
@@ -539,16 +968,20 @@ fn tick_floor(seconds: f64) -> f64 {
 fn plan_alignment_segments(
     source_duration_seconds: f64,
     text_unit_count: usize,
+    window_target_seconds: f64,
 ) -> Result<Vec<AlignmentSegmentPlan>, String> {
     if !source_duration_seconds.is_finite() || source_duration_seconds <= 0.0 {
         return Err("Qwen alignment source duration is invalid".to_string());
     }
-    let segment_count = (source_duration_seconds / ALIGN_WINDOW_TARGET_SECONDS)
+    if !window_target_seconds.is_finite() || window_target_seconds <= 0.0 {
+        return Err("Qwen alignment window target is invalid".to_string());
+    }
+    let segment_count = (source_duration_seconds / window_target_seconds)
         .ceil()
         .max(1.0) as usize;
     if segment_count > 1 && text_unit_count < segment_count {
         return Err(format!(
-            "Qwen long-form alignment requires at least {segment_count} whitespace-delimited lyric units"
+            "Qwen long-form alignment requires at least {segment_count} lyric units"
         ));
     }
     let owner_seconds = source_duration_seconds / segment_count as f64;
@@ -630,6 +1063,48 @@ fn target_words_from_context(
     Ok(selected)
 }
 
+/// The two windows either side of a long-form seam are independently measured
+/// against overlapping audio, so their boundary words can disagree by a few
+/// ticks. Reconcile only the exact pair of words touching the seam, and only
+/// when a single deterministic tick-aligned point exists that keeps both
+/// words positive-duration and falls inside audio both windows actually
+/// measured. Otherwise leave the words untouched and fail closed.
+fn reconcile_alignment_seam(
+    previous_plan: &AlignmentSegmentPlan,
+    next_plan: &AlignmentSegmentPlan,
+    previous_word: &mut AlignmentWord,
+    next_word: &mut AlignmentWord,
+) -> Result<(), String> {
+    const EPSILON: f64 = 1e-6;
+    if next_word.start >= previous_word.end {
+        return Ok(());
+    }
+    let overlap_ticks =
+        ((previous_word.end - next_word.start) / ALIGN_TIMESTAMP_TICK_SECONDS).round() as i64;
+    let split_ticks = overlap_ticks.max(0) / 2;
+    let seam = next_word.start + split_ticks as f64 * ALIGN_TIMESTAMP_TICK_SECONDS;
+    let window_lower = previous_plan
+        .audio_start_seconds
+        .max(next_plan.audio_start_seconds);
+    let window_upper = previous_plan
+        .audio_end_seconds
+        .min(next_plan.audio_end_seconds);
+    if seam - previous_word.start > EPSILON
+        && next_word.end - seam > EPSILON
+        && seam >= window_lower - EPSILON
+        && seam <= window_upper + EPSILON
+    {
+        previous_word.end = seam;
+        next_word.start = seam;
+        return Ok(());
+    }
+    Err(
+        "Qwen long-form alignment windows produced overlapping timing that could not be \
+         reconciled at the window seam"
+            .to_string(),
+    )
+}
+
 fn execute_alignment_window(
     runtime: &ValidatedRuntime,
     model: &Path,
@@ -661,18 +1136,99 @@ fn execute_alignment_window(
     Ok(raw_alignment.words)
 }
 
+/// The pinned aligner is deterministic for a fixed audio/text/window-plan
+/// input, so retrying an *unmodified* failing window plan against unchanged
+/// audio bytes reproduces the identical failure (confirmed against a real
+/// production song: identical window plan failed identically on every
+/// retry). What genuinely varies run to run is the upstream GPU separation
+/// stage: repeated real production runs of the same source measured ~0.14%
+/// of PCM samples differing by a few least-significant bits (real GPU
+/// floating-point non-associativity in the separation compute), and for at
+/// least one real seam that sits on a genuine ambiguity (audio spanning a
+/// verbatim-repeated lyric block), that tiny separation-stage difference was
+/// enough to flip the aligner's measurement from clean to badly
+/// inconsistent. A retry therefore only has a real chance of succeeding if
+/// it changes what the aligner actually sees: each retry shrinks the
+/// window-count target, so windows are re-planned with different text/audio
+/// boundaries and the model gets genuinely different local context, not a
+/// bit-identical replay. This still re-measures for real and never
+/// fabricates a result; every invariant (text, ordering, non-overlap) is
+/// enforced identically regardless of which window plan produced it.
+const ALIGN_SEAM_RETRY_ATTEMPTS: u32 = 3;
+
+/// Halved per retry attempt (110s -> 55s -> 27.5s), each roughly doubling the
+/// window count so the seam under test is very unlikely to land on the exact
+/// same text/audio boundary as the previous attempt.
+fn align_window_target_seconds(attempt: u32) -> f64 {
+    ALIGN_WINDOW_TARGET_SECONDS / 2f64.powi(attempt as i32)
+}
+
 fn run_align(
     runtime: &ValidatedRuntime,
     model: &Path,
     audio: &Path,
     output_dir: &Path,
     config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let mut last_error = String::new();
+    for attempt in 0..ALIGN_SEAM_RETRY_ATTEMPTS {
+        // Each attempt's real per-window progress is buffered rather than
+        // forwarded live: a discarded (failed) attempt must never surface
+        // progress that a subsequent attempt would then regress behind, and
+        // the caller's monotonic-progress contract forbids that. Once an
+        // attempt succeeds, its buffered sequence — the exact real
+        // completions that produced the result — is replayed in order.
+        let mut buffered: Vec<(u64, u64, &'static str)> = Vec::new();
+        let mut buffer_progress = |completed: u64, total: u64, message: &'static str| {
+            buffered.push((completed, total, message));
+            Ok(())
+        };
+        match run_align_once(
+            runtime,
+            model,
+            audio,
+            output_dir,
+            config,
+            align_window_target_seconds(attempt),
+            &mut buffer_progress,
+        ) {
+            Ok(destination) => {
+                for (completed, total, message) in buffered {
+                    progress(completed, total, message)?;
+                }
+                return Ok(destination);
+            }
+            Err(error) if error.contains("could not be reconciled at the window seam") => {
+                last_error = error;
+                if attempt + 1 < ALIGN_SEAM_RETRY_ATTEMPTS {
+                    continue;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
+}
+
+fn run_align_once(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    window_target_seconds: f64,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     let input = normalize_alignment_input(config)?;
     let destination = output_dir.join("qwen-alignment-evidence.json");
     let source_duration_seconds = audio::wav_duration_seconds(audio)?;
     let text_units = alignment_text_units(&input.transcript);
-    let plans = plan_alignment_segments(source_duration_seconds, text_units.len())?;
+    let plans = plan_alignment_segments(
+        source_duration_seconds,
+        text_units.len(),
+        window_target_seconds,
+    )?;
     let mut words: Vec<AlignmentWord> = Vec::new();
     let mut segment_evidence = Vec::with_capacity(plans.len());
     for plan in &plans {
@@ -702,8 +1258,14 @@ fn run_align(
         if plans.len() > 1 {
             let _ = std::fs::remove_file(&window);
         }
+        let result = result?;
+        progress(
+            (plan.index + 1) as u64,
+            plans.len() as u64,
+            "Running pinned Qwen alignment windows",
+        )?;
         let mut target_words = target_words_from_context(
-            result?,
+            result,
             &context_text,
             compact_character_count(&prefix_text),
             compact_character_count(&target_text),
@@ -712,13 +1274,12 @@ fn run_align(
             word.start += plan.audio_start_seconds;
             word.end += plan.audio_start_seconds;
         }
-        let normalized = normalize_alignment_words(target_words)?;
-        if words
-            .last()
-            .zip(normalized.first())
-            .is_some_and(|(previous, next)| next.start < previous.end)
+        let mut normalized = normalize_alignment_words(target_words)?;
+        if plan.index > 0
+            && let Some(next_word) = normalized.first_mut()
+            && let Some(previous_word) = words.last_mut()
         {
-            return Err("Qwen long-form alignment windows produced overlapping timing".to_string());
+            reconcile_alignment_seam(&plans[plan.index - 1], plan, previous_word, next_word)?;
         }
         segment_evidence.push(AlignmentSegmentEvidence {
             index: plan.index,
@@ -783,6 +1344,138 @@ mod tests {
             start,
             end,
         }
+    }
+
+    #[test]
+    fn alignment_units_preserve_words_and_segment_unspaced_cjk() {
+        assert_eq!(
+            alignment_text_units("one two three"),
+            vec!["one", "two", "three"]
+        );
+        assert_eq!(
+            alignment_text_units("春天在哪里"),
+            vec!["春", "天", "在", "哪", "里"]
+        );
+    }
+
+    #[test]
+    fn engine_output_reader_stops_at_the_combined_capture_limit() {
+        let total = Arc::new(AtomicUsize::new(0));
+        let oversized = Arc::new(AtomicBool::new(false));
+        let bytes = read_bounded_engine_pipe(
+            std::io::Cursor::new(vec![0_u8; MAX_ENGINE_OUTPUT_BYTES + 1]),
+            Arc::clone(&total),
+            Arc::clone(&oversized),
+        );
+        assert_eq!(bytes.len(), MAX_ENGINE_OUTPUT_BYTES);
+        assert!(oversized.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    fn unix_process_is_running(pid: i32) -> bool {
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(") ").map(|(_, tail)| tail.to_string()))
+            .and_then(|tail| tail.chars().next());
+        if state == Some('Z') {
+            return false;
+        }
+        // SAFETY: signal 0 only probes process existence/permission.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_engine_kills_descendants_that_outlive_the_direct_child() {
+        let dir = std::env::temp_dir().join(format!("uta-qwen-engine-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_path = dir.join("descendant.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!("sleep 30 & echo $! > '{}'", pid_path.display()));
+        let output = run_engine(&mut command).unwrap();
+        assert!(output.status.success());
+        let descendant_pid: i32 = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unix_process_is_running(descendant_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !unix_process_is_running(descendant_pid),
+            "a descendant left running by the pinned engine must not outlive it"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn windows_process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: the queried handle is closed on every successful open and
+        // the exit-code pointer refers to a live local `u32`.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut exit_code = 0_u32;
+            let queried = GetExitCodeProcess(process, &mut exit_code) != 0;
+            CloseHandle(process);
+            queried && exit_code == STILL_ACTIVE as u32
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_engine_kills_descendants_that_outlive_the_direct_child() {
+        let dir = std::env::temp_dir().join(format!("uta-qwen-engine-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_path = dir.join("descendant.pid");
+        let escaped_pid_path = pid_path.to_string_lossy().replace('\'', "''");
+        let script = dir.join("spawn-descendant.ps1");
+        std::fs::write(
+            &script,
+            format!(
+                "$child = Start-Process -FilePath \"$env:SystemRoot\\System32\\ping.exe\" -ArgumentList \"-t\",\"127.0.0.1\" -PassThru -WindowStyle Hidden\nSet-Content -LiteralPath '{escaped_pid_path}' -Value $child.Id\n"
+            ),
+        )
+        .unwrap();
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script);
+        let output = run_engine(&mut command).unwrap();
+        assert!(output.status.success());
+        let descendant_pid: u32 = std::fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while windows_process_is_alive(descendant_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !windows_process_is_alive(descendant_pid),
+            "a descendant left running by the pinned engine must not outlive it"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -900,7 +1593,7 @@ mod tests {
 
     #[test]
     fn long_form_plan_is_bounded_complete_and_has_context() {
-        let plan = plan_alignment_segments(305.813_375, 26).unwrap();
+        let plan = plan_alignment_segments(305.813_375, 26, ALIGN_WINDOW_TARGET_SECONDS).unwrap();
         assert_eq!(plan.len(), 3);
         assert_eq!(
             plan.iter()
@@ -937,5 +1630,732 @@ mod tests {
             target_words_from_context(vec![word("anchortarget", 0.0, 1.0)], "anchor target", 6, 6,)
                 .is_err()
         );
+    }
+
+    fn seam_plan(index: usize, audio_start: f64, audio_end: f64) -> AlignmentSegmentPlan {
+        AlignmentSegmentPlan {
+            index,
+            audio_start_seconds: audio_start,
+            audio_end_seconds: audio_end,
+            context_unit_start: 0,
+            target_unit_start: 0,
+            target_unit_end: 1,
+        }
+    }
+
+    #[test]
+    fn seam_reconciliation_leaves_non_overlapping_windows_untouched() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        let mut previous = word("恋", 64.00, 65.20);
+        let mut next = word("花", 65.50, 66.00);
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+        assert_eq!(previous, word("恋", 64.00, 65.20));
+        assert_eq!(next, word("花", 65.50, 66.00));
+    }
+
+    #[test]
+    fn seam_reconciliation_accepts_touching_boundary_unchanged() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        let mut previous = word("恋", 64.00, 65.20);
+        let mut next = word("花", 65.20, 66.00);
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+        assert_eq!(previous.end, next.start);
+        assert_eq!(previous.end, 65.20);
+    }
+
+    #[test]
+    fn seam_reconciliation_splits_a_small_overlap_deterministically() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        let mut previous = word("恋", 64.00, 65.20);
+        let mut next = word("花", 65.04, 66.00);
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+        // Overlap is [65.04, 65.20] = 2 ticks; split_ticks = 1 => seam = 65.04 + 0.08.
+        assert!((previous.end - 65.12).abs() < 1e-9);
+        assert_eq!(previous.end, next.start);
+        assert!(previous.start < previous.end);
+        assert!(next.start < next.end);
+    }
+
+    #[test]
+    fn seam_reconciliation_resolves_a_sub_tick_overlap() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        let mut previous = word("恋", 64.00, 65.20);
+        let mut next = word("花", 65.18, 66.00);
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+        assert_eq!(previous.end, next.start);
+        assert!(previous.start < previous.end);
+        assert!(next.start < next.end);
+    }
+
+    #[test]
+    fn seam_reconciliation_resolves_a_larger_overlap_within_bounds() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        // Both words carry ample internal margin, so a 10-tick (0.8s) overlap
+        // still has a valid deterministic seam strictly inside both words.
+        let mut previous = word("恋", 60.00, 66.00);
+        let mut next = word("花", 65.20, 70.00);
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+        // Overlap is [65.20, 66.00] = 10 ticks; split_ticks = 5 => seam = 65.20 + 0.40.
+        assert!((previous.end - 65.60).abs() < 1e-9);
+        assert_eq!(previous.end, next.start);
+        assert!(previous.start < previous.end);
+        assert!(next.start < next.end);
+    }
+
+    #[test]
+    fn seam_reconciliation_fails_closed_when_one_word_would_collapse() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        // previous is exactly one tick wide, and the overlap consumes the
+        // entire word: no seam can keep previous.start < previous.end.
+        let mut previous = word("恋", 65.12, 65.20);
+        let mut next = word("花", 65.04, 65.28);
+        let previous_before = previous.clone();
+        let next_before = next.clone();
+        let error = reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next)
+            .unwrap_err();
+        assert!(error.contains("could not be reconciled"));
+        // Fail-closed must never partially mutate either word.
+        assert_eq!(previous, previous_before);
+        assert_eq!(next, next_before);
+    }
+
+    #[test]
+    fn seam_reconciliation_fails_closed_outside_shared_window_audio() {
+        // The two windows share no audio (window ranges do not overlap), so
+        // no candidate seam can be grounded in evidence either window
+        // actually measured.
+        let previous_plan = seam_plan(0, 0.0, 65.0);
+        let next_plan = seam_plan(1, 65.5, 200.0);
+        let mut previous = word("恋", 64.00, 66.00);
+        let mut next = word("花", 65.00, 67.00);
+        let previous_before = previous.clone();
+        let next_before = next.clone();
+        let error = reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next)
+            .unwrap_err();
+        assert!(error.contains("could not be reconciled"));
+        assert_eq!(previous, previous_before);
+        assert_eq!(next, next_before);
+    }
+
+    #[test]
+    fn seam_reconciliation_is_deterministic_across_repeated_calls() {
+        let previous_plan = seam_plan(0, 0.0, 140.0);
+        let next_plan = seam_plan(1, 60.0, 200.0);
+        let run = || {
+            let mut previous = word("恋", 64.00, 65.20);
+            let mut next = word("花", 65.04, 66.00);
+            reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+            (previous, next)
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn asr_truncation_marker_matches_the_captured_production_failure() {
+        let real = "pinned Qwen engine failed with exit status: 1: [debug] ggml_vulkan: \
+            Found 1 Vulkan devices:\n[warn] qwen3_asr run: output truncated at 1024 tokens \
+            \u{2014} decode reached the generation budget before end-of-stream; the \
+            transcript may be incomplete.\n[info] timings: load=1825.62 ms";
+        assert!(is_generation_budget_truncation(real));
+        assert!(!is_generation_budget_truncation(
+            "pinned Qwen engine failed with exit status: 1: some unrelated Vulkan error"
+        ));
+        assert!(!is_generation_budget_truncation(
+            "Qwen ASR returned an empty transcript"
+        ));
+        assert!(!is_generation_budget_truncation(
+            "could not start pinned Qwen engine: No such file or directory"
+        ));
+    }
+
+    #[test]
+    fn asr_split_midpoint_halves_until_the_floor_then_stops() {
+        assert_eq!(asr_split_midpoint(0.0, 90.0, 0), Some(45.0));
+        assert_eq!(asr_split_midpoint(0.0, 45.0, 1), Some(22.5));
+        assert_eq!(asr_split_midpoint(0.0, 22.5, 2), Some(11.25));
+        // Half of 11.25s is 5.625s, below the 10s floor.
+        assert_eq!(asr_split_midpoint(0.0, 11.25, 3), None);
+    }
+
+    #[test]
+    fn asr_split_midpoint_respects_the_max_depth_even_with_room_to_spare() {
+        assert_eq!(asr_split_midpoint(0.0, 1000.0, ASR_MAX_SPLIT_DEPTH), None);
+        assert!(asr_split_midpoint(0.0, 1000.0, ASR_MAX_SPLIT_DEPTH - 1).is_some());
+    }
+
+    // ---- End-to-end fixtures: a fake pinned-engine executable stands in for
+    // the real Vulkan binary so `run_align`/`run_asr` exercise their real
+    // window-stitching logic without GPU/model dependencies. The fake engine
+    // only understands "-o <path>", copying the next canned response file
+    // from its own control directory (one response per call, in order).
+    //
+    // The fake engine is a `#!/usr/bin/env bash` script, so everything from
+    // here to the end of this module is Unix-only; the pure-function
+    // seam/split-budget tests above already cover the same orchestration
+    // logic (including the platform-portable `ProcessTreeGuard` machinery in
+    // `run_engine`) without depending on a shell.
+
+    #[cfg(unix)]
+    fn synthetic_silent_wav(duration_seconds: f64) -> Vec<u8> {
+        let byte_rate: u32 = 32_000;
+        let data_bytes = (duration_seconds * f64::from(byte_rate)).round() as u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        wav.resize(wav.len() + data_bytes as usize, 0);
+        wav
+    }
+
+    /// Write a fake engine whose control directory is baked into the script
+    /// itself (never a shared process-wide env var), so concurrently running
+    /// tests never interfere with each other's call counters.
+    #[cfg(unix)]
+    fn write_fake_engine(script_path: &Path, control: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\ncontrol={control:?}\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncount_file=\"$control/count\"\nn=0\nif [ -f \"$count_file\" ]; then n=$(cat \"$count_file\"); fi\necho $((n+1)) > \"$count_file\"\nif [ -f \"$control/truncate-$n\" ]; then\n  echo '[warn] qwen3_asr run: output truncated at 1024 tokens \u{2014} decode reached the generation budget before end-of-stream; the transcript may be incomplete.' >&2\n  exit 1\nfi\ncp \"$control/response-$n\" \"$out\"\n",
+        );
+        std::fs::write(script_path, script).unwrap();
+        let mut permissions = std::fs::metadata(script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script_path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn reset_fake_engine_calls(control: &Path) {
+        let _ = std::fs::remove_file(control.join("count"));
+    }
+
+    #[cfg(unix)]
+    fn fixture_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("uta-qwen-e2e-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("control")).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn assert_words_are_ordered_and_non_overlapping(words: &[serde_json::Value]) {
+        let mut previous_end = 0.0_f64;
+        for word in words {
+            let start = word["start"].as_f64().unwrap();
+            let end = word["end"].as_f64().unwrap();
+            assert!(start < end, "word {word:?} is not positive-duration");
+            assert!(
+                start >= previous_end - 1e-9,
+                "word {word:?} overlaps the previous word (previous_end={previous_end})"
+            );
+            previous_end = end;
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_align_reconciles_a_real_seam_overlap_for_dense_cjk_lyrics() {
+        let test_dir = fixture_dir("cjk");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙蝶恋花千古佳话";
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        // Window 0 owns chars[0..5]; context == target (no prefix).
+        std::fs::write(
+            control.join("response-0"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "风", "start": 0.00, "end": 0.08},
+                {"word": "吹", "start": 0.08, "end": 0.16},
+                {"word": "沙", "start": 0.16, "end": 0.24},
+                {"word": "蝶", "start": 0.24, "end": 0.32},
+                {"word": "恋", "start": 64.00, "end": 65.20}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        // Window 1 context is chars[2..10]; chars[2..5] are discarded prefix,
+        // chars[5..10] are the owned target. "花" is deliberately timed to
+        // overlap the previous window's "恋" by 2 ticks after offsetting.
+        std::fs::write(
+            control.join("response-1"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "沙", "start": 0.00, "end": 0.08},
+                {"word": "蝶", "start": 0.08, "end": 0.16},
+                {"word": "恋", "start": 0.16, "end": 0.24},
+                {"word": "花", "start": 5.04, "end": 6.00},
+                {"word": "千", "start": 6.00, "end": 6.08},
+                {"word": "古", "start": 6.08, "end": 6.16},
+                {"word": "佳", "start": 6.16, "end": 6.24},
+                {"word": "话", "start": 6.24, "end": 6.32}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+        let destination = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        let words = evidence["words"].as_array().unwrap();
+        assert_eq!(words.len(), 10);
+        let recovered: String = words
+            .iter()
+            .map(|word| word["word"].as_str().unwrap())
+            .collect();
+        assert_eq!(recovered, transcript);
+        assert_words_are_ordered_and_non_overlapping(words);
+        // The deliberate 2-tick seam overlap between "恋" and "花" reconciles
+        // to the deterministic midpoint tick, 65.12s.
+        assert!((words[4]["end"].as_f64().unwrap() - 65.12).abs() < 1e-9);
+        assert!((words[5]["start"].as_f64().unwrap() - 65.12).abs() < 1e-9);
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    /// Builds a valid raw-engine response covering exactly one plan segment's
+    /// context range, with tick-spaced sequential local timestamps starting
+    /// at zero. Safe/non-conflicting by construction: real window seams are
+    /// only ever tested by deliberately overriding specific entries.
+    #[cfg(unix)]
+    fn sequential_context_response(text_units: &[String], plan: &AlignmentSegmentPlan) -> Vec<u8> {
+        let mut t = 0.0_f64;
+        let words: Vec<serde_json::Value> = text_units
+            [plan.context_unit_start..plan.target_unit_end]
+            .iter()
+            .map(|unit| {
+                let entry = serde_json::json!({"word": unit, "start": t, "end": t + 0.08});
+                t += 0.08;
+                entry
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({"words": words})).unwrap()
+    }
+
+    #[test]
+    fn align_window_target_shrinks_each_attempt_so_retries_replan_windows() {
+        assert_eq!(align_window_target_seconds(0), ALIGN_WINDOW_TARGET_SECONDS);
+        assert_eq!(
+            align_window_target_seconds(1),
+            ALIGN_WINDOW_TARGET_SECONDS / 2.0
+        );
+        assert_eq!(
+            align_window_target_seconds(2),
+            ALIGN_WINDOW_TARGET_SECONDS / 4.0
+        );
+        // A shorter target plans strictly more windows for the same audio,
+        // so a retry genuinely changes what the model is asked to align
+        // rather than replaying an identical, deterministic computation.
+        let attempt0 = plan_alignment_segments(200.0, 10, align_window_target_seconds(0)).unwrap();
+        let attempt1 = plan_alignment_segments(200.0, 10, align_window_target_seconds(1)).unwrap();
+        assert!(attempt1.len() > attempt0.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_align_retries_a_real_measurement_after_a_transient_unresolvable_seam() {
+        let test_dir = fixture_dir("retry-success");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙蝶恋花千古佳话";
+        let text_units = alignment_text_units(transcript);
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        // Attempt 0 (2 windows, the default target): identical to the
+        // deterministic-seam fixture's data, but with "花" placed so far
+        // from "恋" that no seam can satisfy previous.start < seam.
+        let attempt0 = plan_alignment_segments(200.0, 10, align_window_target_seconds(0)).unwrap();
+        std::fs::write(
+            control.join("response-0"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "风", "start": 0.00, "end": 0.08},
+                {"word": "吹", "start": 0.08, "end": 0.16},
+                {"word": "沙", "start": 0.16, "end": 0.24},
+                {"word": "蝶", "start": 0.24, "end": 0.32},
+                {"word": "恋", "start": 64.00, "end": 65.20}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            control.join("response-1"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "沙", "start": 0.00, "end": 0.08},
+                {"word": "蝶", "start": 0.08, "end": 0.16},
+                {"word": "恋", "start": 0.16, "end": 0.24},
+                {"word": "花", "start": 0.08, "end": 0.90},
+                {"word": "千", "start": 0.90, "end": 1.00},
+                {"word": "古", "start": 1.00, "end": 1.10},
+                {"word": "佳", "start": 1.10, "end": 1.20},
+                {"word": "话", "start": 1.20, "end": 1.30}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            attempt0.len(),
+            2,
+            "test fixture assumes 2 windows at the default target"
+        );
+
+        // Attempt 1 (retry, a shorter target -> more/different windows):
+        // every window is measured with simple sequential, non-conflicting
+        // timestamps, so this attempt succeeds cleanly on its own merits.
+        let attempt1 = plan_alignment_segments(200.0, 10, align_window_target_seconds(1)).unwrap();
+        assert!(
+            attempt1.len() > attempt0.len(),
+            "the retry must actually replan with different windows"
+        );
+        for plan in &attempt1 {
+            std::fs::write(
+                control.join(format!("response-{}", attempt0.len() + plan.index)),
+                sequential_context_response(&text_units, plan),
+            )
+            .unwrap();
+        }
+
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress_calls = Vec::new();
+        let mut progress = |completed: u64, total: u64, _message: &'static str| {
+            progress_calls.push((completed, total));
+            Ok(())
+        };
+        let destination = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        let words = evidence["words"].as_array().unwrap();
+        assert_eq!(words.len(), 10);
+        assert_words_are_ordered_and_non_overlapping(words);
+        let recovered: String = words
+            .iter()
+            .map(|word| word["word"].as_str().unwrap())
+            .collect();
+        assert_eq!(recovered, transcript);
+        // The failed attempt's progress is never surfaced: the caller only
+        // ever sees the winning attempt's own monotonic, non-regressing,
+        // complete (final == total) sequence.
+        assert_eq!(progress_calls.len(), attempt1.len());
+        assert!(progress_calls.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(
+            progress_calls.last().unwrap().0,
+            progress_calls.last().unwrap().1
+        );
+        // Exactly 2 attempts were made (attempt 0's 2 windows + attempt 1's
+        // windows): bounded, not endless.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            (attempt0.len() + attempt1.len()).to_string()
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_align_fails_closed_after_exhausting_seam_retries() {
+        let test_dir = fixture_dir("retry-exhausted");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙蝶恋花千古佳话";
+        let text_units = alignment_text_units(transcript);
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        // `run_align_once` bails out at the first unresolvable seam, so only
+        // each attempt's first two windows are ever measured regardless of
+        // how many windows that attempt's (shrinking-target) plan has. Window
+        // 0 always starts at local/global time 0, so pinning its last target
+        // word's *local* time near the window's own 140s ceiling pushes its
+        // *global* end far past any later window's naturally small audio
+        // start + local offset, reproducing an unresolvable gap under every
+        // attempt's own text/audio boundaries without depending on exactly
+        // where window 1 happens to start.
+        let mut response_index = 0_usize;
+        let mut total_windows = 0_usize;
+        for attempt in 0..ALIGN_SEAM_RETRY_ATTEMPTS {
+            let plan =
+                plan_alignment_segments(200.0, 10, align_window_target_seconds(attempt)).unwrap();
+            total_windows += plan.len();
+            for (position, segment) in plan.iter().take(2).enumerate() {
+                let mut response = sequential_context_response(&text_units, segment);
+                if position == 0 {
+                    // Force window 0's last (target) word far into its own
+                    // window, well past where window 1's small, unmodified
+                    // sequential timestamps can possibly reach it.
+                    let mut value: serde_json::Value = serde_json::from_slice(&response).unwrap();
+                    let words = value["words"].as_array_mut().unwrap();
+                    let last = words.len() - 1;
+                    words[last]["start"] = serde_json::json!(ALIGN_WINDOW_MAX_SECONDS - 0.5);
+                    words[last]["end"] = serde_json::json!(ALIGN_WINDOW_MAX_SECONDS - 0.42);
+                    response = serde_json::to_vec(&value).unwrap();
+                }
+                std::fs::write(control.join(format!("response-{response_index}")), response)
+                    .unwrap();
+                response_index += 1;
+            }
+        }
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+        let error = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(error.contains("could not be reconciled at the window seam"));
+        assert!(
+            total_windows > response_index,
+            "the fixture must exercise fewer real calls than total planned \
+             windows, proving the bail-out-at-first-seam behavior"
+        );
+        // Exactly ALIGN_SEAM_RETRY_ATTEMPTS attempts were made (2 real calls
+        // each): bounded, not endless, and not silently retried forever.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            response_index.to_string()
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_align_reconciles_a_seam_overlap_for_whitespace_lyrics_and_is_deterministic() {
+        let test_dir = fixture_dir("latin");
+        let control = test_dir.join("control");
+        let transcript = "one two three four five six seven eight nine ten";
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        std::fs::write(
+            control.join("response-0"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "one", "start": 0.00, "end": 0.32},
+                {"word": "two", "start": 0.32, "end": 0.64},
+                {"word": "three", "start": 0.64, "end": 0.96},
+                {"word": "four", "start": 0.96, "end": 1.28},
+                {"word": "five", "start": 64.00, "end": 65.20}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            control.join("response-1"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "three", "start": 0.00, "end": 0.32},
+                {"word": "four", "start": 0.32, "end": 0.64},
+                {"word": "five", "start": 0.64, "end": 0.96},
+                {"word": "six", "start": 5.04, "end": 6.00},
+                {"word": "seven", "start": 6.00, "end": 6.32},
+                {"word": "eight", "start": 6.32, "end": 6.64},
+                {"word": "nine", "start": 6.64, "end": 6.96},
+                {"word": "ten", "start": 6.96, "end": 7.28}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+
+        let run = || {
+            reset_fake_engine_calls(&control);
+            let mut progress_calls = Vec::new();
+            let mut progress = |completed: u64, total: u64, _message: &'static str| {
+                progress_calls.push((completed, total));
+                Ok(())
+            };
+            let destination = run_align(
+                &runtime,
+                Path::new("/fake-model.gguf"),
+                &audio_path,
+                &test_dir,
+                &config,
+                &mut progress,
+            )
+            .unwrap();
+            (std::fs::read(&destination).unwrap(), progress_calls)
+        };
+
+        let (first_bytes, first_progress) = run();
+        let (second_bytes, second_progress) = run();
+        assert_eq!(
+            first_bytes, second_bytes,
+            "repeated runs must be deterministic"
+        );
+        assert_eq!(first_progress, second_progress);
+        assert_eq!(first_progress, vec![(1, 2), (2, 2)]);
+
+        let evidence: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+        let words = evidence["words"].as_array().unwrap();
+        assert_eq!(words.len(), 10);
+        let recovered: String = words
+            .iter()
+            .map(|word| word["word"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            recovered,
+            transcript
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        );
+        assert_words_are_ordered_and_non_overlapping(words);
+        assert!((words[4]["end"].as_f64().unwrap() - 65.12).abs() < 1e-9);
+        assert!((words[5]["start"].as_f64().unwrap() - 65.12).abs() < 1e-9);
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_asr_recovers_from_truncation_by_splitting_the_offending_window() {
+        let test_dir = fixture_dir("asr-retry");
+        let control = test_dir.join("control");
+        let audio_path = test_dir.join("source.wav");
+        // 60s fits in a single top-level 90s-max plan window.
+        std::fs::write(&audio_path, synthetic_silent_wav(60.0)).unwrap();
+        // Call 0: the whole-file attempt truncates.
+        std::fs::write(control.join("truncate-0"), "").unwrap();
+        // Call 1: the [0,30) half succeeds.
+        std::fs::write(control.join("response-1"), "<|zh|>chunk-a").unwrap();
+        // Call 2: the [30,60) half succeeds.
+        std::fs::write(control.join("response-2"), "<|zh|>chunk-b").unwrap();
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let mut progress_calls = Vec::new();
+        let mut progress = |completed: u64, total: u64, _message: &'static str| {
+            progress_calls.push((completed, total));
+            Ok(())
+        };
+        let destination = run_asr(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &serde_json::json!({}),
+            &mut progress,
+        )
+        .unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        assert_eq!(evidence["text"], "chunk-a chunk-b");
+        let segments = evidence["long_input"]["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0]["audio_start_seconds"], 0.0);
+        assert_eq!(segments[0]["audio_end_seconds"], 30.0);
+        assert_eq!(segments[1]["audio_start_seconds"], 30.0);
+        assert_eq!(segments[1]["audio_end_seconds"], 60.0);
+        // Progress reports real audio-time coverage (ms), monotonically
+        // reaching the true total despite the retry/split, never a guessed
+        // window-count percentage.
+        assert_eq!(progress_calls, vec![(30_000, 60_000), (60_000, 60_000)]);
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_asr_fails_closed_when_truncation_cannot_be_resolved_within_policy_bounds() {
+        let test_dir = fixture_dir("asr-retry-limit");
+        let control = test_dir.join("control");
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(20.0)).unwrap();
+        // Call 0: the whole-file attempt on [0,20) truncates, so it splits
+        // to [0,10) and [10,20). Call 1: [0,10) truncates too; half of that
+        // is 5s, below the 10s floor, so it cannot split again and must fail
+        // closed immediately rather than retrying forever or ever reaching
+        // the untried [10,20) half.
+        std::fs::write(control.join("truncate-0"), "").unwrap();
+        std::fs::write(control.join("truncate-1"), "").unwrap();
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+        let error = run_asr(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &serde_json::json!({}),
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(error.contains("could not be split further within policy bounds"));
+        // Exactly 2 calls were made (the untried [10,20) half is never
+        // attempted once its sibling fails closed): no unbounded retry loop.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
     }
 }

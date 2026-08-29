@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bintis/utz/main/format/manifest-v0.1.schema.json",
+  "title": "Uta song package manifest 0.1",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "package_id",
+    "revision",
+    "song",
+    "audio",
+    "charts",
+    "scoring"
+  ],
+  "properties": {
+    "format": { "const": "uta.song" },
+    "format_version": { "type": "string", "pattern": "^0\\.1\\.[0-9]+$" },
+    "package_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "song": { "$ref": "#/$defs/song" },
+    "audio": {
+      "type": "object",
+      "required": ["instrumental"],
+      "properties": {
+        "instrumental": { "$ref": "#/$defs/asset" },
+        "guide_vocals": { "$ref": "#/$defs/asset" },
+        "original": { "$ref": "#/$defs/asset" },
+        "audio_offset_seconds": { "type": "number", "default": 0 }
+      },
+      "additionalProperties": true
+    },
+    "charts": {
+      "type": "object",
+      "required": ["transcript", "pitch_track", "pitch_notes"],
+      "properties": {
+        "transcript": { "$ref": "#/$defs/asset" },
+        "pitch_track": { "$ref": "#/$defs/asset" },
+        "pitch_notes": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": true
+    },
+    "visuals": {
+      "type": "object",
+      "properties": {
+        "cover": { "$ref": "#/$defs/asset" },
+        "video": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": true
+    },
+    "scoring": {
+      "type": "object",
+      "required": ["engine", "version"],
+      "properties": {
+        "engine": { "const": "uta.pitch" },
+        "version": { "type": "integer", "minimum": 1 },
+        "octave_tolerance": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": true
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "generator": { "type": "string" },
+        "source": { "type": "string" },
+        "rights": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "required": ["path", "media_type", "sha256", "bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "song": {
+      "type": "object",
+      "required": ["title", "artist", "duration_seconds"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "artist": { "type": "string", "minLength": 1 },
+        "album": { "type": ["string", "null"] },
+        "language": { "type": ["string", "null"] },
+        "duration_seconds": { "type": "number", "minimum": 0 },
+        "bpm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "key": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

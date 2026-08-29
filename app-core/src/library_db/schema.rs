@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 13;
+pub(crate) const SCHEMA_VERSION: i32 = 14;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -56,7 +56,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE TABLE IF NOT EXISTS analysis_queue (
             file_hash TEXT PRIMARY KEY,
-            status TEXT NOT NULL CHECK (status IN ('queued', 'analyzing', 'failed')),
+            status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'failed')),
             analyzing_pct INTEGER,
             failed_message TEXT,
             request_id TEXT,
@@ -135,7 +135,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
-        -- Phase 2/3 (docs/analysis-dag-redesign.md, phase plan §2.3): one
+        -- Phase 2/3 (the immutable artifact contract, phase plan §2.3): one
         -- row per real node id that a completed/failed run's
         -- `stage_routes` recorded (i.e. the emitting native worker call site had
         -- migrated to `progress_node`/`artifact_reused`; routes without a
@@ -186,14 +186,6 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_analysis_node_artifacts_run_node
             ON analysis_node_artifacts(run_id, node_id);
 
-        CREATE TABLE IF NOT EXISTS analysis_capture_requests (
-            file_hash TEXT NOT NULL,
-            node_id TEXT NOT NULL,
-            artifact_kind TEXT NOT NULL,
-            persistent INTEGER NOT NULL DEFAULT 0,
-            created_at_ms INTEGER NOT NULL,
-            PRIMARY KEY (file_hash, node_id, artifact_kind)
-        );
         ",
     )?;
     // SCHEMA_VERSION 4 -> 5: Phase 6 `invalidate_analysis_artifact` /
@@ -265,6 +257,45 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
                 [],
             )?;
         }
+    }
+    // SCHEMA_VERSION 13 -> 14: staged requests are durable queue entries but
+    // must not be picked up by startup recovery. SQLite cannot alter a CHECK
+    // constraint in place, so rebuild only legacy queue tables whose original
+    // CREATE statement does not yet permit the staged state.
+    let analysis_queue_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'analysis_queue'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !analysis_queue_sql.contains("'staged'") {
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE analysis_queue RENAME TO analysis_queue_v13;
+             CREATE TABLE analysis_queue (
+                file_hash TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'failed')),
+                analyzing_pct INTEGER,
+                failed_message TEXT,
+                request_id TEXT,
+                engine_request_json TEXT,
+                request_digest TEXT,
+                engine_plan_json TEXT,
+                source_path TEXT,
+                source_sha256 TEXT,
+                queued_at_ms INTEGER
+             );
+             INSERT INTO analysis_queue (
+                file_hash, status, analyzing_pct, failed_message, request_id,
+                engine_request_json, request_digest, engine_plan_json,
+                source_path, source_sha256, queued_at_ms
+             )
+             SELECT file_hash, status, analyzing_pct, failed_message, request_id,
+                    engine_request_json, request_digest, engine_plan_json,
+                    source_path, source_sha256, queued_at_ms
+             FROM analysis_queue_v13;
+             DROP TABLE analysis_queue_v13;
+             COMMIT;",
+        )?;
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
     Ok(())
@@ -438,6 +469,51 @@ mod tests {
         ensure_schema(&conn).unwrap();
         ensure_schema(&conn).unwrap();
         assert!(column_exists(&conn, "analysis_node_artifacts", "attempt_id").unwrap());
+    }
+
+    #[test]
+    fn ensure_schema_allows_staged_queue_rows_without_losing_existing_intent() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE analysis_queue;
+             CREATE TABLE analysis_queue (
+                file_hash TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'analyzing', 'failed')),
+                analyzing_pct INTEGER,
+                failed_message TEXT,
+                request_id TEXT,
+                engine_request_json TEXT,
+                request_digest TEXT,
+                engine_plan_json TEXT,
+                source_path TEXT,
+                source_sha256 TEXT,
+                queued_at_ms INTEGER
+             );
+             INSERT INTO analysis_queue (
+                file_hash, status, request_id, engine_request_json
+             ) VALUES ('existing', 'queued', 'request-1', '{\"schema\":1}');",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO analysis_queue (file_hash, status) VALUES ('manual', 'staged')",
+            [],
+        )
+        .unwrap();
+
+        let preserved: (String, String) = conn
+            .query_row(
+                "SELECT status, engine_request_json FROM analysis_queue WHERE file_hash = 'existing'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            ("queued".to_string(), "{\"schema\":1}".to_string())
+        );
     }
 
     #[test]

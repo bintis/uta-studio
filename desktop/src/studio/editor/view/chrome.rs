@@ -25,15 +25,15 @@ pub(crate) fn spawn_editor(
                 page.spawn((
                     Node {
                         width: percent(100),
-                        height: px(58),
+                        min_height: px(WORKSPACE_TOP_BAR_MIN_HEIGHT),
                         flex_shrink: 0.0,
                         align_items: AlignItems::Center,
                         padding: UiRect::horizontal(px(12)),
                         border: UiRect::bottom(px(1)),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.58)),
-                    BorderColor::all(theme.border.with_alpha(0.55)),
+                    BackgroundColor(theme.background.with_alpha(0.72)),
+                    BorderColor::all(theme.border.with_alpha(0.4)),
                 ))
                 .with_children(|toolbar| {
                     spawn_icon_button(
@@ -141,16 +141,16 @@ pub(crate) fn spawn_editor(
                 .spawn((
                     Node {
                         width: percent(100),
-                        height: px(58),
+                        min_height: px(WORKSPACE_TOP_BAR_MIN_HEIGHT),
                         flex_shrink: 0.0,
                         align_items: AlignItems::Center,
-                        padding: UiRect::horizontal(px(16)),
+                        padding: UiRect::horizontal(px(12)),
                         column_gap: px(8),
                         border: UiRect::bottom(px(1)),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.58)),
-                    BorderColor::all(theme.border.with_alpha(0.55)),
+                    BackgroundColor(theme.background.with_alpha(0.72)),
+                    BorderColor::all(theme.border.with_alpha(0.4)),
                 ))
                 .with_children(|toolbar| {
                     spawn_icon_button(

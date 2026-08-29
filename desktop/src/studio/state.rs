@@ -1,9 +1,6 @@
-use std::collections::BTreeSet;
-
 use app_core::{
-    AnalysisNodeId, AnalysisRunHistory, AnalysisTask, AppConfig, ArtifactRevision,
-    ArtifactTypedDiff, LibraryMenuFilters, LibraryMenuItems, LoadSongsParams, Song, SongsMeta,
-    SongsStore,
+    AnalysisRunHistory, AnalysisTask, AppConfig, LibraryMenuFilters, LibraryMenuItems,
+    LoadSongsParams, Song, SongsMeta, SongsStore,
 };
 use bevy::{
     ecs::system::SystemParam,
@@ -11,15 +8,13 @@ use bevy::{
 };
 
 use super::{
-    ANALYSIS_GRAPH_ZOOM_DEFAULT, AnalysisArtifactContextMenu, AnalysisExportContextMenu,
-    AnalysisLogViewerState, AnalysisModelCategory, AnalysisNodeContextMenu, ArtifactInspectorTab,
-    ArtifactLineagePanel, CacheClearScope, DocumentationState, EditorDockSelectKind, FolderBrowser,
-    LibraryFacet, LibraryPlayback, LibrarySelectKind, LibraryView, LineageScope, NativeEditor,
-    NativeEditorLoadJob, NativeExportJob, NativeLanguageEditor, NativeLyricsEditor,
-    NativeLyricsSearchJob, NativeLyricsWaveformJob, NativeSongSettings, PendingLeave,
-    PlanPreviewDraft, SelectedGraphEdge, SettingsSelectKind, SettingsTab, SetupRequest,
-    SongContextMenu, StudioRoute, analysis_graph_node_label, analysis_node_stage_index,
-    bucket_stage_id, build_analysis_node_context_menu, load_songs,
+    ANALYSIS_GRAPH_ZOOM_DEFAULT, AnalysisLogViewerState, AnalysisNodeContextMenu, CacheClearScope,
+    DocumentationState, EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback,
+    LibrarySelectKind, LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob,
+    NativeLanguageEditor, NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
+    NativeSongSettings, PendingLeave, PlanPreviewDraft, SelectedGraphEdge, SettingsSelectKind,
+    SettingsTab, SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu,
+    load_songs,
 };
 
 #[derive(Resource)]
@@ -84,10 +79,7 @@ impl LibraryState {
 
 #[derive(Resource)]
 pub(crate) struct AnalysisUiState {
-    pub(crate) selected_artifact_inspector_tab: ArtifactInspectorTab,
     pub(crate) selected_graph_edge: Option<SelectedGraphEdge>,
-    pub(crate) analysis_lineage_mode: bool,
-    pub(crate) analysis_lineage_scope: LineageScope,
     pub(crate) analysis_graph_scroll_offset: f32,
     pub(crate) analysis_graph_vertical_scroll_offset: f32,
     pub(crate) analysis_graph_zoom: f32,
@@ -99,15 +91,17 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_tasks: Vec<AnalysisTask>,
     pub(crate) analysis_history: Vec<AnalysisRunHistory>,
     pub(crate) selected_analysis_history: Option<i64>,
-    pub(crate) selected_analysis_stage: Option<String>,
     pub(crate) selected_analysis_node: Option<String>,
-    pub(crate) expanded_compound_nodes: BTreeSet<AnalysisNodeId>,
     pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
-    pub(crate) analysis_model_category: AnalysisModelCategory,
     pub(crate) workflow: Option<app_core::StoredWorkflow>,
+    /// Frozen local compile used by Processing Studio and the Advanced Graph.
+    /// Rebuilt only when the workflow changes; rendering never launches Runtime
+    /// Manager or recompiles the graph on every frame.
+    pub(crate) workflow_snapshot: Option<app_core::WorkflowExecutionSnapshot>,
     pub(crate) selected_workflow_node: Option<app_core::WorkflowNodeId>,
     pub(crate) workflow_compile_error: Option<String>,
+    pub(crate) processing_studio_scroll_offset: f32,
 }
 
 #[derive(Resource)]
@@ -119,18 +113,12 @@ pub(crate) struct EditorUiState {
 pub(crate) struct DialogState {
     pub(crate) song_context: Option<SongContextMenu>,
     pub(crate) analysis_node_context: Option<AnalysisNodeContextMenu>,
-    pub(crate) analysis_artifact_context: Option<AnalysisArtifactContextMenu>,
-    pub(crate) analysis_export_context: Option<AnalysisExportContextMenu>,
     pub(crate) pending_setup: Option<SetupRequest>,
+    pub(crate) model_downloads_open: bool,
     pub(crate) diagnostic_report: Option<uta_studio_diagnostics::DiagnosticReport>,
     pub(crate) lyrics_editor: Option<NativeLyricsEditor>,
     pub(crate) pending_cache_delete: Option<String>,
-    pub(crate) pending_artifact_delete: Option<ArtifactRevision>,
-    pub(crate) pending_artifact_invalidate: Option<ArtifactRevision>,
-    pub(crate) pending_artifact_active: Option<ArtifactRevision>,
-    pub(crate) artifact_diff: Option<ArtifactTypedDiff>,
-    pub(crate) artifact_lineage: Option<ArtifactLineagePanel>,
-    pub(crate) artifact_impact: Option<app_core::DownstreamImpact>,
+    pub(crate) pending_chart_delete: Option<String>,
     pub(crate) pending_chart_replace: Option<String>,
     pub(crate) language_editor: Option<NativeLanguageEditor>,
     pub(crate) plan_preview_draft: Option<PlanPreviewDraft>,
@@ -150,9 +138,9 @@ pub(crate) struct DialogState {
 
 pub(crate) struct ModelSettingsSnapshot {
     pub(crate) runtime_status: app_core::AnalysisRuntimeStatus,
-    pub(crate) runtime_registry: Vec<app_core::NativeModelRuntime>,
-    pub(crate) strategy_resources: Vec<app_core::AnalysisStrategyResourceStatus>,
-    pub(crate) strategy_resources_error: Option<String>,
+    pub(crate) runtime_models: Vec<app_core::RuntimeModelPresentation>,
+    pub(crate) fusion_agent_adapter: Option<app_core::RuntimeResourceStatusWireV1>,
+    pub(crate) fusion_agent_adapter_error: Option<String>,
     pub(crate) audio_catalog: app_core::AudioModelCatalogSummary,
     pub(crate) audio_catalog_error: Option<String>,
 }
@@ -269,10 +257,7 @@ impl StudioStateBundle {
                 library_scroll_offset: 0.0,
             },
             analysis: AnalysisUiState {
-                selected_artifact_inspector_tab: ArtifactInspectorTab::default(),
                 selected_graph_edge: None,
-                analysis_lineage_mode: false,
-                analysis_lineage_scope: LineageScope::Full,
                 analysis_graph_scroll_offset: 0.0,
                 analysis_graph_vertical_scroll_offset: 0.0,
                 analysis_graph_zoom: ANALYSIS_GRAPH_ZOOM_DEFAULT,
@@ -284,32 +269,25 @@ impl StudioStateBundle {
                 analysis_tasks: app_core::load_analysis_tasks(),
                 analysis_history: app_core::load_analysis_history(100),
                 selected_analysis_history: None,
-                selected_analysis_stage: None,
                 selected_analysis_node: None,
-                expanded_compound_nodes: BTreeSet::new(),
                 analysis_mini_view: false,
                 analysis_model_panel_open: false,
-                analysis_model_category: AnalysisModelCategory::default(),
                 workflow: None,
+                workflow_snapshot: None,
                 selected_workflow_node: None,
                 workflow_compile_error: None,
+                processing_studio_scroll_offset: 0.0,
             },
             editor: EditorUiState { editor: None },
             dialogs: DialogState {
                 song_context: None,
                 analysis_node_context: None,
-                analysis_artifact_context: None,
-                analysis_export_context: None,
                 pending_setup: None,
+                model_downloads_open: false,
                 diagnostic_report: None,
                 lyrics_editor: None,
                 pending_cache_delete: None,
-                pending_artifact_delete: None,
-                pending_artifact_invalidate: None,
-                pending_artifact_active: None,
-                artifact_diff: None,
-                artifact_lineage: None,
-                artifact_impact: None,
+                pending_chart_delete: None,
                 pending_chart_replace: None,
                 language_editor: None,
                 plan_preview_draft: None,
@@ -364,9 +342,6 @@ impl StudioStateBundle {
         if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_SYNC_ARTIFACTS") {
             let _ = app_core::import_legacy_artifacts(&app_core::CacheDir::new(), &hash);
         }
-        if let Ok(stage) = std::env::var("UTA_STUDIO_DEBUG_SELECT_STAGE") {
-            self.analysis.selected_analysis_stage = Some(stage);
-        }
         if let Ok(node) = std::env::var("UTA_STUDIO_DEBUG_SELECT_NODE") {
             self.analysis.selected_analysis_node = Some(node);
         }
@@ -392,11 +367,6 @@ impl StudioStateBundle {
         if std::env::var("UTA_STUDIO_DEBUG_MINI_VIEW").is_ok() {
             self.analysis.analysis_mini_view = true;
         }
-        if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_EXPAND_COMPOUND") {
-            self.analysis
-                .expanded_compound_nodes
-                .insert(AnalysisNodeId::new(node_id));
-        }
         if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT")
             && let Some(history) = self.analysis.selected_analysis_history.and_then(|id| {
                 self.analysis
@@ -405,18 +375,14 @@ impl StudioStateBundle {
                     .find(|history| history.id == id)
             })
         {
-            let stage_id =
-                bucket_stage_id(analysis_node_stage_index(&node_id).unwrap_or(0)).to_string();
-            let label = analysis_graph_node_label(&node_id, &node_id).to_string();
+            let capability_id = node_id.clone();
+            let label = node_id.clone();
             self.dialogs.analysis_node_context = Some(build_analysis_node_context_menu(
                 &node_id,
-                &stage_id,
+                &capability_id,
                 &label,
                 &history.file_hash,
                 Some(history.id),
-                self.analysis
-                    .expanded_compound_nodes
-                    .contains(&AnalysisNodeId::new(node_id.clone())),
                 Vec2::new(420.0, 40.0),
             ));
         }
@@ -434,7 +400,6 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) scanning: bool,
     pub(crate) route: StudioRoute,
     pub(crate) documentation: &'a DocumentationState,
-    pub(crate) selected_artifact_inspector_tab: ArtifactInspectorTab,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) library_view: LibraryView,
     pub(crate) library_search: &'a Option<String>,
@@ -448,20 +413,13 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) folder_browser: &'a FolderBrowser,
     pub(crate) song_context: &'a Option<SongContextMenu>,
     pub(crate) analysis_node_context: &'a Option<AnalysisNodeContextMenu>,
-    pub(crate) analysis_artifact_context: &'a Option<AnalysisArtifactContextMenu>,
-    pub(crate) analysis_export_context: &'a Option<AnalysisExportContextMenu>,
     pub(crate) selected_graph_edge: &'a Option<SelectedGraphEdge>,
-    pub(crate) analysis_lineage_mode: bool,
     pub(crate) pending_setup: Option<SetupRequest>,
+    pub(crate) model_downloads_open: bool,
     pub(crate) diagnostic_report: &'a Option<uta_studio_diagnostics::DiagnosticReport>,
     pub(crate) lyrics_editor: &'a Option<NativeLyricsEditor>,
     pub(crate) pending_cache_delete: &'a Option<String>,
-    pub(crate) pending_artifact_delete: &'a Option<ArtifactRevision>,
-    pub(crate) pending_artifact_invalidate: &'a Option<ArtifactRevision>,
-    pub(crate) pending_artifact_active: &'a Option<ArtifactRevision>,
-    pub(crate) artifact_diff: &'a Option<ArtifactTypedDiff>,
-    pub(crate) artifact_lineage: &'a Option<ArtifactLineagePanel>,
-    pub(crate) artifact_impact: &'a Option<app_core::DownstreamImpact>,
+    pub(crate) pending_chart_delete: &'a Option<String>,
     pub(crate) pending_chart_replace: &'a Option<String>,
     pub(crate) language_editor: &'a Option<NativeLanguageEditor>,
     pub(crate) plan_preview_draft: &'a Option<PlanPreviewDraft>,
@@ -472,28 +430,27 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) open_settings_select: Option<SettingsSelectKind>,
     pub(crate) settings_scroll_offsets: [f32; 4],
     pub(crate) model_settings_job: &'a ModelSettingsJob,
+    pub(crate) model_settings_refresh_pending: bool,
     pub(crate) library_scroll_offset: f32,
     pub(crate) analysis_graph_scroll_offset: f32,
     pub(crate) analysis_graph_vertical_scroll_offset: f32,
     pub(crate) analysis_graph_zoom: f32,
     pub(crate) analysis_graph_viewport_width: f32,
     pub(crate) analysis_graph_viewport_height: f32,
-    pub(crate) analysis_graph_fit_active: bool,
     pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
     pub(crate) analysis_tasks: &'a [AnalysisTask],
     pub(crate) analysis_history: &'a [AnalysisRunHistory],
     pub(crate) selected_analysis_history: Option<i64>,
-    pub(crate) selected_analysis_stage: &'a Option<String>,
     pub(crate) selected_analysis_node: &'a Option<String>,
-    pub(crate) expanded_compound_nodes: &'a BTreeSet<AnalysisNodeId>,
     pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
-    pub(crate) analysis_model_category: AnalysisModelCategory,
     pub(crate) workflow: &'a Option<app_core::StoredWorkflow>,
+    pub(crate) workflow_snapshot: &'a Option<app_core::WorkflowExecutionSnapshot>,
     pub(crate) selected_workflow_node: &'a Option<app_core::WorkflowNodeId>,
     pub(crate) workflow_compile_error: &'a Option<String>,
+    pub(crate) processing_studio_scroll_offset: f32,
     pub(crate) pending_analysis_history_clear: bool,
     pub(crate) search_open: bool,
     pub(crate) activity_open: bool,
@@ -520,7 +477,6 @@ impl<'a> StudioSessionView<'a> {
             scanning: library.scanning,
             route: shell.route,
             documentation: &shell.documentation,
-            selected_artifact_inspector_tab: analysis.selected_artifact_inspector_tab,
             settings_tab: shell.settings_tab,
             library_view: library.library_view,
             library_search: &library.library_search,
@@ -534,52 +490,44 @@ impl<'a> StudioSessionView<'a> {
             folder_browser: &library.folder_browser,
             song_context: &dialogs.song_context,
             analysis_node_context: &dialogs.analysis_node_context,
-            analysis_artifact_context: &dialogs.analysis_artifact_context,
-            analysis_export_context: &dialogs.analysis_export_context,
             selected_graph_edge: &analysis.selected_graph_edge,
-            analysis_lineage_mode: analysis.analysis_lineage_mode,
             pending_setup: dialogs.pending_setup,
+            model_downloads_open: dialogs.model_downloads_open,
             diagnostic_report: &dialogs.diagnostic_report,
             lyrics_editor: &dialogs.lyrics_editor,
             pending_cache_delete: &dialogs.pending_cache_delete,
-            pending_artifact_delete: &dialogs.pending_artifact_delete,
-            pending_artifact_invalidate: &dialogs.pending_artifact_invalidate,
-            pending_artifact_active: &dialogs.pending_artifact_active,
-            artifact_diff: &dialogs.artifact_diff,
-            artifact_lineage: &dialogs.artifact_lineage,
-            artifact_impact: &dialogs.artifact_impact,
+            pending_chart_delete: &dialogs.pending_chart_delete,
             pending_chart_replace: &dialogs.pending_chart_replace,
             language_editor: &dialogs.language_editor,
             plan_preview_draft: &dialogs.plan_preview_draft,
             analysis_log_viewer: &dialogs.analysis_log_viewer,
             song_settings: &dialogs.song_settings,
             pending_cache_clear: dialogs.pending_cache_clear,
-            pending_leave: dialogs.pending_leave,
+            pending_leave: dialogs.pending_leave.clone(),
             open_settings_select: dialogs.open_settings_select,
             settings_scroll_offsets: shell.settings_scroll_offsets,
             model_settings_job: &jobs.model_settings_job,
+            model_settings_refresh_pending: jobs.request_model_settings_refresh,
             library_scroll_offset: library.library_scroll_offset,
             analysis_graph_scroll_offset: analysis.analysis_graph_scroll_offset,
             analysis_graph_vertical_scroll_offset: analysis.analysis_graph_vertical_scroll_offset,
             analysis_graph_zoom: analysis.analysis_graph_zoom,
             analysis_graph_viewport_width: analysis.analysis_graph_viewport_width,
             analysis_graph_viewport_height: analysis.analysis_graph_viewport_height,
-            analysis_graph_fit_active: analysis.analysis_graph_fit_active,
             open_library_select: dialogs.open_library_select,
             export_all_open: dialogs.export_all_open,
             open_editor_select: dialogs.open_editor_select,
             analysis_tasks: &analysis.analysis_tasks,
             analysis_history: &analysis.analysis_history,
             selected_analysis_history: analysis.selected_analysis_history,
-            selected_analysis_stage: &analysis.selected_analysis_stage,
             selected_analysis_node: &analysis.selected_analysis_node,
-            expanded_compound_nodes: &analysis.expanded_compound_nodes,
             analysis_mini_view: analysis.analysis_mini_view,
             analysis_model_panel_open: analysis.analysis_model_panel_open,
-            analysis_model_category: analysis.analysis_model_category,
             workflow: &analysis.workflow,
+            workflow_snapshot: &analysis.workflow_snapshot,
             selected_workflow_node: &analysis.selected_workflow_node,
             workflow_compile_error: &analysis.workflow_compile_error,
+            processing_studio_scroll_offset: analysis.processing_studio_scroll_offset,
             pending_analysis_history_clear: dialogs.pending_analysis_history_clear,
             search_open: dialogs.search_open,
             activity_open: dialogs.activity_open,

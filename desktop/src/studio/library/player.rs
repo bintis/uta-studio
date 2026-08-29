@@ -23,6 +23,12 @@ pub(crate) fn spawn_library_player(
     let Some(song) = playback_song.or_else(|| session.selected_song()) else {
         return;
     };
+    let audio_sources = library_audio_sources(&song);
+    let selected_audio_source = audio_sources
+        .iter()
+        .find(|source| source.id == session.library_playback.audio_source_id)
+        .unwrap_or(&audio_sources[0])
+        .clone();
     parent
         .spawn((
             Node {
@@ -254,48 +260,150 @@ pub(crate) fn spawn_library_player(
                             ));
                         });
                 });
-            let source_format = song
-                .path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .map(str::to_ascii_uppercase)
-                .unwrap_or_else(|| "AUDIO".to_string());
             player
                 .spawn(Node {
+                    position_type: PositionType::Relative,
                     width: px(270),
                     min_width: px(190),
                     flex_shrink: 1.0,
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::FlexEnd,
                     row_gap: px(5),
-                    overflow: Overflow::clip(),
                     ..default()
                 })
                 .with_children(|source| {
-                    source
-                        .spawn(Node {
+                    let mut quality = source.spawn((
+                        Node {
                             width: percent(100),
+                            min_height: px(22),
                             justify_content: JustifyContent::FlexEnd,
                             align_items: AlignItems::Center,
                             column_gap: px(5),
+                            padding: UiRect::horizontal(px(4)),
+                            border_radius: BorderRadius::all(px(4)),
                             ..default()
-                        })
-                        .with_children(|quality| {
-                            spawn_text(
+                        },
+                        BackgroundColor(Color::NONE),
+                    ));
+                    if audio_sources.len() > 1 {
+                        quality.insert((
+                            Button,
+                            UiAction::from(LibraryCommand::ToggleLibraryAudioSourceMenu),
+                        ));
+                    } else {
+                        quality.insert(Pickable::IGNORE);
+                    }
+                    quality.with_children(|quality| {
+                        spawn_text(
+                            quality,
+                            font.clone(),
+                            selected_audio_source.label.to_ascii_uppercase(),
+                            7.0,
+                            theme.muted_foreground.with_alpha(0.72),
+                        );
+                        spawn_text(
+                            quality,
+                            font.clone(),
+                            selected_audio_source.format.clone(),
+                            9.0,
+                            theme.muted_foreground,
+                        );
+                        if audio_sources.len() > 1 {
+                            spawn_icon(
                                 quality,
-                                font.clone(),
-                                "ORIGINAL",
-                                7.0,
-                                theme.muted_foreground.with_alpha(0.72),
-                            );
-                            spawn_text(
-                                quality,
-                                font.clone(),
-                                source_format,
-                                9.0,
+                                icons.clone(),
+                                UiIcon::ChevronDown,
+                                12.0,
                                 theme.muted_foreground,
                             );
-                        });
+                        }
+                    });
+                    if session.library_playback.audio_source_menu_open && audio_sources.len() > 1 {
+                        source
+                            .spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    right: px(0),
+                                    bottom: px(62),
+                                    width: px(250),
+                                    max_height: px(320),
+                                    flex_direction: FlexDirection::Column,
+                                    padding: UiRect::all(px(7)),
+                                    row_gap: px(3),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(7)),
+                                    overflow: Overflow::clip(),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.card.with_alpha(0.98)),
+                                BorderColor::all(theme.border.with_alpha(0.88)),
+                                BoxShadow::new(
+                                    Color::srgba(0.0, 0.0, 0.0, 0.26),
+                                    px(0),
+                                    px(12),
+                                    px(28),
+                                    px(-8),
+                                ),
+                                ZIndex(86),
+                            ))
+                            .with_children(|menu| {
+                                spawn_text(menu, font.clone(), "AUDIO SOURCE", 7.0, theme.primary);
+                                for candidate in &audio_sources {
+                                    let selected = candidate.id == selected_audio_source.id;
+                                    menu.spawn((
+                                        Button,
+                                        UiAction::from(LibraryCommand::SelectLibraryAudioSource(
+                                            candidate.id.clone(),
+                                        )),
+                                        Node {
+                                            width: percent(100),
+                                            min_height: px(34),
+                                            align_items: AlignItems::Center,
+                                            padding: UiRect::horizontal(px(9)),
+                                            column_gap: px(8),
+                                            border_radius: BorderRadius::all(px(5)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(if selected {
+                                            theme.primary.with_alpha(0.12)
+                                        } else {
+                                            Color::NONE
+                                        }),
+                                    ))
+                                    .with_children(|row| {
+                                        spawn_text(
+                                            row,
+                                            font.clone(),
+                                            if selected { "✓" } else { "" },
+                                            8.0,
+                                            theme.primary,
+                                        );
+                                        spawn_text(
+                                            row,
+                                            font.clone(),
+                                            candidate.label.clone(),
+                                            9.0,
+                                            if selected {
+                                                theme.foreground
+                                            } else {
+                                                theme.muted_foreground
+                                            },
+                                        );
+                                        row.spawn(Node {
+                                            flex_grow: 1.0,
+                                            ..default()
+                                        });
+                                        spawn_text(
+                                            row,
+                                            font.clone(),
+                                            candidate.format.clone(),
+                                            8.0,
+                                            theme.muted_foreground,
+                                        );
+                                    });
+                                }
+                            });
+                    }
                     source
                         .spawn(Node {
                             width: percent(100),

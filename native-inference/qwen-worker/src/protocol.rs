@@ -39,6 +39,10 @@ pub enum WorkerFrame<'a> {
         task_id: &'a str,
         fraction: f32,
         message: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_units_completed: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_units_total: Option<u64>,
     },
     Output {
         task_id: &'a str,
@@ -56,6 +60,18 @@ pub enum WorkerFrame<'a> {
         message: &'a str,
         retryable: bool,
     },
+}
+
+impl<'a> WorkerFrame<'a> {
+    pub fn progress(task_id: &'a str, fraction: f32, message: &'a str) -> Self {
+        Self::Progress {
+            task_id,
+            fraction,
+            message,
+            work_units_completed: None,
+            work_units_total: None,
+        }
+    }
 }
 
 pub fn emit(frame: WorkerFrame<'_>) -> Result<(), String> {

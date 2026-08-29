@@ -1,0 +1,38 @@
+{
+  "format": "uta.vocal-chart",
+  "format_version": "0.3.0",
+  "timebase": 1000000,
+  "tracks": [
+    {
+      "id": "lead",
+      "role": "lead",
+      "phrases": [
+        {
+          "id": "phrase-1",
+          "notes": [
+            {
+              "id": "note-1",
+              "start": 1000000,
+              "duration": 250000,
+              "pitch": {
+                "midi": 60
+              },
+              "vocal_mode": "pitched",
+              "bonus": "golden",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-1",
+                  "text": "la",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -10,6 +11,7 @@ use super::error::BackendCliError;
 use super::process::{
     discover_executable, native_command, read_machine_frame, spawn_stderr_drain, stderr_text,
 };
+use super::runtime_wire::RuntimePolicyWireV1;
 
 #[derive(Clone)]
 pub struct AnalysisCancelHandle {
@@ -133,11 +135,14 @@ impl AnalysisCliClient {
         Ok(ready)
     }
 
-    pub fn capabilities(&mut self) -> Result<Vec<CapabilityDescriptorWireV1>, BackendCliError> {
+    pub fn capabilities(
+        &mut self,
+        runtime_policy: RuntimePolicyWireV1,
+    ) -> Result<Vec<CapabilityDescriptorWireV1>, BackendCliError> {
         self.send(&serde_json::json!({
             "type":"capabilities",
             "protocol":ANALYSIS_WORKER_PROTOCOL_VERSION,
-            "runtime_policy":"experimental"
+            "runtime_policy":runtime_policy.as_str()
         }))?;
         let frame = self.required_frame("capabilities response")?;
         ensure_type(&frame, "capabilities")?;
@@ -190,12 +195,23 @@ impl AnalysisCliClient {
         request_id: &str,
         output_dir: &Path,
     ) -> Result<AnalysisResultManifestWireV1, BackendCliError> {
+        self.analyze_with_events(request, request_id, output_dir, |_| {})
+    }
+
+    pub fn analyze_with_events(
+        &mut self,
+        request: &serde_json::Value,
+        request_id: &str,
+        output_dir: &Path,
+        mut on_event: impl FnMut(AnalysisLifecycleFrameWireV1),
+    ) -> Result<AnalysisResultManifestWireV1, BackendCliError> {
         self.send(&serde_json::json!({
             "type":"analyze", "protocol":ANALYSIS_WORKER_PROTOCOL_VERSION,
             "request":request, "output_dir":output_dir
         }))?;
         let started = self.required_frame("analysis_started response")?;
         self.domain_or_frame(started, request_id, "analysis_started")?;
+        let mut worker_progress = BTreeMap::new();
         loop {
             let frame = self.required_frame("analysis terminal response")?;
             let frame_type = frame
@@ -220,9 +236,20 @@ impl AnalysisCliClient {
                         code: "cancelled".to_string(),
                         message: "analysis was cancelled".to_string(),
                         retryable: false,
+                        request_id: Some(request_id.to_string()),
+                        capability: None,
+                        resource: None,
                     });
                 }
                 "error" => return Err(domain_error(frame, Some(request_id))?),
+                frame_type if AnalysisLifecycleFrameWireV1::is_lifecycle_type(frame_type) => {
+                    check_request_id(&frame, request_id)?;
+                    let event: AnalysisLifecycleFrameWireV1 =
+                        decode(frame, "analysis lifecycle frame")?;
+                    validate_lifecycle_event(&event)?;
+                    validate_worker_progress_monotonic(&event, &mut worker_progress)?;
+                    on_event(event);
+                }
                 _ => {
                     if frame.get("request_id").is_some() {
                         check_request_id(&frame, request_id)?;
@@ -388,6 +415,94 @@ fn validate_ready(ready: &AnalysisWorkerReadyV1) -> Result<(), BackendCliError> 
     Ok(())
 }
 
+fn validate_worker_progress_monotonic(
+    event: &AnalysisLifecycleFrameWireV1,
+    states: &mut BTreeMap<(String, String), (f32, Option<(u64, u64)>)>,
+) -> Result<(), BackendCliError> {
+    let Some(task_id) = event.worker_task_id.as_ref() else {
+        return Ok(());
+    };
+    let progress = event.progress.ok_or_else(|| {
+        BackendCliError::MalformedFrame(
+            "worker-correlated lifecycle progress omitted its fraction".to_string(),
+        )
+    })?;
+    let key = (event.node_id.clone(), task_id.clone());
+    let units = event.work_units_completed.zip(event.work_units_total);
+    if let Some((previous_progress, previous_units)) = states.get(&key) {
+        let units_regressed = match (*previous_units, units) {
+            (Some((previous_completed, previous_total)), Some((completed, total))) => {
+                total != previous_total || completed < previous_completed
+            }
+            _ => false,
+        };
+        if progress < *previous_progress || units_regressed {
+            return Err(BackendCliError::MalformedFrame(
+                "worker-correlated lifecycle progress regressed".to_string(),
+            ));
+        }
+    }
+    let retained_units = units.or_else(|| states.get(&key).and_then(|(_, units)| *units));
+    states.insert(key, (progress, retained_units));
+    Ok(())
+}
+
+fn validate_lifecycle_event(event: &AnalysisLifecycleFrameWireV1) -> Result<(), BackendCliError> {
+    let progress_valid = event
+        .progress
+        .is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value));
+    let work_units_valid = match (event.work_units_completed, event.work_units_total) {
+        (None, None) => true,
+        (Some(completed), Some(total)) => {
+            total > 0
+                && completed <= total
+                && event
+                    .worker_task_id
+                    .as_deref()
+                    .is_some_and(|task_id| !task_id.trim().is_empty())
+        }
+        _ => false,
+    };
+    if event.schema_version != 1
+        || event.request_id.trim().is_empty()
+        || event.node_id.trim().is_empty()
+        || event.capability_id.trim().is_empty()
+        || event
+            .presentation_node_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || event
+            .model_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || event
+            .worker_task_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || (event.worker_task_id.is_some() && event.frame_type != "node_progress")
+        || event.implementation.trim().is_empty()
+        || event.event_at_ms <= 0
+        || !progress_valid
+        || !work_units_valid
+        || (event.frame_type == "node_progress" && event.progress.is_none())
+        || (event.frame_type == "artifact"
+            && event
+                .artifact
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()))
+        || (matches!(event.frame_type.as_str(), "warning" | "degraded")
+            && event
+                .message
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()))
+    {
+        return Err(BackendCliError::MalformedFrame(
+            "analysis lifecycle frame violates its typed contract".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_type(frame: &serde_json::Value, expected: &str) -> Result<(), BackendCliError> {
     let actual = frame.get("type").and_then(serde_json::Value::as_str);
     if actual == Some(expected) {
@@ -420,10 +535,7 @@ fn domain_error(
 ) -> Result<BackendCliError, BackendCliError> {
     let error: AnalysisErrorWireV1 = decode(frame, "analysis error frame")?;
     if let Some(expected) = expected_request_id
-        && error
-            .request_id
-            .as_deref()
-            .is_some_and(|actual| actual != expected)
+        && error.request_id.as_deref() != Some(expected)
     {
         return Err(BackendCliError::RequestIdMismatch {
             expected: expected.to_string(),
@@ -434,6 +546,9 @@ fn domain_error(
         code: error.code,
         message: error.message,
         retryable: error.retryable,
+        request_id: error.request_id,
+        capability: error.capability,
+        resource: error.resource,
     })
 }
 
@@ -455,4 +570,49 @@ fn decode_field<T: DeserializeOwned>(
         .map(serde_json::Value::take)
         .ok_or_else(|| BackendCliError::MalformedFrame(format!("{label} omitted {field}")))?;
     decode(value, label)
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    fn event(progress: f32, completed: u64, total: u64) -> AnalysisLifecycleFrameWireV1 {
+        AnalysisLifecycleFrameWireV1 {
+            frame_type: "node_progress".to_string(),
+            schema_version: 1,
+            request_id: "request".to_string(),
+            node_id: "pitch.track".to_string(),
+            presentation_node_id: Some("workflow.f0_rmvpe".to_string()),
+            capability_id: "pitch.track".to_string(),
+            model_id: Some("rmvpe".to_string()),
+            implementation: "openvino".to_string(),
+            progress: Some(progress),
+            work_units_completed: Some(completed),
+            work_units_total: Some(total),
+            worker_task_id: Some("rmvpe-task-7".to_string()),
+            artifact: None,
+            message: Some("window inference".to_string()),
+            event_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn worker_progress_requires_identity_and_rejects_cross_frame_regression() {
+        let first = event(0.5, 5, 10);
+        validate_lifecycle_event(&first).unwrap();
+        let mut states = BTreeMap::new();
+        validate_worker_progress_monotonic(&first, &mut states).unwrap();
+        validate_worker_progress_monotonic(&event(0.6, 6, 10), &mut states).unwrap();
+
+        let error =
+            validate_worker_progress_monotonic(&event(0.7, 4, 10), &mut states).unwrap_err();
+        assert!(error.to_string().contains("progress regressed"));
+        let error =
+            validate_worker_progress_monotonic(&event(0.4, 7, 10), &mut states).unwrap_err();
+        assert!(error.to_string().contains("progress regressed"));
+
+        let mut missing_identity = event(0.5, 5, 10);
+        missing_identity.worker_task_id = None;
+        assert!(validate_lifecycle_event(&missing_identity).is_err());
+    }
 }

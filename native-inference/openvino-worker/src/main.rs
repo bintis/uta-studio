@@ -46,6 +46,8 @@ fn run_task(
         task_id,
         fraction: 0.01,
         message: "Decoding source audio to the model sample rate",
+        work_units_completed: None,
+        work_units_total: None,
     })?;
     if matches!(model_id, "stars" | "rosvot") {
         let audio_24k = audio::decode_mono(source, output_dir, 24_000)?;
@@ -56,11 +58,13 @@ fn run_task(
             &audio_16k,
             output_dir,
             config,
-            |fraction, message| {
+            |fraction, message, work_units| {
                 let _ = emit(WorkerFrame::Progress {
                     task_id,
                     fraction: 0.02 + fraction * 0.97,
                     message,
+                    work_units_completed: work_units.map(|(completed, _)| completed),
+                    work_units_total: work_units.map(|(_, total)| total),
                 });
             },
         )?;
@@ -103,6 +107,8 @@ fn run_task(
                     task_id,
                     fraction: 0.02 + fraction * 0.97,
                     message,
+                    work_units_completed: None,
+                    work_units_total: None,
                 });
             })?;
         for (artifact, path) in [("lead_vocal", lead), ("vocal_residual", residual)] {
@@ -119,27 +125,48 @@ fn run_task(
         });
     }
     let output = match model_id {
-        "rmvpe" => rmvpe::infer(&audio, output_dir, config, |fraction, message| {
-            let _ = emit(WorkerFrame::Progress {
-                task_id,
-                fraction: 0.02 + fraction * 0.97,
-                message,
-            });
-        })?,
-        "fcpe" => fcpe::infer(&audio, output_dir, config, |fraction, message| {
-            let _ = emit(WorkerFrame::Progress {
-                task_id,
-                fraction: 0.02 + fraction * 0.97,
-                message,
-            });
-        })?,
-        "basic_pitch" => basic_pitch::infer(&audio, output_dir, config, |fraction, message| {
-            let _ = emit(WorkerFrame::Progress {
-                task_id,
-                fraction: 0.02 + fraction * 0.97,
-                message,
-            });
-        })?,
+        "rmvpe" => rmvpe::infer(
+            &audio,
+            output_dir,
+            config,
+            |fraction, message, work_units| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                    work_units_completed: work_units.map(|(completed, _)| completed),
+                    work_units_total: work_units.map(|(_, total)| total),
+                });
+            },
+        )?,
+        "fcpe" => fcpe::infer(
+            &audio,
+            output_dir,
+            config,
+            |fraction, message, (completed, total)| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                    work_units_completed: Some(completed),
+                    work_units_total: Some(total),
+                });
+            },
+        )?,
+        "basic_pitch" => basic_pitch::infer(
+            &audio,
+            output_dir,
+            config,
+            |fraction, message, (completed, total)| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                    work_units_completed: Some(completed),
+                    work_units_total: Some(total),
+                });
+            },
+        )?,
         "firered_asr2_aed" => firered::infer(&audio, output_dir, config)?,
         "bs_roformer_vocals_ep317" => {
             bs_roformer::infer(&audio, output_dir, config, |fraction, message| {
@@ -147,16 +174,25 @@ fn run_task(
                     task_id,
                     fraction: 0.02 + fraction * 0.97,
                     message,
+                    work_units_completed: None,
+                    work_units_total: None,
                 });
             })?
         }
-        "game" => game::infer(&audio, output_dir, config, |fraction, message| {
-            let _ = emit(WorkerFrame::Progress {
-                task_id,
-                fraction: 0.02 + fraction * 0.97,
-                message,
-            });
-        })?,
+        "game" => game::infer(
+            &audio,
+            output_dir,
+            config,
+            |fraction, message, work_units| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                    work_units_completed: work_units.map(|(completed, _)| completed),
+                    work_units_total: work_units.map(|(_, total)| total),
+                });
+            },
+        )?,
         "melband_roformer_denoise_aufr33" | "melband_roformer_dereverb_anvuew" => {
             melband_roformer_denoise::infer(
                 model_id,
@@ -168,6 +204,8 @@ fn run_task(
                         task_id,
                         fraction: 0.02 + fraction * 0.97,
                         message,
+                        work_units_completed: None,
+                        work_units_total: None,
                     });
                 },
             )?
@@ -178,6 +216,8 @@ fn run_task(
                     task_id,
                     fraction: 0.02 + fraction * 0.97,
                     message,
+                    work_units_completed: None,
+                    work_units_total: None,
                 });
             })?
         }

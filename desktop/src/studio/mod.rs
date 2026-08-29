@@ -34,9 +34,9 @@ mod actions_chrome;
 mod actions_content;
 mod actions_settings;
 mod analysis;
+mod analysis_edge_selection;
 mod analysis_layout;
 mod analysis_model;
-mod artifact_workbench_ui;
 mod chrome;
 mod commands;
 mod documentation;
@@ -67,13 +67,13 @@ pub(crate) use actions::*;
 pub(crate) use actions_chrome::*;
 pub(crate) use actions_content::*;
 pub(crate) use actions_settings::*;
+pub(crate) use analysis_edge_selection::*;
 pub(crate) use analysis_layout::*;
 pub(crate) use analysis_model::*;
-pub(crate) use artifact_workbench_ui::*;
 pub(crate) use chrome::*;
 pub(crate) use commands::{
-    AnalysisCommand, AnalysisModelCategory, AppCommand, EditorCommand, LibraryCommand,
-    SettingsCommand, UiAction, UiCommand,
+    AnalysisCommand, AppCommand, EditorCommand, LibraryCommand, SettingsCommand, UiAction,
+    UiCommand,
 };
 pub(crate) use documentation::*;
 pub(crate) use editor::*;

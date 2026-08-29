@@ -46,6 +46,7 @@ pub(crate) fn run_openvino_denoise(
         &NativeTask {
             task_id: task.task_id.to_string(),
             node_id: "audio.denoise".to_string(),
+            presentation_node_id: None,
             model_id: "melband_roformer_denoise_aufr33".to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),

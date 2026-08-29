@@ -159,6 +159,8 @@ AnalysisEngine::capabilities
 
 Those names are backend implementation details.
 
+An `analyze` command returns `analysis_started`, followed by zero or more typed lifecycle frames and one correlated terminal frame. Implemented lifecycle types are `node_started`, measured `node_progress`, `node_completed`, `node_failed`, `artifact`, `warning`, and `degraded`. Every lifecycle frame carries the request ID, raw Engine node ID, capability ID, implementation and Engine timestamp; model ID and Processing Studio presentation-node ID are present when applicable. Studio must reject malformed/cross-request frames and must not turn node order or human stderr into a percentage.
+
 ---
 
 # 6. Exact preview/execution rule
@@ -202,7 +204,6 @@ request_id
 contract/version
 relative confined paths
 file existence
-SHA-256
 byte count
 media type
 status
@@ -379,6 +380,8 @@ Development may discover workspace binaries where explicitly supported.
 
 Do not expose individual model files to Studio through new environment variables.
 
+External analysis tools that are not Studio-facing CLIs remain Runtime Manager resources. In particular, AI-judgment fusion uses `tool:fusion_agent_adapter`: Studio must not put the adapter executable path into `AnalyzeRequest` or workflow DTOs. Runtime Manager owns configure/status/resolve for that path; Engine consumes the resolved tool only after normal request validation.
+
 ---
 
 # 14. Process security rules
@@ -396,6 +399,8 @@ Source media remains read-only.
 Runtime mutation confirmation remains explicit.
 
 No HTTP control server is introduced.
+
+AI-judgment adapters are direct child processes of Analysis Engine after Runtime Manager resolution. They may use the network according to the user's configured external provider, but the Uta protocol sends only bounded fusion candidate metadata in v1—not source audio bytes, arbitrary project files, the library DB, model files, or unrelated user content. A configured adapter is external software running with the user's OS permissions; Uta does not claim it is sandboxed.
 
 ---
 
@@ -489,33 +494,13 @@ The wrapped Studio executable receives exact CLI paths.
 
 The package smoke test must prove Studio can launch both CLIs from the packaged artifact.
 
-The old `uta-native-analyzer` wrapper may remain temporarily only for legacy compatibility and is not the final Studio process boundary.
+The retired compatibility wrapper is not packaged or routed. `uta-analyze` is the only Studio-facing analysis process.
 
 ---
 
-# 19. Migration from current direct crate coupling
+# 19. Completed process-boundary migration
 
-Current repository code temporarily contains direct Studio dependencies/imports such as:
-
-```text
-app-core/Cargo.toml -> uta-analysis-engine
-app-core/Cargo.toml -> uta-runtime-manager
-app-core/src/... -> uta_analysis_engine::...
-app-core/src/... -> uta_runtime_manager::...
-```
-
-These are migration debt, not the target architecture.
-
-Studio Integration must replace them with:
-
-```text
-Studio-owned wire DTOs
-AnalysisCliClient
-RuntimeCliClient
-process-level fixtures/contract tests
-```
-
-The migration is complete only when direct backend crate imports are zero in Studio code.
+Studio owns local wire DTOs and communicates through `AnalysisCliClient` and `RuntimeCliClient`. Direct backend crate imports and compatibility execution routes are forbidden and remain at zero.
 
 ---
 

@@ -183,20 +183,24 @@ pub fn infer(
     audio: &[f32],
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &str),
+    mut progress: impl FnMut(f32, &str, Option<(u64, u64)>),
 ) -> Result<PathBuf, String> {
     let model = model_artifact(config)?;
-    progress(0.02, "Validating source-built OpenVINO runtime");
+    progress(0.02, "Validating source-built OpenVINO runtime", None);
     let runtime_manifest_sha256 = crate::runtime::validate_runtime()?;
-    progress(0.03, "Validating RMVPE OpenVINO IR files");
+    progress(0.03, "Validating RMVPE OpenVINO IR files", None);
 
-    progress(0.08, "Computing native log-mel features");
+    progress(0.08, "Computing native log-mel features", None);
     let (frame_major, frames) = log_mel_spectrogram(audio, |fraction| {
-        progress(0.08 + 0.32 * fraction, "Computing native log-mel features");
+        progress(
+            0.08 + 0.32 * fraction,
+            "Computing native log-mel features",
+            None,
+        );
     })?;
 
     let device = crate::runtime::inference_device(config)?;
-    progress(0.42, "Loading RMVPE OpenVINO IR");
+    progress(0.42, "Loading RMVPE OpenVINO IR", None);
     let mut core = Core::new().map_err(|error| format!("OpenVINO is unavailable: {error}"))?;
     crate::runtime::configure_inference_core(&mut core, device)?;
     if device == crate::runtime::InferenceDevice::Gpu {
@@ -269,16 +273,17 @@ pub fn infer(
         request
             .set_input_tensor(&tensor)
             .map_err(|error| format!("could not bind RMVPE IR input: {error}"))?;
-        progress(
-            0.55 + 0.3 * window as f32 / window_count as f32,
-            "Running RMVPE OpenVINO IR",
-        );
         request.infer().map_err(|error| {
             format!(
                 "RMVPE OpenVINO {} inference failed: {error}",
                 device.label()
             )
         })?;
+        progress(
+            0.55 + 0.3 * (window + 1) as f32 / window_count as f32,
+            "Running RMVPE OpenVINO IR windows",
+            Some(((window + 1) as u64, window_count as u64)),
+        );
         let output = request
             .get_output_tensor()
             .map_err(|error| format!("could not read RMVPE output: {error}"))?;
@@ -316,7 +321,7 @@ pub fn infer(
     if evidence_frames.len() != frames {
         return Err("RMVPE overlap stitching did not preserve the evidence timeline".to_string());
     }
-    progress(0.88, "Decoding calibrated pitch evidence");
+    progress(0.88, "Decoding calibrated pitch evidence", None);
     let evidence = PitchEvidence {
         schema_version: 1,
         model_id: "rmvpe",
@@ -336,7 +341,7 @@ pub fn infer(
     file.write_all(b"\n").map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
     std::fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
-    progress(1.0, "RMVPE evidence complete");
+    progress(1.0, "RMVPE evidence complete", None);
     Ok(destination)
 }
 

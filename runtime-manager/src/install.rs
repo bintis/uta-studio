@@ -238,7 +238,12 @@ impl RuntimeManager {
             return Err(not_acquirable(resource, "no audited import recipe exists"));
         }
         ensure_license_accepted(&model.acquisition, options)?;
-        if source.is_dir() {
+        let converted_file = model
+            .source
+            .converted_artifact
+            .as_ref()
+            .filter(|artifact| artifact.format.starts_with("gguf"));
+        if source.is_dir() && converted_file.is_none() {
             let imported = match resource.id.as_str() {
                 "bs_roformer_vocals_ep317" => Some(bs_roformer::import_bs_roformer_ir_directory(
                     self, resource, model, source,
@@ -286,11 +291,6 @@ impl RuntimeManager {
                 });
             }
         }
-        let converted_file = model
-            .source
-            .converted_artifact
-            .as_ref()
-            .filter(|artifact| artifact.format.starts_with("gguf"));
         let filename = converted_file
             .map(|artifact| artifact.manifest_filename.as_str())
             .or(model.source.filename.as_deref())
@@ -307,11 +307,16 @@ impl RuntimeManager {
             )
             .with_resource(resource));
         }
+        let source_file = if source.is_dir() {
+            source.join(filename)
+        } else {
+            source.to_path_buf()
+        };
         let _generation = publish_single_file(
             self.paths(),
             resource,
             &self.catalog().catalog_version,
-            source,
+            &source_file,
             Path::new(filename),
             PublishIdentity {
                 source: Some(model.source.clone()),

@@ -7,8 +7,7 @@ use ts_rs::TS;
 pub enum SetupStep {
     PrepareFolders,
     Ffmpeg,
-    NativeComponents,
-    RuntimeLock,
+    BackendProtocols,
     SelectedModels,
     Finish,
 }
@@ -39,7 +38,6 @@ impl ComputeBackend {
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelDownloadTarget {
-    SharedRuntime,
     RoFormer,
     FireRed,
     QwenAsr,
@@ -118,19 +116,16 @@ pub struct AnalysisRuntimeStatus {
     pub ready: bool,
     pub runtime_contract_current: bool,
     pub ffmpeg_available: bool,
-    pub native_analyzer_available: bool,
     pub openvino_runtime_available: bool,
     pub ggml_vulkan_runtime_available: bool,
     pub qwen_asr_runtime_available: bool,
     pub qwen_align_runtime_available: bool,
-    pub runtime_lock_valid: bool,
     pub pitch_model_available: bool,
     pub selected_models_available: bool,
     pub selected_models: Vec<String>,
     pub models: Vec<ModelInstallStatus>,
     pub compute_backend: String,
     pub ffmpeg_path: Option<String>,
-    pub runtime_lock_sha256: String,
     pub missing: Vec<String>,
 }
 

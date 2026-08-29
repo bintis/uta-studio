@@ -1,3 +1,2 @@
-# Preserve vendored upstream snapshots and patch payloads byte-for-byte.
-third_party/rosvot/upstream/** -whitespace
+# Preserve vendored patch payloads byte-for-byte.
 native-inference/qwen-worker/patches/*.patch -whitespace

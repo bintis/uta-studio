@@ -5,22 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::analysis_graph::{AnalysisGraphSpec, AnalysisNodeId};
 
 use super::{
-    CapabilityId, ExecutionPolicy, QualityMode, WorkflowDefinition, WorkflowNodeId,
-    WorkflowPortType,
+    CapabilityId, ExecutionPolicy, QualityMode, SeparationStrategyV1, WorkflowDefinition,
+    WorkflowNodeId, WorkflowPortType,
 };
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolvedRuntimeKind {
-    OpenVino,
-    Vulkan,
-    NativeDsp,
-    CpuReference,
-    PinnedQwenAsrVulkan,
-    PinnedQwenAlignVulkan,
-    #[default]
-    Unresolved,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledNodeBinding {
@@ -29,14 +16,12 @@ pub struct CompiledNodeBinding {
     pub analysis_node: AnalysisNodeId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separation_strategy: Option<SeparationStrategyV1>,
     #[serde(default)]
     pub execution_policy: ExecutionPolicy,
     #[serde(default)]
     pub priority: i32,
-    #[serde(default)]
-    pub runtime: ResolvedRuntimeKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_recipe_digest: Option<String>,
 }
 
 const fn enabled_binding() -> bool {

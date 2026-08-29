@@ -85,7 +85,7 @@ impl CacheDir {
         }
     }
 
-    /// Authoritative UTZ 0.2 authoring document. Transcript and analyzer note
+    /// Authoritative UTZ 0.3 authoring document. Transcript and analyzer note
     /// files remain migration/evidence inputs, not parallel chart truth.
     pub fn vocal_chart_path(&self, hash: &str) -> PathBuf {
         self.path.join(format!("{hash}_vocal_chart.json"))
@@ -226,7 +226,7 @@ impl CacheDir {
     /// Structured key/rhythm analysis (tonic/scale/confidence, BPM,
     /// per-beat timestamps, and — when Essentia is installed — a few extra
     /// descriptors), written once during analysis by `analyze_music` in
-    /// `pipeline.py`. Kept out of the transcript so the beat-timestamp
+    /// the pre-process-boundary analyzer. Kept out of the transcript so the beat-timestamp
     /// array never has to round-trip through it.
     pub fn music_analysis_path(&self, hash: &str) -> PathBuf {
         self.path.join(format!("{hash}_music_analysis.json"))
@@ -256,7 +256,7 @@ impl CacheDir {
     /// Same file set as `delete_song_cache`, minus the Authored Chart.
     /// The "Reanalyze all" action regenerates every analysis artifact but
     /// must not discard chart edits by default
-    /// (docs/analysis-dag-redesign.md §6/Phase 5) -- callers that really do
+    /// (the immutable artifact contract §6/Phase 5) -- callers that really do
     /// want the chart gone too (the explicit, confirmed "Delete cache"
     /// action) keep using `delete_song_cache` directly.
     pub fn delete_analysis_outputs_keep_chart(&self, hash: &str) {
@@ -273,7 +273,7 @@ impl CacheDir {
     /// `delete_analysis_outputs_keep_chart` would remove -- a real,
     /// filesystem-backed "what would this delete" query, not a guess,
     /// so a caller can back each one up first instead of deleting blind
-    /// (docs/analysis-dag-redesign.md Phase 5 status note on
+    /// (the immutable artifact contract Phase 5 status note on
     /// `realign`/`reanalyze_full`'s eager-delete gap). Only paths that
     /// currently exist are returned.
     pub fn analysis_output_paths_keep_chart(&self, hash: &str) -> Vec<PathBuf> {
@@ -399,7 +399,7 @@ impl CacheDir {
 }
 
 // Phase 0 regression baseline for the analysis DAG redesign
-// (docs/analysis-dag-redesign.md §13). These lock down current,
+// (the immutable artifact contract §13). These lock down current,
 // intentional cache-invalidation behavior so later phases can be verified
 // against a known-good baseline instead of guessing what "still works"
 // means from the UI.
@@ -458,7 +458,7 @@ mod invalidation_tests {
 
     #[test]
     fn invalidate_authored_chart_only_removes_the_chart() {
-        // Baseline for docs/analysis-dag-redesign.md §6: today this call is
+        // Baseline for the immutable artifact contract §6: today this call is
         // unconditional and is the *only* file it touches. Phase 5 changes
         // when this gets called (via ChartUpdatePolicy), not what it deletes
         // when it is called — so this narrow-scope guarantee must hold
@@ -485,7 +485,7 @@ mod invalidation_tests {
     #[test]
     fn invalidate_authored_chart_is_unconditional_today() {
         // Named baseline documenting current behavior explicitly (see
-        // docs/analysis-dag-redesign.md §6 and §13): there is no "was this
+        // the immutable artifact contract §6 and §13): there is no "was this
         // chart actually stale" check. Calling this on an up-to-date,
         // freshly-authored chart still deletes it. When Phase 5 introduces
         // ChartUpdatePolicy::CreateCandidate, this test's assertion should
@@ -568,7 +568,7 @@ mod invalidation_tests {
         cache.clear_all();
     }
 
-    // Phase 5 status note (docs/analysis-dag-redesign.md, `realign`/
+    // Phase 5 status note (the immutable artifact contract, `realign`/
     // `reanalyze_full`'s eager-delete gap): these two enumerators exist so
     // `app-core/src/analyzer.rs` can back a file up *before* deleting it
     // instead of deleting blind. Real regression protection for that use
@@ -626,7 +626,7 @@ mod invalidation_tests {
 
     #[test]
     fn delete_song_cache_does_not_touch_a_different_song_in_the_same_directory() {
-        // Dependency-isolation guarantee behind docs/analysis-dag-redesign.md
+        // Dependency-isolation guarantee behind the immutable artifact contract
         // §5's claim that stems.separate and music.analysis are independent
         // per-song: a delete for one hash must never reach into another
         // hash's files even though they share one flat cache directory.
@@ -800,14 +800,6 @@ pub fn dir_size(path: &Path) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .map(|m| m.len())
         .sum()
-}
-
-pub fn clear_models() {
-    let dir = models_dir();
-
-    if dir.is_dir() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
 
 #[derive(Debug, Deserialize)]

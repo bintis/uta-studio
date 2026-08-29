@@ -1,14 +1,14 @@
 use std::path::Path;
 
 use super::*;
+use crate::backend_cli::AnalysisCliClient;
 use crate::cache::{relocate_app_data_path, same_path, songs_cache_dir, uta_studio_dir};
 
 fn tasks() -> Vec<SetupTask> {
     [
         (SetupStep::PrepareFolders, "Prepare data folders"),
         (SetupStep::Ffmpeg, "Verify ffmpeg"),
-        (SetupStep::NativeComponents, "Verify native components"),
-        (SetupStep::RuntimeLock, "Verify runtime lock"),
+        (SetupStep::BackendProtocols, "Verify backend protocols"),
         (SetupStep::SelectedModels, "Prepare selected model"),
         (SetupStep::Finish, "Finish"),
     ]
@@ -113,26 +113,16 @@ pub fn run_vendor_setup(
     emit(
         &mut on_progress,
         &mut task_list,
-        SetupStep::NativeComponents,
+        SetupStep::BackendProtocols,
         40,
-        "Verifying local native workers...",
+        "Verifying Analysis Engine and Runtime Manager protocols...",
         None,
         None,
     );
-    if crate::native_runtime::native_analyzer_path().is_none() {
-        return Err("the packaged native analyzer component is unavailable".to_string());
+    if !AnalysisCliClient::is_available() {
+        return Err("the packaged Analysis Engine CLI is unavailable".to_string());
     }
-
-    emit(
-        &mut on_progress,
-        &mut task_list,
-        SetupStep::RuntimeLock,
-        55,
-        "Verifying pinned runtime identities...",
-        None,
-        None,
-    );
-    crate::native_runtime::native_runtime_lock()?;
+    runtime_client()?;
 
     emit(
         &mut on_progress,

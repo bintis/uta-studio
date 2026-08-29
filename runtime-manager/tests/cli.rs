@@ -25,6 +25,17 @@ fn run(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+fn run_without_adapter_discovery(args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .env_remove("UTA_STUDIO_FUSION_AGENT_ADAPTER_PATH")
+        .env_remove("UTA_STUDIO_FUSION_AGENT_CLI_PATH")
+        .env("PATH", "")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
 fn run_with_proxy(args: &[&str], proxy: &str) -> std::process::Output {
     Command::new(binary())
         .args(args)
@@ -48,6 +59,113 @@ fn json_stdout(output: &std::process::Output) -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn fusion_adapter_cli_lifecycle_is_persistent_and_resolvable() {
+    let root = temp_path("fusion-adapter-lifecycle");
+    let store = root.join("store");
+    let adapter = root.join(if cfg!(windows) {
+        "uta-fusion-agent-adapter.exe"
+    } else {
+        "uta-fusion-agent-adapter"
+    });
+    std::fs::create_dir_all(&root).unwrap();
+    let execution_marker = root.join("adapter-was-executed");
+    std::fs::write(
+        &adapter,
+        format!(
+            "#!/bin/sh\nprintf executed > '{}'\n",
+            execution_marker.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let manifest = PathBuf::from(format!("{}.uta-fusion-adapter.json", adapter.display()));
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec(&serde_json::json!({
+            "contract": "uta.fusion_agent_adapter",
+            "version": 1,
+            "adapter_id": "fusion_agent_adapter",
+            "adapter_version": "1.2.3-test",
+            "fusion_protocol_version": 3
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let store_arg = store.to_string_lossy().into_owned();
+    let adapter_arg = adapter.to_string_lossy().into_owned();
+
+    let configure = run_without_adapter_discovery(&[
+        "configure-tool",
+        "tool:fusion_agent_adapter",
+        "--path",
+        &adapter_arg,
+        "--yes",
+        "--output",
+        "json",
+        "--store",
+        &store_arg,
+    ]);
+    assert!(
+        configure.status.success(),
+        "{}",
+        String::from_utf8_lossy(&configure.stderr)
+    );
+    let configured = json_stdout(&configure);
+    assert_eq!(configured["data"]["usable"], true);
+    assert_eq!(configured["data"]["tool_version"], "1.2.3-test");
+
+    let resolve = run_without_adapter_discovery(&[
+        "resolve",
+        "tool:fusion_agent_adapter",
+        "--output",
+        "json",
+        "--store",
+        &store_arg,
+    ]);
+    assert!(resolve.status.success());
+    let resolved = json_stdout(&resolve);
+    assert_eq!(resolved["data"]["identity"], "fusion_agent_adapter");
+    assert_eq!(resolved["data"]["version"], "1.2.3-test");
+    assert_eq!(resolved["data"]["protocol_version"], 3);
+    assert_eq!(
+        resolved["data"]["executable"],
+        adapter.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+
+    let clear = run_without_adapter_discovery(&[
+        "clear-tool",
+        "tool:fusion_agent_adapter",
+        "--yes",
+        "--output",
+        "json",
+        "--store",
+        &store_arg,
+    ]);
+    assert!(clear.status.success());
+    assert_eq!(json_stdout(&clear)["data"]["usable"], false);
+    let unavailable = run_without_adapter_discovery(&[
+        "resolve",
+        "tool:fusion_agent_adapter",
+        "--output",
+        "json",
+        "--store",
+        &store_arg,
+    ]);
+    assert_eq!(unavailable.status.code(), Some(10));
+    assert_eq!(json_stdout(&unavailable)["code"], "resource_missing");
+    assert!(
+        !execution_marker.exists(),
+        "configure/status/resolve/clear must never launch the adapter or provider"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

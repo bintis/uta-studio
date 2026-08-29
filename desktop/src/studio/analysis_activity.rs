@@ -6,7 +6,9 @@ pub(crate) fn active_analysis_task_count(tasks: &[app_core::AnalysisTask]) -> us
         .filter(|task| {
             matches!(
                 task.status,
-                app_core::QueuedStatus::Queued | app_core::QueuedStatus::Analyzing(_)
+                app_core::QueuedStatus::Staged
+                    | app_core::QueuedStatus::Queued
+                    | app_core::QueuedStatus::Analyzing(_)
             )
         })
         .count()
@@ -175,10 +177,14 @@ pub(crate) fn follow_live_analysis_node(
     if analysis.analysis_graph_needs_fit {
         return;
     }
-    let live_id = analysis
-        .analysis_tasks
-        .iter()
-        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+    let active_task = analysis.analysis_tasks.iter().find(|task| {
+        matches!(task.status, app_core::QueuedStatus::Analyzing(_))
+            && library
+                .selected_song
+                .as_ref()
+                .is_none_or(|hash| hash == &task.file_hash)
+    });
+    let live_id = active_task
         .and_then(|task| task.live.as_ref())
         .and_then(|live| live.node_id.clone());
     let Some(live_id) = live_id else {
@@ -193,7 +199,18 @@ pub(crate) fn follow_live_analysis_node(
         .next()
         .map(|computed| computed.size().x * computed.inverse_scale_factor())
         .unwrap_or(0.0);
+    let workflow = active_task
+        .and_then(|task| task.live.as_ref())
+        .and_then(|live| live.engine.as_ref())
+        .and_then(exact_workflow_plan_from_engine)
+        .map(|(workflow, _)| workflow)
+        .or_else(|| {
+            analysis.workflow_snapshot.as_ref().and_then(|snapshot| {
+                app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
+            })
+        });
     analysis.analysis_graph_scroll_offset = estimated_analysis_graph_center_scroll(
+        workflow.as_ref(),
         &live_id,
         clamp_analysis_graph_zoom(analysis.analysis_graph_zoom),
         viewport_width,
@@ -302,12 +319,13 @@ mod tests {
     #[test]
     fn active_task_count_tracks_only_sidebar_badge_jobs() {
         let tasks = [
+            task(app_core::QueuedStatus::Staged),
             task(app_core::QueuedStatus::Queued),
             task(app_core::QueuedStatus::Analyzing(42)),
             task(app_core::QueuedStatus::Failed("failed".to_string())),
         ];
 
-        assert_eq!(active_analysis_task_count(&tasks), 2);
+        assert_eq!(active_analysis_task_count(&tasks), 3);
         assert_eq!(
             active_analysis_task_count(&[task(app_core::QueuedStatus::Failed(
                 "failed".to_string()

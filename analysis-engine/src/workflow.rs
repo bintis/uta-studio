@@ -27,6 +27,96 @@ pub enum WorkflowExecutionPolicyV1 {
     DisagreementWindows,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuousF0SourceV1 {
+    Rmvpe,
+    Fcpe,
+}
+
+impl ContinuousF0SourceV1 {
+    pub fn model_id(self) -> &'static str {
+        match self {
+            Self::Rmvpe => "rmvpe",
+            Self::Fcpe => "fcpe",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteLengthSourceV1 {
+    Game,
+    F0Derived,
+}
+
+impl NoteLengthSourceV1 {
+    pub fn parameter_value(self) -> &'static str {
+        match self {
+            Self::Game => "game",
+            Self::F0Derived => "f0",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnsetSupportSourceV1 {
+    Automatic,
+    Acoustic,
+    BasicPitch,
+}
+
+impl OnsetSupportSourceV1 {
+    pub fn parameter_value(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Acoustic => "acoustic",
+            Self::BasicPitch => "basic_pitch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FusionModeV1 {
+    /// The algorithmic HSMM candidate-graph decode. Default and only
+    /// production-pinned path.
+    #[default]
+    Algorithm,
+    /// Explicit non-default opt-in: a locally installed AI agent CLI selects
+    /// the final candidate path from the same evidence instead of the HSMM
+    /// decoder. Never a silent fallback for the algorithmic path.
+    AiJudgment,
+}
+
+impl FusionModeV1 {
+    pub fn parameter_value(self) -> &'static str {
+        match self {
+            Self::Algorithm => "algorithm",
+            Self::AiJudgment => "ai",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpertFusionPolicyV1 {
+    pub continuous_f0: ContinuousF0SourceV1,
+    pub note_lengths: NoteLengthSourceV1,
+    pub onset_support: OnsetSupportSourceV1,
+}
+
+impl Default for ExpertFusionPolicyV1 {
+    fn default() -> Self {
+        Self {
+            continuous_f0: ContinuousF0SourceV1::Rmvpe,
+            note_lengths: NoteLengthSourceV1::Game,
+            onset_support: OnsetSupportSourceV1::Automatic,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowExecutionV1 {
@@ -40,6 +130,28 @@ pub struct WorkflowExecutionV1 {
     pub nodes: Vec<WorkflowNodeV1>,
     pub bindings: Vec<WorkflowBindingV1>,
     pub terminal_outputs: Vec<WorkflowTerminalOutputV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_policy: Option<ExpertFusionPolicyV1>,
+    #[serde(default)]
+    pub fusion_mode: FusionModeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowProviderPreferencesV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrumental: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowExecutionInvocationV1 {
+    pub invocation_id: String,
+    pub provider_id: String,
+    pub capabilities: Vec<String>,
+    pub output_ports: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,16 +159,12 @@ pub struct WorkflowExecutionV1 {
 pub struct WorkflowNodeV1 {
     pub instance_id: String,
     pub capability_id: String,
-    pub analysis_node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
     pub execution_policy: WorkflowExecutionPolicyV1,
     pub priority: i32,
-    pub runtime: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_recipe_digest: Option<String>,
     #[serde(default)]
-    pub parameters: serde_json::Value,
+    pub provider_preferences: WorkflowProviderPreferencesV1,
+    #[serde(default)]
+    pub execution_invocations: Vec<WorkflowExecutionInvocationV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,22 +241,21 @@ impl WorkflowExecutionV1 {
         }
 
         let mut instances = BTreeSet::new();
-        let mut analysis_nodes = BTreeSet::new();
+        let mut invocation_ids = BTreeSet::new();
         let mut nodes = BTreeMap::new();
         for node in &self.nodes {
             validate_identifier(&node.instance_id, "workflow node instance")?;
-            validate_identifier(&node.analysis_node, "analysis node")?;
-            if !instances.insert(node.instance_id.as_str())
-                || !analysis_nodes.insert(node.analysis_node.as_str())
-            {
+            if !instances.insert(node.instance_id.as_str()) {
                 return Err(
                     invalid("compiled workflow contains duplicate node identity")
                         .for_request(&request.request_id),
                 );
             }
             validate_node(node, request)?;
-            nodes.insert(node.analysis_node.as_str(), node);
+            validate_execution_invocations(node, &mut invocation_ids, request)?;
+            nodes.insert(node.instance_id.as_str(), node);
         }
+        self.validate_expert_fusion_policy(request)?;
 
         let mut edges = BTreeSet::new();
         for binding in &self.bindings {
@@ -228,10 +335,10 @@ impl WorkflowExecutionV1 {
             }
             if binding.analyzer_attachment
                 && (binding.semantic_type != "audio"
-                    || binding.audio_role.as_deref() != Some("lead_vocal"))
+                    || !matches!(binding.audio_role.as_deref(), Some("lead_vocal" | "vocal")))
             {
                 return Err(invalid(
-                    "Engine v1 analyzers must bind to the compiled lead_vocal artifact",
+                    "Engine analyzers must bind to a compiled vocal or lead_vocal artifact",
                 )
                 .for_request(&request.request_id));
             }
@@ -257,22 +364,178 @@ impl WorkflowExecutionV1 {
             .filter_map(|node| {
                 engine_capabilities(node)
                     .contains(&capability)
-                    .then_some((node.priority, node.execution_policy))
+                    .then_some((node.execution_policy, node.priority))
             })
-            .max_by_key(|(priority, _)| *priority)
-            .map(|(_, policy)| policy)
+            .max_by_key(|(policy, priority)| {
+                let policy_rank = match policy {
+                    WorkflowExecutionPolicyV1::Always => 4,
+                    WorkflowExecutionPolicyV1::OnDisagreement
+                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
+                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
+                    WorkflowExecutionPolicyV1::Disabled => 0,
+                };
+                (policy_rank, *priority)
+            })
+            .map(|(policy, _)| policy)
+    }
+
+    pub fn presentation_node_for_engine_execution(
+        &self,
+        capability: &str,
+        model_id: Option<&str>,
+    ) -> Option<String> {
+        let node = self
+            .nodes
+            .iter()
+            .filter(|node| engine_capabilities(node).contains(&capability))
+            .filter(|node| {
+                model_id.is_none_or(|model| {
+                    engine_model_for_capability(node, capability) == Some(model)
+                })
+            })
+            .max_by_key(|node| {
+                let policy_rank = match node.execution_policy {
+                    WorkflowExecutionPolicyV1::Always => 4,
+                    WorkflowExecutionPolicyV1::OnDisagreement
+                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
+                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
+                    WorkflowExecutionPolicyV1::Disabled => 0,
+                };
+                (policy_rank, node.priority)
+            })?;
+        if let Some(invocation) = node.execution_invocations.iter().find(|invocation| {
+            invocation
+                .capabilities
+                .iter()
+                .any(|item| item == capability)
+                && model_id.is_none_or(|model| invocation.provider_id == model)
+        }) {
+            return Some(invocation.invocation_id.clone());
+        }
+        let suffix = match capability {
+            "audio.extract_vocals" => ".vocal",
+            "audio.extract_instrumental" => ".instrumental",
+            _ => "",
+        };
+        Some(format!("{}{suffix}", node.instance_id))
+    }
+
+    pub fn model_for_engine_capability(&self, capability: &str) -> Option<&str> {
+        self.nodes
+            .iter()
+            .filter(|node| node.execution_policy != WorkflowExecutionPolicyV1::Disabled)
+            .filter(|node| engine_capabilities(node).contains(&capability))
+            .max_by_key(|node| {
+                let policy_rank = match node.execution_policy {
+                    WorkflowExecutionPolicyV1::Always => 4,
+                    WorkflowExecutionPolicyV1::OnDisagreement
+                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
+                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
+                    WorkflowExecutionPolicyV1::Disabled => 0,
+                };
+                (policy_rank, node.priority)
+            })
+            .and_then(|node| engine_model_for_capability(node, capability))
+    }
+
+    pub fn policy_for_model(&self, model_id: &str) -> Option<WorkflowExecutionPolicyV1> {
+        self.nodes
+            .iter()
+            .find(|node| node.provider_preferences.primary.as_deref() == Some(model_id))
+            .map(|node| node.execution_policy)
+    }
+
+    pub fn should_schedule_model(&self, model_id: &str, profile: AnalysisProfile) -> bool {
+        self.policy_for_model(model_id)
+            .is_some_and(|policy| match policy {
+                WorkflowExecutionPolicyV1::Always => true,
+                WorkflowExecutionPolicyV1::Disabled => false,
+                WorkflowExecutionPolicyV1::MaximumOnly => profile == AnalysisProfile::Maximum,
+                WorkflowExecutionPolicyV1::OnDisagreement
+                | WorkflowExecutionPolicyV1::DisagreementWindows => {
+                    profile != AnalysisProfile::Fast
+                }
+            })
+    }
+
+    pub fn parameters_for_engine_capability(&self, capability: &str) -> Option<serde_json::Value> {
+        let node = self
+            .nodes
+            .iter()
+            .filter(|node| engine_capabilities(node).contains(&capability))
+            .max_by_key(|node| node.priority)?;
+        Some(self.engine_resolved_parameters(node))
+    }
+
+    pub fn engine_resolved_parameters(&self, node: &WorkflowNodeV1) -> serde_json::Value {
+        if node.capability_id == "fusion.singing_evidence" {
+            serde_json::json!({
+                "fusion_mode": self.fusion_mode.parameter_value(),
+            })
+        } else {
+            serde_json::json!({})
+        }
+    }
+
+    /// Resolves the Engine's internal baseline from Stage 3 participation.
+    /// The deserialize-only `fusion_policy` field is intentionally ignored.
+    pub fn resolved_expert_fusion_policy(
+        &self,
+        profile: AnalysisProfile,
+    ) -> Option<ExpertFusionPolicyV1> {
+        self.nodes
+            .iter()
+            .any(|node| {
+                node.capability_id == "fusion.singing_evidence"
+                    && node.execution_policy != WorkflowExecutionPolicyV1::Disabled
+            })
+            .then(|| ExpertFusionPolicyV1 {
+                continuous_f0: if self.should_schedule_model("rmvpe", profile) {
+                    ContinuousF0SourceV1::Rmvpe
+                } else {
+                    ContinuousF0SourceV1::Fcpe
+                },
+                note_lengths: if self.should_schedule_model("game", profile) {
+                    NoteLengthSourceV1::Game
+                } else {
+                    NoteLengthSourceV1::F0Derived
+                },
+                onset_support: OnsetSupportSourceV1::Automatic,
+            })
+    }
+
+    pub fn fusion_mode(&self) -> FusionModeV1 {
+        self.fusion_mode
+    }
+
+    fn validate_expert_fusion_policy(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
+        let fusion_node = self
+            .nodes
+            .iter()
+            .find(|node| node.capability_id == "fusion.singing_evidence");
+        let Some(fusion_node) = fusion_node else {
+            return Ok(());
+        };
+        if fusion_node.execution_policy == WorkflowExecutionPolicyV1::Disabled {
+            return Ok(());
+        }
+        if !self.should_schedule_model("rmvpe", request.analysis.profile)
+            && !self.should_schedule_model("fcpe", request.analysis.profile)
+        {
+            return Err(invalid(
+                "Stage 3 must schedule at least one continuous F0 expert for final fusion",
+            )
+            .for_request(&request.request_id));
+        }
+        Ok(())
     }
 
     pub fn node_for_model(&self, model_id: &str) -> Option<&WorkflowNodeV1> {
         self.nodes
             .iter()
             .filter(|node| {
-                node.model_id.as_deref() == Some(model_id)
-                    || node.parameters.as_object().is_some_and(|parameters| {
-                        parameters
-                            .values()
-                            .any(|value| value.as_str() == Some(model_id))
-                    })
+                node.provider_preferences.primary.as_deref() == Some(model_id)
+                    || node.provider_preferences.instrumental.as_deref() == Some(model_id)
             })
             .max_by_key(|node| node.priority)
     }
@@ -325,10 +588,23 @@ impl WorkflowExecutionV1 {
                 );
             }
         }
+        let primary_role = request.primary_source()?.role;
+        let force_lead_isolation = request
+            .requested_artifacts
+            .stems
+            .contains(&AudioRole::LeadVocal)
+            && !matches!(
+                primary_role,
+                AudioRole::LeadVocal | AudioRole::CleanLeadVocal
+            );
         let active_capabilities = self
             .nodes
             .iter()
-            .filter(|node| node.execution_policy != WorkflowExecutionPolicyV1::Disabled)
+            .filter(|node| {
+                node.execution_policy != WorkflowExecutionPolicyV1::Disabled
+                    || (force_lead_isolation
+                        && engine_capabilities(node).contains(&"audio.lead_isolate"))
+            })
             .flat_map(engine_capabilities)
             .collect::<BTreeSet<_>>();
         let terminal_types = self
@@ -375,6 +651,14 @@ impl WorkflowExecutionV1 {
         for role in &request.requested_artifacts.stems {
             let capability = match role {
                 AudioRole::GuideVocals | AudioRole::VocalStem => "audio.extract_vocals",
+                AudioRole::LeadVocal
+                    if matches!(
+                        primary_role,
+                        AudioRole::LeadVocal | AudioRole::CleanLeadVocal
+                    ) =>
+                {
+                    continue;
+                }
                 AudioRole::LeadVocal => "audio.lead_isolate",
                 AudioRole::Instrumental => "audio.extract_instrumental",
                 AudioRole::BackingVocal | AudioRole::HarmonyVocal => "audio.lead_partition",
@@ -386,8 +670,18 @@ impl WorkflowExecutionV1 {
     }
 }
 
+fn engine_model_for_capability<'a>(node: &'a WorkflowNodeV1, capability: &str) -> Option<&'a str> {
+    if capability == "audio.extract_instrumental" {
+        return node.provider_preferences.instrumental.as_deref();
+    }
+    node.provider_preferences.primary.as_deref()
+}
+
 pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
-    let mut capabilities = match (node.capability_id.as_str(), node.model_id.as_deref()) {
+    let mut capabilities = match (
+        node.capability_id.as_str(),
+        node.provider_preferences.primary.as_deref(),
+    ) {
         ("audio.source", None) => vec!["audio.decode"],
         ("audio.separate_vocal_bgm", Some("bs_roformer_vocals_ep317")) => {
             vec!["audio.extract_vocals"]
@@ -402,10 +696,14 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
         ("analysis.asr", Some("qwen3_asr_1_7b")) => vec!["speech.transcribe"],
         ("analysis.asr", Some("firered_asr2_aed")) => vec!["speech.transcribe.challenger"],
         ("analysis.forced_alignment", Some("qwen3_forced_aligner_0_6b")) => {
-            vec!["speech.align"]
+            vec!["speech.align", "fusion.alignment"]
         }
-        ("analysis.pitch_f0", Some("rmvpe")) => vec!["pitch.track"],
-        ("analysis.pitch_f0", Some("fcpe")) => vec!["pitch.secondary"],
+        ("analysis.pitch_f0", Some("rmvpe")) => {
+            vec!["pitch.track", "pitch.secondary.rmvpe"]
+        }
+        ("analysis.pitch_f0", Some("fcpe")) => {
+            vec!["pitch.track", "pitch.secondary", "pitch.secondary.fcpe"]
+        }
         ("analysis.note_boundary", Some("game")) => vec!["notes.game"],
         ("analysis.note_boundary", Some("basic_pitch")) => vec!["notes.basic_pitch"],
         ("analysis.note_boundary", Some("rosvot")) => vec!["notes.rosvot"],
@@ -416,23 +714,126 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
         ("fusion.transcript", None) => vec!["fusion.transcript"],
         ("fusion.singing_evidence", None) => vec!["fusion.singing"],
         ("fusion.candidate_graph", None) => vec!["fusion.candidate_graph"],
-        ("finalize.canonical_singing_track", None) => vec!["finalize.vocal_chart"],
+        ("finalize.canonical_singing_track", None) => {
+            vec!["rhythm.quantize", "finalize.vocal_chart"]
+        }
         _ => Vec::new(),
     };
     if node.capability_id == "audio.separate_vocal_bgm"
-        && node
-            .parameters
-            .get("instrumental_model_id")
-            .and_then(serde_json::Value::as_str)
-            == Some("melband_roformer_inst_v2")
+        && matches!(
+            node.provider_preferences.instrumental.as_deref(),
+            Some("melband_roformer_inst_v2" | "bs_roformer_vocals_ep317")
+        )
     {
         capabilities.push("audio.extract_instrumental");
     }
     capabilities
 }
 
+fn validate_execution_invocations<'a>(
+    node: &'a WorkflowNodeV1,
+    invocation_ids: &mut BTreeSet<&'a str>,
+    request: &AnalyzeRequestV1,
+) -> EngineResult<()> {
+    let available = engine_capabilities(node);
+    if node.execution_invocations.is_empty() {
+        if available
+            .iter()
+            .any(|capability| capability.starts_with("audio.extract_"))
+        {
+            return Err(invalid(
+                "workflow omits the required typed provider execution invocation topology",
+            )
+            .for_request(&request.request_id));
+        }
+        return Ok(());
+    }
+    let mut declared_capabilities = BTreeSet::new();
+    let mut declared_outputs = BTreeSet::new();
+    for invocation in &node.execution_invocations {
+        validate_identifier(&invocation.invocation_id, "workflow execution invocation")?;
+        validate_identifier(&invocation.provider_id, "workflow execution provider")?;
+        if !invocation_ids.insert(&invocation.invocation_id) {
+            return Err(
+                invalid("workflow contains duplicate execution invocation identity")
+                    .for_request(&request.request_id),
+            );
+        }
+        if invocation.capabilities.is_empty() || invocation.output_ports.is_empty() {
+            return Err(
+                invalid("workflow execution invocation has no capability or output")
+                    .for_request(&request.request_id),
+            );
+        }
+        for capability in &invocation.capabilities {
+            if !available.contains(&capability.as_str())
+                || engine_model_for_capability(node, capability) != Some(&invocation.provider_id)
+                || !declared_capabilities.insert(capability.as_str())
+            {
+                return Err(invalid(
+                    "workflow execution invocation disagrees with typed provider capability binding",
+                )
+                .for_request(&request.request_id));
+            }
+            let required_output = match capability.as_str() {
+                "audio.extract_vocals" => Some("vocal"),
+                "audio.extract_instrumental" => Some("instrumental"),
+                _ => None,
+            };
+            if required_output.is_some_and(|required_output| {
+                !invocation
+                    .output_ports
+                    .iter()
+                    .any(|output| output == required_output)
+            }) {
+                return Err(invalid(
+                    "workflow execution invocation disagrees with semantic capability/output binding",
+                )
+                .for_request(&request.request_id));
+            }
+        }
+        for output in &invocation.output_ports {
+            if port_contract(node, output, PortDirection::Output).is_none()
+                || !declared_outputs.insert(output.as_str())
+            {
+                return Err(invalid(
+                    "workflow execution invocation has an unknown or duplicate output binding",
+                )
+                .for_request(&request.request_id));
+            }
+            let required_capability = match output.as_str() {
+                "vocal" => Some("audio.extract_vocals"),
+                "instrumental" => Some("audio.extract_instrumental"),
+                _ => None,
+            };
+            if required_capability.is_some_and(|required_capability| {
+                !invocation
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == required_capability)
+            }) {
+                return Err(invalid(
+                    "workflow execution invocation disagrees with semantic capability/output binding",
+                )
+                .for_request(&request.request_id));
+            }
+        }
+    }
+    for capability in available
+        .iter()
+        .filter(|capability| capability.starts_with("audio.extract_"))
+    {
+        if !declared_capabilities.contains(capability) {
+            return Err(invalid(
+                "workflow execution invocation topology omits a provider execution",
+            )
+            .for_request(&request.request_id));
+        }
+    }
+    Ok(())
+}
+
 fn validate_node(node: &WorkflowNodeV1, request: &AnalyzeRequestV1) -> EngineResult<()> {
-    validate_runtime_claim(node, request)?;
     if engine_capabilities(node).is_empty()
         && node.execution_policy != WorkflowExecutionPolicyV1::Disabled
     {
@@ -446,27 +847,16 @@ fn validate_node(node: &WorkflowNodeV1, request: &AnalyzeRequestV1) -> EngineRes
         .with_capability(&node.capability_id)
         .for_request(&request.request_id));
     }
-    if !matches!(
-        node.runtime.as_str(),
-        "openvino"
-            | "vulkan"
-            | "native_dsp"
-            | "cpu_reference"
-            | "pinned_qwen_asr_vulkan"
-            | "pinned_qwen_align_vulkan"
-            | "unresolved"
-    ) {
-        return Err(invalid(format!(
-            "workflow node {} declares unknown runtime {}",
-            node.instance_id, node.runtime
-        ))
-        .for_request(&request.request_id));
-    }
-    if node.parameters.as_object().is_none() {
-        return Err(
-            invalid("workflow resolved parameters must be a JSON object")
-                .for_request(&request.request_id),
-        );
+    for (slot, provider) in [
+        ("primary", node.provider_preferences.primary.as_deref()),
+        (
+            "instrumental",
+            node.provider_preferences.instrumental.as_deref(),
+        ),
+    ] {
+        if let Some(provider) = provider {
+            validate_identifier(provider, &format!("workflow {slot} provider preference"))?;
+        }
     }
     Ok(())
 }
@@ -537,7 +927,7 @@ fn port_contract(
             | "analysis.acoustic_dsp",
             Input,
             "audio",
-        ) => Some(port("audio", Some("lead_vocal"), true, false)),
+        ) => Some(port("audio", None, true, false)),
         ("analysis.asr", Output, "transcript") => {
             Some(port("transcript_evidence", None, false, false))
         }
@@ -556,9 +946,7 @@ fn port_contract(
             Some(port("transcript_evidence", None, true, true))
         }
         ("fusion.transcript", Output, "lyrics") => Some(port("lyrics", None, false, false)),
-        ("analysis.forced_alignment", Input, "audio") => {
-            Some(port("audio", Some("lead_vocal"), true, false))
-        }
+        ("analysis.forced_alignment", Input, "audio") => Some(port("audio", None, true, false)),
         ("analysis.forced_alignment", Input, "lyrics") => Some(port("lyrics", None, true, false)),
         ("analysis.forced_alignment", Output, "alignment") => {
             Some(port("alignment_evidence", None, false, false))
@@ -567,7 +955,7 @@ fn port_contract(
             Some(port("pitch_evidence", None, true, true))
         }
         ("fusion.singing_evidence", Input, "boundaries") => {
-            Some(port("boundary_evidence", None, true, true))
+            Some(port("boundary_evidence", None, false, true))
         }
         ("fusion.singing_evidence", Input, "alignment") => {
             Some(port("alignment_evidence", None, true, false))
@@ -603,6 +991,27 @@ fn port_contract(
     }
 }
 
+fn producer_policy_covers_consumer(
+    producer: WorkflowExecutionPolicyV1,
+    consumer: WorkflowExecutionPolicyV1,
+) -> bool {
+    match consumer {
+        WorkflowExecutionPolicyV1::Disabled => true,
+        WorkflowExecutionPolicyV1::Always => producer == WorkflowExecutionPolicyV1::Always,
+        WorkflowExecutionPolicyV1::OnDisagreement
+        | WorkflowExecutionPolicyV1::DisagreementWindows => matches!(
+            producer,
+            WorkflowExecutionPolicyV1::Always
+                | WorkflowExecutionPolicyV1::OnDisagreement
+                | WorkflowExecutionPolicyV1::DisagreementWindows
+        ),
+        WorkflowExecutionPolicyV1::MaximumOnly => matches!(
+            producer,
+            WorkflowExecutionPolicyV1::Always | WorkflowExecutionPolicyV1::MaximumOnly
+        ),
+    }
+}
+
 fn validate_required_inputs(
     workflow: &WorkflowExecutionV1,
     nodes: &BTreeMap<&str, &WorkflowNodeV1>,
@@ -615,7 +1024,7 @@ fn validate_required_inputs(
         let input_ports = workflow
             .bindings
             .iter()
-            .filter(|binding| binding.to_node == node.analysis_node)
+            .filter(|binding| binding.to_node == node.instance_id)
             .fold(
                 BTreeMap::<&str, Vec<&WorkflowBindingV1>>::new(),
                 |mut map, binding| {
@@ -660,19 +1069,21 @@ fn validate_required_inputs(
                 .for_request(&request.request_id));
             }
             if contract.required
-                && node.execution_policy == WorkflowExecutionPolicyV1::Always
                 && input_ports.get(required_port).is_some_and(|bindings| {
                     bindings.iter().all(|binding| {
                         nodes
                             .get(binding.from_node.as_str())
                             .is_none_or(|producer| {
-                                producer.execution_policy != WorkflowExecutionPolicyV1::Always
+                                !producer_policy_covers_consumer(
+                                    producer.execution_policy,
+                                    node.execution_policy,
+                                )
                             })
                     })
                 })
             {
                 return Err(invalid(format!(
-                    "workflow node {} required input {required_port} depends only on conditional producers",
+                    "workflow node {} required input {required_port} depends only on producers whose execution policy may omit it",
                     node.instance_id
                 ))
                 .for_request(&request.request_id));
@@ -680,45 +1091,6 @@ fn validate_required_inputs(
         }
     }
     Ok(())
-}
-
-fn validate_runtime_claim(node: &WorkflowNodeV1, request: &AnalyzeRequestV1) -> EngineResult<()> {
-    if node.execution_policy == WorkflowExecutionPolicyV1::Disabled || node.runtime == "unresolved"
-    {
-        return Ok(());
-    }
-    let compatible = match node.model_id.as_deref() {
-        None => node.runtime == "native_dsp",
-        Some(
-            "bs_roformer_vocals_ep317"
-            | "melband_roformer_harmony"
-            | "melband_roformer_denoise_aufr33"
-            | "melband_roformer_dereverb_anvuew",
-        ) => node.runtime == "vulkan",
-        Some("qwen3_asr_1_7b") => node.runtime == "pinned_qwen_asr_vulkan",
-        Some("qwen3_forced_aligner_0_6b") => node.runtime == "pinned_qwen_align_vulkan",
-        Some(
-            "rmvpe" | "fcpe" | "game" | "basic_pitch" | "firered_asr2_aed" | "rosvot" | "stars",
-        ) => matches!(node.runtime.as_str(), "openvino" | "cpu_reference"),
-        Some(_) => false,
-    };
-    if compatible {
-        Ok(())
-    } else {
-        Err(EngineError::new(
-            EngineErrorCode::RuntimeResolutionFailed,
-            format!(
-                "workflow node {} declares a runtime incompatible with its model",
-                node.instance_id
-            ),
-        )
-        .with_resource(
-            node.model_id
-                .as_deref()
-                .map_or("workflow:native", |model| model),
-        )
-        .for_request(&request.request_id))
-    }
 }
 
 fn validate_acyclic(
@@ -838,11 +1210,30 @@ mod tests {
                 binding("lead", "lead", "pitch", "audio", "lead_vocal", true)
             ],
             "terminal_outputs": [{
-                "node": "workflow.pitch",
+                "node": "pitch",
                 "port": "pitch",
                 "semantic_type": "pitch_evidence"
             }]
         })
+    }
+
+    fn workflow_with_typed_fusion(policy: &str) -> serde_json::Value {
+        let mut value = workflow_value();
+        let fusion = node(
+            "fusion",
+            "fusion.singing_evidence",
+            None,
+            policy,
+            500,
+            "native_dsp",
+        );
+        value["nodes"].as_array_mut().unwrap().push(fusion);
+        value["fusion_policy"] = serde_json::json!({
+            "continuous_f0": "rmvpe",
+            "note_lengths": "game",
+            "onset_support": "automatic"
+        });
+        value
     }
 
     fn binding(
@@ -854,9 +1245,9 @@ mod tests {
         analyzer: bool,
     ) -> serde_json::Value {
         serde_json::json!({
-            "from_node": format!("workflow.{from}"),
+            "from_node": from,
             "from_port": from_port,
-            "to_node": format!("workflow.{to}"),
+            "to_node": to,
             "to_port": to_port,
             "semantic_type": "audio",
             "audio_role": role,
@@ -873,16 +1264,25 @@ mod tests {
         priority: i32,
         runtime: &str,
     ) -> serde_json::Value {
-        serde_json::json!({
+        let _ = runtime;
+        let mut value = serde_json::json!({
             "instance_id": id,
             "capability_id": capability,
-            "analysis_node": format!("workflow.{id}"),
-            "model_id": model,
             "execution_policy": policy,
             "priority": priority,
-            "runtime": runtime,
-            "parameters": {}
-        })
+            "provider_preferences": {
+                "primary": model
+            }
+        });
+        if capability == "audio.separate_vocal_bgm" {
+            value["execution_invocations"] = serde_json::json!([{
+                "invocation_id": format!("{id}.vocal"),
+                "provider_id": model.expect("separation fixture has a provider"),
+                "capabilities": ["audio.extract_vocals"],
+                "output_ports": ["vocal"]
+            }]);
+        }
+        value
     }
 
     #[test]
@@ -906,6 +1306,306 @@ mod tests {
     }
 
     #[test]
+    fn separation_models_map_to_independent_presentation_nodes() {
+        let mut value = workflow_value();
+        value["nodes"][1]["provider_preferences"]["instrumental"] =
+            serde_json::json!("melband_roformer_inst_v2");
+        value["nodes"][1]["execution_invocations"] = serde_json::json!([
+            {
+                "invocation_id": "split.vocal",
+                "provider_id": "bs_roformer_vocals_ep317",
+                "capabilities": ["audio.extract_vocals"],
+                "output_ports": ["vocal"]
+            },
+            {
+                "invocation_id": "split.instrumental",
+                "provider_id": "melband_roformer_inst_v2",
+                "capabilities": ["audio.extract_instrumental"],
+                "output_ports": ["instrumental"]
+            }
+        ]);
+        let workflow: WorkflowExecutionV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            workflow.presentation_node_for_engine_execution(
+                "audio.extract_vocals",
+                Some("bs_roformer_vocals_ep317")
+            ),
+            Some("split.vocal".to_string())
+        );
+        assert_eq!(
+            workflow.presentation_node_for_engine_execution(
+                "audio.extract_instrumental",
+                Some("melband_roformer_inst_v2")
+            ),
+            Some("split.instrumental".to_string())
+        );
+        assert_eq!(
+            workflow.model_for_engine_capability("audio.extract_instrumental"),
+            Some("melband_roformer_inst_v2")
+        );
+    }
+
+    #[test]
+    fn ep317_dual_output_strategy_is_one_validated_invocation() {
+        let mut value = workflow_value();
+        value["nodes"][1]["provider_preferences"]["instrumental"] =
+            serde_json::json!("bs_roformer_vocals_ep317");
+        value["nodes"][1]["execution_invocations"] = serde_json::json!([{
+            "invocation_id": "split",
+            "provider_id": "bs_roformer_vocals_ep317",
+            "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
+            "output_ports": ["vocal", "instrumental"]
+        }]);
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
+        let workflow = WorkflowExecutionV1::from_request(&request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            workflow.model_for_engine_capability("audio.extract_instrumental"),
+            Some("bs_roformer_vocals_ep317")
+        );
+        assert_eq!(
+            workflow.presentation_node_for_engine_execution(
+                "audio.extract_instrumental",
+                Some("bs_roformer_vocals_ep317")
+            ),
+            Some("split".to_string())
+        );
+    }
+
+    #[test]
+    fn separation_requires_typed_provider_invocation_topology() {
+        let mut value = workflow_value();
+        value["nodes"][1]["execution_invocations"] = serde_json::json!([]);
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
+        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(error.message.contains("invocation topology"));
+    }
+
+    #[test]
+    fn forged_provider_invocation_topology_fails_at_the_engine_boundary() {
+        let mut value = workflow_value();
+        value["nodes"][1]["execution_invocations"] = serde_json::json!([{
+            "invocation_id": "split.vocal",
+            "provider_id": "melband_roformer_inst_v2",
+            "capabilities": ["audio.extract_vocals"],
+            "output_ports": ["vocal"]
+        }]);
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
+        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(error.message.contains("typed provider capability binding"));
+    }
+
+    #[test]
+    fn swapped_separation_output_bindings_fail_at_the_engine_boundary() {
+        let mut value = workflow_value();
+        value["nodes"][1]["provider_preferences"]["instrumental"] =
+            serde_json::json!("melband_roformer_inst_v2");
+        value["nodes"][1]["execution_invocations"] = serde_json::json!([
+            {
+                "invocation_id": "split.vocal",
+                "provider_id": "bs_roformer_vocals_ep317",
+                "capabilities": ["audio.extract_vocals"],
+                "output_ports": ["instrumental"]
+            },
+            {
+                "invocation_id": "split.instrumental",
+                "provider_id": "melband_roformer_inst_v2",
+                "capabilities": ["audio.extract_instrumental"],
+                "output_ports": ["vocal"]
+            }
+        ]);
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
+        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(error.message.contains("semantic capability/output binding"));
+    }
+
+    #[test]
+    fn engine_native_substages_reuse_their_owning_workflow_card() {
+        let mut value = workflow_value();
+        value["nodes"].as_array_mut().unwrap().push(node(
+            "alignment",
+            "analysis.forced_alignment",
+            Some("qwen3_forced_aligner_0_6b"),
+            "always",
+            600,
+            "vulkan",
+        ));
+        value["nodes"].as_array_mut().unwrap().push(node(
+            "canonical",
+            "finalize.canonical_singing_track",
+            None,
+            "always",
+            300,
+            "native_dsp",
+        ));
+        let workflow: WorkflowExecutionV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            workflow.presentation_node_for_engine_execution("fusion.alignment", None),
+            Some("alignment".to_string())
+        );
+        assert_eq!(
+            workflow.presentation_node_for_engine_execution("rhythm.quantize", None),
+            Some("canonical".to_string())
+        );
+    }
+
+    #[test]
+    fn consumer_policy_rejects_required_input_from_less_available_producer() {
+        let mut value = workflow_value();
+        value["nodes"][2]["execution_policy"] = serde_json::json!("maximum_only");
+        value["nodes"][3]["execution_policy"] = serde_json::json!("on_disagreement");
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.vocal_chart = false;
+        request.requested_artifacts.singing_analysis = false;
+        request.requested_artifacts.transcript = false;
+        request.requested_artifacts.alignment = false;
+        request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
+        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(error.message.contains("execution policy may omit it"));
+
+        let mut reverse = workflow_value();
+        reverse["nodes"][2]["execution_policy"] = serde_json::json!("on_disagreement");
+        reverse["nodes"][3]["execution_policy"] = serde_json::json!("maximum_only");
+        let mut reverse_request = valid_request(AudioRole::OriginalMix);
+        reverse_request.requested_artifacts.vocal_chart = false;
+        reverse_request.requested_artifacts.singing_analysis = false;
+        reverse_request.requested_artifacts.transcript = false;
+        reverse_request.requested_artifacts.alignment = false;
+        reverse_request
+            .extensions
+            .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), reverse);
+        let reverse_error = WorkflowExecutionV1::from_request(&reverse_request).unwrap_err();
+        assert_eq!(reverse_error.code, EngineErrorCode::InvalidContract);
+        assert!(
+            reverse_error
+                .message
+                .contains("execution policy may omit it")
+        );
+    }
+
+    #[test]
+    fn stage_four_parameters_expose_only_fusion_mode() {
+        let workflow: WorkflowExecutionV1 =
+            serde_json::from_value(workflow_with_typed_fusion("always")).unwrap();
+        let fusion = workflow
+            .nodes
+            .iter()
+            .find(|node| node.capability_id == "fusion.singing_evidence")
+            .unwrap();
+        assert_eq!(
+            workflow.engine_resolved_parameters(fusion),
+            serde_json::json!({"fusion_mode": "algorithm"})
+        );
+        assert_eq!(
+            workflow.resolved_expert_fusion_policy(AnalysisProfile::Balanced),
+            Some(ExpertFusionPolicyV1 {
+                continuous_f0: ContinuousF0SourceV1::Rmvpe,
+                note_lengths: NoteLengthSourceV1::F0Derived,
+                onset_support: OnsetSupportSourceV1::Automatic,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_fusion_policy_is_ignored_in_favor_of_stage_three() {
+        let mut value = workflow_with_typed_fusion("always");
+        value["fusion_policy"]["continuous_f0"] = serde_json::json!("fcpe");
+        value["fusion_policy"]["note_lengths"] = serde_json::json!("game");
+        value["fusion_policy"]["onset_support"] = serde_json::json!("basic_pitch");
+        let workflow: WorkflowExecutionV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            workflow.resolved_expert_fusion_policy(AnalysisProfile::Balanced),
+            Some(ExpertFusionPolicyV1 {
+                continuous_f0: ContinuousF0SourceV1::Rmvpe,
+                note_lengths: NoteLengthSourceV1::F0Derived,
+                onset_support: OnsetSupportSourceV1::Automatic,
+            })
+        );
+    }
+
+    #[test]
+    fn conditional_game_participation_resolves_by_profile() {
+        let mut value = workflow_with_typed_fusion("always");
+        value["nodes"].as_array_mut().unwrap().push(node(
+            "game",
+            "analysis.note_boundary",
+            Some("game"),
+            "maximum_only",
+            600,
+            "openvino",
+        ));
+        let workflow: WorkflowExecutionV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            workflow
+                .resolved_expert_fusion_policy(AnalysisProfile::Fast)
+                .unwrap()
+                .note_lengths,
+            NoteLengthSourceV1::F0Derived
+        );
+        assert_eq!(
+            workflow
+                .resolved_expert_fusion_policy(AnalysisProfile::Maximum)
+                .unwrap()
+                .note_lengths,
+            NoteLengthSourceV1::Game
+        );
+    }
+
+    #[test]
+    fn active_fcpe_primary_wins_over_a_higher_priority_disabled_rmvpe_node() {
+        let mut value = workflow_value();
+        value["nodes"][3]["execution_policy"] = serde_json::json!("disabled");
+        value["nodes"].as_array_mut().unwrap().push(node(
+            "fcpe",
+            "analysis.pitch_f0",
+            Some("fcpe"),
+            "always",
+            670,
+            "openvino",
+        ));
+        let workflow: WorkflowExecutionV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            workflow.policy_for_engine_capability("pitch.track"),
+            Some(WorkflowExecutionPolicyV1::Always)
+        );
+    }
+
+    #[test]
     fn unknown_version_invalid_binding_and_cycle_fail_at_trust_boundary() {
         let mut request = valid_request(AudioRole::OriginalMix);
         request.requested_artifacts.vocal_chart = false;
@@ -914,7 +1614,7 @@ mod tests {
         request.requested_artifacts.alignment = false;
 
         let mut unknown = workflow_value();
-        unknown["version"] = serde_json::json!(2);
+        unknown["version"] = serde_json::json!(99);
         request
             .extensions
             .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), unknown);
@@ -983,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_runtime_and_forged_terminal_port_fail_closed() {
+    fn studio_runtime_claim_and_forged_terminal_port_fail_closed() {
         let mut request = valid_request(AudioRole::OriginalMix);
         request.requested_artifacts.vocal_chart = false;
         request.requested_artifacts.singing_analysis = false;
@@ -995,12 +1695,9 @@ mod tests {
         request
             .extensions
             .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), runtime);
-        assert_eq!(
-            WorkflowExecutionV1::from_request(&request)
-                .unwrap_err()
-                .code,
-            EngineErrorCode::RuntimeResolutionFailed
-        );
+        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(error.message.contains("unknown field `runtime`"));
 
         let mut terminal = workflow_value();
         terminal["terminal_outputs"][0]["port"] = serde_json::json!("not-pitch");

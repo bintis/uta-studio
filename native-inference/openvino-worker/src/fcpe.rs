@@ -59,11 +59,15 @@ fn model_dir(config: &serde_json::Value) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+fn window_progress(window_index: usize, window_count: usize) -> (u64, u64) {
+    ((window_index + 1) as u64, window_count as u64)
+}
+
 pub fn infer(
     audio: &[f32],
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &'static str),
+    mut progress: impl FnMut(f32, &'static str, (u64, u64)),
 ) -> Result<PathBuf, String> {
     if audio.is_empty() {
         return Err("FCPE requires non-empty decoded audio".to_string());
@@ -117,6 +121,7 @@ pub fn infer(
         progress(
             (window_index + 1) as f32 / window_count as f32,
             "Running FCPE pitch windows",
+            window_progress(window_index, window_count),
         );
     }
     if frames.is_empty() {
@@ -183,6 +188,12 @@ fn pitch_frame(source_sample: usize, value: f32) -> PitchFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_progress_reports_exact_measured_units() {
+        assert_eq!(window_progress(0, 3), (1, 3));
+        assert_eq!(window_progress(2, 3), (3, 3));
+    }
 
     #[test]
     fn invalid_and_unvoiced_outputs_never_fabricate_pitch() {

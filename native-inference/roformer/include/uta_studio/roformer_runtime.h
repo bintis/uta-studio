@@ -29,7 +29,7 @@ public:
     std::vector<std::vector<float>> Process(const std::vector<float>& input_audio,
                                int chunk_size = 352800,
                                int num_overlap = 2,
-                               std::function<void(float)> progress_callback = nullptr,
+                               std::function<void(int, int)> progress_callback = nullptr,
                                CancelCallback cancel_callback = nullptr,
                                int batch_size = 1,
                                bool serial_pipeline = false);
@@ -43,14 +43,14 @@ public:
     int GetSampleRate() const;
     int GetNumStems() const;
 
-    // Static helper for Overlap-Add logic (matches Python exactly)
+    // Static helper for the pinned overlap-add contract.
     // model_func: input [samples], output [stems][samples] (interleaved stereo)
     using ModelCallback = std::function<std::vector<std::vector<float>>(const std::vector<float>&)>;
     static std::vector<std::vector<float>> ProcessOverlapAdd(const std::vector<float>& input_audio,
                                                 int chunk_size,
                                                 int num_overlap,
                                                 ModelCallback model_func,
-                                                std::function<void(float)> progress_callback = nullptr,
+                                                std::function<void(int, int)> progress_callback = nullptr,
                                                 CancelCallback cancel_callback = nullptr);
 
 private:
@@ -58,7 +58,7 @@ private:
     std::vector<std::vector<float>> ProcessOverlapAddPipelined(const std::vector<float>& input_audio,
                                                   int chunk_size,
                                                   int num_overlap,
-                                                  std::function<void(float)> progress_callback,
+                                                  std::function<void(int, int)> progress_callback,
                                                   CancelCallback cancel_callback,
                                                   int batch_size);
 

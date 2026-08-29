@@ -2,6 +2,20 @@
 
 This changelog is generated from git history.
 
+## 0.7.0 — 2026-08-29
+
+### Melody path and score coherence
+
+- Fixed Qwen long-form forced-alignment windows failing on real songs when adjacent windows measured overlapping timing at a shared seam: window boundaries now reconcile deterministically to a tick-aligned point inside audio both windows actually measured, or fail closed rather than fabricate a result, and a bounded retry re-plans genuinely different window boundaries before giving up.
+- Fixed Qwen ASR failing on dense-text windows that exceeded the pinned engine's fixed generation-token budget: a detected truncation now splits the offending window and retries each half, bounded by a minimum window size and maximum split depth, with progress reported as real audio-time coverage.
+- Fixed canonical (caller-supplied) CJK lyrics losing every line boundary before reaching the aligner, which forced fragile per-character window planning instead of the far more reliable per-line planning already used for whitespace-delimited languages.
+- Raised the fusion candidate-evidence relation bound to match real full-length-song evidence density; the previous ceiling was calibrated against synthetic fixtures and rejected legitimate real-song candidate pools outright.
+- Both retained real-song end-to-end routes (caller-supplied lyrics and ASR-derived transcript) now produce a complete, provenance-backed singing chart.
+
+### Packaging and cross-platform build
+
+- Fixed the Windows build of the Qwen native worker, which previously failed to compile due to Unix-only process-group APIs. The pinned Qwen engine's process tree is now supervised on Windows through a kill-on-close Job Object (mirroring the existing fusion-agent adapter pattern), so a crashed or cancelled supervisor cannot orphan a GPU engine process on either platform.
+
 ## 0.6.0 — 2026-08-24
 
 ### Native analysis platform

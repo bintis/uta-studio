@@ -197,6 +197,101 @@ pub(crate) fn poll_export_job(
     invalidated.invalidate(UiDirtyRegion::Library);
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LibraryAudioSource {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) format: String,
+    pub(crate) path: PathBuf,
+}
+
+fn audio_source_format(path: &std::path::Path) -> String {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| "AUDIO".to_string())
+}
+
+fn artifact_audio_source_label(revision: &app_core::ArtifactRevision) -> Option<String> {
+    use app_core::ArtifactKind;
+
+    Some(match revision.kind {
+        ArtifactKind::VocalStem => "Vocals".to_string(),
+        ArtifactKind::InstrumentalStem => "BGM".to_string(),
+        ArtifactKind::RawVocalStem => "Raw vocals".to_string(),
+        ArtifactKind::DenoisedVocalStem => "Denoised vocals".to_string(),
+        ArtifactKind::DereverbedVocalStem => "Dereverbed vocals".to_string(),
+        ArtifactKind::AnalysisVocalStem => "Lead vocal".to_string(),
+        ArtifactKind::HighQualityInstrumentalStem => "High-quality BGM".to_string(),
+        ArtifactKind::DenoisedInstrumentalStem => "Denoised BGM".to_string(),
+        ArtifactKind::DereverbedInstrumentalStem => "Dereverbed BGM".to_string(),
+        ArtifactKind::KaraokeInstrumentalStem => "Karaoke BGM".to_string(),
+        ArtifactKind::DrumStem => "Drums".to_string(),
+        ArtifactKind::BassStem => "Bass".to_string(),
+        ArtifactKind::GuitarStem => "Guitar".to_string(),
+        ArtifactKind::PianoStem => "Piano".to_string(),
+        ArtifactKind::OtherStem => "Other stem".to_string(),
+        ArtifactKind::AudioStem => format!("Processed audio · {}", revision.producer_node),
+        _ => return None,
+    })
+}
+
+pub(crate) fn library_audio_sources(song: &Song) -> Vec<LibraryAudioSource> {
+    let mut sources = vec![LibraryAudioSource {
+        id: "original".to_string(),
+        label: "Original".to_string(),
+        format: audio_source_format(&song.path),
+        path: song.path.clone(),
+    }];
+    let mut paths = std::collections::BTreeSet::from([song.path.clone()]);
+    let mut revisions = app_core::load_analysis_artifacts(&song.file_hash);
+    revisions.sort_by_key(|revision| std::cmp::Reverse(revision.created_at_ms));
+    for revision in revisions {
+        if !revision.active || revision.invalidated || !revision.path.is_file() {
+            continue;
+        }
+        let Some(label) = artifact_audio_source_label(&revision) else {
+            continue;
+        };
+        if !paths.insert(revision.path.clone()) {
+            continue;
+        }
+        sources.push(LibraryAudioSource {
+            id: format!("artifact:{}", revision.id),
+            label,
+            format: audio_source_format(&revision.path),
+            path: revision.path,
+        });
+    }
+
+    // Charts created before the immutable artifact inventory may still point
+    // at authorized compatibility stems. Keep those stems auditionable too.
+    if let Ok(chart) = app_core::load_chart(&song.file_hash) {
+        for (id, label, path) in [
+            (
+                "chart:instrumental",
+                "BGM",
+                PathBuf::from(chart.audio.instrumental),
+            ),
+            (
+                "chart:vocals",
+                "Vocals",
+                chart.audio.vocals.map(PathBuf::from).unwrap_or_default(),
+            ),
+        ] {
+            if path.is_file() && paths.insert(path.clone()) {
+                sources.push(LibraryAudioSource {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                    format: audio_source_format(&path),
+                    path,
+                });
+            }
+        }
+    }
+    sources
+}
+
 pub(crate) fn library_visible_position(playback: &LibraryPlayback) -> f64 {
     if playback.status.playing {
         (playback.status.position_secs + playback.last_audio_sync.elapsed().as_secs_f64()).min(
@@ -231,11 +326,62 @@ pub(crate) fn play_library_song(
         return Err(format!("Could not play the original source: {error}"));
     }
     playback.file_hash = Some(file_hash.to_string());
+    playback.audio_source_id = "original".to_string();
+    playback.audio_source_menu_open = false;
     playback.queue_index = playback.queue.iter().position(|hash| hash == file_hash);
     playback.visible_position = status.position_secs;
     playback.status = status;
     playback.last_audio_sync = Instant::now();
     Ok(())
+}
+
+pub(crate) fn select_library_audio_source(
+    audio: &uta_studio_audio::EditorAudioPlayer,
+    file_hash: &str,
+    source_id: &str,
+    playback: &mut LibraryPlayback,
+) -> Result<String, String> {
+    let song = app_core::load_song_by_hash(file_hash)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Song not found: {file_hash}"))?;
+    let source = library_audio_sources(&song)
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| "The selected audio source is no longer available.".to_string())?;
+    if playback.file_hash.as_deref() == Some(file_hash)
+        && playback.audio_source_id == source.id
+        && playback.status.loaded
+    {
+        playback.audio_source_menu_open = false;
+        return Ok(format!("Playing {}.", source.label));
+    }
+
+    let same_song = playback.file_hash.as_deref() == Some(file_hash);
+    let position = if same_song {
+        library_visible_position(playback)
+    } else {
+        0.0
+    };
+    let was_playing = same_song && playback.status.playing;
+    audio.load_path(&source.path)?;
+    let mut status = audio.set_volume(playback.volume)?;
+    if position > 0.0 {
+        status = audio.seek(position.min(status.duration_secs.max(0.0)))?;
+    }
+    if was_playing {
+        status = audio.play()?;
+    }
+    if let Some(error) = status.error.as_ref() {
+        return Err(format!("Could not play {}: {error}", source.label));
+    }
+    playback.file_hash = Some(file_hash.to_string());
+    playback.audio_source_id = source.id;
+    playback.audio_source_menu_open = false;
+    playback.queue_index = playback.queue.iter().position(|hash| hash == file_hash);
+    playback.visible_position = status.position_secs;
+    playback.status = status;
+    playback.last_audio_sync = Instant::now();
+    Ok(format!("Audio source: {}.", source.label))
 }
 
 /// §7.6 "Play audio artifact": plays one artifact revision's file (a
@@ -244,29 +390,6 @@ pub(crate) fn play_library_song(
 /// outside the library queue -- `playback.file_hash`/`queue`/`queue_index`
 /// are cleared rather than repurposed, since this isn't "now playing this
 /// song," it's "now previewing this artifact revision."
-pub(crate) fn play_artifact_revision(
-    audio: &uta_studio_audio::EditorAudioPlayer,
-    path: &std::path::Path,
-    playback: &mut LibraryPlayback,
-) -> Result<(), String> {
-    if !path.is_file() {
-        return Err(format!("Artifact file is unavailable: {}", path.display()));
-    }
-    audio.load_path(path)?;
-    audio.set_volume(playback.volume)?;
-    let status = audio.play()?;
-    if let Some(error) = status.error.as_ref() {
-        return Err(format!("Could not play this artifact: {error}"));
-    }
-    playback.file_hash = None;
-    playback.queue.clear();
-    playback.queue_index = None;
-    playback.visible_position = status.position_secs;
-    playback.status = status;
-    playback.last_audio_sync = Instant::now();
-    Ok(())
-}
-
 pub(crate) fn prepare_library_queue(
     songs: &[Song],
     file_hash: &str,

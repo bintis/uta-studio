@@ -1,0 +1,104 @@
+{
+  "format": "uta.vocal-chart",
+  "format_version": "0.3.0",
+  "timebase": 1000000,
+  "language": "en",
+  "tracks": [
+    {
+      "id": "p1-lead",
+      "role": "lead",
+      "part": 1,
+      "singer": "Alice",
+      "phrases": [
+        {
+          "id": "p1-phrase-1",
+          "notes": [
+            {
+              "id": "p1-note-1",
+              "start": 0,
+              "duration": 400000,
+              "pitch": {
+                "midi": 64
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "p1-lyric-1",
+                  "text": "Hello",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p2-lead",
+      "role": "lead",
+      "part": 2,
+      "singer": "Bob",
+      "phrases": [
+        {
+          "id": "p2-phrase-1",
+          "notes": [
+            {
+              "id": "p2-note-1",
+              "start": 200000,
+              "duration": 400000,
+              "pitch": {
+                "midi": 67
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "p2-lyric-1",
+                  "text": "World",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "backing",
+      "role": "backing",
+      "scoring_enabled": false,
+      "phrases": [
+        {
+          "id": "backing-phrase-1",
+          "notes": [
+            {
+              "id": "backing-note-1",
+              "start": 100000,
+              "duration": 300000,
+              "pitch": null,
+              "vocal_mode": "spoken",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "none"
+              },
+              "lyrics": [
+                {
+                  "id": "backing-lyric-1",
+                  "text": "(ooh)",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

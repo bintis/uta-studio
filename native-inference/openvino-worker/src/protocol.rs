@@ -80,6 +80,10 @@ pub enum WorkerFrame<'a> {
         task_id: &'a str,
         fraction: f32,
         message: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_units_completed: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_units_total: Option<u64>,
     },
     Output {
         task_id: &'a str,

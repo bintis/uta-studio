@@ -43,7 +43,6 @@ pub(crate) fn action_is_navigation_target(action: &UiAction) -> bool {
             | UiCommand::Editor(EditorCommand::DismissProblemsPanel)
             | UiCommand::Editor(EditorCommand::DismissShortcutsPanel)
             | UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext)
-            | UiCommand::Analysis(AnalysisCommand::DismissAnalysisExportContext)
             | UiCommand::Analysis(AnalysisCommand::ClosePlanPreview)
             | UiCommand::Analysis(AnalysisCommand::CloseAnalysisLogViewer)
     )
@@ -88,20 +87,6 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.analysis_log_viewer.is_some() {
         return Some(UiAction::from(AnalysisCommand::CloseAnalysisLogViewer));
     }
-    if session.artifact_diff.is_some() {
-        return Some(UiAction::from(AnalysisCommand::CloseArtifactDiff));
-    }
-    if session.artifact_impact.is_some() {
-        return Some(UiAction::from(AnalysisCommand::CloseArtifactImpact));
-    }
-    if session.artifact_lineage.is_some() || session.analysis_lineage_mode {
-        return Some(UiAction::from(AnalysisCommand::CloseArtifactLineage));
-    }
-    if session.analysis_export_context.is_some() {
-        return Some(UiAction::from(
-            AnalysisCommand::DismissAnalysisExportContext,
-        ));
-    }
     if session.pending_leave.is_some() {
         return Some(UiAction::from(AppCommand::CancelLeave));
     }
@@ -114,20 +99,8 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.pending_cache_delete.is_some() {
         return Some(UiAction::from(AnalysisCommand::CancelDeleteSongCache));
     }
-    if session.pending_artifact_delete.is_some() {
-        return Some(UiAction::from(
-            AnalysisCommand::CancelDeleteArtifactRevision,
-        ));
-    }
-    if session.pending_artifact_invalidate.is_some() {
-        return Some(UiAction::from(
-            AnalysisCommand::CancelInvalidateArtifactRevision,
-        ));
-    }
-    if session.pending_artifact_active.is_some() {
-        return Some(UiAction::from(
-            AnalysisCommand::CancelSetActiveArtifactRevision,
-        ));
+    if session.pending_chart_delete.is_some() {
+        return Some(UiAction::from(AnalysisCommand::CancelDeleteAuthoredChart));
     }
     if session.pending_chart_replace.is_some() {
         return Some(UiAction::from(AnalysisCommand::CancelReplaceAuthoredChart));
@@ -155,11 +128,6 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     }
     if session.song_context.is_some() {
         return Some(UiAction::from(LibraryCommand::DismissSongContext));
-    }
-    if session.analysis_artifact_context.is_some() {
-        return Some(UiAction::from(
-            AnalysisCommand::DismissAnalysisArtifactContext,
-        ));
     }
     if session.analysis_node_context.is_some() {
         return Some(UiAction::from(AnalysisCommand::DismissAnalysisNodeContext));

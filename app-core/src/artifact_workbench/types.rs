@@ -4,24 +4,14 @@
 //! render these values without reading cache files or inventing lineage.
 
 use std::path::PathBuf;
-#[cfg(test)]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis_artifact::{ArtifactRevision, load_active_artifact};
+use crate::analysis_artifact::{ArtifactRevision, load_active_artifact, load_analysis_artifacts};
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::library_db;
 
 use super::inspect::{bounded_read, inspect_artifact, revision_by_id};
-
-#[cfg(test)]
-fn workbench_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRef {
@@ -171,31 +161,6 @@ pub struct DownstreamImpact {
     pub affected_nodes: Vec<AnalysisNodeId>,
     pub authored_chart_preserved: bool,
     pub export_may_need_regeneration: bool,
-    pub will_run: Vec<AnalysisNodeId>,
-    pub will_reuse: Vec<AnalysisNodeId>,
-    pub will_become_stale: Vec<AnalysisNodeId>,
-    pub will_be_blocked: Vec<AnalysisNodeId>,
-    pub will_remain_preserved: Vec<String>,
-    pub exports_needing_regeneration: Vec<String>,
-    pub queued_targets: Vec<AnalysisNodeId>,
-    pub queued_disabled: Vec<AnalysisNodeId>,
-    pub queued_frozen: Vec<ArtifactKind>,
-    pub queued_bypassed: Vec<AnalysisNodeId>,
-    pub request_fingerprint: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImpactTrigger {
-    RunNode,
-    RunDownstream,
-    SaveAndRunDownstream,
-    SetActive,
-    Invalidate,
-    Delete,
-    Freeze,
-    Bypass,
-    Disable,
-    CandidateReplace,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -268,9 +233,13 @@ pub fn apply_artifact_revision_to_chart(
 }
 
 pub fn authored_chart_is_pinned(file_hash: &str) -> bool {
-    load_active_artifact(file_hash, ArtifactKind::AuthoredChart)
-        .and_then(|revision| library_db::analysis_artifact_is_pinned(&revision.id).ok())
-        .unwrap_or(false)
+    load_analysis_artifacts(file_hash)
+        .into_iter()
+        .any(|revision| {
+            revision.kind == ArtifactKind::AuthoredChart
+                && !revision.invalidated
+                && library_db::analysis_artifact_is_pinned(&revision.id).unwrap_or(false)
+        })
 }
 
 /// Create an in-memory authored working copy from exact immutable revisions.
@@ -398,78 +367,6 @@ pub fn merge_chart_revisions(
     }
     merged.validate().map_err(|error| error.to_string())?;
     Ok(merged)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureIntermediateRequest {
-    pub file_hash: String,
-    pub node_id: AnalysisNodeId,
-    pub kind: ArtifactKind,
-    pub enabled: bool,
-    #[serde(default)]
-    pub persistent: bool,
-}
-
-/// Persist an explicit opt-in for retaining a normally ephemeral boundary.
-/// Only the real `lyrics.preprocess -> PreprocessedAudio` boundary is
-/// supported; accepting arbitrary pairs would create a misleading setting
-/// the analyzer cannot honor.
-#[cfg(test)]
-pub(crate) fn set_intermediate_capture_request(
-    request: &CaptureIntermediateRequest,
-) -> Result<(), String> {
-    if request.file_hash.trim().is_empty() {
-        return Err("capture request requires a song hash".to_string());
-    }
-    if request.node_id.as_str() != "lyrics.preprocess"
-        || request.kind != ArtifactKind::PreprocessedAudio
-    {
-        return Err(
-            "only lyrics.preprocess PreprocessedAudio can be captured currently".to_string(),
-        );
-    }
-    let kind = serde_json::to_value(request.kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .ok_or_else(|| "could not encode capture artifact kind".to_string())?;
-    if request.enabled {
-        library_db::analysis_capture_request_upsert(&library_db::AnalysisCaptureRequestRow {
-            file_hash: request.file_hash.clone(),
-            node_id: request.node_id.as_str().to_string(),
-            artifact_kind: kind,
-            persistent: request.persistent,
-            created_at_ms: workbench_now_ms(),
-        })
-        .map_err(|error| error.to_string())
-    } else {
-        library_db::analysis_capture_request_delete(
-            &request.file_hash,
-            request.node_id.as_str(),
-            &kind,
-        )
-        .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn intermediate_capture_request(
-    file_hash: &str,
-) -> Result<Option<CaptureIntermediateRequest>, String> {
-    let kind = serde_json::to_value(ArtifactKind::PreprocessedAudio)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .ok_or_else(|| "could not encode capture artifact kind".to_string())?;
-    library_db::analysis_capture_request_get(file_hash, "lyrics.preprocess", &kind)
-        .map(|row| {
-            row.map(|row| CaptureIntermediateRequest {
-                file_hash: row.file_hash,
-                node_id: AnalysisNodeId::new(row.node_id),
-                kind: ArtifactKind::PreprocessedAudio,
-                enabled: true,
-                persistent: row.persistent,
-            })
-        })
-        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

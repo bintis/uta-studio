@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bintis/utz/main/format/vocal-chart-v0.3.schema.json",
+  "title": "Uta vocal chart 0.3",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "timebase",
+    "tracks"
+  ],
+  "properties": {
+    "format": {
+      "const": "uta.vocal-chart"
+    },
+    "format_version": {
+      "type": "string",
+      "pattern": "^0\\.3\\.(0|[1-9][0-9]*)$"
+    },
+    "timebase": {
+      "const": 1000000
+    },
+    "language": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tracks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/track"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "track": {
+      "type": "object",
+      "required": [
+        "id",
+        "role",
+        "phrases"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "lead",
+            "harmony",
+            "backing",
+            "adlib"
+          ]
+        },
+        "part": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9
+        },
+        "singer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scoring_enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "phrases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/phrase"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "phrase": {
+      "type": "object",
+      "required": [
+        "id",
+        "notes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "notes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "note": {
+      "type": "object",
+      "required": [
+        "id",
+        "start",
+        "duration",
+        "pitch",
+        "vocal_mode",
+        "bonus",
+        "scoring",
+        "lyrics"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "start": {
+          "$ref": "#/$defs/time"
+        },
+        "duration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "pitch": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "midi"
+              ],
+              "properties": {
+                "midi": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 127
+                },
+                "cents": {
+                  "type": "integer",
+                  "minimum": -99,
+                  "maximum": 99,
+                  "default": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "vocal_mode": {
+          "enum": [
+            "pitched",
+            "rap",
+            "spoken",
+            "freestyle"
+          ]
+        },
+        "bonus": {
+          "enum": [
+            "normal",
+            "golden"
+          ]
+        },
+        "scoring": {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "pitch",
+                "rhythm",
+                "none"
+              ]
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "lyrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/textToken"
+              },
+              {
+                "$ref": "#/$defs/continuationToken"
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "textToken": {
+      "type": "object",
+      "required": [
+        "id",
+        "text",
+        "join_before"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string"
+        },
+        "join_before": {
+          "enum": [
+            "none",
+            "space"
+          ]
+        },
+        "reading": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phonemes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "continuationToken": {
+      "type": "object",
+      "required": [
+        "continuation_of"
+      ],
+      "properties": {
+        "continuation_of": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "time": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

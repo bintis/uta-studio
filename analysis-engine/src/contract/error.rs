@@ -22,6 +22,7 @@ pub enum EngineErrorCode {
     RuntimeResolutionFailed,
     WorkerUnavailable,
     WorkerProtocolMismatch,
+    WorkerTimeout,
     WorkerFailed,
     InferenceFailed,
     OutputValidationFailed,
@@ -48,6 +49,7 @@ impl EngineErrorCode {
             Self::RuntimeResolutionFailed => "runtime_resolution_failed",
             Self::WorkerUnavailable => "worker_unavailable",
             Self::WorkerProtocolMismatch => "worker_protocol_mismatch",
+            Self::WorkerTimeout => "worker_timeout",
             Self::WorkerFailed => "worker_failed",
             Self::InferenceFailed => "inference_failed",
             Self::OutputValidationFailed => "output_validation_failed",
@@ -110,8 +112,15 @@ impl std::error::Error for EngineError {}
 
 impl From<uta_runtime_manager::RuntimeManagerError> for EngineError {
     fn from(error: uta_runtime_manager::RuntimeManagerError) -> Self {
+        let tool_resource = error
+            .resource
+            .as_deref()
+            .is_some_and(|resource| resource.starts_with("tool:"));
         let code = match error.code.as_str() {
+            "resource_missing" if tool_resource => EngineErrorCode::WorkerUnavailable,
             "resource_missing" => EngineErrorCode::ModelUnavailable,
+            "tool_unusable" => EngineErrorCode::WorkerUnavailable,
+            "tool_protocol_mismatch" => EngineErrorCode::WorkerProtocolMismatch,
             "no_validated_backend" => EngineErrorCode::RuntimeUnvalidated,
             "worker_capability_missing" => EngineErrorCode::WorkerUnavailable,
             "runtime_missing" => EngineErrorCode::RuntimeResolutionFailed,
@@ -121,5 +130,30 @@ impl From<uta_runtime_manager::RuntimeManagerError> for EngineError {
         result.resource = error.resource;
         result.retryable = error.retryable;
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_tool_failures_keep_resource_and_map_to_worker_codes() {
+        let resource = uta_runtime_manager::ResourceRef::tool("fusion_agent_adapter").unwrap();
+        for (runtime_code, expected) in [
+            ("resource_missing", EngineErrorCode::WorkerUnavailable),
+            ("tool_unusable", EngineErrorCode::WorkerUnavailable),
+            (
+                "tool_protocol_mismatch",
+                EngineErrorCode::WorkerProtocolMismatch,
+            ),
+        ] {
+            let runtime_error =
+                uta_runtime_manager::RuntimeManagerError::new(runtime_code, "adapter is not ready")
+                    .with_resource(&resource);
+            let error = EngineError::from(runtime_error);
+            assert_eq!(error.code, expected);
+            assert_eq!(error.resource.as_deref(), Some("tool:fusion_agent_adapter"));
+        }
     }
 }

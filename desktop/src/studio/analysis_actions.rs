@@ -3,6 +3,9 @@ use crate::studio::*;
 #[derive(Resource)]
 pub(crate) struct AnalysisRefreshTimer(pub(crate) Timer);
 
+#[derive(Resource)]
+pub(crate) struct AnalysisLogRefreshTimer(pub(crate) Timer);
+
 #[derive(Component, Clone, Copy)]
 pub(crate) struct AnalysisGraphViewport {
     pub(crate) unscaled_width: f32,
@@ -11,6 +14,9 @@ pub(crate) struct AnalysisGraphViewport {
 
 #[derive(Component)]
 pub(crate) struct AnalysisLogViewerScroll;
+
+#[derive(Component)]
+pub(crate) struct AnalysisLogViewerOutput;
 
 #[derive(Component)]
 pub(crate) struct PlanPreviewScroll;
@@ -24,45 +30,18 @@ pub(crate) struct AnalysisNodeMenuAction {
 #[derive(Clone)]
 pub(crate) struct AnalysisNodeContextMenu {
     pub(crate) node_id: String,
-    /// Bucket stage id ("separation", "pitch", ...) for "View in
-    /// inspector" -- a different string space from `node_id` (the real
-    /// dotted `AnalysisNodeId`); `selected_analysis_stage` is keyed by the
-    /// former throughout the rest of this module.
-    pub(crate) stage_id: String,
+    /// Compiled capability identity shown by the inspector.
+    pub(crate) capability_id: String,
     pub(crate) label: String,
-    pub(crate) retry_action: Option<AnalysisNodeMenuAction>,
-    pub(crate) run_downstream_action: Option<AnalysisNodeMenuAction>,
+    pub(crate) run_action: Option<AnalysisNodeMenuAction>,
     /// `None` when no history run is currently selected -- "Compare with
     /// previous attempt" needs a `current_run_id` to diff against, which
     /// only exists once a run is selected in the Activity/Queue view.
     pub(crate) compare_node_action: Option<UiAction>,
-    /// §8.3 migration table's "Force transcribe -> Transcription Node ->
-    /// Force Recompute": only offered for `lyrics.transcribe` (the only
-    /// node "ignore online lyrics, transcribe again" is meaningful for).
-    /// Reuses the existing `UiAction::ForceTranscribe`/
-    /// `app_core::reanalyze_force_transcribe` Song Detail already calls --
-    /// not a new backend capability, just a second, DAG-side entry point
-    /// for the same real action.
-    pub(crate) force_transcribe_action: Option<UiAction>,
-    /// §8.3 migration table's "Refetch & align -> Lyrics Source -> LRCLIB
-    /// -> Run Timing": only offered for `lyrics.align` -- distinct from
-    /// that node's existing "Retry with same configuration"
-    /// (`RealignSong`, realigns against whatever lyrics are already set)
-    /// the way Song Detail's "Word timing" (Realign) and "Lyrics source"
-    /// (Refetch & align) are two separate rows for the same reason. Reuses
-    /// the existing `UiAction::ReanalyzeTranscript`/
-    /// `app_core::reanalyze_transcript` Song Detail already calls.
-    pub(crate) refetch_align_action: Option<UiAction>,
     /// §7.5's last item, "View logs": always offered because a node filter is
     /// meaningful for every node. Opens the selected run's dedicated JSONL
     /// log; legacy runs without `log_path` show an explicit empty state.
     pub(crate) view_logs_action: Option<UiAction>,
-    /// §7.3 "Music Analysis 支持展开": `(button label, action)`, `None` for
-    /// every non-compound node. The label flips between "Expand
-    /// sub-checks"/"Collapse sub-checks" depending on current state so the
-    /// same button always describes what clicking it does next, rather than
-    /// the state it's currently in.
-    pub(crate) compound_toggle: Option<(&'static str, UiAction)>,
     pub(crate) position: Vec2,
 }
 
@@ -71,8 +50,8 @@ pub(crate) struct AnalysisNodeContextMenu {
 /// and replaces it without mutating Global or Song settings.
 pub(crate) struct PlanPreviewDraft {
     pub(crate) file_hash: String,
-    pub(crate) target: app_core::AnalysisDefaultTarget,
-    pub(crate) target_overridden: bool,
+    pub(crate) outputs: app_core::AnalysisOutputSelection,
+    pub(crate) outputs_overridden: bool,
     pub(crate) run_override: app_core::AnalysisExperienceOverride,
     /// Studio-owned inheritance projection. Backend presentation remains
     /// limited to the frozen `EngineRunPreview` view fields.
@@ -98,8 +77,9 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
             .map(|profile| &profile.analysis_experience),
         Some(&draft.run_override),
     );
-    if !draft.target_overridden {
-        draft.target = effective.default_target.value;
+    if !draft.outputs_overridden {
+        draft.outputs =
+            app_core::AnalysisOutputSelection::from_target(effective.default_target.value);
     }
     draft.effective_settings = Some(effective);
 
@@ -112,9 +92,12 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
             file_hash: draft.file_hash.clone(),
             request_id: format!("studio-{nonce}"),
             lyrics: Default::default(),
-            target_override: draft.target_overridden.then_some(draft.target),
+            target_override: None,
+            requested_outputs: Some(draft.outputs),
             compute_backend: config.compute_backend.clone(),
             model_backend_overrides: config.model_backend_overrides.clone(),
+            default_device_class: config.default_device_class.clone(),
+            model_device_overrides: config.model_device_overrides.clone(),
             run_override: draft.run_override.clone(),
         },
         &config.analysis_experience,
@@ -148,53 +131,15 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
     }
 }
 
-/// Buckets a plan's nodes into the phase-plan's real, non-fabricated
-/// categories (`uta-studio-analysis-dag-phases.md` §7.7's worked example --
-/// "Will run: Pitch Analysis, Build Candidate Chart / Will reuse: Music
-/// Analysis, Vocal Stem..."). `NotApplicable` (inactive-route) nodes are
-/// omitted -- route-irrelevant noise, matching existing precedent
-/// elsewhere. `Frozen`/`Stale`/`Failed` never appear here: this pure
-/// function only reads what `plan` actually contains, and the Plan Preview
-/// panel never stages Freeze or applies the Failed/Stale overlays the
-/// canvas separately adds -- so those buckets are correctly absent, not
-/// silently dropped.
-#[cfg(test)]
-pub(crate) fn plan_preview_groups(
-    plan: &app_core::AnalysisPlan,
-) -> Vec<(&'static str, Vec<String>)> {
-    let mut will_run = Vec::new();
-    let mut will_reuse = Vec::new();
-    let mut blocked = Vec::new();
-    let mut disabled = Vec::new();
-    for node in &plan.nodes {
-        let label = node.id.to_string();
-        if node.will_run {
-            will_run.push(label);
-            continue;
-        }
-        match node.state {
-            app_core::NodeState::Ready => will_reuse.push(label),
-            app_core::NodeState::Blocked => blocked.push(label),
-            app_core::NodeState::Disabled => disabled.push(label),
-            _ => {}
-        }
-    }
-    [
-        ("Will run", will_run),
-        ("Will reuse", will_reuse),
-        ("Blocked", blocked),
-        ("Disabled", disabled),
-    ]
-    .into_iter()
-    .filter(|(_, nodes)| !nodes.is_empty())
-    .collect()
-}
-
 /// §7.5's "View logs" dialog state -- which run-scoped analysis log and
 /// node filter should be shown.
 pub(crate) struct AnalysisLogViewerState {
     pub(crate) file_hash: String,
     pub(crate) node_id: String,
+    pub(crate) follow_tail: bool,
+    pub(crate) scroll_offset: f32,
+    pub(crate) observed_log_revision: Option<(u64, u128)>,
+    pub(crate) log_poll_initialized: bool,
 }
 
 pub(crate) fn spawn_analysis_log_viewer(
@@ -208,16 +153,30 @@ pub(crate) fn spawn_analysis_log_viewer(
         app_core::analysis_log_lines(selected_run_id, &state.file_hash, Some(&state.node_id), 240);
     let log_path = app_core::analysis_log_path_for(selected_run_id, &state.file_hash);
     let header = if log_path.is_some() {
-        format!("Dedicated analysis log · node {}", state.node_id)
+        if selected_run_id.is_none() {
+            format!("LIVE · following node {}", state.node_id)
+        } else {
+            format!("RUN LOG · node {}", state.node_id)
+        }
+    } else if selected_run_id.is_none() {
+        format!("WAITING FOR LOG · node {}", state.node_id)
     } else {
-        "No dedicated log was recorded for this legacy analysis run".to_string()
+        "NO LOG · this legacy run did not record a dedicated analysis log".to_string()
+    };
+    let console_text = if lines.is_empty() && selected_run_id.is_some() {
+        "No log output was recorded for this node.".to_string()
+    } else if lines.is_empty() {
+        "Waiting for log output…".to_string()
+    } else {
+        lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
-    // Click-outside-to-close backdrop, same pattern as the Plan Preview
-    // dialog's -- and a real fix, not cosmetic: the dialog previously had
-    // no dismiss handler outside its own "Close" button at all, and with
-    // up to 80 log lines (`get_recent_logs(80)`) that button could scroll
-    // out of reach in the first place (see below).
+    // Keep a close action both on the backdrop and in the fixed footer. The
+    // log itself stays inside Studio; no desktop file-manager window is opened.
     parent.spawn((
         Button,
         UiAction::from(AnalysisCommand::CloseAnalysisLogViewer),
@@ -251,10 +210,11 @@ pub(crate) fn spawn_analysis_log_viewer(
             overlay
                 .spawn((
                     Node {
-                        width: px(620),
-                        max_height: percent(84),
+                        width: px(760),
+                        max_width: percent(92),
+                        height: percent(78),
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(24)),
+                        padding: UiRect::all(px(20)),
                         row_gap: px(8),
                         border: UiRect::all(px(1)),
                         border_radius: BorderRadius::all(px(8)),
@@ -264,7 +224,7 @@ pub(crate) fn spawn_analysis_log_viewer(
                     BorderColor::all(theme.border),
                 ))
                 .with_children(|dialog| {
-                    spawn_text(dialog, font.clone(), "VIEW LOGS", 8.0, theme.primary);
+                    spawn_text(dialog, font.clone(), "LOG CONSOLE", 9.0, theme.primary);
                     spawn_text(
                         dialog,
                         font.clone(),
@@ -276,7 +236,11 @@ pub(crate) fn spawn_analysis_log_viewer(
                     spawn_text(
                         dialog,
                         font.clone(),
-                        "Ctrl + wheel to scroll",
+                        if state.follow_tail {
+                            "Live tail enabled · scroll up to inspect earlier output"
+                        } else {
+                            "Live tail paused · scroll to the bottom to resume"
+                        },
                         8.0,
                         theme.muted_foreground,
                     );
@@ -284,58 +248,39 @@ pub(crate) fn spawn_analysis_log_viewer(
                         height: px(4),
                         ..default()
                     });
-                    // The scrollable region, separate from the dialog's own
-                    // (unscrolled) heading and action row below -- so
-                    // "Close"/"Open log file" stay reachable regardless of
-                    // how many lines there are, instead of themselves being
-                    // part of what has to be scrolled past.
+                    // Console output is one text stream so appending log records does not
+                    // create hundreds of independently laid-out UI nodes.
                     dialog
                         .spawn((
                             AnalysisLogViewerScroll,
                             Node {
                                 min_height: px(0),
-                                flex_direction: FlexDirection::Column,
+                                flex_grow: 1.0,
+                                padding: UiRect::all(px(12)),
+                                border: UiRect::all(px(1)),
                                 overflow: Overflow::scroll_y(),
                                 ..default()
                             },
-                            ScrollPosition::default(),
+                            BackgroundColor(Color::srgb(0.025, 0.03, 0.04)),
+                            BorderColor::all(theme.border),
+                            ScrollPosition(Vec2::new(0.0, state.scroll_offset)),
                         ))
                         .with_children(|scroll| {
-                            // A scrollable flex column shrinks its direct
-                            // children to the viewport height before
-                            // measuring overflow (same fix already used for
-                            // Settings' own scrollable content) -- wrap the
-                            // real lines in one intrinsic-height child so
-                            // they keep their real height and the region
-                            // scrolls instead of squashing everything to fit.
-                            scroll
-                                .spawn(Node {
+                            scroll.spawn((
+                                AnalysisLogViewerOutput,
+                                Node {
                                     width: percent(100),
                                     flex_shrink: 0.0,
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: px(4),
                                     ..default()
-                                })
-                                .with_children(|body| {
-                                    if lines.is_empty() {
-                                        spawn_text(
-                                            body,
-                                            font.clone(),
-                                            "No log lines captured yet.",
-                                            10.0,
-                                            theme.muted_foreground,
-                                        );
-                                    }
-                                    for line in &lines {
-                                        spawn_wrapped_text(
-                                            body,
-                                            font.clone(),
-                                            line.text.clone(),
-                                            9.0,
-                                            theme.foreground,
-                                        );
-                                    }
-                                });
+                                },
+                                Text::new(console_text),
+                                ui_text_font(font.clone(), 9.0),
+                                TextColor(Color::srgb(0.72, 0.86, 0.76)),
+                                TextLayout {
+                                    linebreak: bevy::text::LineBreak::WordOrCharacter,
+                                    ..default()
+                                },
+                            ));
                         });
                     dialog
                         .spawn(Node {
@@ -347,16 +292,6 @@ pub(crate) fn spawn_analysis_log_viewer(
                             ..default()
                         })
                         .with_children(|actions| {
-                            if log_path.is_some() {
-                                spawn_text_button(
-                                    actions,
-                                    font.clone(),
-                                    theme,
-                                    "Open log file",
-                                    10.0,
-                                    UiAction::from(AnalysisCommand::OpenAnalysisLogFile),
-                                );
-                            }
                             spawn_action_button(
                                 actions,
                                 font,
@@ -418,25 +353,17 @@ pub(crate) fn handle_plan_preview_scroll(
     position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
 }
 
-/// Ctrl+wheel scrolls the log viewer's line list -- same modifier
-/// `handle_analysis_graph_scroll` now requires, and for the same reason:
-/// this dialog sits on top of the library's own scrollable song list, so a
-/// bare wheel wasn't just doing nothing here, it was reaching through to
-/// scroll the list underneath instead.
+/// The modal owns ordinary wheel input, preventing scroll-through to the DAG.
+/// Scrolling up pauses tail-follow; reaching the bottom resumes it.
 pub(crate) fn handle_analysis_log_viewer_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    keys: Res<ButtonInput<KeyCode>>,
-    dialogs: Res<DialogState>,
+    mut dialogs: ResMut<DialogState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AnalysisLogViewerScroll>>,
+    mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if dialogs.analysis_log_viewer.is_none() {
+    let Some(state) = dialogs.analysis_log_viewer.as_mut() else {
         return;
-    }
-    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    if !ctrl {
-        wheel.clear();
-        return;
-    }
+    };
     let Ok((computed, mut position)) = lists.single_mut() else {
         wheel.clear();
         return;
@@ -456,6 +383,72 @@ pub(crate) fn handle_analysis_log_viewer_scroll(
     let content = computed.content_size() * computed.inverse_scale_factor();
     let max = (content.y - size.y).max(0.0);
     position.y = (position.y + delta).clamp(0.0, max);
+    state.scroll_offset = position.y;
+    let was_following = state.follow_tail;
+    state.follow_tail = position.y >= max - 1.0;
+    if state.follow_tail != was_following {
+        invalidated.invalidate(UiDirtyRegion::Dialog);
+    }
+}
+
+pub(crate) fn analysis_log_viewer_closed(dialogs: Res<DialogState>) -> bool {
+    dialogs.analysis_log_viewer.is_none()
+}
+
+pub(crate) fn follow_analysis_log_viewer_tail(
+    mut dialogs: ResMut<DialogState>,
+    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<AnalysisLogViewerScroll>>,
+) {
+    let Some(state) = dialogs.analysis_log_viewer.as_mut() else {
+        return;
+    };
+    if !state.follow_tail {
+        return;
+    }
+    let Ok((computed, mut position)) = lists.single_mut() else {
+        return;
+    };
+    let size = computed.size() * computed.inverse_scale_factor();
+    let content = computed.content_size() * computed.inverse_scale_factor();
+    let max = (content.y - size.y).max(0.0);
+    position.y = max;
+    state.scroll_offset = max;
+}
+
+pub(crate) fn refresh_analysis_log_viewer(
+    time: Res<Time>,
+    mut timer: ResMut<AnalysisLogRefreshTimer>,
+    analysis: Res<AnalysisUiState>,
+    mut dialogs: ResMut<DialogState>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let Some(state) = dialogs.analysis_log_viewer.as_mut() else {
+        return;
+    };
+    // Historical runs are immutable; only an active run can append output.
+    if analysis.selected_analysis_history.is_some() {
+        return;
+    }
+    let revision =
+        app_core::analysis_log_path_for(analysis.selected_analysis_history, &state.file_hash)
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|metadata| {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |duration| duration.as_nanos());
+                (metadata.len(), modified)
+            });
+    if state.log_poll_initialized && state.observed_log_revision == revision {
+        return;
+    }
+    state.log_poll_initialized = true;
+    state.observed_log_revision = revision;
+    invalidated.invalidate(UiDirtyRegion::Dialog);
 }
 
 pub(crate) fn exact_preview_allows_queue(
@@ -498,7 +491,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                 bottom: px(0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                padding: UiRect::all(px(18)),
+                padding: UiRect::ZERO,
                 ..default()
             },
             ZIndex(93),
@@ -508,16 +501,14 @@ pub(crate) fn spawn_plan_preview_dialog(
             overlay
                 .spawn((
                     Node {
-                        width: percent(92),
-                        max_width: px(820),
-                        height: percent(90),
-                        max_height: px(860),
+                        width: percent(100),
+                        height: percent(100),
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(24)),
-                        row_gap: px(12),
+                        padding: UiRect::all(px(18)),
+                        row_gap: px(10),
                         overflow: Overflow::scroll_y(),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(10)),
+                        border: UiRect::ZERO,
+                        border_radius: BorderRadius::ZERO,
                         ..default()
                     },
                     PlanPreviewScroll,
@@ -530,14 +521,14 @@ pub(crate) fn spawn_plan_preview_dialog(
                     spawn_text(
                         body,
                         font.clone(),
-                        "Exact Engine plan preview",
+                        "Confirm this analysis run",
                         18.0,
                         theme.foreground,
                     );
                     spawn_wrapped_text(
                         body,
                         font.clone(),
-                        "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.",
+                        "Choose what to generate and the quality for this run. The summary below shows the resolved workflow, resources, and any blockers before anything starts.",
                         10.0,
                         theme.muted_foreground,
                     );
@@ -545,28 +536,16 @@ pub(crate) fn spawn_plan_preview_dialog(
                     spawn_text(
                         body,
                         font.clone(),
-                        format!("OUTPUT TARGET · Source: {}", preview_target_source(draft)),
+                        format!("OUTPUTS · {}", preview_target_source(draft)),
                         8.0,
                         theme.primary,
                     );
-                    spawn_run_choice_row(
-                        body,
-                        font.clone(),
-                        theme,
-                        [
-                            (app_core::AnalysisDefaultTarget::FullCandidate, "Candidate"),
-                            (app_core::AnalysisDefaultTarget::Transcript, "Transcript"),
-                            (app_core::AnalysisDefaultTarget::Alignment, "Alignment"),
-                            (app_core::AnalysisDefaultTarget::PitchEvidence, "Pitch"),
-                            (app_core::AnalysisDefaultTarget::Instrumental, "Instrumental"),
-                        ],
-                        draft,
-                    );
+                    spawn_run_output_sheet(body, font.clone(), theme, draft);
 
                     spawn_text(
                         body,
                         font.clone(),
-                        format!("QUALITY · Source: {}", preview_quality_source(draft)),
+                        format!("QUALITY · {}", preview_quality_source(draft)),
                         8.0,
                         theme.primary,
                     );
@@ -574,37 +553,107 @@ pub(crate) fn spawn_plan_preview_dialog(
 
                     match &draft.engine_preview {
                         Ok(preview) => {
-                            spawn_preview_request_summary(
-                                body,
-                                font.clone(),
-                                theme,
-                                draft,
-                                preview,
-                            );
-                            spawn_preview_lyrics_context(body, font.clone(), theme, preview);
-                            spawn_preview_execution_plan(body, font.clone(), theme, preview);
-                            spawn_preview_resources(body, font.clone(), theme, preview);
-                            spawn_preview_outputs(body, font.clone(), theme, preview);
-                            if preview.blockers.is_empty() {
-                                spawn_wrapped_text(
-                                    body,
-                                    font.clone(),
-                                    "All capabilities required by this exact request are ready under the local testing policy.",
-                                    9.0,
-                                    theme.primary,
-                                );
-                            } else {
-                                spawn_text(body, font.clone(), "REQUEST BLOCKERS", 8.0, theme.editor_warning);
-                                for blocker in &preview.blockers {
-                                    spawn_wrapped_text(
-                                        body,
-                                        font.clone(),
-                                        format!("• {blocker}"),
-                                        9.0,
-                                        theme.editor_warning,
-                                    );
-                                }
-                            }
+                            body.spawn(Node {
+                                width: percent(100),
+                                min_height: px(0),
+                                flex_grow: 1.0,
+                                align_items: AlignItems::FlexStart,
+                                flex_wrap: FlexWrap::Wrap,
+                                column_gap: px(12),
+                                ..default()
+                            })
+                            .with_children(|details| {
+                                details
+                                    .spawn(Node {
+                                        min_width: px(260),
+                                        flex_basis: px(300),
+                                        flex_grow: 1.0,
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(6),
+                                        ..default()
+                                    })
+                                    .with_children(|request| {
+                                        spawn_preview_request_summary(
+                                            request,
+                                            font.clone(),
+                                            theme,
+                                            draft,
+                                            preview,
+                                        );
+                                        spawn_preview_lyrics_context(
+                                            request,
+                                            font.clone(),
+                                            theme,
+                                            preview,
+                                        );
+                                    });
+                                details
+                                    .spawn(Node {
+                                        min_width: px(320),
+                                        flex_basis: px(380),
+                                        flex_grow: 1.0,
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(6),
+                                        ..default()
+                                    })
+                                    .with_children(|plan| {
+                                        spawn_preview_execution_plan(
+                                            plan,
+                                            font.clone(),
+                                            theme,
+                                            preview,
+                                        );
+                                    });
+                                details
+                                    .spawn(Node {
+                                        min_width: px(320),
+                                        flex_basis: px(380),
+                                        flex_grow: 1.0,
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(6),
+                                        ..default()
+                                    })
+                                    .with_children(|resources| {
+                                        spawn_preview_resources(
+                                            resources,
+                                            font.clone(),
+                                            theme,
+                                            preview,
+                                        );
+                                        spawn_preview_outputs(
+                                            resources,
+                                            font.clone(),
+                                            theme,
+                                            preview,
+                                        );
+                                        if preview.blockers.is_empty() {
+                                            spawn_wrapped_text(
+                                                resources,
+                                                font.clone(),
+                                                "Ready to run. All resources required by this request are available.",
+                                                9.0,
+                                                theme.primary,
+                                            );
+                                        } else {
+                                            spawn_text(
+                                                resources,
+                                                font.clone(),
+                                                "NEEDS ATTENTION",
+                                                8.0,
+                                                theme.editor_warning,
+                                            );
+                                            for blocker in &preview.blockers {
+                                                spawn_wrapped_text(
+                                                    resources,
+                                                    font.clone(),
+                                                    format!("• {blocker}"),
+                                                    9.0,
+                                                    theme.editor_warning,
+                                                );
+                                            }
+                                        }
+                                    });
+                            });
                         }
                         Err(error) => {
                             spawn_text(body, font.clone(), "PREVIEW UNAVAILABLE", 8.0, theme.destructive);
@@ -643,7 +692,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                             actions,
                             font.clone(),
                             theme,
-                            "Manage models…",
+                            "Model parameters",
                             UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                         );
                         let request_ready = draft.engine_preview.as_ref().is_ok_and(|preview| {
@@ -658,7 +707,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                                 actions,
                                 font.clone(),
                                 theme,
-                                "Analyze",
+                                "Start now",
                                 UiAction::from(AnalysisCommand::QueueExactPreview),
                             );
                         } else {
@@ -699,7 +748,7 @@ pub(crate) fn spawn_plan_preview_dialog(
 }
 
 pub(crate) fn preview_target_source(draft: &PlanPreviewDraft) -> &'static str {
-    if draft.target_overridden {
+    if draft.outputs_overridden {
         return "RUN";
     }
     match draft
@@ -762,11 +811,10 @@ fn spawn_run_segment(
         });
 }
 
-fn spawn_run_choice_row<const N: usize>(
+fn spawn_run_output_sheet(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
-    choices: [(app_core::AnalysisDefaultTarget, &'static str); N],
     draft: &PlanPreviewDraft,
 ) {
     parent
@@ -782,18 +830,36 @@ fn spawn_run_choice_row<const N: usize>(
                 row,
                 font.clone(),
                 theme,
-                "Use profile",
-                !draft.target_overridden,
-                UiAction::from(AnalysisCommand::ResetPlanPreviewTarget),
+                "Use profile outputs",
+                !draft.outputs_overridden,
+                UiAction::from(AnalysisCommand::ResetPlanPreviewOutputs),
             );
-            for (target, label) in choices {
+            for (output, label) in [
+                (
+                    app_core::AnalysisOutputKind::CandidateChart,
+                    "Candidate chart",
+                ),
+                (
+                    app_core::AnalysisOutputKind::PitchEvidence,
+                    "Pitch evidence",
+                ),
+                (app_core::AnalysisOutputKind::Transcript, "Transcript"),
+                (app_core::AnalysisOutputKind::Alignment, "Alignment"),
+                (app_core::AnalysisOutputKind::Instrumental, "Instrumental"),
+            ] {
+                let selected = draft.outputs.contains(output);
+                let display = if selected {
+                    format!("☑ {label}")
+                } else {
+                    format!("☐ {label}")
+                };
                 spawn_run_segment(
                     row,
                     font.clone(),
                     theme,
-                    label,
-                    draft.target_overridden && target == draft.target,
-                    UiAction::from(AnalysisCommand::SetPlanPreviewTarget(target)),
+                    &display,
+                    selected,
+                    UiAction::from(AnalysisCommand::TogglePlanPreviewOutput(output)),
                 );
             }
         });
@@ -1001,6 +1067,36 @@ fn spawn_preview_resources(
         8.0,
         theme.primary,
     );
+    let fusion_mode = preview
+        .engine_plan
+        .workflow_execution
+        .as_ref()
+        .map_or(app_core::FusionModeWireV1::Algorithm, |workflow| {
+            workflow.fusion_mode
+        });
+    let candidate_graph_exercised = preview
+        .engine_plan
+        .execution_nodes
+        .iter()
+        .any(|node| node.capability.as_str() == "fusion.candidate_graph");
+    let adapter_preview = match (fusion_mode, candidate_graph_exercised) {
+        (app_core::FusionModeWireV1::Algorithm, _) => {
+            "Fusion Agent Adapter · Not required for Algorithm mode."
+        }
+        (app_core::FusionModeWireV1::AiJudgment, false) => {
+            "Fusion Agent Adapter · Not exercised by this exact run. Preview does not contact the provider."
+        }
+        (app_core::FusionModeWireV1::AiJudgment, true) => {
+            "Fusion Agent Adapter · Preview checks local readiness only; it does not contact the provider."
+        }
+    };
+    spawn_wrapped_text(
+        parent,
+        font.clone(),
+        adapter_preview,
+        9.0,
+        theme.muted_foreground,
+    );
     if preview.engine_plan.resolved_resources.is_empty() {
         spawn_wrapped_text(
             parent,
@@ -1017,7 +1113,73 @@ fn spawn_preview_resources(
         } else {
             "Optional"
         };
-        let (status_label, color, details) = if let Some(error) = &resource.resolution_error {
+        let adapter_resource = resource.requirement.resource == "tool:fusion_agent_adapter";
+        let (status_label, color, details) = if adapter_resource {
+            if let Some(error) = &resource.resolution_error {
+                (
+                    "Status unavailable",
+                    theme.editor_warning,
+                    format!(
+                        "{} · {requirement_role} · {error}",
+                        resource.requirement.reason
+                    ),
+                )
+            } else if let Some(status) = &resource.status {
+                let missing = status.origin == app_core::ResourceOriginWireV1::Missing
+                    || status.reasons.iter().any(|reason| {
+                        matches!(
+                            reason,
+                            app_core::ReadinessReasonWireV1::Absent
+                                | app_core::ReadinessReasonWireV1::ExecutableMissing
+                        )
+                    });
+                let reasons = status
+                    .reasons
+                    .iter()
+                    .map(readiness_reason_label)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let identity = status.tool_identity.as_deref().unwrap_or("Unavailable");
+                let version = status.tool_version.as_deref().unwrap_or("Unavailable");
+                let protocol = status
+                    .tool_protocol_version
+                    .map_or_else(|| "Unavailable".to_string(), |value| value.to_string());
+                (
+                    if status.usable {
+                        "Usable"
+                    } else if missing {
+                        "Missing"
+                    } else {
+                        "Unusable"
+                    },
+                    if status.usable {
+                        theme.primary
+                    } else {
+                        theme.editor_warning
+                    },
+                    format!(
+                        "{} · {} · Identity: {} · Version: {} · Protocol: {}{}",
+                        resource.requirement.reason,
+                        requirement_role,
+                        identity,
+                        version,
+                        protocol,
+                        (!reasons.is_empty())
+                            .then(|| format!(" · {reasons}"))
+                            .unwrap_or_default()
+                    ),
+                )
+            } else {
+                (
+                    "Status unavailable",
+                    theme.editor_warning,
+                    format!(
+                        "{} · {requirement_role} · No Runtime Manager status was returned.",
+                        resource.requirement.reason
+                    ),
+                )
+            }
+        } else if let Some(error) = &resource.resolution_error {
             (
                 "Blocked",
                 theme.editor_warning,
@@ -1027,6 +1189,19 @@ fn spawn_preview_resources(
                 ),
             )
         } else if let Some(status) = &resource.status {
+            let readiness = if status.usable || status.reasons.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " · Reasons: {}",
+                    status
+                        .reasons
+                        .iter()
+                        .map(|reason| format!("{reason:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             (
                 if status.usable {
                     "Usable"
@@ -1039,11 +1214,12 @@ fn spawn_preview_resources(
                     theme.editor_warning
                 },
                 format!(
-                    "{} · {} · Backend: {:?} · Validation: {:?}",
+                    "{} · {} · Backend: {:?} · Validation: {:?}{}",
                     resource.requirement.reason,
                     requirement_role,
                     status.selected_backend,
-                    status.validation_state
+                    status.validation_state,
+                    readiness
                 ),
             )
         } else {
@@ -1149,59 +1325,31 @@ pub(crate) fn capability_product_label(capability: &str) -> &'static str {
     }
 }
 
-fn analysis_node_execution_actions(
-    node_id: &str,
-    file_hash: &str,
-) -> (
-    Option<AnalysisNodeMenuAction>,
-    Option<AnalysisNodeMenuAction>,
-) {
-    // Engine v1 exposes artifact-level exact requests, not arbitrary legacy
-    // node execution/reuse. Offer only actions that compile to one of those
-    // typed targets; unsupported granular routes stay absent rather than
-    // falling through to uta-native-analyzer.
-    let retry = match node_id {
-        "pitch.extract" => Some(AnalysisNodeMenuAction {
-            label: "Rebuild pitch evidence",
-            action: UiAction::from(AnalysisCommand::ReanalyzePitch(file_hash.to_string())),
-        }),
-        "lyrics.transcribe" => Some(AnalysisNodeMenuAction {
-            label: "Retranscribe",
-            action: UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string())),
-        }),
-        "lyrics.align" => Some(AnalysisNodeMenuAction {
-            label: "Realign existing lyrics",
-            action: UiAction::from(AnalysisCommand::RealignSong(file_hash.to_string())),
-        }),
-        "chart.build_candidate" => Some(AnalysisNodeMenuAction {
-            label: "Rebuild candidate chart route",
-            action: UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
-        }),
-        _ => None,
-    };
-    let downstream = (node_id == "preflight").then(|| AnalysisNodeMenuAction {
-        label: "Run full analysis pipeline",
-        action: UiAction::from(AnalysisCommand::ReanalyzeFull(file_hash.to_string())),
-    });
-    (retry, downstream)
+fn analysis_node_execution_action(node_id: &str) -> Option<AnalysisNodeMenuAction> {
+    node_id
+        .starts_with("workflow.")
+        .then(|| AnalysisNodeMenuAction {
+            label: "Run exact workflow",
+            action: UiAction::from(AnalysisCommand::RunWorkflow),
+        })
 }
 
 pub(crate) fn build_analysis_node_context_menu(
     node_id: &str,
-    stage_id: &str,
+    capability_id: &str,
     label: &str,
     file_hash: &str,
     selected_run_id: Option<i64>,
-    is_expanded: bool,
     position: Vec2,
 ) -> AnalysisNodeContextMenu {
-    let (retry_action, run_downstream_action) = analysis_node_execution_actions(node_id, file_hash);
     AnalysisNodeContextMenu {
         node_id: node_id.to_string(),
-        stage_id: stage_id.to_string(),
+        capability_id: capability_id.to_string(),
         label: label.to_string(),
-        retry_action,
-        run_downstream_action,
+        run_action: selected_run_id
+            .is_none()
+            .then(|| analysis_node_execution_action(node_id))
+            .flatten(),
         compare_node_action: selected_run_id.map(|run_id| {
             UiAction::from(AnalysisCommand::CompareNodeAttemptWithPrevious(
                 file_hash.to_string(),
@@ -1209,145 +1357,19 @@ pub(crate) fn build_analysis_node_context_menu(
                 run_id,
             ))
         }),
-        force_transcribe_action: node_can_force_transcribe(node_id)
-            .then(|| UiAction::from(AnalysisCommand::ForceTranscribe(file_hash.to_string()))),
-        refetch_align_action: node_can_refetch_and_align(node_id)
-            .then(|| UiAction::from(AnalysisCommand::ReanalyzeTranscript(file_hash.to_string()))),
         view_logs_action: Some(UiAction::from(AnalysisCommand::OpenAnalysisLogViewer(
             file_hash.to_string(),
             node_id.to_string(),
         ))),
-        compound_toggle: analysis_node_compound_toggle_action(node_id, is_expanded),
         position,
     }
-}
-
-/// §8.3 migration table's "Force transcribe -> Transcription Node -> Force
-/// Recompute": whether `node_id` has a meaningful "ignore online lyrics,
-/// transcribe again" action -- only `lyrics.transcribe`. Shared by the real
-/// click path and the `UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT` debug-injection
-/// path, same reasoning as `analysis_node_compound_toggle_action` below.
-pub(crate) fn node_can_force_transcribe(node_id: &str) -> bool {
-    node_id == "lyrics.transcribe"
-}
-
-/// §8.3 migration table's "Refetch & align -> Lyrics Source -> LRCLIB ->
-/// Run Timing": whether `node_id` has a meaningful "refetch online lyrics,
-/// then align" action -- only `lyrics.align`.
-pub(crate) fn node_can_refetch_and_align(node_id: &str) -> bool {
-    node_id == "lyrics.align"
-}
-
-/// `(button label, action)` for the compound-node expand/collapse toggle,
-/// or `None` when `node_id` isn't a compound node at all. Shared by the
-/// real pointer path (`open_analysis_node_from_pointer`) and the
-/// `UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT` debug-injection path in
-/// `desktop/src/studio/mod.rs`, so the two can't drift.
-pub(crate) fn analysis_node_compound_toggle_action(
-    node_id: &str,
-    is_expanded: bool,
-) -> Option<(&'static str, UiAction)> {
-    let is_compound = app_core::baseline_graph_spec()
-        .node(&app_core::AnalysisNodeId::new(node_id))
-        .is_some_and(|node| node.is_compound());
-    if !is_compound {
-        return None;
-    }
-    let label = if is_expanded {
-        "Collapse sub-checks"
-    } else {
-        "Expand sub-checks"
-    };
-    Some((
-        label,
-        UiAction::from(AnalysisCommand::ToggleAnalysisCompoundNode(
-            node_id.to_string(),
-        )),
-    ))
-}
-
-/// §7.6 "Play audio artifact": whether an artifact revision's `kind` is a
-/// real waveform file `uta_studio_audio::EditorAudioPlayer::load_path` can
-/// actually open, as opposed to a JSON/text artifact (transcripts, pitch
-/// data, music analysis) that a "Play" button would just fail against.
-pub(crate) fn artifact_kind_is_playable(kind: app_core::ArtifactKind) -> bool {
-    matches!(
-        kind,
-        app_core::ArtifactKind::VocalStem
-            | app_core::ArtifactKind::InstrumentalStem
-            | app_core::ArtifactKind::RawVocalStem
-            | app_core::ArtifactKind::DenoisedVocalStem
-            | app_core::ArtifactKind::DereverbedVocalStem
-            | app_core::ArtifactKind::AnalysisVocalStem
-            | app_core::ArtifactKind::HighQualityInstrumentalStem
-            | app_core::ArtifactKind::DenoisedInstrumentalStem
-            | app_core::ArtifactKind::DereverbedInstrumentalStem
-            | app_core::ArtifactKind::KaraokeInstrumentalStem
-            | app_core::ArtifactKind::PreprocessedAudio
-    )
-}
-
-/// Overlays real execution failures from `analysis_node_attempts` onto a
-/// Phase 1 plan preview, so §7.8/§9.3's "Focus Failed" button has something
-/// real to find -- `analysis_plan::build_plan` itself never produces
-/// `NodeState::Failed` (only `Ready`/`Frozen`/`Disabled`/`Blocked`/
-/// `NotApplicable`, per that module's own doc comment), so without this the
-/// button's search always came back empty and it silently never appeared.
-/// Only overlays a `Ready` node: `Blocked`/`Disabled`/`NotApplicable`/
-/// `Frozen` already have a more specific, intentional explanation and must
-/// not be overwritten just because a node-attempt row with that id also
-/// happens to exist (e.g. from an earlier run, before the current plan
-/// decided to skip the node this time).
-pub(crate) fn overlay_failed_node_attempts(
-    mut plan: app_core::AnalysisPlan,
-    attempts: &[app_core::NodeAttempt],
-) -> app_core::AnalysisPlan {
-    let failed_ids: std::collections::BTreeSet<app_core::AnalysisNodeId> = attempts
-        .iter()
-        .filter(|attempt| attempt.status == "failed")
-        .map(|attempt| app_core::AnalysisNodeId::new(attempt.node_id.clone()))
-        .collect();
-    for node in &mut plan.nodes {
-        if node.state == app_core::NodeState::Ready && failed_ids.contains(&node.id) {
-            node.state = app_core::NodeState::Failed;
-        }
-    }
-    plan
-}
-
-/// Phase 5 §5.5 "Stale Evidence" / §7's "GraphNodeState has no Stale
-/// variant" gap: overlays `app_core::candidate_chart_status`'s real
-/// mtime-based staleness comparison onto `chart.build_candidate` -- the one
-/// node a Candidate/Authored distinction actually applies to. Same
-/// "only overwrite Ready" rule as `overlay_failed_node_attempts`: a
-/// Blocked/Disabled/NotApplicable/Frozen `chart.build_candidate` already
-/// has a more specific, intentional explanation for why it isn't running
-/// this pass, which staleness (a fact about the *last* successful run's
-/// output, not this plan) must not override.
-pub(crate) fn overlay_stale_candidate_chart(
-    mut plan: app_core::AnalysisPlan,
-    candidate_status: &app_core::CandidateChartStatus,
-) -> app_core::AnalysisPlan {
-    if !matches!(
-        candidate_status,
-        app_core::CandidateChartStatus::CandidateAvailable(_)
-    ) {
-        return plan;
-    }
-    let chart_build_id = app_core::AnalysisNodeId::new("chart.build_candidate");
-    for node in &mut plan.nodes {
-        if node.id == chart_build_id && node.state == app_core::NodeState::Ready {
-            node.state = app_core::NodeState::Stale;
-        }
-    }
-    plan
 }
 
 pub(crate) struct AnalysisNodeClickTarget<'a> {
     pub(crate) node_id: &'a str,
     pub(crate) label: &'a str,
     pub(crate) file_hash: &'a str,
-    pub(crate) stage_id: &'a str,
+    pub(crate) capability_id: &'a str,
 }
 
 pub(crate) fn clamp_analysis_node_context_position(position: Vec2, viewport: Vec2) -> Vec2 {
@@ -1378,26 +1400,21 @@ pub(crate) fn open_analysis_node_from_pointer(
         node_id,
         label,
         file_hash,
-        stage_id,
+        capability_id,
     } = target;
     match button {
         PointerButton::Primary => {
-            analysis.selected_analysis_stage = Some(stage_id.to_string());
             analysis.selected_analysis_node = Some(node_id.to_string());
             dialogs.analysis_node_context = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         PointerButton::Secondary => {
-            let is_expanded = analysis
-                .expanded_compound_nodes
-                .contains(&app_core::AnalysisNodeId::new(node_id));
             dialogs.analysis_node_context = Some(build_analysis_node_context_menu(
                 node_id,
-                stage_id,
+                capability_id,
                 label,
                 file_hash,
                 analysis.selected_analysis_history,
-                is_expanded,
                 clamp_analysis_node_context_position(menu_position, viewport_size),
             ));
             invalidated.invalidate(UiDirtyRegion::Dialog);
@@ -1478,71 +1495,16 @@ pub(crate) fn spawn_analysis_node_context_menu(
                 11.0,
                 UiAction::from(AnalysisCommand::OpenAnalysisInspect(
                     context.node_id.clone(),
-                    context.stage_id.clone(),
+                    context.capability_id.clone(),
                 )),
             );
-            if context.retry_action.is_some() || context.run_downstream_action.is_some() {
+            if let Some(run) = context.run_action.clone() {
                 menu.spawn(Node {
                     height: px(5),
                     ..default()
                 });
                 spawn_text(menu, font.clone(), "EXECUTION", 7.0, theme.muted_foreground);
-            }
-            if let Some(retry) = context.retry_action.clone() {
-                spawn_menu_text_button(menu, font.clone(), theme, retry.label, 11.0, retry.action);
-            }
-            if let Some(downstream) = context.run_downstream_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    downstream.label,
-                    11.0,
-                    downstream.action,
-                );
-            }
-            if context.force_transcribe_action.is_some() || context.refetch_align_action.is_some() {
-                menu.spawn(Node {
-                    height: px(5),
-                    ..default()
-                });
-                spawn_text(
-                    menu,
-                    font.clone(),
-                    "RUN OPTIONS",
-                    7.0,
-                    theme.muted_foreground,
-                );
-            }
-            if let Some(force_transcribe_action) = context.force_transcribe_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Force transcribe",
-                    11.0,
-                    force_transcribe_action,
-                );
-            }
-            if let Some(refetch_align_action) = context.refetch_align_action.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    "Refetch lyrics & align",
-                    11.0,
-                    refetch_align_action,
-                );
-            }
-            if let Some((toggle_label, toggle_action)) = context.compound_toggle.clone() {
-                spawn_menu_text_button(
-                    menu,
-                    font.clone(),
-                    theme,
-                    toggle_label,
-                    11.0,
-                    toggle_action,
-                );
+                spawn_menu_text_button(menu, font.clone(), theme, run.label, 11.0, run.action);
             }
             menu.spawn(Node {
                 height: px(5),

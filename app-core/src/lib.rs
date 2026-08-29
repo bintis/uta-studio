@@ -1,12 +1,8 @@
-// Unit-test builds intentionally compile retired analyzer compatibility helpers
-// that are unavailable from the product API but still exercise migration data.
-#![cfg_attr(test, allow(dead_code))]
-
+mod acceptance_gen;
 mod analysis_artifact;
 mod analysis_engine_adapter;
 mod analysis_experience;
 mod analysis_graph;
-mod analysis_plan;
 mod analysis_profile;
 mod analyzer;
 mod api;
@@ -28,9 +24,8 @@ mod library_menu;
 mod library_model;
 mod lrc;
 mod lyrics;
-mod native_runtime;
+mod runtime_presentation;
 mod scanner;
-mod singing;
 mod song;
 mod source;
 mod ultrastar_export;
@@ -46,47 +41,39 @@ pub use analysis_artifact::{
     compute_config_hash, compute_native_config_hash, delete_artifact_revision, hash_file_contents,
     import_legacy_artifacts, invalidate_artifact_revision, load_active_artifact,
     load_analysis_artifacts, load_artifact_revisions, migrate_artifact_revisions_to_store,
-    record_artifact_revision, set_active_artifact_revision,
+    record_artifact_revision, set_active_artifact_revision, validate_artifact_revision_file,
 };
 pub use analysis_engine_adapter::{
     AnalysisRequestIntent, EngineRunDraft, EngineRunPreview, QueuedEngineRun,
     ResolvedAnalysisSource, StudioLyricToken, StudioLyricsContext, StudioLyricsContextProjection,
     StudioLyricsMode, compile_analyze_request_v1, preview_analyze_request_v1,
-    preview_and_queue_engine_run, preview_engine_run, project_lyrics_context, queue_exact_preview,
-    resolve_true_source,
+    preview_and_queue_engine_run, preview_and_stage_engine_run, preview_engine_run,
+    project_lyrics_context, queue_exact_preview, resolve_true_source, stage_exact_preview,
 };
 pub use analysis_experience::{
     ANALYSIS_EXPERIENCE_SCHEMA_VERSION, AnalysisAudioPreferences, AnalysisDefaultTarget,
     AnalysisExperienceOverride, AnalysisExperienceSettings, AnalysisLyricsPreferences,
-    AnalysisQualityProfile, AnalysisSettingSource, AnalysisSingingPreferences, AutomaticStrategy,
-    EffectiveAnalysisExperience, EffectiveAnalysisSetting, resolve_analysis_experience,
+    AnalysisOutputKind, AnalysisOutputSelection, AnalysisQualityProfile, AnalysisSettingSource,
+    AnalysisSingingPreferences, AutomaticStrategy, EffectiveAnalysisExperience,
+    EffectiveAnalysisSetting, resolve_analysis_experience,
 };
 pub use analysis_graph::{
     AnalysisEdge, AnalysisGraphSpec, AnalysisNodeId, AnalysisNodeSpec, ArtifactKind, CachePolicy,
-    DisablePolicy, GraphValidationError, active_stem_nodes_from_settings,
-    analysis_node_for_audio_step, baseline_graph_spec, default_active_stem_nodes,
-    lyrics_route_node_ids, optional_stem_node_ids, stem_group_node_ids,
-};
-pub use analysis_plan::{
-    AnalysisPlan, AnalysisRequest, LyricsRoute, NodeState, PlanError, PlanWarning, PlannedNode,
-    build_plan, get_analysis_graph, preview_analysis_plan,
+    DisablePolicy, GraphValidationError,
 };
 pub use analysis_profile::{
-    AnalysisProfileSnapshot, ProfileField, ProfileFieldResolution, ProfileSource,
-    get_song_analysis_profile, reset_song_analysis_profile, resolve_profile_field,
+    SongAnalysisProfile, get_song_analysis_profile, reset_song_analysis_profile,
     set_song_analysis_profile,
 };
 pub use analyzer::{
     AnalysisBatchQueueResult, AnalysisProgressSnapshot, AnalysisQueue, AnalysisRunComparison,
-    AnalysisRunHistory, AnalysisStageRoute, AnalysisTask, EngineRunHistoryProjection, NodeAttempt,
-    NodeAttemptComparison, PendingAnalysisIntent, QueuedStatus, SongAuthoringState,
-    analysis_log_lines, analysis_log_path_for, cancel_analysis_run, clear_analysis_history,
-    compare_analysis_runs, compare_node_attempt_with_previous_run, delete_cache,
-    downstream_node_ids, enqueue_all, enqueue_one, load_analysis_history,
-    load_analysis_node_attempts, load_analysis_tasks, preview_analysis_plan_for_selection,
-    preview_full_analysis_plan, realign, reanalyze_force_transcribe, reanalyze_full,
-    reanalyze_pitch, reanalyze_transcript, resolve_song_authoring_state, shutdown_server,
-    stop_analysis_run,
+    AnalysisRunHistory, AnalysisStageRoute, AnalysisTask, EngineErrorHistoryProjection,
+    EngineRunHistoryProjection, NodeAttempt, NodeAttemptComparison, QueuedStatus,
+    SongAuthoringState, analysis_log_lines, analysis_log_path_for, cancel_analysis_run,
+    clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
+    delete_cache, enqueue_all, enqueue_one, load_analysis_history, load_analysis_node_attempts,
+    load_analysis_tasks, realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch,
+    reanalyze_transcript, resolve_song_authoring_state, start_queued_analysis, stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -95,26 +82,21 @@ pub use artifact_workbench::{
     ArtifactDraftCommit, ArtifactDraftContent, ArtifactDraftKind, ArtifactEditDraft,
     ArtifactHealth, ArtifactHealthStatus, ArtifactInspection, ArtifactLineage, ArtifactLineageNode,
     ArtifactMediaType, ArtifactPreview, ArtifactRef, ArtifactSaveMode, ArtifactSaveOptions,
-    ArtifactTypedDiff, ChartRevisionMergeMode, DownstreamImpact, ImpactTrigger, NodeIoInspection,
-    analysis_request_from_impact, apply_artifact_revision_to_chart, artifact_capabilities,
-    artifact_editor_text, artifact_health, artifact_lineage, authored_chart_is_pinned,
-    begin_artifact_edit, capture_analysis_run_artifacts, commit_artifact_edit,
-    compare_artifacts_typed, inspect_analysis_node_io, inspect_artifact, merge_chart_revisions,
-    preview_artifact, preview_artifact_downstream_impact, preview_artifact_edit_impact,
-    preview_frozen_downstream_impact, preview_node_downstream_impact,
-    queued_request_matches_preview, resolve_artifact_for_run, resolve_graph_edge_binding,
+    ArtifactTypedDiff, ChartRevisionMergeMode, DownstreamImpact, NodeIoInspection,
+    apply_artifact_revision_to_chart, artifact_capabilities, artifact_editor_text, artifact_health,
+    artifact_lineage, authored_chart_is_pinned, begin_artifact_edit,
+    capture_analysis_run_artifacts, commit_artifact_edit, compare_artifacts_typed,
+    inspect_analysis_node_io, inspect_artifact, merge_chart_revisions, preview_artifact,
+    preview_artifact_edit_impact, resolve_artifact_for_run, resolve_graph_edge_binding,
     set_artifact_pinned,
 };
 pub use audio_model::{
-    AudioModelCatalogSummary, AudioModelFileStatus, AudioModelLicense, AudioModelStatus,
-    AudioParameterMap, AudioParameterSpec, AudioParameterValue, DEFAULT_BGM_MODEL_ID,
-    DEFAULT_VOCAL_MODEL_ID, REQUIRED_AUDIO_MODEL_IDS, audio_model_dir, audio_processing_root,
+    AudioModelCatalogSummary, AudioModelLicense, AudioModelStatus, DEFAULT_BGM_MODEL_ID,
+    DEFAULT_VOCAL_MODEL_ID,
 };
 pub use audio_processing::{
-    AudioInputReference, AudioOutputBinding, AudioProcessingPlanSnapshot, AudioProcessingSettings,
-    AudioProcessingStep, AudioRuntimeRequest, ResolvedAudioParameter, cleanup_model_enabled,
-    get_audio_model_status, install_audio_model, list_audio_models, preview_effective_audio_params,
-    reinstall_audio_model, remove_audio_model, validate_audio_processing_profile,
+    get_audio_model_status, install_audio_model, list_audio_models, reinstall_audio_model,
+    remove_audio_model,
 };
 pub use authoring::{
     AudioPaths, ShiftDone, ShiftResult, get_audio_paths, load_pitch_guide, load_transcript,
@@ -122,17 +104,21 @@ pub use authoring::{
 };
 pub use backend_cli::{
     AnalysisCliClient, AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalyzeRequestWireV1,
-    BackendCliError, RuntimeCliClient, RuntimeResourceDetailsWireV1, RuntimeResourceStatusWireV1,
+    BackendCliError, ContinuousF0SourceWireV1, ExpertFusionPolicyWireV1, FusionModeWireV1,
+    InstallStateWireV1, NoteLengthSourceWireV1, OnsetSupportSourceWireV1, ReadinessReasonWireV1,
+    ResourceOriginWireV1, RuntimeCliClient, RuntimeResourceDetailsWireV1,
+    RuntimeResourceStatusWireV1, WorkflowExecutionNodePlanWireV1, WorkflowExecutionPlanWireV1,
+    WorkflowNodeExecutionStateWireV1,
 };
 pub use cache::{
-    CacheDir, CachePaths, CacheStats, cache_roots, clear_models, default_uta_studio_dir,
-    normalized_target_path, same_path, uta_studio_dir,
+    CacheDir, CachePaths, CacheStats, cache_roots, default_uta_studio_dir, normalized_target_path,
+    same_path, uta_studio_dir,
 };
 pub use chart::{
     CandidateChartStatus, CandidateChartSummary, ChartAudio, ChartDocument, ChartReadiness,
     ChartUpdatePolicy, ChartWaveform, candidate_chart_status, chart_problem_count, chart_readiness,
-    decode_chart_waveform, load_chart, replace_authored_chart_with_fresh_analysis,
-    save_vocal_chart, save_vocal_chart_from_revision,
+    decode_chart_waveform, delete_authored_chart, load_chart,
+    replace_authored_chart_with_fresh_analysis, save_vocal_chart, save_vocal_chart_from_revision,
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{
@@ -142,39 +128,27 @@ pub use editor::{
     EvidenceTrack, HumanCorrection, KeyChord, LyricAddress, MIN_NOTE_SECONDS, NoteKind,
     ProblemKind, ProblemReport, ReviewReason, ReviewRegion, ReviewSeverity, Severity,
     SingingEvidenceBundle, Syllable, TrackRole, TrackSummary, apply_editor_suggestion,
-    editor_action, editor_action_for_chord, editor_actions, kana_morae, syllables,
-    technique_evidence_track,
+    editor_action, editor_action_for_chord, editor_actions, kana_morae,
+    singing_analysis_evidence_bundle, syllables, technique_evidence_track,
 };
 pub use export_destination::{
     ExportNodeInspection, ExportPackageKind, inspect_export_node, last_export_destination,
     record_last_export, validate_export_node, validate_export_package,
 };
-pub use library_db::{init_library, library_db_path, load_song_by_hash};
+pub use library_db::{init_library, library_db_path, load_song_by_hash, load_song_by_path};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};
 pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsStore};
 pub use lyrics::{
-    LrclibCandidate, LyricsFile, apply_timed_lyrics, load_lyrics_file, provide_lrc,
-    save_lyrics_and_realign, search_lrclib_for_hash,
+    LrclibCandidate, LyricsFile, apply_timed_lyrics, load_lyrics_file, provide_lrc, save_lyrics,
+    search_lrclib_for_hash,
 };
-pub use native_runtime::{
-    BackendCapability, NATIVE_WORKER_PROTOCOL_VERSION, NativeBackend, NativeModelRuntime,
-    NativeRuntimeLock, NativeTask, NativeTaskOutput, NativeTaskResult,
-    OPENVINO_WORKER_RECIPE_SHA256, RUNTIME_LOCK_JSON, RUNTIME_LOCK_SHA256, ResolvedNativeRuntime,
-    RuntimeRouteError, ValidationState, WorkerCommand, WorkerFrame, component_executable,
-    native_analyzer_path, native_runtime_lock, native_runtime_registry, resolve_native_runtime,
-    run_native_task, runtime_recipe_digest,
+pub use runtime_presentation::{
+    FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
+    RuntimeBackendPresentation, RuntimeModelPresentation, RuntimeValidationPresentation,
+    clear_fusion_agent_adapter, configure_fusion_agent_adapter, fusion_agent_adapter_status,
+    runtime_model_presentations,
 };
 pub use scanner::{clear_library_index, start_scan};
-pub use singing::{
-    CANONICAL_TIMELINE_STEP_MS, CalibrationMethod, CanonicalLyrics, CanonicalNote,
-    CanonicalNoteEvidence, CanonicalSingingTrack, CanonicalWordBoundary, EvidenceFrame,
-    EvidenceProvenance, EvidenceSeries, ExpertTask, F0Point, FusedEstimate, HarmonyMetadata,
-    PitchAlternative, PitchBendPoint, ScalarEvidence, ScoreCalibrator, SegmentCandidate,
-    SingingReviewReason, SingingReviewRegion, TechniqueScores, TimeRange, TranscriptHypothesis,
-    TranscriptTokenEvidence, WeightedEstimate, WordBoundaryEvidence, build_canonical_singing_track,
-    build_review_regions, correlation_aware_score, decode_candidate_graph, fuse_scalar,
-    fuse_transcripts, fuse_word_boundaries,
-};
 pub use song::{
     MusicAnalysis, MusicAnalysisDescriptors, MusicKeyAnalysis, MusicRhythmAnalysis, Song,
     SongOrigin, TranscriptSource, load_music_analysis, update_song_settings,
@@ -198,15 +172,23 @@ pub use vocal_chart::migrate_analyzer_chart;
 pub use workflow::{
     AnalyzerBinding, AudioArtifactDescriptor, AudioRole, CapabilityClass, CapabilityId,
     CompiledArtifactBinding, CompiledNodeBinding, ConditionalExecution, ExecutionPolicy,
-    NodeCapability, NodePosition, QualityMode, ResolvedRuntimeKind, StoredWorkflow,
-    WorkflowCompileError, WorkflowDefinition, WorkflowEdge, WorkflowExecutionSnapshot, WorkflowId,
-    WorkflowLayout, WorkflowNodeId, WorkflowNodeInstance, WorkflowPortRef, WorkflowPortSpec,
-    WorkflowPortType, WorkflowValidationCode, WorkflowValidationIssue, WorkflowValidationReport,
-    bind_workflow_analyzer, compile_workflow, default_workflow, duplicate_audio_transformation,
-    list_workflow_capabilities, load_song_workflow, preview_workflow_compile,
-    reorder_audio_transformation, save_song_workflow, set_workflow_execution_policy,
-    set_workflow_priority, validate_workflow, workflow_definition_digest,
-    workflow_from_audio_settings,
+    FusionModeV1, NodeCapability, NodePosition, OptionalWorkflowCardV1, QualityMode,
+    SeparationOutputRoleV1, SeparationProviderExecutionV1, SeparationStrategyOptionV1,
+    SeparationStrategyV1, StoredWorkflow, WORKFLOW_EXECUTION_EXTENSION_KEY, WorkflowBindingWireV1,
+    WorkflowCompileError, WorkflowDefinition, WorkflowEdge, WorkflowExecutionInvocationWireV1,
+    WorkflowExecutionSnapshot, WorkflowExecutionWireV1, WorkflowId, WorkflowLayout,
+    WorkflowModelOption, WorkflowNodeId, WorkflowNodeInstance, WorkflowNodeWireV1, WorkflowPortRef,
+    WorkflowPortSpec, WorkflowPortType, WorkflowProviderPreferencesWireV1,
+    WorkflowTerminalOutputWireV1, WorkflowValidationCode, WorkflowValidationIssue,
+    WorkflowValidationReport, add_optional_workflow_card, bind_workflow_analyzer, compile_workflow,
+    default_workflow, duplicate_audio_transformation, fusion_mode,
+    insert_audio_transformation_after_output, list_workflow_capabilities, load_song_workflow,
+    preview_workflow_compile, remove_workflow_node, reorder_audio_transformation,
+    save_song_workflow, separation_strategy_descriptor, separation_strategy_options,
+    set_workflow_execution_policy, set_workflow_node_model, set_workflow_parameter,
+    set_workflow_priority, set_workflow_separation_strategy, validate_workflow,
+    workflow_definition_digest, workflow_has_optional_card, workflow_model_label,
+    workflow_model_options,
 };
 
 pub fn startup() -> Result<(), String> {
@@ -215,21 +197,12 @@ pub fn startup() -> Result<(), String> {
     let config = AppConfig::load();
     init_library().map_err(|e| e.to_string())?;
 
-    // Exact Engine requests resume from their durable snapshots independently
-    // of the legacy aggregate readiness signal. Request-specific readiness was
-    // already confirmed by uta-analyze before queueing; startup must not route
-    // them through a different global heuristic or reconstruct their intent.
-    let resumable = AnalysisQueue::load()
-        .entries
-        .into_iter()
-        .filter_map(|(file_hash, status)| {
-            matches!(
-                status,
-                analyzer::QueuedStatus::Queued | analyzer::QueuedStatus::Analyzing(_)
-            )
-            .then_some(file_hash)
-        })
-        .collect::<Vec<_>>();
+    // Exact Engine requests that the user already started resume from their
+    // durable snapshots independently of the legacy aggregate readiness
+    // signal. Staged requests remain held in Processing Queue until an explicit
+    // Start action; startup must never turn them into automatic work.
+    let resumable =
+        library_db::analysis_queue_resumable_hashes().map_err(|error| error.to_string())?;
     for file_hash in resumable {
         if library_db::analysis_queue_engine_intent(&file_hash)
             .ok()

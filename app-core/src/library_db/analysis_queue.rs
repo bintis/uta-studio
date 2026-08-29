@@ -1,8 +1,8 @@
 //! Persistent analyzer queue.
 //!
 //! Backs `analyzer::AnalysisQueue`. Each song hash gets one row carrying its
-//! current status (`queued`, `analyzing` with a percentage, or `failed` with a
-//! message).
+//! current status (`staged`, `queued`, `analyzing` with a percentage, or
+//! `failed` with a message). Staged requests require an explicit user start.
 
 use std::path::PathBuf;
 
@@ -57,16 +57,19 @@ pub fn analysis_queue_upsert_row(
     })
 }
 
-pub fn analysis_queue_set_engine_intent(intent: &EngineQueueIntent) -> rusqlite::Result<bool> {
+fn analysis_queue_set_engine_intent_with_status(
+    intent: &EngineQueueIntent,
+    status: &str,
+) -> rusqlite::Result<bool> {
     with_conn_mut(|connection| {
         let changed = connection.execute(
             "INSERT INTO analysis_queue (
                 file_hash, status, analyzing_pct, failed_message, request_id,
                 engine_request_json, request_digest, engine_plan_json,
                 source_path, source_sha256, queued_at_ms
-             ) VALUES (?1, 'queued', NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ) VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(file_hash) DO UPDATE SET
-                status = 'queued', analyzing_pct = NULL, failed_message = NULL,
+                status = excluded.status, analyzing_pct = NULL, failed_message = NULL,
                 request_id = excluded.request_id,
                 engine_request_json = excluded.engine_request_json,
                 request_digest = excluded.request_digest,
@@ -77,6 +80,7 @@ pub fn analysis_queue_set_engine_intent(intent: &EngineQueueIntent) -> rusqlite:
              WHERE analysis_queue.status = 'failed'",
             params![
                 intent.file_hash,
+                status,
                 intent.request_id,
                 intent.request_json,
                 intent.request_digest,
@@ -87,6 +91,44 @@ pub fn analysis_queue_set_engine_intent(intent: &EngineQueueIntent) -> rusqlite:
             ],
         )?;
         Ok(changed == 1)
+    })
+}
+
+pub fn analysis_queue_set_engine_intent(intent: &EngineQueueIntent) -> rusqlite::Result<bool> {
+    analysis_queue_set_engine_intent_with_status(intent, "queued")
+}
+
+pub fn analysis_queue_stage_engine_intent(intent: &EngineQueueIntent) -> rusqlite::Result<bool> {
+    analysis_queue_set_engine_intent_with_status(intent, "staged")
+}
+
+pub fn analysis_queue_status(file_hash: &str) -> rusqlite::Result<Option<String>> {
+    with_conn(|connection| {
+        connection
+            .query_row(
+                "SELECT status FROM analysis_queue WHERE file_hash = ?1",
+                [file_hash],
+                |row| row.get(0),
+            )
+            .optional()
+    })
+}
+
+fn queue_status_resumes(status: &str) -> bool {
+    matches!(status, "queued" | "analyzing")
+}
+
+pub fn analysis_queue_resumable_hashes() -> rusqlite::Result<Vec<String>> {
+    with_conn(|connection| {
+        let mut statement = connection.prepare("SELECT file_hash, status FROM analysis_queue")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(file_hash, status)| queue_status_resumes(&status).then_some(file_hash))
+            .collect())
     })
 }
 
@@ -162,4 +204,16 @@ pub fn analysis_queue_save_rows(rows: &[AnalysisQueueRow]) -> rusqlite::Result<(
         tx.commit()?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_status_resumes;
+
+    #[test]
+    fn staged_requests_never_resume_until_the_user_starts_them() {
+        assert!(!queue_status_resumes("staged"));
+        assert!(queue_status_resumes("queued"));
+        assert!(queue_status_resumes("analyzing"));
+    }
 }

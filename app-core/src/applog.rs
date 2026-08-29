@@ -108,7 +108,7 @@ mod tests {
     /// test in this module (and, in a real run, the whole app); serialize
     /// tests that touch it so they can't interleave and observe each
     /// other's pushed lines, same reasoning as `analyzer.rs`'s
-    /// `PENDING_NODE_INTENTS` test guard.
+    /// process-wide logging test guard.
     static GUARD: StdMutex<()> = StdMutex::new(());
 
     fn clear_buffer() {

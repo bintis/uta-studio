@@ -1,228 +1,62 @@
 use super::*;
-use crate::{
-    analysis_graph::baseline_graph_spec,
-    analysis_plan::{AnalysisPlan, AnalysisRequest, NodeState},
-};
 
-pub(crate) fn request_fingerprint(request: &AnalysisRequest) -> String {
-    serde_json::to_string(&(
-        &request.file_hash,
-        request
-            .targets
-            .iter()
-            .map(|id| id.as_str().to_string())
-            .collect::<Vec<_>>(),
-        request
-            .disabled_nodes
-            .iter()
-            .map(|id| id.as_str().to_string())
-            .collect::<Vec<_>>(),
-        request
-            .frozen_artifacts
-            .iter()
-            .map(|kind| format!("{kind:?}"))
-            .collect::<Vec<_>>(),
-        request
-            .bypassed_nodes
-            .iter()
-            .map(|id| id.as_str().to_string())
-            .collect::<Vec<_>>(),
-        format!("{:?}", request.lyrics_route),
-        serde_json::to_value(&request.profile_snapshot).unwrap_or(serde_json::Value::Null),
-    ))
-    .unwrap_or_default()
+/// Returns the Studio-owned outer Workflow graph for artifact lineage and
+/// authoring-impact presentation. Execution readiness and scheduling remain
+/// exclusively authoritative in the Analysis Engine Plan.
+pub(crate) fn current_workflow_graph(
+    file_hash: &str,
+) -> Result<crate::analysis_graph::AnalysisGraphSpec, String> {
+    let definition = crate::workflow::load_song_workflow(file_hash)
+        .map(|stored| stored.definition)
+        .unwrap_or_else(|_| crate::workflow::default_workflow(file_hash));
+    crate::workflow::compile_workflow(&definition)
+        .map(|snapshot| snapshot.graph)
+        .map_err(|error| error.to_string())
 }
 
-pub fn queued_request_matches_preview(
-    impact: &DownstreamImpact,
-    request: &AnalysisRequest,
-) -> bool {
-    impact.request_fingerprint == request_fingerprint(request)
+fn output_producer_for_kind(
+    graph: &crate::analysis_graph::AnalysisGraphSpec,
+    kind: ArtifactKind,
+) -> Option<AnalysisNodeId> {
+    graph
+        .nodes
+        .iter()
+        .find(|node| node.outputs.contains(&kind))
+        .map(|node| node.id.clone())
 }
 
-pub fn analysis_request_from_impact(file_hash: &str, impact: &DownstreamImpact) -> AnalysisRequest {
-    crate::analyzer::analysis_request_snapshot(
-        file_hash,
-        impact.queued_targets.iter().cloned().collect(),
-        impact.queued_disabled.iter().cloned().collect(),
-        impact.queued_frozen.iter().copied().collect(),
-        impact.queued_bypassed.iter().cloned().collect(),
-    )
-}
-
-pub(crate) fn classify_plan_impact(
+fn workflow_impact(
     file_hash: &str,
     focus: AnalysisNodeId,
-    plan: &AnalysisPlan,
-    request: &AnalysisRequest,
-    authored_chart_preserved: bool,
+    graph: &crate::analysis_graph::AnalysisGraphSpec,
 ) -> DownstreamImpact {
-    let graph = baseline_graph_spec();
-    let mut will_run = Vec::new();
-    let mut will_reuse = Vec::new();
-    let mut will_be_blocked = Vec::new();
-    for node in &plan.nodes {
-        match node.state {
-            NodeState::Frozen => will_reuse.push(node.id.clone()),
-            NodeState::Blocked => will_be_blocked.push(node.id.clone()),
-            NodeState::Disabled => will_be_blocked.push(node.id.clone()),
-            _ if node.will_run => will_run.push(node.id.clone()),
-            _ => {}
-        }
-    }
     let affected_nodes = graph.dependents_of(&focus).into_iter().collect::<Vec<_>>();
-    let will_become_stale = affected_nodes
-        .iter()
-        .filter(|node_id| {
-            will_run.iter().any(|running| running == *node_id)
-                && graph.node(node_id).is_some_and(|node| {
-                    node.outputs
-                        .iter()
-                        .any(|kind| load_active_artifact(file_hash, *kind).is_some())
-                })
-        })
-        .cloned()
-        .collect();
-    let mut will_remain_preserved = Vec::new();
-    if authored_chart_preserved {
-        will_remain_preserved.push("AuthoredChart".to_string());
+    let mut affected_with_focus = affected_nodes.clone();
+    if !affected_with_focus.contains(&focus) {
+        affected_with_focus.insert(0, focus.clone());
     }
-    for kind in [
-        ArtifactKind::VocalStem,
-        ArtifactKind::InstrumentalStem,
-        ArtifactKind::TimedTranscript,
-        ArtifactKind::PitchTrack,
-        ArtifactKind::CandidateChart,
-        ArtifactKind::AuthoredChart,
-    ] {
-        if let Some(revision) = load_active_artifact(file_hash, kind)
-            && library_db::analysis_artifact_is_pinned(&revision.id).unwrap_or(false)
-        {
-            will_remain_preserved.push(format!("Pinned {kind:?}"));
-        }
-    }
-    let export_may_need_regeneration = will_run
-        .iter()
-        .any(|node| node.as_str() == "chart.build_candidate")
-        || focus.as_str() == "chart.build_candidate";
+    let export_may_need_regeneration = affected_with_focus.iter().any(|node_id| {
+        graph
+            .node(node_id)
+            .is_some_and(|node| node.outputs.contains(&ArtifactKind::CandidateChart))
+    });
     DownstreamImpact {
         file_hash: file_hash.to_string(),
         node_id: focus,
         affected_nodes,
-        authored_chart_preserved,
+        authored_chart_preserved: true,
         export_may_need_regeneration,
-        will_run,
-        will_reuse,
-        will_become_stale,
-        will_be_blocked,
-        will_remain_preserved,
-        exports_needing_regeneration: if export_may_need_regeneration {
-            vec!["UTZ".to_string(), "UltraStar".to_string()]
-        } else {
-            Vec::new()
-        },
-        queued_targets: request.targets.iter().cloned().collect(),
-        queued_disabled: request.disabled_nodes.iter().cloned().collect(),
-        queued_frozen: request.frozen_artifacts.iter().copied().collect(),
-        queued_bypassed: request.bypassed_nodes.iter().cloned().collect(),
-        request_fingerprint: request_fingerprint(request),
     }
-}
-
-pub fn preview_frozen_downstream_impact(
-    file_hash: &str,
-    trigger: ImpactTrigger,
-    focus_node: Option<&str>,
-) -> Result<DownstreamImpact, String> {
-    let graph = baseline_graph_spec();
-    let focus = focus_node
-        .map(AnalysisNodeId::new)
-        .unwrap_or_else(|| AnalysisNodeId::new("chart.build_candidate"));
-    if focus_node.is_some() && graph.node(&focus).is_none() {
-        return Err(format!("unknown analysis node: {}", focus.as_str()));
-    }
-    let mut targets = BTreeSet::new();
-    let mut extra_disabled = BTreeSet::new();
-    let mut extra_frozen = BTreeSet::new();
-    let mut extra_bypassed = BTreeSet::new();
-    match trigger {
-        ImpactTrigger::RunNode => {
-            targets.insert(focus.clone());
-        }
-        ImpactTrigger::RunDownstream | ImpactTrigger::SaveAndRunDownstream => {
-            targets = crate::analyzer::downstream_node_ids(focus.as_str());
-        }
-        ImpactTrigger::Freeze => {
-            extra_frozen.extend(crate::analyzer::frozen_artifact_kinds_for_node_id(
-                focus.as_str(),
-            ));
-        }
-        ImpactTrigger::Bypass => {
-            extra_bypassed.insert(focus.clone());
-        }
-        ImpactTrigger::Disable => {
-            extra_disabled.insert(focus.clone());
-        }
-        ImpactTrigger::SetActive | ImpactTrigger::Invalidate | ImpactTrigger::Delete => {
-            targets = graph.dependents_of(&focus);
-            if targets.is_empty() {
-                targets.insert(AnalysisNodeId::new("chart.build_candidate"));
-            }
-        }
-        ImpactTrigger::CandidateReplace => {
-            targets.insert(AnalysisNodeId::new("chart.build_candidate"));
-        }
-    }
-    let request = crate::analyzer::analysis_request_snapshot(
-        file_hash,
-        targets,
-        extra_disabled,
-        extra_frozen,
-        extra_bypassed,
-    );
-    let plan = crate::analysis_plan::preview_analysis_plan(file_hash, request.clone())
-        .map_err(|error| error.to_string())?;
-    Ok(classify_plan_impact(
-        file_hash,
-        focus,
-        &plan,
-        &request,
-        trigger != ImpactTrigger::CandidateReplace,
-    ))
-}
-
-pub fn preview_node_downstream_impact(node_id: &str) -> Result<DownstreamImpact, String> {
-    preview_frozen_downstream_impact("", ImpactTrigger::RunDownstream, Some(node_id))
-}
-
-pub fn preview_artifact_downstream_impact(
-    reference: &ArtifactRef,
-) -> Result<DownstreamImpact, String> {
-    let revision = revision_by_id(&reference.file_hash, &reference.revision_id)
-        .ok_or_else(|| format!("artifact revision not found: {}", reference.revision_id))?;
-    preview_frozen_downstream_impact(
-        &reference.file_hash,
-        ImpactTrigger::Invalidate,
-        Some(revision.producer_node.as_str()),
-    )
 }
 
 pub(crate) fn preview_kind_downstream_impact(
     file_hash: &str,
     kind: ArtifactKind,
 ) -> Result<DownstreamImpact, String> {
-    let graph = baseline_graph_spec();
-    let first = graph
-        .nodes
-        .iter()
-        .find(|node| node.inputs.contains(&kind))
-        .map(|node| node.id.clone())
-        .ok_or_else(|| format!("{kind:?} has no downstream consumer"))?;
-    preview_frozen_downstream_impact(
-        file_hash,
-        ImpactTrigger::SaveAndRunDownstream,
-        Some(first.as_str()),
-    )
+    let graph = current_workflow_graph(file_hash)?;
+    let focus = output_producer_for_kind(&graph, kind)
+        .ok_or_else(|| format!("{kind:?} has no producer in the current Workflow"))?;
+    Ok(workflow_impact(file_hash, focus, &graph))
 }
 
 pub fn preview_artifact_edit_impact(draft: &ArtifactEditDraft) -> Result<DownstreamImpact, String> {

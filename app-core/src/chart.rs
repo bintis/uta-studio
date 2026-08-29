@@ -27,7 +27,7 @@ use crate::{
     cache::{CacheDir, normalize_tempo},
     error::UtaStudioError,
     library_db,
-    vocal_chart::migrate_analyzer_chart,
+    vocal_chart::{load_saved_or_candidate_chart, migrate_analyzer_chart},
 };
 
 fn playable_audio(
@@ -199,18 +199,18 @@ pub fn load_chart(file_hash: &str) -> Result<ChartDocument, UtaStudioError> {
     }
 
     let cache = CacheDir::new();
-    let pitch_track = read_json(&cache.pitch_track_path(file_hash), "pitch track")?;
+    let pitch_track_path = cache.pitch_track_path(file_hash);
+    let pitch_track = if pitch_track_path.is_file() {
+        read_json(&pitch_track_path, "pitch track")?
+    } else {
+        serde_json::Value::Null
+    };
     let mut repaired_issues = Vec::new();
 
-    let vocal_chart = if cache.vocal_chart_path(file_hash).is_file() {
-        let chart: VocalChartV1 =
-            serde_json::from_str(&std::fs::read_to_string(cache.vocal_chart_path(file_hash))?)?;
-        chart
-            .validate()
-            .map_err(|error| UtaStudioError::Other(error.to_string()))?;
+    let vocal_chart = if let Some(chart) = load_saved_or_candidate_chart(file_hash)? {
         chart
     } else {
-        // A song that has never been edited still carries only analyzer output.
+        // Legacy songs may still carry only transcript and pitch-note output.
         let mut transcript = read_json(
             &cache.resolve_timed_transcript_path(file_hash),
             "transcript",
@@ -520,28 +520,118 @@ pub fn save_vocal_chart_from_revision(
     Ok(())
 }
 
-/// Explicit, user-confirmed discard of the Authored Chart: the next load
-/// rebuilds it from the latest analyzer output (transcript + pitch notes)
-/// instead of the edits this deletes. Reanalysis paths never call this
-/// automatically (docs/analysis-dag-redesign.md §6/Phase 5) -- it exists
-/// only for a user who explicitly wants to throw away their edits and
-/// start over from fresh analysis. Callers must gate this behind a
+/// Explicit, user-confirmed removal of the active Authored Chart selection.
+/// Immutable authored revisions remain non-invalidated for explicit recovery
+/// in Artifact Workbench; the next normal load therefore resolves the active
+/// Candidate Chart instead of silently resurrecting that history. Reanalysis
+/// paths never call this automatically. Callers must gate this behind a
 /// confirmation UI; it performs no confirmation of its own.
-pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(), UtaStudioError> {
-    let cache = CacheDir::new();
+pub fn delete_authored_chart(file_hash: &str) -> Result<(), UtaStudioError> {
+    delete_authored_chart_from_cache(&CacheDir::new(), file_hash)
+}
+
+pub(crate) fn delete_authored_chart_from_cache(
+    cache: &CacheDir,
+    file_hash: &str,
+) -> Result<(), UtaStudioError> {
     let chart_path = cache.vocal_chart_path(file_hash);
-    let active_is_pinned = load_active_artifact(file_hash, ArtifactKind::AuthoredChart)
-        .and_then(|revision| crate::library_db::analysis_artifact_is_pinned(&revision.id).ok())
-        .unwrap_or(false);
-    if active_is_pinned
+    if crate::artifact_workbench::authored_chart_is_pinned(file_hash)
         || crate::library_db::analysis_artifact_path_is_pinned(&chart_path).unwrap_or(false)
     {
         return Err(UtaStudioError::Other(
-            "the authored chart is pinned; unpin its artifact revision before replacing it".into(),
+            "the authored chart is pinned; unpin its artifact revision before deleting it".into(),
         ));
     }
-    cache.invalidate_authored_chart(file_hash);
+    let staged = chart_path.with_file_name(format!(
+        ".delete-pending-{}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        chart_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("authored-chart.json")
+    ));
+    if chart_path.is_file() {
+        std::fs::rename(&chart_path, &staged)?;
+    }
+    let recovery_source = staged
+        .is_file()
+        .then_some(staged.as_path())
+        .unwrap_or(&chart_path);
+    let recovery =
+        crate::analysis_artifact::capture_compatibility_recovery_revision(
+            cache,
+            file_hash,
+            ArtifactKind::AuthoredChart,
+            recovery_source,
+        )
+        .map_err(|error| {
+            if staged.is_file()
+                && let Err(restore_error) = std::fs::rename(&staged, &chart_path)
+            {
+                return UtaStudioError::Other(format!(
+                    "could not preserve the authored chart for recovery: {error}; restoring the chart also failed: {restore_error}"
+                ));
+            }
+            UtaStudioError::Other(format!(
+                "could not preserve the authored chart for recovery: {error}"
+            ))
+        })?;
+    let recovery_row = recovery
+        .as_ref()
+        .map(crate::analysis_artifact::revision_to_row);
+    let kind = serde_json::to_string(&ArtifactKind::AuthoredChart)?;
+    let deactivated = crate::library_db::analysis_artifacts_deactivate_kind_with_recovery(
+        file_hash,
+        &kind,
+        recovery_row.as_ref(),
+    );
+    match deactivated {
+        Ok(true) => {}
+        Ok(false) => {
+            if staged.is_file()
+                && let Err(error) = std::fs::rename(&staged, &chart_path)
+            {
+                return Err(UtaStudioError::Other(format!(
+                    "the authored chart became pinned and restoring its compatibility file failed: {error}"
+                )));
+            }
+            return Err(UtaStudioError::Other(
+                "the authored chart is pinned; unpin its artifact revision before deleting it"
+                    .into(),
+            ));
+        }
+        Err(error) => {
+            if staged.is_file()
+                && let Err(restore_error) = std::fs::rename(&staged, &chart_path)
+            {
+                return Err(UtaStudioError::Other(format!(
+                    "could not update authored chart state: {error}; restoring the compatibility file also failed: {restore_error}"
+                )));
+            }
+            return Err(UtaStudioError::Other(error.to_string()));
+        }
+    }
+    if staged.is_file()
+        && let Err(error) = std::fs::remove_file(&staged)
+    {
+        // The semantic deletion has already committed. A hidden staging file is
+        // non-authoritative and can be cleaned later; reporting failure here
+        // would falsely imply that the chart deactivation rolled back.
+        tracing::warn!(
+            "[chart] Authored chart deactivated, but staged compatibility cleanup failed at {}: {error}",
+            staged.display()
+        );
+    }
     Ok(())
+}
+
+/// Backwards-compatible name for the explicit authored-chart discard path.
+pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(), UtaStudioError> {
+    delete_authored_chart(file_hash)
 }
 
 /// Phase 5 §5.1: how a fresh analysis result should reconcile with an
@@ -554,7 +644,7 @@ pub fn replace_authored_chart_with_fresh_analysis(file_hash: &str) -> Result<(),
 /// two variants. This enum exists to name that already-true default and the
 /// two escape hatches (skip a rerun entirely; or explicitly discard edits
 /// and replace) rather than to select between three different code paths
-/// today -- see `docs/analysis-dag-redesign.md` §6.
+/// today -- see `the immutable artifact contract` §6.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub enum ChartUpdatePolicy {
@@ -629,14 +719,19 @@ fn modified_after(path: &Path, reference: std::time::SystemTime) -> bool {
 /// real, and matches what the Authored Chart protection guarantee actually
 /// is: "did analysis write something new since I last saved my edits."
 pub fn candidate_chart_status(file_hash: &str) -> CandidateChartStatus {
-    let authored = load_active_artifact(file_hash, ArtifactKind::AuthoredChart).or_else(|| {
-        crate::analysis_artifact::load_artifact_revisions(file_hash, ArtifactKind::AuthoredChart)
-            .into_iter()
-            .filter(|revision| !revision.invalidated)
-            .max_by_key(|revision| revision.created_at_ms)
-    });
+    // Only the explicitly active authored revision is current. Historical
+    // non-invalidated revisions remain recoverable through Artifact Workbench
+    // after Delete Chart clears the active selection.
+    let authored = load_active_artifact(file_hash, ArtifactKind::AuthoredChart);
     let Some(authored) = authored else {
-        return CandidateChartStatus::NotAuthoredYet;
+        let compatibility = CacheDir::new().vocal_chart_path(file_hash);
+        return if compatibility.is_file()
+            && crate::vocal_chart::validate_candidate_chart_path(&compatibility).is_ok()
+        {
+            CandidateChartStatus::UpToDate
+        } else {
+            CandidateChartStatus::NotAuthoredYet
+        };
     };
     let candidate =
         crate::analysis_artifact::load_artifact_revisions(file_hash, ArtifactKind::CandidateChart)
@@ -1305,11 +1400,22 @@ mod chart_problem_count_tests {
 #[cfg(test)]
 mod tests {
     use super::{
+        CandidateChartStatus, candidate_chart_status_for, delete_authored_chart_from_cache,
         normalize_pitch_note_timings, normalize_transcript_timings, playable_audio,
         validate_pitch_notes, validate_transcript,
     };
-    use crate::cache::CacheDir;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::{
+        analysis_graph::ArtifactKind,
+        cache::CacheDir,
+        library_db::{
+            AnalysisArtifactRow, analysis_active_artifact, analysis_artifact_set_pinned,
+            analysis_artifacts_for_kind, analysis_artifacts_publish_batch,
+        },
+    };
+    use std::{
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn failed_non_audio_preview_is_cleaned_without_touching_the_source() {
@@ -1347,6 +1453,190 @@ mod tests {
                 .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp."))
         );
         cache.clear_all();
+    }
+
+    #[test]
+    fn delete_chart_retires_only_authored_state_and_honors_pins() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-delete-authored-chart-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let cache = CacheDir {
+            path: root.join("cache"),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        let file_hash = "delete-authored-song";
+        let source = root.join("source.flac");
+        let authored_revision = root.join("immutable-authored.json");
+        let candidate_revision = root.join("immutable-candidate.json");
+        let evidence_revision = root.join("immutable-evidence.json");
+        for path in [
+            &source,
+            &authored_revision,
+            &candidate_revision,
+            &evidence_revision,
+        ] {
+            std::fs::write(path, path.to_string_lossy().as_bytes()).unwrap();
+        }
+        std::fs::write(cache.vocal_chart_path(file_hash), b"authored compatibility").unwrap();
+        std::fs::write(
+            cache.candidate_chart_path(file_hash),
+            b"candidate compatibility",
+        )
+        .unwrap();
+
+        let authored_kind = serde_json::to_string(&ArtifactKind::AuthoredChart).unwrap();
+        let candidate_kind = serde_json::to_string(&ArtifactKind::CandidateChart).unwrap();
+        let evidence_kind = serde_json::to_string(&ArtifactKind::EvidenceBundle).unwrap();
+        let row = |id: &str, kind: &str, path: &Path| AnalysisArtifactRow {
+            id: id.to_string(),
+            file_hash: file_hash.to_string(),
+            kind: kind.to_string(),
+            path: path.to_string_lossy().into_owned(),
+            content_hash: format!("content-{id}"),
+            producer_node: "test".to_string(),
+            input_revisions: "[]".to_string(),
+            config_hash: "config".to_string(),
+            algorithm_version: "1".to_string(),
+            created_at_ms: 1,
+            byte_size: 1,
+            active: false,
+            legacy: false,
+            invalidated: false,
+        };
+        analysis_artifacts_publish_batch(
+            &[
+                row("authored", &authored_kind, &authored_revision),
+                row("candidate", &candidate_kind, &candidate_revision),
+                row("evidence", &evidence_kind, &evidence_revision),
+            ],
+            &[
+                (
+                    file_hash.to_string(),
+                    authored_kind.clone(),
+                    "authored".to_string(),
+                ),
+                (
+                    file_hash.to_string(),
+                    candidate_kind.clone(),
+                    "candidate".to_string(),
+                ),
+                (
+                    file_hash.to_string(),
+                    evidence_kind.clone(),
+                    "evidence".to_string(),
+                ),
+            ],
+            &[],
+        )
+        .unwrap();
+
+        analysis_artifact_set_pinned("authored", true).unwrap();
+        assert!(delete_authored_chart_from_cache(&cache, file_hash).is_err());
+        assert_eq!(
+            std::fs::read(cache.vocal_chart_path(file_hash)).unwrap(),
+            b"authored compatibility"
+        );
+        assert!(
+            analysis_active_artifact(file_hash, &authored_kind)
+                .unwrap()
+                .is_some()
+        );
+
+        analysis_artifact_set_pinned("authored", false).unwrap();
+        delete_authored_chart_from_cache(&cache, file_hash).unwrap();
+        assert!(!cache.vocal_chart_path(file_hash).exists());
+        assert!(cache.candidate_chart_path(file_hash).exists());
+        assert!(source.exists());
+        assert!(
+            authored_revision.exists(),
+            "immutable provenance is retained"
+        );
+        let retained_authored = analysis_artifacts_for_kind(file_hash, &authored_kind).unwrap();
+        assert!(retained_authored.len() >= 2);
+        assert!(
+            retained_authored
+                .iter()
+                .all(|revision| !revision.active && !revision.invalidated)
+        );
+        assert!(retained_authored.iter().any(|revision| {
+            std::fs::read(&revision.path)
+                .ok()
+                .as_deref()
+                .is_some_and(|bytes| bytes == b"authored compatibility")
+        }));
+        assert!(candidate_revision.exists());
+        assert!(evidence_revision.exists());
+        assert!(
+            analysis_active_artifact(file_hash, &authored_kind)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            analysis_active_artifact(file_hash, &candidate_kind)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            analysis_active_artifact(file_hash, &evidence_kind)
+                .unwrap()
+                .is_some()
+        );
+
+        let legacy_hash = "delete-legacy-authored-song";
+        let legacy_chart = crate::vocal_chart::migrate_analyzer_chart(
+            &serde_json::json!({
+                "segments":[{"text":"legacy","start":1.0,"end":1.5,
+                    "words":[{"word":"legacy","start":1.0,"end":1.5}]}]
+            }),
+            &serde_json::json!({
+                "notes":[{"start":1.0,"end":1.5,"midi":60,"confidence":0.9}]
+            }),
+        )
+        .unwrap();
+        let legacy_bytes = serde_json::to_vec(&legacy_chart).unwrap();
+        std::fs::write(cache.vocal_chart_path(legacy_hash), &legacy_bytes).unwrap();
+        assert!(matches!(
+            candidate_chart_status_for(&cache, legacy_hash),
+            CandidateChartStatus::UpToDate
+        ));
+        delete_authored_chart_from_cache(&cache, legacy_hash).unwrap();
+        assert!(!cache.vocal_chart_path(legacy_hash).exists());
+        assert!(matches!(
+            candidate_chart_status_for(&cache, legacy_hash),
+            CandidateChartStatus::NotAuthoredYet
+        ));
+        let retained_legacy = analysis_artifacts_for_kind(legacy_hash, &authored_kind).unwrap();
+        assert_eq!(retained_legacy.len(), 1);
+        assert!(retained_legacy[0].legacy);
+        assert!(!retained_legacy[0].active);
+        assert!(!retained_legacy[0].invalidated);
+        assert_eq!(
+            std::fs::read(&retained_legacy[0].path).unwrap(),
+            legacy_bytes
+        );
+        crate::analysis_artifact::set_active_artifact_revision(
+            &cache.path,
+            legacy_hash,
+            ArtifactKind::AuthoredChart,
+            &retained_legacy[0].id,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(cache.vocal_chart_path(legacy_hash)).unwrap(),
+            legacy_bytes
+        );
+        assert!(matches!(
+            candidate_chart_status_for(&cache, legacy_hash),
+            CandidateChartStatus::UpToDate
+        ));
+        cache.clear_all();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

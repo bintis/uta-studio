@@ -28,6 +28,8 @@ pub enum WorkflowValidationCode {
     InvalidAnalyzerBinding,
     MissingHardDependency,
     MissingFinalOutput,
+    InvalidFusionPolicy,
+    InvalidProviderStrategy,
     Cycle,
 }
 
@@ -177,6 +179,52 @@ pub(crate) fn resolved_workflow_output_types(
         })
         .collect::<BTreeMap<_, _>>();
     resolved_output_types_for_nodes(definition, &nodes)
+}
+
+pub(crate) fn effective_workflow_source(
+    definition: &WorkflowDefinition,
+    registry: &BTreeMap<CapabilityId, NodeCapability>,
+    source: &WorkflowPortRef,
+) -> WorkflowPortRef {
+    fn resolve(
+        definition: &WorkflowDefinition,
+        registry: &BTreeMap<CapabilityId, NodeCapability>,
+        source: &WorkflowPortRef,
+        visited: &mut BTreeSet<WorkflowNodeId>,
+    ) -> WorkflowPortRef {
+        if !visited.insert(source.node.clone()) {
+            return source.clone();
+        }
+        let Some(instance) = definition
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == source.node)
+        else {
+            return source.clone();
+        };
+        let Some(capability) = registry.get(&instance.capability_id) else {
+            return source.clone();
+        };
+        let transparent = matches!(instance.execution_policy, super::ExecutionPolicy::Disabled)
+            && (capability.preserves_audio_role
+                || (capability.id.as_str() == "audio.lead_isolate" && source.port == "lead"))
+            && capability
+                .output(&source.port)
+                .is_some_and(|output| output.port_type.is_audio());
+        if !transparent {
+            return source.clone();
+        }
+        let Some(incoming) = definition
+            .edges
+            .iter()
+            .find(|edge| edge.to.node == source.node && edge.to.port == "audio")
+        else {
+            return source.clone();
+        };
+        resolve(definition, registry, &incoming.from, visited)
+    }
+
+    resolve(definition, registry, source, &mut BTreeSet::new())
 }
 
 fn validate_edge(
@@ -348,6 +396,40 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> WorkflowValidationR
                 None,
             ));
         }
+        if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
+            match node.separation_strategy {
+                Some(strategy) => {
+                    let descriptor = super::separation_strategy_descriptor(strategy);
+                    let expected_primary = descriptor
+                        .executions
+                        .first()
+                        .map(|execution| execution.provider_id);
+                    if node.model_id.as_deref() != expected_primary
+                        || node.parameters.contains_key("instrumental_model_id")
+                    {
+                        report.issues.push(issue(
+                            WorkflowValidationCode::InvalidProviderStrategy,
+                            "Vocal/BGM separation provider fields disagree with the typed strategy.",
+                            Some(node.instance_id.clone()),
+                            None,
+                        ));
+                    }
+                }
+                None => report.issues.push(issue(
+                    WorkflowValidationCode::InvalidProviderStrategy,
+                    "Vocal/BGM separation requires a typed provider strategy.",
+                    Some(node.instance_id.clone()),
+                    None,
+                )),
+            }
+        } else if node.separation_strategy.is_some() {
+            report.issues.push(issue(
+                WorkflowValidationCode::InvalidProviderStrategy,
+                "Only Vocal/BGM separation may declare a separation strategy.",
+                Some(node.instance_id.clone()),
+                None,
+            ));
+        }
         nodes.insert(&node.instance_id, capability);
     }
 
@@ -375,7 +457,8 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> WorkflowValidationR
         *connected_inputs
             .entry((&edge.to.node, edge.to.port.as_str()))
             .or_default() += 1;
-        if producer_is_guaranteed(&edge.from.node) {
+        let effective_source = effective_workflow_source(definition, &registry, &edge.from);
+        if producer_is_guaranteed(&effective_source.node) {
             *guaranteed_inputs
                 .entry((&edge.to.node, edge.to.port.as_str()))
                 .or_default() += 1;
@@ -385,7 +468,8 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> WorkflowValidationR
         *connected_inputs
             .entry((&binding.analyzer_node, binding.analyzer_input.as_str()))
             .or_default() += 1;
-        if producer_is_guaranteed(&binding.source.node) {
+        let effective_source = effective_workflow_source(definition, &registry, &binding.source);
+        if producer_is_guaranteed(&effective_source.node) {
             *guaranteed_inputs
                 .entry((&binding.analyzer_node, binding.analyzer_input.as_str()))
                 .or_default() += 1;
@@ -481,6 +565,19 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> WorkflowValidationR
             WorkflowValidationCode::MissingFinalOutput,
             "Add a Canonical Singing Track finalization node before running the workflow.",
             None,
+            None,
+        ));
+    }
+
+    if let Err(message) = super::validate_expert_fusion_intent(definition) {
+        report.issues.push(issue(
+            WorkflowValidationCode::InvalidFusionPolicy,
+            message,
+            definition
+                .nodes
+                .iter()
+                .find(|node| node.instance_id.as_str() == "evidence_fusion")
+                .map(|node| node.instance_id.clone()),
             None,
         ));
     }

@@ -185,7 +185,7 @@ From a song, open the lyrics action to:
 - enter timed LRC;
 - search LRCLIB;
 - review a candidate before saving;
-- optionally queue alignment after saving.
+- save without automatically starting analysis; queue alignment later from the song’s Analysis controls when needed.
 
 Always verify spelling, repeated lines, punctuation, and omitted vocalizations before alignment.
 
@@ -198,6 +198,8 @@ This setting affects the song’s recognition/alignment pipeline. It does not ch
 ### 8. Chart editor
 
 Open an analyzed song and select **Edit chart**. The editor supports waveform and pitch evidence, lyric/phrase boundaries, note bars, multiple tracks, and named undo history.
+
+Use the waveform context menu to bind immutable workflow audio revisions to **A** and **B**, switch audition between them without resetting the playhead or play/pause state, and select either revision for waveform inspection independently. Source media and artifact revisions remain read-only.
 
 Common operations include:
 
@@ -243,8 +245,8 @@ Exports UTF-8 UltraStar 1.1 text plus sibling media. Export preserves normal, go
 
 **Settings → Storage** reports generated storage by songs, models, and other data.
 
-- **Clear generated cache** removes generated stems, charts/previews, and temporary authoring data covered by that cache action. It does not delete source media.
-- **Clear models** removes downloaded model artifacts and makes runtime status report them as missing until setup is run again.
+- **Clear generated cache** removes generated stems, charts/previews, and temporary authoring data covered by that cache action. It does not delete source media or installed models.
+- Install, repair, and remove individual model artifacts only from **Settings → Models & runtime**.
 
 The default settings/data root is `~/.uta-studio`, unless a different data location is configured. Before migrating or reinstalling:
 
@@ -263,7 +265,7 @@ In **Settings → General**:
 - **Application log → View log** opens the current log when one exists.
 - **Feature API diagnostics → Run checks** verifies local APIs, native audio, and real temporary UTZ/UltraStar exports. The diagnostic temporary folder is removed after the check.
 
-Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens that run and filters by `node_id`; legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
+Each analysis run writes one detailed JSONL file under `analysis-logs/`. A DAG node’s **View logs** action opens an in-app console filtered by `node_id`; while a run is active, the console follows new output in real time. Scroll up to pause live tailing and return to the bottom to resume it. Legacy runs clearly report that no dedicated log exists. Analysis progress, model output, and tracebacks stay out of `app.log`. Confirmed history clearing also removes only the referenced files inside `analysis-logs/`.
 
 Include the application version, platform, selected runtime, relevant log excerpt, and reproducible steps in a bug report. Do not attach copyrighted source media unless you have permission.
 
@@ -428,5 +430,11 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 ## Processing Studio and evidence review
 
 Open **Processing Studio** from a song page to edit the machine workflow. Audio transformations rewrite real typed dataflow; the executable audio lanes are Vocal, BGM, Lead, and Vocal Residual. Backing and Harmony remain chart-authoring roles until a future audio partition capability exists. Analyzer attachments choose a concrete audio artifact, while analyzer order only changes ready-node priority. Invalid types, missing hard dependencies, and cycles cannot be saved. **Advanced Graph** displays the exact compiled DAG.
+
+Stage 1 presents **Lead isolation**, **Denoise**, and **Dereverb** as independent On/Off preprocessing switches. All three are Off in a new default workflow. Off is a transparent bypass: an OriginalMix still produces Vocal when analysis needs it, and analyzers consume that Vocal rather than a falsely labeled LeadVocal. Requesting an explicit LeadVocal output forces lead isolation. Plan Preview shows the exact analyzer route and each switch state before queueing.
+
+Stage 4 **Decision mode** defaults to **Algorithm**, the deterministic candidate-graph/HSMM decoder. **AI judgment** is an explicit alternative: a configured Fusion Agent Adapter may contact an external AI provider and receives bounded fusion candidate metadata so it can choose among real Engine candidates. It cannot invent note geometry or measured evidence, and Engine validates the returned selection before creating the Candidate chart. Configure the adapter under **Settings → Models & runtime**. If the adapter/provider is missing, times out, returns an invalid response, or fails validation, the analysis fails; Uta! Studio never silently falls back to Algorithm. Plan Preview shows the requested decision mode and adapter readiness without contacting the provider.
+
+In **Models & runtime → Fusion Agent Adapter**, Runtime Manager automatically scans `PATH` for `uta-fusion-agent-adapter`, `uta-fusion-agent-pi`, `uta-fusion-agent-codex`, and `uta-fusion-agent-claude` integrations with a protocol-compatible sidecar manifest. Use **Scan again** after installing one, or choose another compatible adapter executable manually. It must have an executable-specific `<adapter-executable>.uta-fusion-adapter.json` sidecar declaring contract `uta.fusion_agent_adapter`, adapter ID `fusion_agent_adapter`, and Fusion protocol version `3`. A shared directory manifest or a plain `pi`, `codex`, `claude`, or other coding-agent executable is not accepted. Uta! Studio verifies this local manifest without launching the adapter or contacting its provider; **Clear** removes only the saved selection, not the executable. The sidecar proves protocol compatibility, not publisher trust; the adapter runs with your OS permissions. Provider credentials remain owned by the adapter/provider mechanism.
 
 A completed run creates a replaceable Candidate revision. The Editor keeps authored notes visually and semantically dominant, exposes read-only evidence and a disagreement-first Review queue, and applies accepted suggestions through normal undo history. Re-analysis never silently replaces an Authored revision. Use Compare or Merge when a newer Candidate is available.

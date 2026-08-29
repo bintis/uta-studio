@@ -95,6 +95,103 @@ pub(crate) fn spawn_cache_delete_confirmation(
     ));
 }
 
+pub(crate) fn spawn_chart_delete_confirmation(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    file_hash: &str,
+) {
+    let title = app_core::load_song_by_hash(file_hash)
+        .ok()
+        .flatten()
+        .map(|song| song.title)
+        .unwrap_or_else(|| "this song".to_string());
+    let pinned = app_core::authored_chart_is_pinned(file_hash);
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                top: px(0),
+                bottom: px(0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.78)),
+            ZIndex(90),
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        width: px(480),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(px(24)),
+                        row_gap: px(11),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(8)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.card),
+                    BorderColor::all(theme.border),
+                ))
+                .with_children(|dialog| {
+                    spawn_text(dialog, font.clone(), "Delete chart?", 17.0, theme.foreground);
+                    spawn_wrapped_text(
+                        dialog,
+                        font.clone(),
+                        if pinned {
+                            "This authored chart is pinned. Unpin the artifact revision before deleting it. Source media, CandidateChart and analysis evidence are retained."
+                                .to_string()
+                        } else {
+                            format!(
+                                "Delete the authored chart for {title}? Source media, CandidateChart and analysis evidence are retained. A retained revision can be reactivated later in Artifact Workbench."
+                            )
+                        },
+                        10.0,
+                        theme.muted_foreground,
+                    );
+                    dialog
+                        .spawn(Node {
+                            width: percent(100),
+                            justify_content: JustifyContent::FlexEnd,
+                            column_gap: px(8),
+                            ..default()
+                        })
+                        .with_children(|actions| {
+                            spawn_text_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Cancel",
+                                10.0,
+                                UiAction::from(AnalysisCommand::CancelDeleteAuthoredChart),
+                            );
+                            if pinned {
+                                spawn_text(
+                                    actions,
+                                    font,
+                                    "Unpin required",
+                                    10.0,
+                                    theme.editor_warning,
+                                );
+                            } else {
+                                spawn_text_button(
+                                    actions,
+                                    font,
+                                    theme,
+                                    "Delete chart",
+                                    10.0,
+                                    UiAction::from(AnalysisCommand::ConfirmDeleteAuthoredChart),
+                                );
+                            }
+                        });
+                });
+        });
+}
+
 /// Phase 5 §5.4 "Compare / Merge / Replace" confirmation modal. Fetches a
 /// fresh `candidate_chart_status` at render time (same pattern as
 /// `spawn_cache_delete_confirmation` re-fetching the song title) rather than
@@ -222,327 +319,6 @@ pub(crate) fn spawn_chart_replace_confirmation(
                                     UiAction::from(AnalysisCommand::ConfirmReplaceAuthoredChart),
                                 );
                             }
-                        });
-                });
-        });
-}
-
-pub(crate) fn spawn_artifact_delete_confirmation(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    revision: &app_core::ArtifactRevision,
-) {
-    let file_name = revision
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| revision.id.clone());
-    let impact_copy =
-        app_core::preview_artifact_downstream_impact(&artifact_ref_from_revision(revision))
-            .map(|impact| {
-                format!(
-                    "Impact preview · {} downstream node(s) · Authored Chart preserved{}.",
-                    impact.affected_nodes.len(),
-                    if impact.export_may_need_regeneration {
-                        " · exports may need regeneration"
-                    } else {
-                        ""
-                    }
-                )
-            })
-            .unwrap_or_else(|error| format!("Impact preview unavailable: {error}"));
-    parent.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(0),
-            right: px(0),
-            top: px(0),
-            bottom: px(0),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        BackgroundColor(theme.background.with_alpha(0.78)),
-        // Above the activity center overlay (ZIndex 100) that this
-        // confirmation is always triggered from.
-        ZIndex(110),
-        children![(
-            Node {
-                width: px(460),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(24)),
-                row_gap: px(11),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
-                ..default()
-            },
-            BackgroundColor(theme.card),
-            BorderColor::all(theme.border),
-            children![
-                (
-                    Text::new("Delete this artifact revision?"),
-                    ui_text_font(font.clone(), 17.0),
-                    TextColor(theme.foreground),
-                ),
-                (
-                    Text::new(format!(
-                        "“{file_name}” will be removed from the cache and its revision history. This does not touch the source song."
-                    )),
-                    ui_text_font(font.clone(), 10.0),
-                    TextColor(theme.muted_foreground),
-                    TextLayout::default(),
-                ),
-                (
-                    Text::new(impact_copy),
-                    ui_text_font(font.clone(), 9.0),
-                    TextColor(theme.muted_foreground),
-                    TextLayout::default(),
-                ),
-                (
-                    Node {
-                        width: percent(100),
-                        justify_content: JustifyContent::FlexEnd,
-                        column_gap: px(8),
-                        ..default()
-                    },
-                    children![
-                        (
-                            Button,
-                            UiAction::from(AnalysisCommand::CancelDeleteArtifactRevision),
-                            Node {
-                                padding: UiRect::axes(px(13), px(8)),
-                                ..default()
-                            },
-                            BackgroundColor(Color::NONE),
-                            children![(
-                                Text::new("Cancel"),
-                                ui_text_font(font.clone(), 10.0),
-                                TextColor(theme.muted_foreground),
-                            )],
-                        ),
-                        (
-                            Button,
-                            UiAction::from(AnalysisCommand::ConfirmDeleteArtifactRevision),
-                            Node {
-                                padding: UiRect::axes(px(13), px(8)),
-                                border_radius: BorderRadius::all(px(5)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.destructive.with_alpha(0.18)),
-                            children![(
-                                Text::new("Delete revision"),
-                                ui_text_font(font, 10.0),
-                                TextColor(theme.destructive),
-                            )],
-                        )
-                    ],
-                )
-            ],
-        )],
-    ));
-}
-
-/// Phase 6 `invalidate_artifact_revision` / Phase 7 §7.6 "Invalidate".
-/// Same modal shape as `spawn_artifact_delete_confirmation`, but the copy
-/// makes explicit that (unlike Delete) the file and its revision history
-/// both survive -- only the "trustworthy/Active-eligible" status changes.
-pub(crate) fn spawn_artifact_invalidate_confirmation(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    revision: &app_core::ArtifactRevision,
-) {
-    let file_name = revision
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| revision.id.clone());
-    let impact_copy =
-        app_core::preview_artifact_downstream_impact(&artifact_ref_from_revision(revision))
-            .map(|impact| {
-                format!(
-                    "Impact preview · {} downstream node(s) · Authored Chart preserved{}.",
-                    impact.affected_nodes.len(),
-                    if impact.export_may_need_regeneration {
-                        " · exports may need regeneration"
-                    } else {
-                        ""
-                    }
-                )
-            })
-            .unwrap_or_else(|error| format!("Impact preview unavailable: {error}"));
-    parent.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(0),
-            right: px(0),
-            top: px(0),
-            bottom: px(0),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        BackgroundColor(theme.background.with_alpha(0.78)),
-        ZIndex(110),
-        children![(
-            Node {
-                width: px(460),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(24)),
-                row_gap: px(11),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
-                ..default()
-            },
-            BackgroundColor(theme.card),
-            BorderColor::all(theme.border),
-            children![
-                (
-                    Text::new("Invalidate this artifact revision?"),
-                    ui_text_font(font.clone(), 17.0),
-                    TextColor(theme.foreground),
-                ),
-                (
-                    Text::new(format!(
-                        "“{file_name}” will be marked stale/wrong and, if it's currently Active, stop being the one this song uses. The file and its revision history are kept -- this doesn't delete anything."
-                    )),
-                    ui_text_font(font.clone(), 10.0),
-                    TextColor(theme.muted_foreground),
-                    TextLayout::default(),
-                ),
-                (
-                    Text::new(impact_copy),
-                    ui_text_font(font.clone(), 9.0),
-                    TextColor(theme.muted_foreground),
-                    TextLayout::default(),
-                ),
-                (
-                    Node {
-                        width: percent(100),
-                        justify_content: JustifyContent::FlexEnd,
-                        column_gap: px(8),
-                        ..default()
-                    },
-                    children![
-                        (
-                            Button,
-                            UiAction::from(AnalysisCommand::CancelInvalidateArtifactRevision),
-                            Node {
-                                padding: UiRect::axes(px(13), px(8)),
-                                ..default()
-                            },
-                            BackgroundColor(Color::NONE),
-                            children![(
-                                Text::new("Cancel"),
-                                ui_text_font(font.clone(), 10.0),
-                                TextColor(theme.muted_foreground),
-                            )],
-                        ),
-                        (
-                            Button,
-                            UiAction::from(AnalysisCommand::ConfirmInvalidateArtifactRevision),
-                            Node {
-                                padding: UiRect::axes(px(13), px(8)),
-                                border_radius: BorderRadius::all(px(5)),
-                                ..default()
-                            },
-                            BackgroundColor(theme.destructive.with_alpha(0.18)),
-                            children![(
-                                Text::new("Invalidate revision"),
-                                ui_text_font(font, 10.0),
-                                TextColor(theme.destructive),
-                            )],
-                        )
-                    ],
-                )
-            ],
-        )],
-    ));
-}
-
-pub(crate) fn spawn_artifact_active_confirmation(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    revision: &app_core::ArtifactRevision,
-) {
-    let impact =
-        app_core::preview_artifact_downstream_impact(&artifact_ref_from_revision(revision))
-            .map(|impact| {
-                format!(
-                    "Will affect {} downstream node(s). Authored Chart remains preserved{}.",
-                    impact.affected_nodes.len(),
-                    if impact.export_may_need_regeneration {
-                        " Exports may need regeneration"
-                    } else {
-                        ""
-                    }
-                )
-            })
-            .unwrap_or_else(|error| format!("Impact preview unavailable: {error}"));
-    parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(0),
-                right: px(0),
-                top: px(0),
-                bottom: px(0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(theme.background.with_alpha(0.78)),
-            ZIndex(110),
-        ))
-        .with_children(|overlay| {
-            overlay
-                .spawn((
-                    Node {
-                        width: px(470),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(24)),
-                        row_gap: px(11),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(8)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.card),
-                    BorderColor::all(theme.border),
-                ))
-                .with_children(|dialog| {
-                    spawn_text(
-                        dialog,
-                        font.clone(),
-                        "Set this revision Active?",
-                        17.0,
-                        theme.foreground,
-                    );
-                    spawn_wrapped_text(dialog, font.clone(), impact, 10.0, theme.muted_foreground);
-                    dialog
-                        .spawn(Node {
-                            width: percent(100),
-                            justify_content: JustifyContent::FlexEnd,
-                            column_gap: px(8),
-                            ..default()
-                        })
-                        .with_children(|actions| {
-                            spawn_text_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                "Cancel",
-                                10.0,
-                                UiAction::from(AnalysisCommand::CancelSetActiveArtifactRevision),
-                            );
-                            spawn_action_button(
-                                actions,
-                                font,
-                                theme,
-                                "Set Active",
-                                UiAction::from(AnalysisCommand::ConfirmSetActiveArtifactRevision),
-                            );
                         });
                 });
         });

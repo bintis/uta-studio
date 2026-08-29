@@ -79,7 +79,7 @@ pub fn infer(
     audio: &[f32],
     output_dir: &Path,
     config: &serde_json::Value,
-    mut progress: impl FnMut(f32, &'static str),
+    mut progress: impl FnMut(f32, &'static str, (u64, u64)),
 ) -> Result<PathBuf, String> {
     if audio.is_empty() {
         return Err("Basic Pitch requires non-empty decoded audio".to_string());
@@ -161,9 +161,11 @@ pub fn infer(
             window_index,
             audio.len(),
         );
+        let (fraction, work_units) = window_progress(window_index, window_count);
         progress(
-            (window_index + 1) as f32 / window_count as f32,
+            fraction,
             "Running Basic Pitch activation windows",
+            work_units,
         );
     }
     let destination = output_dir.join("basic-pitch-activation-evidence.json");
@@ -205,6 +207,13 @@ fn window_count(source_samples: usize) -> usize {
     } else {
         (padded_samples - INPUT_SAMPLES).div_ceil(WINDOW_HOP_SAMPLES) + 1
     }
+}
+
+fn window_progress(window_index: usize, window_count: usize) -> (f32, (u64, u64)) {
+    debug_assert!(window_index < window_count);
+    let completed = (window_index + 1) as u64;
+    let total = window_count as u64;
+    (completed as f32 / total as f32, (completed, total))
 }
 
 fn fill_padded_window(input: &mut [f32], audio: &[f32], window_index: usize) {
@@ -300,6 +309,13 @@ mod tests {
         }
         assert!(frames.last().unwrap().time < source_samples as f64 / 22_050.0);
         assert_eq!(frames[0].contour_score, 0.4);
+    }
+
+    #[test]
+    fn window_progress_reports_exact_completed_and_total_units() {
+        assert_eq!(window_progress(0, 3), (1.0 / 3.0, (1, 3)));
+        assert_eq!(window_progress(1, 3), (2.0 / 3.0, (2, 3)));
+        assert_eq!(window_progress(2, 3), (1.0, (3, 3)));
     }
 
     #[test]

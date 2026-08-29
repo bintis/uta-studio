@@ -237,6 +237,9 @@ pub struct ChartLyric {
     /// through, authored as a chain of continuation tokens. Empty for a
     /// syllable that isn't held past its own note.
     pub continuation_notes: Vec<usize>,
+    /// The aligner-recognized reading for this token, if any, or a user
+    /// override — see `EditorDocument::set_lyric_reading`.
+    pub reading: Option<String>,
 }
 
 /// A note copied to the editor clipboard, with times relative to the copy origin.

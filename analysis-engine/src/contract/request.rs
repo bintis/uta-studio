@@ -576,6 +576,16 @@ pub struct ExecutionPolicyV1 {
     /// Qwen and every RoFormer keep their independently pinned Vulkan runtime.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, uta_runtime_manager::NativeBackend>,
+    /// Explicit global device-class preference, orthogonal to
+    /// `requested_backend`. Captured and validated; Runtime Manager does not
+    /// yet enumerate multiple physical devices per backend, so this does not
+    /// change device selection until that resolver support exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_device: Option<uta_runtime_manager::NativeDeviceClass>,
+    /// Per-model device-class choices, same precedence rule as
+    /// `model_backend_overrides`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_device_overrides: BTreeMap<String, uta_runtime_manager::NativeDeviceClass>,
 }
 
 impl Default for ExecutionPolicyV1 {
@@ -584,6 +594,8 @@ impl Default for ExecutionPolicyV1 {
             runtime_policy: RuntimePolicy::Experimental,
             requested_backend: None,
             model_backend_overrides: BTreeMap::new(),
+            requested_device: None,
+            model_device_overrides: BTreeMap::new(),
         }
     }
 }
@@ -600,6 +612,16 @@ impl ExecutionPolicyV1 {
             .get(model_id)
             .copied()
             .or(self.requested_backend)
+    }
+
+    pub fn requested_device_for(
+        &self,
+        model_id: &str,
+    ) -> Option<uta_runtime_manager::NativeDeviceClass> {
+        self.model_device_overrides
+            .get(model_id)
+            .copied()
+            .or(self.requested_device)
     }
 }
 
@@ -679,6 +701,13 @@ pub(crate) mod tests {
     fn valid_request_round_trips() {
         let request = valid_request(AudioRole::OriginalMix);
         request.validate().unwrap();
+        let request_json = serde_json::to_value(&request).unwrap();
+        assert!(!request_json.to_string().contains("fusion_agent_executable"));
+        assert!(
+            !request_json
+                .to_string()
+                .contains("fusion_agent_adapter_path")
+        );
         let encoded = serde_json::to_vec(&request).unwrap();
         let decoded: AnalyzeRequestV1 = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, request);

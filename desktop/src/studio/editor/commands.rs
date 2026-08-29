@@ -106,6 +106,22 @@ pub(crate) fn update_editor_word_text(
     document.set_lyric_text(selection, text)
 }
 
+pub(crate) fn update_editor_word_reading(
+    document: &mut app_core::EditorDocument,
+    selection: WordSelection,
+    reading: Option<String>,
+) -> bool {
+    document.set_lyric_reading(selection, reading)
+}
+
+pub(crate) fn advance_editor_lyric_edit(
+    document: &mut app_core::EditorDocument,
+    from: WordSelection,
+    forward: bool,
+) -> Option<WordSelection> {
+    document.advance_lyric_edit(from, forward)
+}
+
 /// Gives a lyric-less pitch note its own lyric text directly, ready to
 /// type over — no separate placeholder note or "Bind" step.
 pub(crate) fn add_lyric_to_editor_note(

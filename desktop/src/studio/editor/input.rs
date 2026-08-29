@@ -24,18 +24,19 @@ use super::{
     action_input::chord_key_code,
     actions::finish_tap,
     commands::{
-        bind_editor_lyric, editor_note_for_word, insert_chart_note, move_chart_note,
-        resize_chart_note, set_editor_word_timing, unbind_editor_note, update_editor_word_text,
+        advance_editor_lyric_edit, bind_editor_lyric, editor_note_for_word, insert_chart_note,
+        move_chart_note, resize_chart_note, set_editor_word_timing, unbind_editor_note,
+        update_editor_word_reading, update_editor_word_text,
     },
     state::{
         EDITOR_DRAG_MIN_PX, EDITOR_LYRIC_NOTE_SNAP_DISTANCE_PX, EDITOR_LYRIC_NOTE_SNAP_MAX_SECONDS,
         EditorDrag, EditorLyricNode, EditorLyricResizeHandle, EditorLyricsSurface,
         EditorMarqueeBox, EditorNoteNode, EditorNoteOriginal, EditorNoteResizeHandle,
         EditorPointerCapture, EditorTimelineSurface, EditorViewportRebuildThrottle,
-        EditorWordInput, EditorWordOriginal, InlineEditorWordInput, NoteEdge, chart_notes,
-        editor_pitch_height_percent, editor_pitch_top_percent, nearest_note_boundary,
-        selected_editor_word, set_editor_pitch_span, snap_lyric_move_to_notes,
-        surface_pitch_fraction,
+        EditorWordInput, EditorWordOriginal, EditorWordReadingInput, InlineEditorWordInput,
+        NoteEdge, chart_notes, editor_pitch_height_percent, editor_pitch_top_percent,
+        nearest_note_boundary, selected_editor_word, selected_editor_word_reading,
+        set_editor_pitch_span, snap_lyric_move_to_notes, surface_pitch_fraction,
     },
 };
 
@@ -74,6 +75,7 @@ pub(crate) fn handle_tap_release(
 
 pub(crate) fn sync_editor_word_input(
     inputs: Query<(Ref<EditableText>, &EditorWordInput)>,
+    reading_inputs: Query<(Ref<EditableText>, &EditorWordReadingInput)>,
     mut editor_state: ResMut<EditorUiState>,
 ) {
     let Some(editor) = editor_state.editor.as_mut() else {
@@ -105,28 +107,75 @@ pub(crate) fn sync_editor_word_input(
             editor.undo.pop();
         }
     }
+    for (input, marker) in &reading_inputs {
+        if input.is_added() || !input.is_changed() {
+            continue;
+        }
+        let text = input.value().to_string();
+        let current = selected_editor_word_reading(&editor.document, marker.0).unwrap_or_default();
+        if text == current {
+            continue;
+        }
+        editor.checkpoint("Edit lyric reading");
+        let reading = (!text.is_empty()).then_some(text);
+        if update_editor_word_reading(&mut editor.document, marker.0, reading) {
+            editor.dirty = true;
+        } else {
+            editor.undo.pop();
+        }
+    }
 }
 
 pub(crate) fn finish_inline_lyric_edit(
     keys: Res<ButtonInput<KeyCode>>,
     mut focus: ResMut<InputFocus>,
-    inline_inputs: Query<(), With<InlineEditorWordInput>>,
+    inline_inputs: Query<&EditableText, With<InlineEditorWordInput>>,
     mut editor_state: ResMut<EditorUiState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if !keys.just_pressed(KeyCode::Enter) && !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
     let Some(entity) = focus.get() else {
         return;
     };
-    if !inline_inputs.contains(entity) {
+    let Ok(editable) = inline_inputs.get(entity) else {
+        return;
+    };
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Escape) {
+        focus.clear();
+        if let Some(editor) = editor_state.editor.as_mut() {
+            editor.word_edit_focus = None;
+        }
+        invalidated.invalidate(UiDirtyRegion::Editor);
         return;
     }
-    focus.clear();
-    if let Some(editor) = editor_state.editor.as_mut() {
-        editor.word_edit_focus = None;
+    if !keys.just_pressed(KeyCode::Tab) {
+        return;
     }
+    // IME composition claims Tab to confirm the current conversion; don't
+    // steal it away from a composition in progress.
+    if editable.is_composing() {
+        return;
+    }
+    let forward = !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let Some(editor) = editor_state.editor.as_mut() else {
+        return;
+    };
+    let Some(from) = editor.word_edit_focus else {
+        return;
+    };
+    editor.checkpoint("Edit lyric");
+    let before = editor.document.revision();
+    // Reaching a phrase boundary: stay at `from`, do nothing.
+    let Some(target) = advance_editor_lyric_edit(&mut editor.document, from, forward) else {
+        editor.undo.pop();
+        return;
+    };
+    if editor.document.revision() == before {
+        editor.undo.pop();
+    } else {
+        editor.dirty = true;
+    }
+    editor.select_only_word(target);
+    editor.word_edit_focus = Some(target);
     invalidated.invalidate(UiDirtyRegion::Editor);
 }
 

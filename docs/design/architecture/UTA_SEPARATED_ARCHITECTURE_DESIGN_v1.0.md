@@ -212,6 +212,7 @@ policy-aware readiness
 resolve
 resource lease
 doctor/smoke lifecycle support
+external tool executable/path ownership (for example `tool:fusion_agent_adapter`)
 ```
 
 不拥有：
@@ -238,6 +239,8 @@ runtime:<id>
 tool:<id>
 bundle:<id>
 ```
+
+AI judgment uses the existing `tool:<id>` resource class. The canonical Stage-4 external resource is `tool:fusion_agent_adapter`: Runtime Manager owns its configured path/readiness/resolve state; Studio owns only the user's `fusion_mode` intent, and Analysis Engine owns candidate selection validation. Runtime Manager does not perform Fusion itself.
 
 当前主要模型：
 
@@ -478,7 +481,7 @@ AnalyzeRequestV1
 
 ```text
 local file identity
-SHA-256
+persisted source identity/provenance metadata
 explicit semantic role
 primary flag
 source_start / canonical timeline
@@ -504,7 +507,7 @@ peak/decoded facts
 ```text
 exactly one primary
 local file only in v1
-SHA-256 mandatory
+source identity fields are metadata, not a hash-verification gate
 no filename role inference
 no hidden time-stretch
 canonical external time = 1_000_000 units/s

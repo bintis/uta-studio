@@ -48,7 +48,6 @@ fn main() {
     }
 
     studio::run();
-    app_core::shutdown_server();
 }
 
 #[cfg(target_os = "linux")]

@@ -163,6 +163,14 @@ mod linux {
         })
     }
 
+    pub(super) fn state_transition_confirmed(
+        current: gst::State,
+        pending: gst::State,
+        target: gst::State,
+    ) -> bool {
+        current == target && pending == gst::State::VoidPending
+    }
+
     #[derive(Default)]
     pub struct PlayerInner {
         player: Option<gst::Element>,
@@ -181,7 +189,7 @@ mod linux {
 
     impl PlayerInner {
         pub fn load(&mut self, path: &Path) -> Result<EditorAudioStatus, String> {
-            self.stop();
+            self.stop()?;
             if !path.is_file() {
                 return Err(format!("Chart audio does not exist: {}", path.display()));
             }
@@ -271,6 +279,13 @@ mod linux {
             player
                 .set_state(gst::State::Paused)
                 .map_err(|error| format!("Could not pause chart audio: {error:?}"))?;
+            let (result, current, pending) = player.state(gst::ClockTime::from_seconds(5));
+            result.map_err(|error| format!("Chart audio did not pause: {error:?}"))?;
+            if !state_transition_confirmed(current, pending, gst::State::Paused) {
+                return Err(format!(
+                    "Chart audio pause was not confirmed (current={current:?}, pending={pending:?})"
+                ));
+            }
             Ok(self.status())
         }
 
@@ -333,12 +348,6 @@ mod linux {
             }
 
             let current_state = player.current_state();
-            let pending_state = player.pending_state();
-            let effective_state = if pending_state == gst::State::VoidPending {
-                current_state
-            } else {
-                pending_state
-            };
             let duration_secs = player
                 .query_duration::<gst::ClockTime>()
                 .map(|value| value.seconds_f64())
@@ -365,7 +374,7 @@ mod linux {
                 // pre-seek query reads *ahead* of the target, which a bare
                 // "at or after" check would wrongly accept as settled.
                 // Predicting elapsed playback time handles both.
-                let expected = if effective_state == gst::State::Playing {
+                let expected = if current_state == gst::State::Playing {
                     target + requested_at.elapsed().as_secs_f64()
                 } else {
                     target
@@ -384,7 +393,7 @@ mod linux {
 
             EditorAudioStatus {
                 loaded: self.path.is_some(),
-                playing: effective_state == gst::State::Playing
+                playing: current_state == gst::State::Playing
                     && !self.ended
                     && self.error.is_none(),
                 position_secs,
@@ -394,21 +403,31 @@ mod linux {
             }
         }
 
-        pub fn stop(&mut self) -> EditorAudioStatus {
-            if let Some(player) = self.player.take() {
-                let _ = player.set_state(gst::State::Null);
+        pub fn stop(&mut self) -> Result<EditorAudioStatus, String> {
+            if let Some(player) = self.player.as_ref() {
+                player
+                    .set_state(gst::State::Null)
+                    .map_err(|error| format!("Could not stop chart audio: {error:?}"))?;
+                let (result, current, pending) = player.state(gst::ClockTime::from_seconds(5));
+                result.map_err(|error| format!("Chart audio did not stop: {error:?}"))?;
+                if !state_transition_confirmed(current, pending, gst::State::Null) {
+                    return Err(format!(
+                        "Chart audio stop was not confirmed (current={current:?}, pending={pending:?})"
+                    ));
+                }
             }
+            self.player = None;
             self.path = None;
             self.ended = false;
             self.error = None;
             self.pending_seek = None;
-            EditorAudioStatus::default()
+            Ok(EditorAudioStatus::default())
         }
     }
 
     impl Drop for PlayerInner {
         fn drop(&mut self) {
-            self.stop();
+            let _ = self.stop();
         }
     }
 
@@ -442,7 +461,7 @@ mod linux {
         }
 
         fn stop(&mut self) -> Result<EditorAudioStatus, String> {
-            Ok(PlayerInner::stop(self))
+            PlayerInner::stop(self)
         }
     }
 }
@@ -792,6 +811,31 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn linux_state_transition_requires_the_current_target_and_no_pending_request() {
+        assert!(!linux::state_transition_confirmed(
+            gstreamer::State::Playing,
+            gstreamer::State::Paused,
+            gstreamer::State::Paused,
+        ));
+        assert!(linux::state_transition_confirmed(
+            gstreamer::State::Paused,
+            gstreamer::State::VoidPending,
+            gstreamer::State::Paused,
+        ));
+        assert!(!linux::state_transition_confirmed(
+            gstreamer::State::Playing,
+            gstreamer::State::Null,
+            gstreamer::State::Null,
+        ));
+        assert!(linux::state_transition_confirmed(
+            gstreamer::State::Null,
+            gstreamer::State::VoidPending,
+            gstreamer::State::Null,
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     #[ignore = "requires an active desktop audio session and UTA_STUDIO_AUDIO_SMOKE_PATH"]
     fn native_player_sustains_real_audio_without_stalls() {
         let path = std::env::var_os("UTA_STUDIO_AUDIO_SMOKE_PATH")
@@ -864,6 +908,6 @@ mod tests {
         player.play().expect("audio must resume");
         std::thread::sleep(std::time::Duration::from_millis(750));
         assert!(player.status().position_secs > sought.position_secs + 0.4);
-        assert!(!player.stop().loaded);
+        assert!(!player.stop().expect("audio must stop").loaded);
     }
 }

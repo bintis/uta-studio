@@ -11,7 +11,10 @@ use crate::contract::{
 };
 use crate::execution::CancellationToken;
 
-use super::{SignalAccumulator, SignalMetrics};
+use super::{
+    SignalAccumulator, SignalMetrics, SignalProfile, build_signal_window,
+    signal_profile_window_frames,
+};
 
 const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 const MAX_AUDIO_SECONDS: u64 = 4 * 60 * 60;
@@ -52,6 +55,7 @@ struct SourceFacts {
 pub struct DecodedAudio {
     pub facts: DecodedAudioFactsV1,
     pub(crate) metrics: SignalMetrics,
+    pub(crate) profile: SignalProfile,
 }
 
 pub fn decode_audio(ffmpeg: &Path, source_id: &str, source: &Path) -> EngineResult<DecodedAudio> {
@@ -174,6 +178,13 @@ pub(crate) fn decode_audio_with_cancellation(
         .saturating_mul(MAX_AUDIO_SECONDS)
         .saturating_mul(u64::from(source_facts.channels));
     let mut statistics = SignalAccumulator::new();
+    let profile_window_frames = signal_profile_window_frames(source_facts.sample_rate);
+    let mut profile = SignalProfile::default();
+    let mut mono_window = Vec::with_capacity(profile_window_frames);
+    let mut window_start_frame = 0_u64;
+    let mut frame_channel_sum = 0.0_f64;
+    let mut frame_channel_count = 0_usize;
+    let channel_count = usize::from(source_facts.channels);
     let mut invalid_sample = false;
     let mut read_error = None;
     let mut was_cancelled = false;
@@ -202,7 +213,26 @@ pub(crate) fn decode_audio_with_cancellation(
                 break;
             }
             statistics.push(value);
+            frame_channel_sum += f64::from(value);
+            frame_channel_count += 1;
             sample_count += 1;
+            if frame_channel_count == channel_count {
+                mono_window.push((frame_channel_sum / channel_count as f64) as f32);
+                frame_channel_sum = 0.0;
+                frame_channel_count = 0;
+                if mono_window.len() == profile_window_frames {
+                    if let Some(window) = build_signal_window(
+                        window_start_frame,
+                        source_facts.sample_rate,
+                        &mono_window,
+                    ) {
+                        profile.windows.push(window);
+                    }
+                    window_start_frame =
+                        window_start_frame.saturating_add(profile_window_frames as u64);
+                    mono_window.clear();
+                }
+            }
             if sample_count > max_samples {
                 break;
             }
@@ -281,6 +311,11 @@ pub(crate) fn decode_audio_with_cancellation(
             )
         })?;
 
+    if let Some(window) =
+        build_signal_window(window_start_frame, source_facts.sample_rate, &mono_window)
+    {
+        profile.windows.push(window);
+    }
     let metrics = statistics.finish();
     Ok(DecodedAudio {
         facts: DecodedAudioFactsV1 {
@@ -295,6 +330,7 @@ pub(crate) fn decode_audio_with_cancellation(
             decode_backend: ffmpeg_identity(ffmpeg),
         },
         metrics,
+        profile,
     })
 }
 
@@ -506,8 +542,11 @@ fn ffmpeg_identity(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+
+    static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
 
     #[cfg(unix)]
     fn fake_ffmpeg(root: &Path, body: &str) -> PathBuf {
@@ -553,12 +592,13 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "uta-analysis-decode-{}-{}",
+            "uta-analysis-decode-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEMP_ROOT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
         root

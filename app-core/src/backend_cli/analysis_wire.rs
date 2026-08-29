@@ -28,6 +28,49 @@ pub struct AnalysisWorkerReadyV1 {
     pub contract_versions: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnalysisLifecycleFrameWireV1 {
+    #[serde(rename = "type")]
+    pub frame_type: String,
+    pub schema_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub presentation_node_id: Option<String>,
+    pub capability_id: String,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    pub implementation: String,
+    #[serde(default)]
+    pub progress: Option<f32>,
+    #[serde(default)]
+    pub work_units_completed: Option<u64>,
+    #[serde(default)]
+    pub work_units_total: Option<u64>,
+    #[serde(default)]
+    pub worker_task_id: Option<String>,
+    #[serde(default)]
+    pub artifact: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    pub event_at_ms: i64,
+}
+
+impl AnalysisLifecycleFrameWireV1 {
+    pub fn is_lifecycle_type(frame_type: &str) -> bool {
+        matches!(
+            frame_type,
+            "node_started"
+                | "node_progress"
+                | "node_completed"
+                | "node_failed"
+                | "artifact"
+                | "warning"
+                | "degraded"
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioRoleWireV1 {
@@ -214,6 +257,15 @@ pub struct ExecutionPolicyWireV1 {
     /// Missing entries retain each model's Runtime Manager-pinned route.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, super::NativeBackendWireV1>,
+    /// Global device-class preference, orthogonal to `requested_backend`.
+    /// Captured and validated by the Engine; Runtime Manager does not yet
+    /// enumerate multiple physical devices per backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_device: Option<super::DeviceClassWireV1>,
+    /// Model-specific device-class choices, same precedence as
+    /// `model_backend_overrides`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_device_overrides: BTreeMap<String, super::DeviceClassWireV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,17 +283,19 @@ pub struct AnalyzeRequestWireV1 {
     pub musical_context: Option<MusicalContextWireV1>,
     pub analysis: AnalysisSpecWireV1,
     pub requested_artifacts: RequestedArtifactsWireV1,
-    #[serde(default = "testing_execution_policy")]
+    #[serde(default = "production_execution_policy")]
     pub execution_policy: ExecutionPolicyWireV1,
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
-fn testing_execution_policy() -> ExecutionPolicyWireV1 {
+fn production_execution_policy() -> ExecutionPolicyWireV1 {
     ExecutionPolicyWireV1 {
-        runtime_policy: RuntimePolicyWireV1::Experimental,
+        runtime_policy: RuntimePolicyWireV1::Production,
         requested_backend: None,
         model_backend_overrides: BTreeMap::new(),
+        requested_device: None,
+        model_device_overrides: BTreeMap::new(),
     }
 }
 
@@ -322,6 +376,44 @@ pub enum WorkflowNodeExecutionStateWireV1 {
     NotRequested,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuousF0SourceWireV1 {
+    Rmvpe,
+    Fcpe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteLengthSourceWireV1 {
+    Game,
+    F0Derived,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnsetSupportSourceWireV1 {
+    Automatic,
+    Acoustic,
+    BasicPitch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpertFusionPolicyWireV1 {
+    pub continuous_f0: ContinuousF0SourceWireV1,
+    pub note_lengths: NoteLengthSourceWireV1,
+    pub onset_support: OnsetSupportSourceWireV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FusionModeWireV1 {
+    #[default]
+    Algorithm,
+    AiJudgment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowExecutionNodePlanWireV1 {
     pub instance_id: String,
@@ -331,6 +423,8 @@ pub struct WorkflowExecutionNodePlanWireV1 {
     pub execution_policy: String,
     pub execution_state: WorkflowNodeExecutionStateWireV1,
     pub priority: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_invocations: Vec<crate::workflow::WorkflowExecutionInvocationWireV1>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
@@ -344,6 +438,11 @@ pub struct WorkflowExecutionPlanWireV1 {
     pub nodes: Vec<WorkflowExecutionNodePlanWireV1>,
     #[serde(default)]
     pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputWireV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_policy: Option<ExpertFusionPolicyWireV1>,
+    /// Required in an exact Engine Plan. A missing backend field must fail
+    /// decoding rather than silently project AI judgment as Algorithm.
+    pub fusion_mode: FusionModeWireV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -503,6 +602,33 @@ pub struct QualityGateOutcomeWireV1 {
     pub regions: Vec<QualityRegionWireV1>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VocalTopologyModeWireV1 {
+    SingleLead,
+    AlternatingMultiLead,
+    OverlappingMultiLead,
+    LeadWithSupport,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VocalTopologyEstimateWireV1 {
+    pub contract: String,
+    pub version: u32,
+    pub timebase: u32,
+    pub source_start: u64,
+    pub duration: u64,
+    pub mode: VocalTopologyModeWireV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub overlap_regions: Vec<QualityRegionWireV1>,
+    #[serde(default)]
+    pub support_regions: Vec<QualityRegionWireV1>,
+    pub evidence_sources: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioQualityReportWireV1 {
     pub contract: String,
@@ -513,6 +639,8 @@ pub struct AudioQualityReportWireV1 {
     pub duration: u64,
     pub planned_gates: Vec<String>,
     pub outcomes: Vec<QualityGateOutcomeWireV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_topology: Option<VocalTopologyEstimateWireV1>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -529,13 +657,44 @@ pub struct AnalysisDiagnosticsWireV1 {
     pub evidence: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisReusePolicyWireV1 {
+    Deterministic,
+    PreservedRevisionOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision_mode", rename_all = "snake_case")]
+pub enum FusionDecisionProvenanceWireV1 {
+    Algorithm {
+        selector: String,
+        selector_version: String,
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+        reuse_policy: AnalysisReusePolicyWireV1,
+    },
+    AiJudgment {
+        adapter_resource: String,
+        adapter_protocol: String,
+        adapter_protocol_version: u32,
+        adapter_identity: String,
+        adapter_version: String,
+        candidate_set_digest: String,
+        selected_candidate_ids: Vec<String>,
+        response_digest: String,
+        reuse_policy: AnalysisReusePolicyWireV1,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisProvenanceWireV1 {
     #[serde(default)]
     pub resources: Vec<serde_json::Value>,
     pub calibration_version: String,
     pub fusion_version: String,
-    pub hsmm_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_decision: Option<FusionDecisionProvenanceWireV1>,
     pub quantization_version: String,
     #[serde(default)]
     pub audio_quality_version: String,
@@ -555,4 +714,67 @@ pub struct AnalysisResultManifestWireV1 {
     pub fingerprint: String,
     #[serde(default)]
     pub degraded_reasons: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workflow_plan_json() -> serde_json::Value {
+        serde_json::json!({
+            "identity": {
+                "contract": "uta.workflow-execution",
+                "version": 1,
+                "workflow_schema_version": 2,
+                "workflow_id": "workflow:test",
+                "workflow_revision": 1,
+                "definition_digest": "digest"
+            },
+            "nodes": [],
+            "terminal_outputs": []
+        })
+    }
+
+    #[test]
+    fn exact_workflow_plan_requires_a_fusion_mode_field() {
+        let error = serde_json::from_value::<WorkflowExecutionPlanWireV1>(workflow_plan_json())
+            .unwrap_err();
+        assert!(error.to_string().contains("missing field `fusion_mode`"));
+    }
+
+    #[test]
+    fn exact_workflow_plan_decodes_typed_provider_invocations() {
+        let mut value = workflow_plan_json();
+        value["nodes"] = serde_json::json!([{
+            "instance_id": "split",
+            "analysis_node": "split",
+            "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
+            "execution_policy": "always",
+            "execution_state": "ready",
+            "priority": 10,
+            "execution_invocations": [{
+                "invocation_id": "split.dual",
+                "provider_id": "dual-output-provider",
+                "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
+                "output_ports": ["vocal", "instrumental"]
+            }],
+            "depends_on": [],
+            "input_bindings": []
+        }]);
+        value["fusion_mode"] = serde_json::json!("algorithm");
+        let plan = serde_json::from_value::<WorkflowExecutionPlanWireV1>(value).unwrap();
+        assert_eq!(plan.nodes[0].execution_invocations.len(), 1);
+        assert_eq!(
+            plan.nodes[0].execution_invocations[0].invocation_id,
+            "split.dual"
+        );
+    }
+
+    #[test]
+    fn exact_workflow_plan_decodes_explicit_ai_judgment() {
+        let mut value = workflow_plan_json();
+        value["fusion_mode"] = serde_json::json!("ai_judgment");
+        let plan = serde_json::from_value::<WorkflowExecutionPlanWireV1>(value).unwrap();
+        assert_eq!(plan.fusion_mode, FusionModeWireV1::AiJudgment);
+    }
 }

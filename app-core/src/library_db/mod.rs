@@ -19,8 +19,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::uta_studio_dir;
 
 mod analysis_artifacts;
-#[cfg(test)]
-mod analysis_capture_requests;
 mod analysis_history;
 mod analysis_node_artifacts;
 mod analysis_node_attempts;
@@ -39,13 +37,10 @@ pub use analysis_artifacts::{
     analysis_artifact_delete, analysis_artifact_is_pinned, analysis_artifact_path_is_pinned,
     analysis_artifact_pinned_paths, analysis_artifact_set_active,
     analysis_artifact_set_invalidated, analysis_artifact_set_pinned, analysis_artifact_upsert,
-    analysis_artifacts_for_kind, analysis_artifacts_for_song, analysis_artifacts_publish_batch,
+    analysis_artifacts_deactivate_kind_with_recovery, analysis_artifacts_for_kind,
+    analysis_artifacts_for_song, analysis_artifacts_publish_batch,
 };
-#[cfg(test)]
-pub use analysis_capture_requests::{
-    AnalysisCaptureRequestRow, analysis_capture_request_delete, analysis_capture_request_get,
-    analysis_capture_request_upsert,
-};
+pub(crate) use analysis_artifacts::{active_artifact_file_hashes, mark_songs_analyzed};
 pub use analysis_history::{
     NewAnalysisHistory, analysis_history_clear, analysis_history_insert, analysis_history_load,
     analysis_history_set_error,
@@ -60,7 +55,8 @@ pub use analysis_node_attempts::{
 };
 pub use analysis_queue::{
     EngineQueueIntent, analysis_queue_clear, analysis_queue_delete, analysis_queue_engine_intent,
-    analysis_queue_load_rows, analysis_queue_save_rows, analysis_queue_set_engine_intent,
+    analysis_queue_load_rows, analysis_queue_resumable_hashes, analysis_queue_save_rows,
+    analysis_queue_set_engine_intent, analysis_queue_stage_engine_intent, analysis_queue_status,
     analysis_queue_upsert_row,
 };
 pub use playlists::{PlaylistDefinition, replace_all_playlists};
@@ -75,8 +71,8 @@ pub use song_analysis_profiles::{
 pub use song_workflows::{song_workflow_get, song_workflow_set};
 pub use songs::{
     append_songs_for_scan, delete_songs_not_in_paths, load_all_songs, load_song_by_hash,
-    load_song_path_strings, read_library_meta, replace_all_songs_sorted, update_library_meta,
-    update_song_fields,
+    load_song_by_path, load_song_path_strings, read_library_meta, replace_all_songs_sorted,
+    update_library_meta, update_song_fields,
 };
 
 /// Incremented at the start of each `start_scan` so in-flight scan threads stop writing
@@ -101,6 +97,8 @@ pub fn init_library() -> rusqlite::Result<()> {
     }
     let conn = connection::open_connection(&library_db_path())?;
     connection::install(conn)?;
+    let cache = crate::cache::CacheDir::new();
+    crate::analysis_artifact::reconcile_active_candidate_charts(&cache.path);
     Ok(())
 }
 

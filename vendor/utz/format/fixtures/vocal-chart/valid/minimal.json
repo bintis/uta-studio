@@ -1,0 +1,41 @@
+{
+  "format": "uta.vocal-chart",
+  "format_version": "0.3.0",
+  "timebase": 1000000,
+  "language": "ja",
+  "tracks": [
+    {
+      "id": "lead",
+      "role": "lead",
+      "phrases": [
+        {
+          "id": "phrase-1",
+          "notes": [
+            {
+              "id": "note-1",
+              "start": 0,
+              "duration": 500000,
+              "pitch": {
+                "midi": 69,
+                "cents": 0
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch",
+                "weight": 1
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-1",
+                  "text": "歌",
+                  "join_before": "none"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

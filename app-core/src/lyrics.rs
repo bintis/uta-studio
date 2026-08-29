@@ -153,7 +153,7 @@ pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {
 
 /// Drops the transcript so it regenerates from the new lyrics source.
 /// Preserves the Authored Chart -- editing the lyrics source must not
-/// discard chart edits (docs/analysis-dag-redesign.md §6/Phase 5). Shared
+/// discard chart edits (the immutable artifact contract §6/Phase 5). Shared
 /// by every lyrics-source-change entry point in this file.
 fn apply_lyrics_edit_reset(cache: &CacheDir, file_hash: &str) {
     let _ = std::fs::remove_file(cache.transcript_path(file_hash));
@@ -163,11 +163,19 @@ fn apply_lyrics_edit_reset(cache: &CacheDir, file_hash: &str) {
     cache.delete_transcript_variants(file_hash);
 }
 
-pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<(), String> {
+pub fn save_lyrics(file_hash: &str, lines: Vec<String>) -> Result<(), String> {
     if is_usdx_song(file_hash) {
         return Err("Cannot edit lyrics for USDX songs".to_string());
     }
 
+    save_lyrics_to_cache(&CacheDir::new(), file_hash, lines)
+}
+
+fn save_lyrics_to_cache(
+    cache: &CacheDir,
+    file_hash: &str,
+    lines: Vec<String>,
+) -> Result<(), String> {
     let normalized: Vec<String> = lines
         .into_iter()
         .map(|l| l.trim().to_string())
@@ -178,15 +186,13 @@ pub fn save_lyrics_and_realign(file_hash: &str, lines: Vec<String>) -> Result<()
         return Err("Lyrics cannot be empty".to_string());
     }
 
-    let cache = CacheDir::new();
-    write_lyrics_file(&cache, file_hash, &normalized)
+    write_lyrics_file(cache, file_hash, &normalized)
         .map_err(|e| format!("Failed to write lyrics file: {e}"))?;
 
-    crate::analysis_engine_adapter::preview_and_queue_engine_run(
-        file_hash,
-        Some(crate::analysis_experience::AnalysisDefaultTarget::Alignment),
-    )
-    .map(|_| ())
+    // Saving lyrics is an authoring mutation, not consent to spend compute.
+    // The user can explicitly add the song to Processing Queue afterward;
+    // existing transcript/chart artifacts remain active until that run.
+    Ok(())
 }
 
 /// Build the editable transcript JSON from parsed LRC segments.
@@ -283,7 +289,7 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
 
     // Timing changed: drop any tempo-shifted transcript variants and the plain
     // lyrics sidecar, and reset the song back to its base key/tempo. The
-    // Authored Chart is preserved (docs/analysis-dag-redesign.md §6/Phase 5).
+    // Authored Chart is preserved (the immutable artifact contract §6/Phase 5).
     cache.delete_transcript_variants(file_hash);
     let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
@@ -313,7 +319,7 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
 }
 
 /// `lyrics.import_timed`'s own real event/history record
-/// (docs/analysis-dag-redesign.md Phase 3 status note). This Rust-side
+/// (the immutable artifact contract Phase 3 status note). This Rust-side
 /// Timed LRC import path completes synchronously and entirely outside the
 /// native-queue-driven `process_song`/`LIVE_ANALYSIS`/`ANALYSIS_STARTED`
 /// machinery -- there is no "in-flight" window for a progress poll to ever
@@ -341,6 +347,8 @@ fn record_timed_lyrics_import(
     let route = AnalysisStageRoute {
         stage: "finalizing".to_string(),
         node_id: Some("lyrics.import_timed".to_string()),
+        engine_node_id: None,
+        capability_id: Some("lyrics.import_timed".to_string()),
         node_event: Some("completed".to_string()),
         binding_kind: None,
         committed_outputs: vec![AnalysisArtifactCommit {
@@ -350,8 +358,8 @@ fn record_timed_lyrics_import(
             binding_kind: "produced".to_string(),
             config_hash: "timed-lrc-import".to_string(),
             algorithm_version: format!("lrc-parser/app-{}", env!("CARGO_PKG_VERSION")),
-            immutable_path: Some(immutable_path),
-            content_hash: Some(content_hash),
+            immutable_path: Some(immutable_path.clone()),
+            content_hash: Some(content_hash.clone()),
             byte_size: Some(byte_size),
             capture_error: None,
         }],
@@ -371,6 +379,7 @@ fn record_timed_lyrics_import(
         event_at_ms: Some(now),
         work_units_completed: Some(1),
         work_units_total: Some(1),
+        worker_task_id: None,
     };
     let snapshot = AnalysisProgressSnapshot {
         stage: "complete".to_string(),
@@ -388,10 +397,13 @@ fn record_timed_lyrics_import(
         backend_fallback_reason: None,
         stage_routes: vec![route],
         node_id: Some("lyrics.import_timed".to_string()),
+        engine_node_id: None,
+        capability_id: Some("lyrics.import_timed".to_string()),
         node_event: Some("completed".to_string()),
         artifact_reused_reason: None,
         analysis_log_path: None,
         engine: None,
+        engine_error: None,
     };
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     let run_id = library_db::analysis_history_insert(&library_db::NewAnalysisHistory {
@@ -427,7 +439,45 @@ fn record_timed_lyrics_import(
         }],
     )
     .map_err(|error| error.to_string())?;
-    crate::artifact_workbench::capture_analysis_run_artifacts_in(cache, run_id, file_hash)
+
+    let attempt_id = library_db::analysis_node_attempts_load(run_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|attempt| attempt.node_id == "lyrics.import_timed")
+        .map(|attempt| attempt.id)
+        .ok_or_else(|| "timed lyrics attempt was not recorded".to_string())?;
+    let kind = crate::analysis_graph::ArtifactKind::TimedTranscript;
+    let revision = crate::analysis_artifact::ArtifactRevision {
+        id: format!("{file_hash}:TimedTranscript:{content_hash}"),
+        file_hash: file_hash.to_string(),
+        kind,
+        path: immutable_path,
+        content_hash,
+        producer_node: crate::analysis_graph::AnalysisNodeId::new("lyrics.import_timed"),
+        input_revisions: Vec::new(),
+        config_hash: "timed-lrc-import".to_string(),
+        algorithm_version: format!("lrc-parser/app-{}", env!("CARGO_PKG_VERSION")),
+        created_at_ms: now,
+        byte_size,
+        active: crate::analysis_artifact::load_active_artifact(file_hash, kind).is_none(),
+        legacy: false,
+        invalidated: false,
+    };
+    let binding = library_db::AnalysisNodeArtifactRow {
+        run_id,
+        attempt_id: Some(attempt_id),
+        node_id: "lyrics.import_timed".to_string(),
+        direction: "output".to_string(),
+        slot: "output:0".to_string(),
+        artifact_kind: serde_json::to_string(&kind).map_err(|error| error.to_string())?,
+        revision_id: Some(revision.id.clone()),
+        binding_kind: "produced".to_string(),
+    };
+    library_db::analysis_artifact_and_node_binding_upsert(
+        &crate::analysis_artifact::revision_to_row(&revision),
+        &binding,
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn write_lyrics_file(
@@ -442,43 +492,8 @@ pub(crate) fn write_lyrics_file(
 }
 
 #[cfg(test)]
-pub(crate) fn fetch_lrclib_lyrics(song: &Song, cache: &CacheDir) -> Option<PathBuf> {
-    let existing = cache.lyrics_path(&song.file_hash);
-    if existing.is_file() {
-        info!(
-            "[lrclib] Using existing lyrics file at {}",
-            existing.display()
-        );
-        return Some(existing);
-    }
-
-    let candidates = lrclib_candidates(song);
-    let pick = candidates.into_iter().next()?;
-
-    info!(
-        "[lrclib] Picked \"{}\" from \"{}\" (duration {:.0}s, delta {:.1}s)",
-        pick.track_name,
-        pick.album_name,
-        pick.duration_secs,
-        (pick.duration_secs - song.duration_secs).abs()
-    );
-    info!("[lrclib] Extracted {} lines", pick.lines.len());
-
-    match write_lyrics_file(cache, &song.file_hash, &pick.lines) {
-        Ok(out) => {
-            info!("[lrclib] Lyrics saved to {}", out.display());
-            Some(out)
-        }
-        Err(e) => {
-            warn!("[lrclib] Failed to write lyrics: {e}");
-            None
-        }
-    }
-}
-
-#[cfg(test)]
 mod chart_protection_tests {
-    use super::apply_lyrics_edit_reset;
+    use super::{apply_lyrics_edit_reset, save_lyrics_to_cache};
     use crate::cache::CacheDir;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -492,6 +507,36 @@ mod chart_protection_tests {
         ));
         std::fs::create_dir_all(&path).expect("create temp cache dir");
         CacheDir { path }
+    }
+
+    #[test]
+    fn saving_plain_lyrics_preserves_current_analysis_artifacts() {
+        let cache = temp_cache();
+        let hash = "songLyricsSaveOnly";
+        let transcript = br#"{"segments":[{"text":"old timing"}]}"#;
+        std::fs::write(cache.transcript_path(hash), transcript).unwrap();
+
+        save_lyrics_to_cache(
+            &cache,
+            hash,
+            vec![
+                " first line ".to_string(),
+                String::new(),
+                "second line".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let saved: super::LyricsFile = serde_json::from_slice(
+            &std::fs::read(cache.lyrics_path(hash)).expect("lyrics source is saved"),
+        )
+        .unwrap();
+        assert_eq!(saved.lines, ["first line", "second line"]);
+        assert_eq!(
+            std::fs::read(cache.transcript_path(hash)).unwrap(),
+            transcript
+        );
+        cache.clear_all();
     }
 
     #[test]

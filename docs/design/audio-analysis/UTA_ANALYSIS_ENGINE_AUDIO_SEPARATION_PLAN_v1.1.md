@@ -673,6 +673,8 @@ Example:
 
 This is Engine evidence, not a new authored UTZ VocalChart semantic field.
 
+The current `audio-quality-gates-v2` implementation derives this evidence before monophonic GAME/F0/Fusion output is trusted. It uses short-window profiles from the decoded lead and, when current lead isolation produced one, the decoded `vocal_residual`. The residual remains an internal measurement input and is cleaned with the worker directory; it is never relabeled or published as BackingVocal or HarmonyVocal. Residual energy alternation is not independent singer/foreground identity evidence: it remains typed `lead_with_support` ambiguity and degrades, while `alternating_multi_lead` is reserved for a future qualified part/identity expert. Caller/unpartitioned vocal input and insufficient evidence produce typed `unknown` evidence, a degraded result and review regions. The current deterministic heuristic is uncalibrated, so it emits `confidence: null` rather than a probability. Engine bounds ordinary gate regions through its evaluation source context without changing the established report-v1 wire shape, and prior `audio-quality-gates-v1` reports remain readable. Studio independently validates one canonical-timebase primary source plus exact Plan source-route/role binding, then binds both ordinary and topology regions to the requested source start plus app-owned media duration instead of trusting the Engine-reported duration; all regions must be ordered, non-overlapping and canonical-range bounded.
+
 ---
 
 # 12. Separation capability split
@@ -832,6 +834,8 @@ Every separation result should be checked before downstream use.
 | cleanup consistency | Detect cleanup-induced vocal-structure damage |
 
 Quality-gate failures should be typed rather than mapped to a generic retry.
+
+Instrumental-specific gates are bound to the generated Instrumental artifact. Vocal leakage compares that artifact only with a non-empty, window-aligned independently generated vocal reference whose active windows cover a meaningful portion of the source; an empty, silent, sparsely active, truncated or misaligned reference yields typed `unknown`. Musical damage uses the generated Instrumental's own measured active coverage, sustained broadband-window coverage, adjacent-window RMS/spectral/crest change coverage, clipping, silence and structural dropouts. A clean pass requires both adequate broadband coverage and measurable temporal structure; a single stationary tone or other insufficient evidence remains `unknown` rather than certifying absence of damage. The original mix is never substituted as the measured Instrumental.
 
 ---
 

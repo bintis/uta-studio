@@ -13,16 +13,17 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const FORMAT_ID: &str = "uta.song";
 pub const FORMAT_VERSION: &str = "0.3.0";
-pub const LEGACY_FORMAT_VERSION: &str = "0.1.0";
 pub const VOCAL_CHART_FORMAT: &str = "uta.vocal-chart";
-pub const VOCAL_CHART_VERSION: &str = "1.1.0";
-pub const VOCAL_CHART_MEDIA_TYPE: &str = "application/vnd.uta.vocal-chart+json;version=1";
+pub const VOCAL_CHART_VERSION: &str = "0.3.0";
+pub const VOCAL_CHART_MEDIA_TYPE: &str = "application/vnd.uta.vocal-chart+json;version=0.3";
 pub const PITCH_EVIDENCE_FORMAT: &str = "uta.pitch-evidence";
-pub const PITCH_EVIDENCE_VERSION: &str = "1.0.0";
-pub const PITCH_EVIDENCE_MEDIA_TYPE: &str = "application/vnd.uta.pitch-evidence+json;version=1";
+pub const PITCH_EVIDENCE_VERSION: &str = "0.3.0";
+pub const PITCH_EVIDENCE_MEDIA_TYPE: &str = "application/vnd.uta.pitch-evidence+json;version=0.3";
 pub const DEFAULT_TIMEBASE: u64 = 1_000_000;
 pub const MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MANIFEST_PATH: &str = "manifest.json";
+pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+pub const UTZ_TIMEBASE: u64 = 1_000_000;
 pub const MAX_FILES: usize = 128;
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -70,89 +71,81 @@ impl AssetRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SongMetadata {
     pub title: String,
     pub artist: String,
     #[serde(default)]
-    pub album: Option<String>,
-    #[serde(default)]
     pub language: Option<String>,
-    pub duration_seconds: f64,
+    pub duration: u64,
     #[serde(default)]
     pub bpm: Option<f64>,
     #[serde(default)]
     pub key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title_sort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artist_sort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub genre: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub year: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub creator: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub composer: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub country: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview_start_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
-/// UTZ 0.1 audio map. The chart-to-audio offset only exists in 0.1; UTZ 0.2
-/// defines chart time zero as instrumental time zero instead.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AudioAssetsV01 {
-    pub instrumental: AssetRef,
-    #[serde(default)]
-    pub guide_vocals: Option<AssetRef>,
-    #[serde(default)]
-    pub original: Option<AssetRef>,
-    #[serde(default)]
-    pub audio_offset_seconds: f64,
+impl SongMetadata {
+    pub fn new(title: impl Into<String>, artist: impl Into<String>, duration: u64) -> Self {
+        Self {
+            title: title.into(),
+            artist: artist.into(),
+            language: None,
+            duration,
+            bpm: None,
+            key: None,
+            metadata: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AudioAssets {
-    pub instrumental: AssetRef,
-    #[serde(default)]
-    pub guide_vocals: Option<AssetRef>,
-    #[serde(default)]
-    pub original: Option<AssetRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loudness: Option<AudioLoudness>,
+    pub assets: BTreeMap<String, AssetRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loudness_lufs: BTreeMap<String, Option<f64>>,
 }
 
-/// Advisory integrated loudness (EBU R 128 LUFS) per audio stem.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AudioLoudness {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instrumental_lufs: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guide_vocals_lufs: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_lufs: Option<f64>,
+impl AudioAssets {
+    pub fn new(instrumental: AssetRef) -> Self {
+        Self {
+            assets: BTreeMap::from([("instrumental".into(), instrumental)]),
+            loudness_lufs: BTreeMap::new(),
+        }
+    }
+
+    pub fn instrumental(&self) -> &AssetRef {
+        self.assets
+            .get("instrumental")
+            .expect("validated AudioAssets always has instrumental")
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VisualAssets {
-    #[serde(default)]
-    pub cover: Option<AssetRef>,
-    #[serde(default)]
-    pub video: Option<AssetRef>,
-    #[serde(default)]
-    pub video_offset_seconds: f64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, AssetRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timing: BTreeMap<String, VisualTiming>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VisualTiming {
+    pub timebase: u64,
+    pub offset: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ScoringConfig {
     pub engine: String,
     pub version: u32,
-    #[serde(default)]
-    pub octave_tolerance: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for ScoringConfig {
@@ -160,12 +153,13 @@ impl Default for ScoringConfig {
         Self {
             engine: "uta.pitch".into(),
             version: 1,
-            octave_tolerance: false,
+            parameters: BTreeMap::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Provenance {
     #[serde(default)]
     pub generator: Option<String>,
@@ -173,76 +167,33 @@ pub struct Provenance {
     pub source: Option<String>,
     #[serde(default)]
     pub rights: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ChartAssetsV01 {
-    pub transcript: AssetRef,
-    pub pitch_track: AssetRef,
-    pub pitch_notes: AssetRef,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ManifestV01 {
-    pub format: String,
-    pub format_version: String,
-    pub package_id: String,
-    pub revision: u32,
-    pub song: SongMetadata,
-    pub audio: AudioAssetsV01,
-    pub charts: ChartAssetsV01,
-    #[serde(default)]
-    pub visuals: VisualAssets,
-    #[serde(default)]
-    pub scoring: ScoringConfig,
-    #[serde(default)]
-    pub provenance: Provenance,
-}
-
-impl ManifestV01 {
-    pub fn new(
-        package_id: impl Into<String>,
-        song: SongMetadata,
-        audio: AudioAssetsV01,
-        charts: ChartAssetsV01,
-    ) -> Self {
-        Self {
-            format: FORMAT_ID.into(),
-            format_version: LEGACY_FORMAT_VERSION.into(),
-            package_id: package_id.into(),
-            revision: 1,
-            song,
-            audio,
-            charts,
-            visuals: VisualAssets::default(),
-            scoring: ScoringConfig::default(),
-            provenance: Provenance::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ChartAssetsV02 {
+pub struct ChartAssets {
     pub vocal: AssetRef,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AnalysisAssetsV02 {
+pub struct AnalysisAssets {
     #[serde(default)]
     pub pitch_evidence: Option<AssetRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ManifestV02 {
+#[serde(deny_unknown_fields)]
+pub struct UtzManifest {
     pub format: String,
     pub format_version: String,
     pub package_id: String,
     pub revision: u32,
     pub song: SongMetadata,
     pub audio: AudioAssets,
-    pub charts: ChartAssetsV02,
+    pub charts: ChartAssets,
     #[serde(default)]
-    pub analysis: AnalysisAssetsV02,
+    pub analysis: AnalysisAssets,
     #[serde(default)]
     pub visuals: VisualAssets,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,10 +204,12 @@ pub struct ManifestV02 {
     #[serde(default)]
     pub extensions: BTreeMap<String, AssetRef>,
     #[serde(default)]
+    pub representations: BTreeMap<String, AssetRef>,
+    #[serde(default)]
     pub provenance: Provenance,
 }
 
-impl ManifestV02 {
+impl UtzManifest {
     pub fn new(
         package_id: impl Into<String>,
         song: SongMetadata,
@@ -270,13 +223,14 @@ impl ManifestV02 {
             revision: 1,
             song,
             audio,
-            charts: ChartAssetsV02 { vocal: vocal_chart },
-            analysis: AnalysisAssetsV02::default(),
+            charts: ChartAssets { vocal: vocal_chart },
+            analysis: AnalysisAssets::default(),
             visuals: VisualAssets::default(),
             scoring: None,
-            required_features: vec!["vocal-chart/1".into()],
+            required_features: vec!["vocal-chart/0.3".into()],
             optional_features: Vec::new(),
             extensions: BTreeMap::new(),
+            representations: BTreeMap::new(),
             provenance: Provenance::default(),
         }
     }
@@ -288,118 +242,37 @@ impl ManifestV02 {
             .filter(|feature| !supported.contains(feature))
             .collect()
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum UtzManifest {
-    V0_2(ManifestV02),
-    V0_1(ManifestV01),
-}
-
-impl From<ManifestV01> for UtzManifest {
-    fn from(value: ManifestV01) -> Self {
-        Self::V0_1(value)
-    }
-}
-
-impl From<ManifestV02> for UtzManifest {
-    fn from(value: ManifestV02) -> Self {
-        Self::V0_2(value)
-    }
-}
-
-impl UtzManifest {
     pub fn format_version(&self) -> &str {
-        match self {
-            Self::V0_1(value) => &value.format_version,
-            Self::V0_2(value) => &value.format_version,
-        }
+        &self.format_version
     }
 
     pub fn package_id(&self) -> &str {
-        match self {
-            Self::V0_1(value) => &value.package_id,
-            Self::V0_2(value) => &value.package_id,
-        }
+        &self.package_id
     }
 
     pub fn song(&self) -> &SongMetadata {
-        match self {
-            Self::V0_1(value) => &value.song,
-            Self::V0_2(value) => &value.song,
-        }
-    }
-
-    pub fn as_v0_1(&self) -> Option<&ManifestV01> {
-        match self {
-            Self::V0_1(value) => Some(value),
-            Self::V0_2(_) => None,
-        }
-    }
-
-    pub fn as_v0_2(&self) -> Option<&ManifestV02> {
-        match self {
-            Self::V0_2(value) => Some(value),
-            Self::V0_1(_) => None,
-        }
+        &self.song
     }
 
     pub fn assets(&self) -> Vec<&AssetRef> {
-        let mut assets = Vec::new();
-        let visuals = match self {
-            Self::V0_1(value) => {
-                assets.push(&value.audio.instrumental);
-                assets.extend(value.audio.guide_vocals.iter());
-                assets.extend(value.audio.original.iter());
-                assets.extend([
-                    &value.charts.transcript,
-                    &value.charts.pitch_track,
-                    &value.charts.pitch_notes,
-                ]);
-                &value.visuals
-            }
-            Self::V0_2(value) => {
-                assets.push(&value.audio.instrumental);
-                assets.extend(value.audio.guide_vocals.iter());
-                assets.extend(value.audio.original.iter());
-                assets.push(&value.charts.vocal);
-                assets.extend(value.analysis.pitch_evidence.iter());
-                assets.extend(value.extensions.values());
-                &value.visuals
-            }
-        };
-        assets.extend(visuals.cover.iter());
-        assets.extend(visuals.video.iter());
+        let mut assets: Vec<_> = self.audio.assets.values().collect();
+        assets.push(&self.charts.vocal);
+        assets.extend(self.analysis.pitch_evidence.iter());
+        assets.extend(self.visuals.assets.values());
+        assets.extend(self.extensions.values());
+        assets.extend(self.representations.values());
         assets
     }
 
     fn assets_mut(&mut self) -> Vec<&mut AssetRef> {
-        match self {
-            Self::V0_1(value) => {
-                let mut assets = vec![
-                    &mut value.audio.instrumental,
-                    &mut value.charts.transcript,
-                    &mut value.charts.pitch_track,
-                    &mut value.charts.pitch_notes,
-                ];
-                assets.extend(value.audio.guide_vocals.iter_mut());
-                assets.extend(value.audio.original.iter_mut());
-                assets.extend(value.visuals.cover.iter_mut());
-                assets.extend(value.visuals.video.iter_mut());
-                assets
-            }
-            Self::V0_2(value) => {
-                let mut assets = vec![&mut value.audio.instrumental, &mut value.charts.vocal];
-                assets.extend(value.audio.guide_vocals.iter_mut());
-                assets.extend(value.audio.original.iter_mut());
-                assets.extend(value.analysis.pitch_evidence.iter_mut());
-                assets.extend(value.visuals.cover.iter_mut());
-                assets.extend(value.visuals.video.iter_mut());
-                assets.extend(value.extensions.values_mut());
-                assets
-            }
-        }
+        let mut assets: Vec<_> = self.audio.assets.values_mut().collect();
+        assets.push(&mut self.charts.vocal);
+        assets.extend(self.analysis.pitch_evidence.iter_mut());
+        assets.extend(self.visuals.assets.values_mut());
+        assets.extend(self.extensions.values_mut());
+        assets.extend(self.representations.values_mut());
+        assets
     }
 
     fn update_asset_metadata(&mut self, contents: &BTreeMap<String, Vec<u8>>) -> Result<()> {
@@ -430,81 +303,39 @@ impl UtzManifest {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let (format, version, package_id, revision, song) = match self {
-            Self::V0_1(value) => (
-                &value.format,
-                &value.format_version,
-                &value.package_id,
-                value.revision,
-                &value.song,
-            ),
-            Self::V0_2(value) => (
-                &value.format,
-                &value.format_version,
-                &value.package_id,
-                value.revision,
-                &value.song,
-            ),
-        };
-        if format != FORMAT_ID {
-            return invalid(format!("unsupported format {format:?}"));
+        if self.format != FORMAT_ID {
+            return invalid(format!("unsupported format {:?}", self.format));
         }
-        // 0.3 only adds optional, defaulted fields to the 0.2 manifest shape,
-        // so a reader for one reads the other losslessly.
-        let supported = match self {
-            Self::V0_1(_) => version.starts_with("0.1."),
-            Self::V0_2(_) => version.starts_with("0.2.") || version.starts_with("0.3."),
-        };
-        if !supported {
-            return invalid(format!("unsupported format version {version:?}"));
+        if !self.format_version.starts_with("0.3.") {
+            return invalid(format!(
+                "unsupported format version {:?}",
+                self.format_version
+            ));
         }
-        if package_id.trim().is_empty()
-            || song.title.trim().is_empty()
-            || song.artist.trim().is_empty()
+        if self.package_id.trim().is_empty()
+            || self.song.title.trim().is_empty()
+            || self.song.artist.trim().is_empty()
         {
             return invalid("package_id, song title, and artist are required");
         }
-        if revision == 0
-            || !song.duration_seconds.is_finite()
-            || song.duration_seconds < 0.0
-            || song
+        if self.revision == 0
+            || self.song.duration > MAX_EXACT_INTEGER
+            || self
+                .song
                 .bpm
                 .is_some_and(|value| !value.is_finite() || value <= 0.0)
         {
             return invalid("revision, song timing, or BPM is invalid");
         }
-        if song
-            .preview_start_seconds
-            .is_some_and(|value| !value.is_finite() || value < 0.0)
-        {
-            return invalid("preview_start_seconds must be a finite non-negative number");
+        if let Some(key) = self.song.metadata.keys().find(|key| {
+            matches!(
+                key.as_str(),
+                "title" | "artist" | "duration_seconds" | "language" | "bpm" | "key" | "metadata"
+            )
+        }) {
+            return invalid(format!("reserved song metadata key {key:?}"));
         }
-        if song.tags.iter().any(|tag| tag.trim().is_empty()) {
-            return invalid("song tags must be non-empty strings");
-        }
-        match self {
-            Self::V0_1(value) => {
-                if value.scoring.engine != "uta.pitch" || value.scoring.version != 1 {
-                    return invalid(format!(
-                        "unsupported 0.1 scoring engine {} version {}",
-                        value.scoring.engine, value.scoring.version
-                    ));
-                }
-                if !value.audio.audio_offset_seconds.is_finite() {
-                    return invalid("audio_offset_seconds must be finite");
-                }
-            }
-            Self::V0_2(value) => validate_v02_manifest(value)?,
-        }
-
-        let visuals = match self {
-            Self::V0_1(value) => &value.visuals,
-            Self::V0_2(value) => &value.visuals,
-        };
-        if !visuals.video_offset_seconds.is_finite() {
-            return invalid("video_offset_seconds must be finite");
-        }
-
+        validate_manifest(self)?;
         let mut paths = HashSet::new();
         for asset in self.assets() {
             validate_package_path(&asset.path)?;
@@ -520,30 +351,74 @@ impl UtzManifest {
             if !paths.insert(folded) {
                 return invalid(format!("asset path is used more than once: {}", asset.path));
             }
+            if asset.sha256.len() != 64
+                || !asset
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return invalid(format!("asset {} has an invalid SHA-256", asset.path));
+            }
         }
         Ok(())
     }
 }
 
-fn validate_v02_manifest(value: &ManifestV02) -> Result<()> {
+fn validate_manifest(value: &UtzManifest) -> Result<()> {
+    validate_semver_line(&value.format_version, 0, 3, "UTZ manifest")?;
+
+    let required: HashSet<_> = value.required_features.iter().map(String::as_str).collect();
+    let optional: HashSet<_> = value.optional_features.iter().map(String::as_str).collect();
+    for feature in value.extensions.keys() {
+        let in_required = required.contains(feature.as_str());
+        let in_optional = optional.contains(feature.as_str());
+        if in_required == in_optional {
+            return invalid(format!(
+                "extension {feature:?} must appear in exactly one of required_features or optional_features"
+            ));
+        }
+    }
+
+    for role in value.visuals.assets.keys() {
+        validate_visual_role(role)?;
+    }
+    for id in value.representations.keys() {
+        validate_representation_id(id)?;
+    }
+    for (role, timing) in &value.visuals.timing {
+        validate_visual_role(role)?;
+        if !value.visuals.assets.contains_key(role) {
+            return invalid(format!("visual timing references missing role {role:?}"));
+        }
+        if timing.timebase != UTZ_TIMEBASE {
+            return invalid("visual timing timebase must be 1,000,000");
+        }
+        let max = MAX_EXACT_INTEGER as i128;
+        let offset = timing.offset as i128;
+        if offset < -max || offset > max {
+            return invalid("visual timing offset exceeds exact integer range");
+        }
+    }
+
+    if !value.audio.assets.contains_key("instrumental") {
+        return invalid("audio.assets must contain instrumental");
+    }
+    for role in value.audio.assets.keys() {
+        validate_audio_role(role)?;
+    }
+    for (role, lufs) in &value.audio.loudness_lufs {
+        validate_audio_role(role)?;
+        if !value.audio.assets.contains_key(role) {
+            return invalid(format!("loudness references missing audio role {role:?}"));
+        }
+        if lufs.is_some_and(|value| !value.is_finite() || !(-70.0..=0.0).contains(&value)) {
+            return invalid("loudness values must be LUFS between -70 and 0");
+        }
+    }
     if let Some(scoring) = &value.scoring
         && (scoring.engine.trim().is_empty() || scoring.version == 0)
     {
         return invalid("scoring hints need a non-empty engine and version");
-    }
-    if let Some(loudness) = &value.audio.loudness {
-        for lufs in [
-            loudness.instrumental_lufs,
-            loudness.guide_vocals_lufs,
-            loudness.original_lufs,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !lufs.is_finite() || !(-70.0..=0.0).contains(&lufs) {
-                return invalid("loudness values must be LUFS between -70 and 0");
-            }
-        }
     }
     if value.charts.vocal.media_type != VOCAL_CHART_MEDIA_TYPE {
         return invalid("vocal chart has the wrong media type");
@@ -557,8 +432,8 @@ fn validate_v02_manifest(value: &ManifestV02) -> Result<()> {
         return invalid("pitch evidence has the wrong media type");
     }
     let required: HashSet<_> = value.required_features.iter().map(String::as_str).collect();
-    if required.len() != value.required_features.len() || !required.contains("vocal-chart/1") {
-        return invalid("required_features must uniquely include vocal-chart/1");
+    if required.len() != value.required_features.len() || !required.contains("vocal-chart/0.3") {
+        return invalid("required_features must uniquely include vocal-chart/0.3");
     }
     let optional: HashSet<_> = value.optional_features.iter().map(String::as_str).collect();
     if optional.len() != value.optional_features.len()
@@ -569,14 +444,11 @@ fn validate_v02_manifest(value: &ManifestV02) -> Result<()> {
     for feature in required.iter().chain(optional.iter()) {
         validate_feature(feature)?;
     }
-    if value.analysis.pitch_evidence.is_some() && !optional.contains("pitch-evidence/1") {
-        return invalid("pitch evidence must declare optional feature pitch-evidence/1");
+    if value.analysis.pitch_evidence.is_some() && !optional.contains("pitch-evidence/0.3") {
+        return invalid("pitch evidence must declare optional feature pitch-evidence/0.3");
     }
     for feature in value.extensions.keys() {
         validate_feature(feature)?;
-        if required.contains(feature.as_str()) || optional.contains(feature.as_str()) {
-            return invalid(format!("extension feature is declared twice: {feature}"));
-        }
     }
     Ok(())
 }
@@ -585,23 +457,108 @@ fn validate_feature(value: &str) -> Result<()> {
     let Some((name, version)) = value.rsplit_once('/') else {
         return invalid(format!("invalid feature identifier {value:?}"));
     };
+    let stable = !version.starts_with('0') && version.bytes().all(|byte| byte.is_ascii_digit());
+    let development = version.strip_prefix("0.").is_some_and(|minor| {
+        !minor.is_empty()
+            && !minor.starts_with('0')
+            && minor.bytes().all(|byte| byte.is_ascii_digit())
+    });
     if name.is_empty()
         || !name.bytes().enumerate().all(|(index, byte)| {
             byte.is_ascii_lowercase()
                 || byte.is_ascii_digit()
                 || (index > 0 && b"._-".contains(&byte))
         })
-        || version.is_empty()
-        || version.starts_with('0')
-        || !version.bytes().all(|byte| byte.is_ascii_digit())
+        || !(stable || development)
     {
         return invalid(format!("invalid feature identifier {value:?}"));
     }
     Ok(())
 }
 
+fn validate_semver_line(value: &str, major: u64, minor: u64, role: &str) -> Result<()> {
+    let mut parts = value.split('.');
+    let (Some(a), Some(b), Some(c), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return invalid(format!("{role} has invalid semantic version {value:?}"));
+    };
+    let valid_component = |s: &str| {
+        !s.is_empty()
+            && s.bytes().all(|byte| byte.is_ascii_digit())
+            && (s == "0" || !s.starts_with('0'))
+    };
+    if !valid_component(a) || !valid_component(b) || !valid_component(c) {
+        return invalid(format!("{role} has invalid semantic version {value:?}"));
+    }
+    if a.parse::<u64>().ok() != Some(major) || b.parse::<u64>().ok() != Some(minor) {
+        return invalid(format!("{role} has unsupported version {value:?}"));
+    }
+    Ok(())
+}
+
+fn validate_namespace(value: &str) -> bool {
+    let parts: Vec<_> = value.split('.').collect();
+    parts.len() >= 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().enumerate().all(|(index, byte)| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || (index > 0 && matches!(byte, b'_' | b'-'))
+                })
+        })
+}
+
+fn validate_audio_role(value: &str) -> Result<()> {
+    const STANDARD: &[&str] = &[
+        "instrumental",
+        "guide_vocals",
+        "original",
+        "lead_vocal",
+        "backing_vocal",
+        "harmony_vocal",
+    ];
+    if STANDARD.contains(&value) || validate_namespace(value) {
+        Ok(())
+    } else {
+        invalid(format!("unknown unnamespaced audio role {value:?}"))
+    }
+}
+
+fn validate_visual_role(value: &str) -> Result<()> {
+    const STANDARD: &[&str] = &["cover", "background", "video", "thumbnail"];
+    if STANDARD.contains(&value) || validate_namespace(value) {
+        Ok(())
+    } else {
+        invalid(format!("unknown unnamespaced visual role {value:?}"))
+    }
+}
+
+fn validate_representation_id(value: &str) -> Result<()> {
+    const STANDARD: &[&str] = &[
+        "midi",
+        "kar",
+        "ust",
+        "ustx",
+        "musicxml",
+        "ultrastar",
+        "lrc",
+        "srt",
+    ];
+    let conventional = value
+        .split('.')
+        .next()
+        .is_some_and(|base| STANDARD.contains(&base));
+    if conventional || validate_namespace(value) {
+        Ok(())
+    } else {
+        invalid(format!("unknown unnamespaced representation id {value:?}"))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VocalChartV1 {
+pub struct VocalChart {
     pub format: String,
     pub format_version: String,
     pub timebase: u64,
@@ -610,7 +567,7 @@ pub struct VocalChartV1 {
     pub tracks: Vec<VocalTrack>,
 }
 
-impl VocalChartV1 {
+impl VocalChart {
     pub fn new(tracks: Vec<VocalTrack>) -> Self {
         Self {
             format: VOCAL_CHART_FORMAT.into(),
@@ -622,10 +579,12 @@ impl VocalChartV1 {
     }
 
     pub fn validate(&self) -> Result<()> {
-        // Readers accept any 1.x chart; fields introduced by a newer minor
-        // version are ignorable by design.
-        if self.format != VOCAL_CHART_FORMAT || !self.format_version.starts_with("1.") {
+        if self.format != VOCAL_CHART_FORMAT {
             return invalid("unsupported vocal chart format or version");
+        }
+        validate_semver_line(&self.format_version, 0, 3, "vocal chart")?;
+        if self.timebase != UTZ_TIMEBASE {
+            return invalid("vocal chart timebase must be 1,000,000");
         }
         validate_time_value(self.timebase, "vocal chart timebase")?;
         if self.tracks.is_empty() {
@@ -700,6 +659,9 @@ impl VocalChartV1 {
                     if !note.scoring.weight.is_finite() || note.scoring.weight < 0.0 {
                         return invalid(format!("note {} has an invalid scoring weight", note.id));
                     }
+                    if note.lyrics.is_empty() {
+                        return invalid(format!("note {} has no lyric tokens", note.id));
+                    }
                     for token in &note.lyrics {
                         match token {
                             LyricToken::Text(token) => {
@@ -770,6 +732,10 @@ pub enum VocalTrackRole {
     Backing,
     Adlib,
 }
+
+/// Compatibility type name used by Uta! Studio's authoring API. The wire
+/// document is the strict UTZ 0.3 `VocalChart` defined above.
+pub type VocalChartV1 = VocalChart;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VocalPhrase {
@@ -853,7 +819,7 @@ pub enum LyricJoin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PitchEvidenceV1 {
+pub struct PitchEvidence {
     pub format: String,
     pub format_version: String,
     pub timebase: u64,
@@ -865,10 +831,18 @@ pub struct PitchEvidenceV1 {
     pub model: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-impl PitchEvidenceV1 {
+/// Compatibility type name used by Uta! Studio's editor evidence API. The
+/// serialized contract is strict PitchEvidence 0.3.
+pub type PitchEvidenceV1 = PitchEvidence;
+
+impl PitchEvidence {
     pub fn validate(&self) -> Result<()> {
-        if self.format != PITCH_EVIDENCE_FORMAT || !self.format_version.starts_with("1.0.") {
+        if self.format != PITCH_EVIDENCE_FORMAT {
             return invalid("unsupported pitch evidence format or version");
+        }
+        validate_semver_line(&self.format_version, 0, 3, "pitch evidence")?;
+        if self.timebase != UTZ_TIMEBASE {
+            return invalid("pitch evidence timebase must be 1,000,000");
         }
         validate_time_value(self.timebase, "pitch evidence timebase")?;
         if self.start > MAX_EXACT_INTEGER {
@@ -908,11 +882,8 @@ pub struct UtzPackage {
 }
 
 impl UtzPackage {
-    pub fn build<M: Into<UtzManifest>>(
-        manifest: M,
-        files: BTreeMap<String, Vec<u8>>,
-    ) -> Result<Self> {
-        let mut manifest = manifest.into();
+    pub fn build(manifest: UtzManifest, files: BTreeMap<String, Vec<u8>>) -> Result<Self> {
+        let mut manifest = manifest;
         validate_file_map(&files)?;
         manifest.update_asset_metadata(&files)?;
         manifest.validate()?;
@@ -958,6 +929,9 @@ impl UtzPackage {
         let manifest_bytes = files
             .remove(MANIFEST_PATH)
             .ok_or_else(|| UtzError::Invalid("manifest.json is missing".into()))?;
+        if manifest_bytes.len() > MAX_MANIFEST_BYTES {
+            return invalid("manifest.json exceeds the 4 MiB limit");
+        }
         let manifest: UtzManifest = serde_json::from_slice(&manifest_bytes)?;
         manifest.validate()?;
         validate_declared_files(&manifest, &files)?;
@@ -967,6 +941,9 @@ impl UtzPackage {
             })?;
             if content.len() as u64 != asset.bytes {
                 return invalid(format!("asset byte count differs: {}", asset.path));
+            }
+            if sha256_hex(content) != asset.sha256 {
+                return invalid(format!("asset checksum differs: {}", asset.path));
             }
         }
         validate_semantic_assets(&manifest, |path| {
@@ -979,20 +956,19 @@ impl UtzPackage {
     }
 
     /// Write a package directly to a seekable destination. Large media files
-    /// are copied in fixed-size chunks, so peak memory stays nearly
+    /// are hashed and copied in fixed-size chunks, so peak memory stays nearly
     /// constant even when a package includes video.
-    pub fn write_streaming<M, W, F>(
-        manifest: M,
+    pub fn write_streaming<W, F>(
+        manifest: UtzManifest,
         sources: BTreeMap<String, AssetSource>,
         output: W,
         mut progress: F,
     ) -> Result<W>
     where
-        M: Into<UtzManifest>,
         W: Write + Seek,
         F: FnMut(&str, u64, u64),
     {
-        let mut manifest = manifest.into();
+        let mut manifest = manifest;
         let declared: BTreeMap<String, String> = manifest
             .assets()
             .into_iter()
@@ -1086,29 +1062,22 @@ impl UtzPackage {
         &self.manifest
     }
 
-    pub fn vocal_chart(&self) -> Result<Option<VocalChartV1>> {
-        let Some(manifest) = self.manifest.as_v0_2() else {
-            return Ok(None);
-        };
-        Ok(Some(parse_validated(
-            self.file(&manifest.charts.vocal.path)
+    pub fn vocal_chart(&self) -> Result<VocalChart> {
+        parse_validated(
+            self.file(&self.manifest.charts.vocal.path)
                 .ok_or_else(|| UtzError::Invalid("vocal chart is missing".into()))?,
-            VocalChartV1::validate,
-        )?))
+            VocalChart::validate,
+        )
     }
 
-    pub fn pitch_evidence(&self) -> Result<Option<PitchEvidenceV1>> {
-        let Some(asset) = self
-            .manifest
-            .as_v0_2()
-            .and_then(|manifest| manifest.analysis.pitch_evidence.as_ref())
-        else {
+    pub fn pitch_evidence(&self) -> Result<Option<PitchEvidence>> {
+        let Some(asset) = self.manifest.analysis.pitch_evidence.as_ref() else {
             return Ok(None);
         };
         Ok(Some(parse_validated(
             self.file(&asset.path)
                 .ok_or_else(|| UtzError::Invalid("pitch evidence is missing".into()))?,
-            PitchEvidenceV1::validate,
+            PitchEvidence::validate,
         )?))
     }
 
@@ -1161,10 +1130,8 @@ fn validate_declared_files(
     if let Some(path) = declared.iter().find(|path| !files.contains_key(**path)) {
         return invalid(format!("manifest asset is missing: {path}"));
     }
-    if matches!(manifest, UtzManifest::V0_2(_))
-        && let Some(path) = files.keys().find(|path| !declared.contains(path.as_str()))
-    {
-        return invalid(format!("UTZ 0.2 contains undeclared asset: {path}"));
+    if let Some(path) = files.keys().find(|path| !declared.contains(path.as_str())) {
+        return invalid(format!("UTZ 0.3 contains undeclared asset: {path}"));
     }
     Ok(())
 }
@@ -1173,13 +1140,9 @@ fn validate_semantic_assets<'a, F>(manifest: &UtzManifest, mut read: F) -> Resul
 where
     F: FnMut(&str) -> Result<&'a [u8]>,
 {
-    if let UtzManifest::V0_2(value) = manifest {
-        let _: VocalChartV1 =
-            parse_validated(read(&value.charts.vocal.path)?, VocalChartV1::validate)?;
-        if let Some(asset) = &value.analysis.pitch_evidence {
-            let _: PitchEvidenceV1 =
-                parse_validated(read(&asset.path)?, PitchEvidenceV1::validate)?;
-        }
+    let _: VocalChart = parse_validated(read(&manifest.charts.vocal.path)?, VocalChart::validate)?;
+    if let Some(asset) = &manifest.analysis.pitch_evidence {
+        let _: PitchEvidence = parse_validated(read(&asset.path)?, PitchEvidence::validate)?;
     }
     Ok(())
 }
@@ -1188,20 +1151,19 @@ fn validate_semantic_sources(
     manifest: &UtzManifest,
     sources: &BTreeMap<String, AssetSource>,
 ) -> Result<()> {
-    if let UtzManifest::V0_2(value) = manifest {
+    let bytes = source_bytes(
+        sources
+            .get(&manifest.charts.vocal.path)
+            .ok_or_else(|| UtzError::Invalid("vocal chart source is missing".into()))?,
+    )?;
+    let _: VocalChart = parse_validated(&bytes, VocalChart::validate)?;
+    if let Some(asset) = &manifest.analysis.pitch_evidence {
         let bytes = source_bytes(
             sources
-                .get(&value.charts.vocal.path)
-                .ok_or_else(|| UtzError::Invalid("vocal chart source is missing".into()))?,
+                .get(&asset.path)
+                .ok_or_else(|| UtzError::Invalid("pitch evidence source is missing".into()))?,
         )?;
-        let _: VocalChartV1 = parse_validated(&bytes, VocalChartV1::validate)?;
-        if let Some(asset) = &value.analysis.pitch_evidence {
-            let bytes =
-                source_bytes(sources.get(&asset.path).ok_or_else(|| {
-                    UtzError::Invalid("pitch evidence source is missing".into())
-                })?)?;
-            let _: PitchEvidenceV1 = parse_validated(&bytes, PitchEvidenceV1::validate)?;
-        }
+        let _: PitchEvidence = parse_validated(&bytes, PitchEvidence::validate)?;
     }
     Ok(())
 }
@@ -1309,39 +1271,16 @@ mod tests {
         SongMetadata {
             title: "Example".into(),
             artist: "Uta".into(),
-            album: None,
             language: Some("ja".into()),
-            duration_seconds: 12.0,
+            duration: 12_000_000,
             bpm: Some(120.0),
             key: Some("C".into()),
-            title_sort: None,
-            artist_sort: None,
-            genre: None,
-            year: None,
-            creator: None,
-            composer: None,
-            country: None,
-            tags: Vec::new(),
-            preview_start_seconds: Some(4.0),
+            metadata: BTreeMap::from([("preview_start".into(), serde_json::json!(4_000_000))]),
         }
     }
 
     fn audio() -> AudioAssets {
-        AudioAssets {
-            instrumental: AssetRef::pending("audio/instrumental.mp3", "audio/mpeg"),
-            guide_vocals: None,
-            original: None,
-            loudness: None,
-        }
-    }
-
-    fn audio_v01() -> AudioAssetsV01 {
-        AudioAssetsV01 {
-            instrumental: AssetRef::pending("audio/instrumental.mp3", "audio/mpeg"),
-            guide_vocals: None,
-            original: None,
-            audio_offset_seconds: 0.0,
-        }
+        AudioAssets::new(AssetRef::pending("audio/instrumental.mp3", "audio/mpeg"))
     }
 
     fn note(id: &str, start: u64, lyric_id: &str, text: &str) -> VocalNote {
@@ -1366,8 +1305,8 @@ mod tests {
         }
     }
 
-    fn chart() -> VocalChartV1 {
-        VocalChartV1::new(vec![VocalTrack {
+    fn chart() -> VocalChart {
+        VocalChart::new(vec![VocalTrack {
             id: "lead".into(),
             role: VocalTrackRole::Lead,
             part: None,
@@ -1394,8 +1333,8 @@ mod tests {
         }
     }
 
-    fn sample_v02() -> (ManifestV02, BTreeMap<String, Vec<u8>>) {
-        let manifest = ManifestV02::new(
+    fn sample_v03() -> (UtzManifest, BTreeMap<String, Vec<u8>>) {
+        let manifest = UtzManifest::new(
             "org.uta.example",
             song(),
             audio(),
@@ -1411,53 +1350,18 @@ mod tests {
         (manifest, files)
     }
 
-    fn sample_v01() -> (ManifestV01, BTreeMap<String, Vec<u8>>) {
-        let manifest = ManifestV01::new(
-            "org.uta.legacy",
-            song(),
-            audio_v01(),
-            ChartAssetsV01 {
-                transcript: AssetRef::pending("charts/transcript.json", "application/json"),
-                pitch_track: AssetRef::pending("charts/pitch-track.json", "application/json"),
-                pitch_notes: AssetRef::pending("charts/pitch-notes.json", "application/json"),
-            },
-        );
-        let files = BTreeMap::from([
-            ("audio/instrumental.mp3".into(), b"audio".to_vec()),
-            (
-                "charts/transcript.json".into(),
-                b"{\"segments\":[]}".to_vec(),
-            ),
-            (
-                "charts/pitch-track.json".into(),
-                b"{\"frames\":[]}".to_vec(),
-            ),
-            ("charts/pitch-notes.json".into(), b"{\"notes\":[]}".to_vec()),
-        ]);
-        (manifest, files)
-    }
-
     #[test]
-    fn v02_round_trip_exposes_note_owned_lyrics() {
-        let (manifest, files) = sample_v02();
+    fn v03_round_trip_exposes_note_owned_lyrics() {
+        let (manifest, files) = sample_v03();
         let package = UtzPackage::build(manifest, files).unwrap();
         let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
         assert_eq!(decoded.manifest().format_version(), FORMAT_VERSION);
-        assert_eq!(decoded.vocal_chart().unwrap().unwrap(), chart());
-    }
-
-    #[test]
-    fn v01_packages_remain_readable() {
-        let (manifest, files) = sample_v01();
-        let package = UtzPackage::build(manifest, files).unwrap();
-        let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
-        assert_eq!(decoded.manifest().format_version(), LEGACY_FORMAT_VERSION);
-        assert!(decoded.vocal_chart().unwrap().is_none());
+        assert_eq!(decoded.vocal_chart().unwrap(), chart());
     }
 
     #[test]
     fn streaming_writer_round_trip_verifies_assets_and_progress() {
-        let (manifest, files) = sample_v02();
+        let (manifest, files) = sample_v03();
         let total: u64 = files.values().map(|value| value.len() as u64).sum();
         let sources = files
             .into_iter()
@@ -1509,9 +1413,9 @@ mod tests {
 
     #[test]
     fn unknown_required_feature_is_reported() {
-        let (mut manifest, _) = sample_v02();
+        let (mut manifest, _) = sample_v03();
         manifest.required_features.push("future-notes/1".into());
-        let supported = HashSet::from(["vocal-chart/1"]);
+        let supported = HashSet::from(["vocal-chart/0.3"]);
         assert_eq!(
             manifest.unsupported_required_features(&supported),
             vec!["future-notes/1"]
@@ -1519,8 +1423,8 @@ mod tests {
     }
 
     #[test]
-    fn v02_rejects_undeclared_assets() {
-        let (manifest, mut files) = sample_v02();
+    fn v03_rejects_undeclared_assets() {
+        let (manifest, mut files) = sample_v03();
         files.insert("extra.bin".into(), Vec::new());
         assert!(UtzPackage::build(manifest, files).is_err());
     }
@@ -1548,15 +1452,18 @@ mod tests {
 
     #[test]
     fn case_insensitive_duplicate_paths_are_rejected() {
-        let (mut manifest, mut files) = sample_v02();
+        let (mut manifest, mut files) = sample_v03();
         files.insert("Audio/Instrumental.mp3".into(), b"copy".to_vec());
-        manifest.audio.original = Some(AssetRef::pending("Audio/Instrumental.mp3", "audio/mpeg"));
+        manifest.audio.assets.insert(
+            "original".into(),
+            AssetRef::pending("Audio/Instrumental.mp3", "audio/mpeg"),
+        );
         assert!(UtzPackage::build(manifest, files).is_err());
     }
 
     #[test]
     fn duet_parts_must_be_contiguous() {
-        let mut valid = VocalChartV1::new(vec![
+        let mut valid = VocalChart::new(vec![
             duet_track("p1", 1, "note-1", "lyric-1"),
             duet_track("p2", 2, "note-2", "lyric-2"),
         ]);
@@ -1572,26 +1479,26 @@ mod tests {
     }
 
     #[test]
-    fn a_note_with_no_lyric_tokens_yet_is_still_valid() {
+    fn notes_require_lyric_tokens() {
         let mut value = chart();
         value.tracks[0].phrases[0].notes[0].lyrics.clear();
-        assert!(value.validate().is_ok());
+        assert!(value.validate().is_err());
     }
 
     #[test]
-    fn preview_start_must_be_non_negative() {
-        let (mut manifest, files) = sample_v02();
-        manifest.song.preview_start_seconds = Some(-1.0);
+    fn duration_must_fit_exact_integer_range() {
+        let (mut manifest, files) = sample_v03();
+        manifest.song.duration = MAX_EXACT_INTEGER + 1;
         assert!(UtzPackage::build(manifest, files).is_err());
     }
 
     #[test]
     fn loudness_must_be_plausible_lufs() {
-        let (mut manifest, files) = sample_v02();
-        manifest.audio.loudness = Some(AudioLoudness {
-            instrumental_lufs: Some(3.0),
-            ..AudioLoudness::default()
-        });
+        let (mut manifest, files) = sample_v03();
+        manifest
+            .audio
+            .loudness_lufs
+            .insert("instrumental".into(), Some(3.0));
         assert!(UtzPackage::build(manifest, files).is_err());
     }
 }

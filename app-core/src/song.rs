@@ -151,7 +151,7 @@ pub struct MusicAnalysisDescriptors {
 }
 
 /// The cached contents of `{file_hash}_music_analysis.json`, written once
-/// during analysis by `analyze_music` in `pipeline.py`. Unlike `Song`, this
+/// during analysis by `analyze_music` in the pre-process-boundary analyzer. Unlike `Song`, this
 /// never round-trips through the library database — it's read fresh from
 /// disk whenever something (the settings panel, the editor's beat grid)
 /// needs it.
@@ -292,14 +292,18 @@ impl Song {
         if !instrumental_ready {
             missing.push("instrumental".into());
         }
-        if !cache.transcript_path(&self.file_hash).is_file() {
-            missing.push("transcript".into());
-        }
-        if !cache.pitch_track_path(&self.file_hash).is_file() {
-            missing.push("pitch_track".into());
-        }
-        if !cache.pitch_notes_path(&self.file_hash).is_file() {
-            missing.push("pitch_notes".into());
+        let complete_chart_ready = cache.vocal_chart_path(&self.file_hash).is_file()
+            || cache.candidate_chart_path(&self.file_hash).is_file();
+        if !complete_chart_ready {
+            if !cache
+                .resolve_timed_transcript_path(&self.file_hash)
+                .is_file()
+            {
+                missing.push("transcript".into());
+            }
+            if !cache.pitch_notes_path(&self.file_hash).is_file() {
+                missing.push("pitch_notes".into());
+            }
         }
 
         self.authoring_ready = missing.is_empty();
@@ -357,8 +361,11 @@ pub(crate) fn compute_file_hash(path: &Path) -> Result<String, std::io::Error> {
 pub fn build_song(path: &Path, cache: &CacheDir, is_video: bool) -> Result<Song, UtaStudioError> {
     let file_hash = compute_file_hash(path)?;
 
-    let is_analyzed = cache.transcript_exists(&file_hash);
-    let (transcript_source, language, key, bpm, tempo, no_stems) = if is_analyzed {
+    let transcript_exists = cache.transcript_exists(&file_hash);
+    let is_analyzed = transcript_exists
+        || cache.vocal_chart_path(&file_hash).is_file()
+        || cache.candidate_chart_path(&file_hash).is_file();
+    let (transcript_source, language, key, bpm, tempo, no_stems) = if transcript_exists {
         let meta = read_transcript_meta(cache, &file_hash);
         (
             Some(meta.source),

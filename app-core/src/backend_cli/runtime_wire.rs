@@ -87,6 +87,17 @@ pub enum NativeBackendWireV1 {
     CpuReference,
 }
 
+/// Device-class preference, orthogonal to `NativeBackendWireV1`. Hand-mirrors
+/// the packaged runtime protocol's native-device-class field while preserving
+/// this crate's convention of never importing the backend crate directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceClassWireV1 {
+    Cpu,
+    Gpu,
+    IntegratedGpu,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValidationStateWireV1 {
@@ -113,6 +124,7 @@ pub enum ResourceOriginWireV1 {
     Managed,
     Legacy,
     EnvironmentOverride,
+    ExternalConfiguration,
     Derived,
 }
 
@@ -128,6 +140,7 @@ pub enum ReadinessReasonWireV1 {
     RuntimeMissing,
     ExecutableMissing,
     WorkerCapabilityMissing,
+    ProtocolMismatch,
     BackendUnvalidated,
     CpuProductionForbidden,
     UnsupportedPlatform,
@@ -154,6 +167,12 @@ pub struct RuntimeResourceStatusWireV1 {
     pub runtime_resource: Option<RuntimeResourceRefWireV1>,
     #[serde(default)]
     pub generation: Option<String>,
+    #[serde(default)]
+    pub tool_identity: Option<String>,
+    #[serde(default)]
+    pub tool_version: Option<String>,
+    #[serde(default)]
+    pub tool_protocol_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +237,16 @@ pub struct RuntimeResolvedIdentityWireV1 {
     pub validation_state: ValidationStateWireV1,
     #[serde(default)]
     pub readiness_reasons: Vec<ReadinessReasonWireV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeResolvedToolWireV1 {
+    pub resource: RuntimeResourceRefWireV1,
+    pub executable: PathBuf,
+    pub identity: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub origin: ResourceOriginWireV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

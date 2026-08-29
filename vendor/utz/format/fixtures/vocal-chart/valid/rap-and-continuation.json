@@ -1,0 +1,79 @@
+{
+  "format": "uta.vocal-chart",
+  "format_version": "0.3.0",
+  "timebase": 1000000,
+  "language": "zh",
+  "tracks": [
+    {
+      "id": "lead",
+      "role": "lead",
+      "phrases": [
+        {
+          "id": "phrase-1",
+          "notes": [
+            {
+              "id": "note-1",
+              "start": 0,
+              "duration": 300000,
+              "pitch": {
+                "midi": 62,
+                "cents": -12
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-1",
+                  "text": "唱",
+                  "join_before": "none",
+                  "reading": "chàng",
+                  "phonemes": "ʈʂʰ a ŋ"
+                }
+              ]
+            },
+            {
+              "id": "note-2",
+              "start": 300000,
+              "duration": 300000,
+              "pitch": {
+                "midi": 62
+              },
+              "vocal_mode": "pitched",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "pitch"
+              },
+              "lyrics": [
+                {
+                  "continuation_of": "lyric-1"
+                }
+              ]
+            },
+            {
+              "id": "note-3",
+              "start": 700000,
+              "duration": 200000,
+              "pitch": null,
+              "vocal_mode": "rap",
+              "bonus": "normal",
+              "scoring": {
+                "mode": "rhythm",
+                "weight": 0.5
+              },
+              "lyrics": [
+                {
+                  "id": "lyric-3",
+                  "text": "歌",
+                  "join_before": "space"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

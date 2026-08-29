@@ -96,21 +96,22 @@ pub fn encode_flac(source: &Path, destination: &Path) -> Result<(), String> {
         .map_err(|error| format!("could not atomically publish GGML FLAC: {error}"))
 }
 
-pub fn encode_vocal_residual_flac(
-    all_vocals: &Path,
-    lead_vocal: &Path,
+pub fn encode_residual_flac(
+    mixture: &Path,
+    estimate: &Path,
     destination: &Path,
+    label: &str,
 ) -> Result<(), String> {
-    if !all_vocals.is_file() || !lead_vocal.is_file() || destination.exists() {
-        return Err("Karaoke vocal-residual publication paths are invalid".to_string());
+    if !mixture.is_file() || !estimate.is_file() || destination.exists() {
+        return Err(format!("{label} residual publication paths are invalid"));
     }
     let temporary = destination.with_extension("flac.tmp");
     let mut command = Command::new(ffmpeg_path()?);
     command
         .args(["-v", "error", "-nostdin", "-i"])
-        .arg(all_vocals)
+        .arg(mixture)
         .args(["-i"])
-        .arg(lead_vocal)
+        .arg(estimate)
         .args([
             "-filter_complex",
             STEREO_RESIDUAL_FILTER,
@@ -126,12 +127,25 @@ pub fn encode_vocal_residual_flac(
             "flac",
         ])
         .arg(&temporary);
-    if let Err(error) = run_ffmpeg(&mut command, "Karaoke vocal-residual encode") {
+    if let Err(error) = run_ffmpeg(&mut command, label) {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
     std::fs::rename(&temporary, destination)
-        .map_err(|error| format!("could not atomically publish vocal residual: {error}"))
+        .map_err(|error| format!("could not atomically publish {label}: {error}"))
+}
+
+pub fn encode_vocal_residual_flac(
+    all_vocals: &Path,
+    lead_vocal: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    encode_residual_flac(
+        all_vocals,
+        lead_vocal,
+        destination,
+        "Karaoke vocal-residual encode",
+    )
 }
 
 #[cfg(test)]

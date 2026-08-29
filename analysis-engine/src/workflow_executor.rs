@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
 use crate::execution::CancellationToken;
 use crate::workflow::{
-    WorkflowBindingV1, WorkflowExecutionPolicyV1, WorkflowExecutionV1, engine_capabilities,
+    ExpertFusionPolicyV1, FusionModeV1, WorkflowBindingV1, WorkflowExecutionInvocationV1,
+    WorkflowExecutionPolicyV1, WorkflowExecutionV1, engine_capabilities,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +48,10 @@ pub struct WorkflowExecutionNodePlanV1 {
     pub execution_policy: WorkflowExecutionPolicyV1,
     pub execution_state: WorkflowNodeExecutionStateV1,
     pub priority: i32,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_invocations: Vec<WorkflowExecutionInvocationV1>,
     pub depends_on: Vec<String>,
     pub input_bindings: Vec<WorkflowBindingV1>,
 }
@@ -56,6 +61,12 @@ pub struct CompiledWorkflowExecutionPlanV1 {
     pub identity: WorkflowPlanIdentityV1,
     pub nodes: Vec<WorkflowExecutionNodePlanV1>,
     pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_policy: Option<ExpertFusionPolicyV1>,
+    /// Exact Stage 4 decision intent from the validated workflow snapshot.
+    /// This field is deliberately required when decoding an Engine Plan so a
+    /// missing backend projection cannot masquerade as Algorithm mode.
+    pub fusion_mode: FusionModeV1,
 }
 
 impl CompiledWorkflowExecutionPlanV1 {
@@ -63,16 +74,17 @@ impl CompiledWorkflowExecutionPlanV1 {
         workflow: &WorkflowExecutionV1,
         profile: AnalysisProfile,
         requested_capabilities: Option<&BTreeSet<String>>,
+        force_lead_output: bool,
     ) -> EngineResult<Self> {
         let by_analysis_node = workflow
             .nodes
             .iter()
-            .map(|node| (node.analysis_node.as_str(), node))
+            .map(|node| (node.instance_id.as_str(), node))
             .collect::<BTreeMap<_, _>>();
         let mut indegree = workflow
             .nodes
             .iter()
-            .map(|node| (node.analysis_node.as_str(), 0usize))
+            .map(|node| (node.instance_id.as_str(), 0usize))
             .collect::<BTreeMap<_, _>>();
         let mut outgoing: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for binding in &workflow.bindings {
@@ -97,7 +109,7 @@ impl CompiledWorkflowExecutionPlanV1 {
                     let right = by_analysis_node[right];
                     left.priority
                         .cmp(&right.priority)
-                        .then_with(|| right.analysis_node.cmp(&left.analysis_node))
+                        .then_with(|| right.instance_id.cmp(&left.instance_id))
                 })
                 .ok_or_else(|| {
                     EngineError::new(
@@ -130,7 +142,12 @@ impl CompiledWorkflowExecutionPlanV1 {
                         .iter()
                         .any(|capability| requested.contains(capability))
                 });
+                let forced_lead_output = force_lead_output
+                    && capabilities
+                        .iter()
+                        .any(|capability| capability == "audio.lead_isolate");
                 let execution_state = match node.execution_policy {
+                    _ if forced_lead_output => WorkflowNodeExecutionStateV1::Ready,
                     WorkflowExecutionPolicyV1::Disabled => WorkflowNodeExecutionStateV1::Disabled,
                     _ if !requested => WorkflowNodeExecutionStateV1::NotRequested,
                     WorkflowExecutionPolicyV1::Always => WorkflowNodeExecutionStateV1::Ready,
@@ -148,7 +165,7 @@ impl CompiledWorkflowExecutionPlanV1 {
                 let mut input_bindings = workflow
                     .bindings
                     .iter()
-                    .filter(|binding| binding.to_node == node.analysis_node)
+                    .filter(|binding| binding.to_node == node.instance_id)
                     .cloned()
                     .collect::<Vec<_>>();
                 input_bindings.sort_by(|left, right| {
@@ -164,13 +181,28 @@ impl CompiledWorkflowExecutionPlanV1 {
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect();
+                let execution_invocations = node
+                    .execution_invocations
+                    .iter()
+                    .filter(|invocation| {
+                        requested_capabilities.is_none_or(|requested| {
+                            invocation.capabilities.iter().any(|capability| {
+                                requested.contains(capability)
+                                    || (forced_lead_output && capability == "audio.lead_isolate")
+                            })
+                        })
+                    })
+                    .cloned()
+                    .collect();
                 WorkflowExecutionNodePlanV1 {
                     instance_id: node.instance_id.clone(),
-                    analysis_node: node.analysis_node.clone(),
+                    analysis_node: node.instance_id.clone(),
                     capabilities,
                     execution_policy: node.execution_policy,
                     execution_state,
                     priority: node.priority,
+                    parameters: workflow.engine_resolved_parameters(node),
+                    execution_invocations,
                     depends_on,
                     input_bindings,
                 }
@@ -188,13 +220,25 @@ impl CompiledWorkflowExecutionPlanV1 {
             },
             nodes,
             terminal_outputs: workflow.terminal_outputs.clone(),
+            fusion_policy: workflow.resolved_expert_fusion_policy(profile),
+            fusion_mode: workflow.fusion_mode(),
         })
     }
 
     pub fn node_for_capability(&self, capability: &str) -> Option<&WorkflowExecutionNodePlanV1> {
         self.nodes
             .iter()
-            .find(|node| node.capabilities.iter().any(|item| item == capability))
+            .filter(|node| node.capabilities.iter().any(|item| item == capability))
+            .max_by_key(|node| {
+                let state_rank = match node.execution_state {
+                    WorkflowNodeExecutionStateV1::Ready => 4,
+                    WorkflowNodeExecutionStateV1::Deferred => 3,
+                    WorkflowNodeExecutionStateV1::ProfileSkipped => 2,
+                    WorkflowNodeExecutionStateV1::NotRequested => 1,
+                    WorkflowNodeExecutionStateV1::Disabled => 0,
+                };
+                (state_rank, node.priority)
+            })
     }
 
     pub fn ready_nodes_for_capability(
@@ -265,25 +309,25 @@ mod tests {
                 "quality_mode":"balanced",
                 "definition_digest":"a".repeat(32),
                 "nodes":[
-                    {"instance_id":"source","capability_id":"audio.source","analysis_node":"workflow.source","execution_policy":"always","priority":100,"runtime":"native_dsp","parameters":{}},
-                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","analysis_node":"workflow.split","model_id":"bs_roformer_vocals_ep317","execution_policy":"always","priority":90,"runtime":"vulkan","parameters":{}},
-                    {"instance_id":"lead","capability_id":"audio.lead_isolate","analysis_node":"workflow.lead","model_id":"melband_roformer_harmony","execution_policy":"always","priority":80,"runtime":"vulkan","parameters":{}},
-                    {"instance_id":"denoise-a","capability_id":"audio.denoise","analysis_node":"workflow.denoise-a","model_id":"melband_roformer_denoise_aufr33","execution_policy":"always","priority":20,"runtime":"vulkan","parameters":{}},
-                    {"instance_id":"denoise-b","capability_id":"audio.denoise","analysis_node":"workflow.denoise-b","model_id":"melband_roformer_denoise_aufr33","execution_policy":"always","priority":10,"runtime":"vulkan","parameters":{}},
-                    {"instance_id":"pitch","capability_id":"analysis.pitch_f0","analysis_node":"workflow.pitch","model_id":"rmvpe","execution_policy":"always","priority":30,"runtime":"openvino","parameters":{}},
-                    {"instance_id":"fcpe","capability_id":"analysis.pitch_f0","analysis_node":"workflow.fcpe","model_id":"fcpe","execution_policy":"on_disagreement","priority":40,"runtime":"openvino","parameters":{}},
-                    {"instance_id":"off","capability_id":"analysis.note_boundary","analysis_node":"workflow.off","model_id":"basic_pitch","execution_policy":"disabled","priority":1000,"runtime":"openvino","parameters":{}}
+                    {"instance_id":"source","capability_id":"audio.source","execution_policy":"always","priority":100},
+                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","provider_preferences":{"primary":"bs_roformer_vocals_ep317"},"execution_invocations":[{"invocation_id":"split.vocal","provider_id":"bs_roformer_vocals_ep317","capabilities":["audio.extract_vocals"],"output_ports":["vocal"]}],"execution_policy":"always","priority":90},
+                    {"instance_id":"lead","capability_id":"audio.lead_isolate","provider_preferences":{"primary":"melband_roformer_harmony"},"execution_policy":"always","priority":80},
+                    {"instance_id":"denoise-a","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":20},
+                    {"instance_id":"denoise-b","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":10},
+                    {"instance_id":"pitch","capability_id":"analysis.pitch_f0","provider_preferences":{"primary":"rmvpe"},"execution_policy":"always","priority":30},
+                    {"instance_id":"fcpe","capability_id":"analysis.pitch_f0","provider_preferences":{"primary":"fcpe"},"execution_policy":"on_disagreement","priority":40},
+                    {"instance_id":"off","capability_id":"analysis.note_boundary","provider_preferences":{"primary":"basic_pitch"},"execution_policy":"disabled","priority":1000}
                 ],
                 "bindings":[
-                    {"from_node":"workflow.source","from_port":"mix","to_node":"workflow.split","to_port":"audio","semantic_type":"audio","audio_role":"source_mix","execution_active":true,"analyzer_attachment":false},
-                    {"from_node":"workflow.split","from_port":"vocal","to_node":"workflow.lead","to_port":"audio","semantic_type":"audio","audio_role":"vocal","execution_active":true,"analyzer_attachment":false},
-                    {"from_node":"workflow.lead","from_port":"lead","to_node":"workflow.denoise-a","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
-                    {"from_node":"workflow.denoise-a","from_port":"audio","to_node":"workflow.denoise-b","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
-                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.pitch","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
-                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.fcpe","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
-                    {"from_node":"workflow.denoise-b","from_port":"audio","to_node":"workflow.off","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":false,"analyzer_attachment":true}
+                    {"from_node":"source","from_port":"mix","to_node":"split","to_port":"audio","semantic_type":"audio","audio_role":"source_mix","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"split","from_port":"vocal","to_node":"lead","to_port":"audio","semantic_type":"audio","audio_role":"vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"lead","from_port":"lead","to_node":"denoise-a","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"denoise-a","from_port":"audio","to_node":"denoise-b","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
+                    {"from_node":"denoise-b","from_port":"audio","to_node":"pitch","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
+                    {"from_node":"denoise-b","from_port":"audio","to_node":"fcpe","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
+                    {"from_node":"denoise-b","from_port":"audio","to_node":"off","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":false,"analyzer_attachment":true}
                 ],
-                "terminal_outputs":[{"node":"workflow.pitch","port":"pitch","semantic_type":"pitch_evidence"}]
+                "terminal_outputs":[{"node":"pitch","port":"pitch","semantic_type":"pitch_evidence"}]
             }),
         );
         WorkflowExecutionV1::from_request(&request)
@@ -293,9 +337,13 @@ mod tests {
 
     #[test]
     fn dependencies_order_nodes_and_duplicate_instances_remain_distinct() {
-        let plan =
-            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
-                .unwrap();
+        let plan = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow(),
+            AnalysisProfile::Balanced,
+            None,
+            false,
+        )
+        .unwrap();
         let order = plan
             .nodes
             .iter()
@@ -306,6 +354,7 @@ mod tests {
                 < order.iter().position(|id| *id == "denoise-b").unwrap()
         );
         assert_eq!(plan.ready_nodes_for_capability("audio.denoise").count(), 2);
+        assert_eq!(plan.fusion_mode, FusionModeV1::Algorithm);
         assert_eq!(
             plan.node_for_capability("pitch.secondary")
                 .unwrap()
@@ -323,13 +372,135 @@ mod tests {
     }
 
     #[test]
+    fn compiled_plan_preserves_explicit_ai_judgment_mode() {
+        let mut workflow = workflow();
+        workflow.fusion_mode = FusionModeV1::AiJudgment;
+        let plan = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow,
+            AnalysisProfile::Balanced,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(plan.fusion_mode, FusionModeV1::AiJudgment);
+    }
+
+    #[test]
+    fn compiled_plan_preserves_typed_provider_invocation_topology() {
+        let mut workflow = workflow();
+        let split = workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.instance_id == "split")
+            .unwrap();
+        split.execution_invocations = vec![crate::workflow::WorkflowExecutionInvocationV1 {
+            invocation_id: "split.dual".to_string(),
+            provider_id: "dual-output-provider".to_string(),
+            capabilities: vec![
+                "audio.extract_vocals".to_string(),
+                "audio.extract_instrumental".to_string(),
+            ],
+            output_ports: vec!["vocal".to_string(), "instrumental".to_string()],
+        }];
+        let plan = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow,
+            AnalysisProfile::Balanced,
+            None,
+            false,
+        )
+        .unwrap();
+        let invocation = &plan
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == "split")
+            .unwrap()
+            .execution_invocations[0];
+        assert_eq!(invocation.invocation_id, "split.dual");
+        assert_eq!(invocation.provider_id, "dual-output-provider");
+        assert_eq!(invocation.output_ports, ["vocal", "instrumental"]);
+
+        let split = workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.instance_id == "split")
+            .unwrap();
+        split
+            .execution_invocations
+            .push(crate::workflow::WorkflowExecutionInvocationV1 {
+                invocation_id: "split.instrumental-only".to_string(),
+                provider_id: "instrumental-provider".to_string(),
+                capabilities: vec!["audio.extract_instrumental".to_string()],
+                output_ports: vec!["instrumental".to_string()],
+            });
+        let requested = BTreeSet::from(["audio.extract_vocals".to_string()]);
+        let partial = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow,
+            AnalysisProfile::Balanced,
+            Some(&requested),
+            false,
+        )
+        .unwrap();
+        let invocations = &partial
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == "split")
+            .unwrap()
+            .execution_invocations;
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].invocation_id, "split.dual");
+    }
+
+    #[test]
+    fn explicit_lead_output_overrides_conditional_state_without_changing_authored_policy() {
+        let mut workflow = workflow();
+        workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.capability_id == "audio.lead_isolate")
+            .unwrap()
+            .execution_policy = WorkflowExecutionPolicyV1::OnDisagreement;
+        let requested = BTreeSet::from(["audio.lead_isolate".to_string()]);
+        let conditional = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow,
+            AnalysisProfile::Balanced,
+            Some(&requested),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            conditional
+                .node_for_capability("audio.lead_isolate")
+                .unwrap()
+                .execution_state,
+            WorkflowNodeExecutionStateV1::Deferred
+        );
+        let forced = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow,
+            AnalysisProfile::Balanced,
+            Some(&requested),
+            true,
+        )
+        .unwrap();
+        let lead = forced.node_for_capability("audio.lead_isolate").unwrap();
+        assert_eq!(lead.execution_state, WorkflowNodeExecutionStateV1::Ready);
+        assert_eq!(
+            lead.execution_policy,
+            WorkflowExecutionPolicyV1::OnDisagreement
+        );
+    }
+
+    #[test]
     fn analyzer_attachment_and_priority_are_truthful() {
-        let plan =
-            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
-                .unwrap();
+        let plan = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow(),
+            AnalysisProfile::Balanced,
+            None,
+            false,
+        )
+        .unwrap();
         let pitch = plan.node_for_capability("pitch.track").unwrap();
         assert_eq!(pitch.input_bindings.len(), 1);
-        assert_eq!(pitch.input_bindings[0].from_node, "workflow.denoise-b");
+        assert_eq!(pitch.input_bindings[0].from_node, "denoise-b");
         assert!(pitch.input_bindings[0].analyzer_attachment);
 
         // FCPE has a higher priority than pitch, but neither gains a dependency
@@ -341,9 +512,13 @@ mod tests {
 
     #[test]
     fn cancellation_discards_staged_control_plane_results() {
-        let plan =
-            CompiledWorkflowExecutionPlanV1::compile(&workflow(), AnalysisProfile::Balanced, None)
-                .unwrap();
+        let plan = CompiledWorkflowExecutionPlanV1::compile(
+            &workflow(),
+            AnalysisProfile::Balanced,
+            None,
+            false,
+        )
+        .unwrap();
         let cancellation = CancellationToken::default();
         let trigger = cancellation.clone();
         let mut calls = 0usize;

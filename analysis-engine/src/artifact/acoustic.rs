@@ -4,7 +4,7 @@ use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineRe
 use crate::fingerprint::ACOUSTIC_DSP_VERSION;
 
 pub const ACOUSTIC_EVIDENCE_CONTRACT: &str = "uta.analysis-engine.acoustic-evidence";
-pub const ACOUSTIC_EVIDENCE_VERSION: u32 = 1;
+pub const ACOUSTIC_EVIDENCE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcousticEvidenceFrameV1 {
@@ -14,6 +14,20 @@ pub struct AcousticEvidenceFrameV1 {
     pub spectral_flux: Option<f32>,
     pub periodicity: f32,
     pub snr_db: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fundamental_hz: Option<f32>,
+    /// Source-local deterministic observations. These are not calibrated
+    /// technique probabilities.
+    #[serde(default)]
+    pub vibrato_activation: f32,
+    #[serde(default)]
+    pub glide_activation: f32,
+    #[serde(default)]
+    pub ornament_activation: f32,
+    #[serde(default)]
+    pub breath_activation: f32,
+    #[serde(default)]
+    pub voicing_transition_activation: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +73,18 @@ impl AcousticEvidenceV1 {
                 || !frame.periodicity.is_finite()
                 || !(0.0..=1.0).contains(&frame.periodicity)
                 || !frame.snr_db.is_finite()
+                || frame
+                    .fundamental_hz
+                    .is_some_and(|value| !value.is_finite() || value <= 0.0)
+                || [
+                    frame.vibrato_activation,
+                    frame.glide_activation,
+                    frame.ornament_activation,
+                    frame.breath_activation,
+                    frame.voicing_transition_activation,
+                ]
+                .into_iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
             {
                 return Err(invalid("acoustic evidence frame is invalid or off-grid"));
             }

@@ -21,6 +21,9 @@ pub enum BackendCliError {
         code: String,
         message: String,
         retryable: bool,
+        request_id: Option<String>,
+        capability: Option<String>,
+        resource: Option<String>,
     },
     Io(String),
 }

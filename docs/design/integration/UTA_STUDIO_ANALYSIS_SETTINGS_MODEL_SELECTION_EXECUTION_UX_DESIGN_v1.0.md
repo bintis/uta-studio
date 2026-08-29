@@ -167,20 +167,18 @@ A resource ID such as `model:rmvpe` may be stored internally because Runtime Man
 
 # 5. Selection modes
 
-This section defines the **target UX vocabulary**. Current Engine v1 does not yet encode a typed per-capability provider preference. Therefore, in the first integration:
+This section defines the **target UX vocabulary**. The current contract has two distinct lanes:
 
 ```text
-Automatic
-    may affect real execution through the existing Engine planner
+standalone AnalyzeRequestV1
+    Automatic and valid optional Off semantics only
 
-Off
-    may affect real execution only when Studio can compile a valid request that omits the optional capability/artifact
-
-Explicit provider
-    remains gated until a versioned Engine preference contract exists
+versioned Processing Studio WorkflowExecutionV1 extension
+    stable provider intent is allowed per concrete capability card
+    when Engine validation recognizes that provider/capability pairing
 ```
 
-Do not render an active explicit-provider selector merely because this design defines its future behavior.
+Processing Studio provider intent is a stable model/resource identity, never a file, recipe, executable or backend path. It participates in workflow validation, exact Preview, execution fingerprint and provenance. A visible explicit choice must block rather than silently substitute when unavailable. General Settings/Song/Run capability preferences remain gated until a separately versioned request contract exists.
 
 Every capability that may have more than one eligible implementation ultimately uses one of three selection modes.
 
@@ -295,7 +293,9 @@ actual resolved resource/backend
 
 The final line is a **veto**, not another preference tier.
 
-If the selected provider is installed but not production-usable:
+All packaged models in the current release have a `ProductionPinned` effective non-CPU route, so no current analysis action is blocked solely by a model validation label. The following rule remains a regression requirement for future catalog/provider changes.
+
+If a selected provider is installed but not production-usable:
 
 ```text
 Preference: GAME
@@ -644,17 +644,15 @@ Initial semantic role:
 GAME
 ```
 
-While GAME is not production-usable, show the row as blocked/unavailable without making the whole Analysis settings page unusable.
-
-Example:
+Current release presentation:
 
 ```text
 Note & boundary expert
-GAME
-Blocked for Production · worker/model validation incomplete
+Automatic · GAME
+ProductionPinned · Ready when installed and its runtime is available
 ```
 
-This only blocks requests that require note/boundary evidence.
+A future unavailable required note provider blocks only requests that require note/boundary evidence.
 
 ## 14.3 Optional challengers
 
@@ -680,6 +678,20 @@ Transcript challenger FireRed
 Every candidate must show its validation class. Production runs cannot execute a candidate unless and until Runtime Manager policy allows it.
 
 If a custom choice is not Production-usable, the preview should state that it will not execute or, if the user explicitly made it required, block the run. Do not quietly pretend it ran.
+
+## 14.4 Stage-4 decision mode
+
+Stage 4 has a separate decision-mode choice from expert/provider selection:
+
+```text
+Decision mode
+Algorithm      default deterministic HSMM/Viterbi
+AI judgment    explicit external AI-assisted selection
+```
+
+AI judgment is permitted in normal Production analysis only as an explicit user choice. It does not promote the AI provider into a `ProductionPinned` model. Models & runtime owns readiness/configuration for `tool:fusion_agent_adapter`; Analysis settings/Processing Studio must not store or transmit a raw executable path in the analysis request.
+
+When AI judgment is selected, show that fusion candidate metadata may be sent to the configured external provider. Plan Preview shows the selected mode and adapter resource/readiness but remains read-only and must not contact the provider. Any adapter/provider/protocol/timeout/validation failure blocks the run; there is no silent fallback to Algorithm. See `UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md`.
 
 ---
 
@@ -843,6 +855,45 @@ may remain when the Engine contract can represent the resulting semantics.
 
 A persisted condition that Engine v1 cannot execute must be reported unsupported rather than silently ignored.
 
+## 17.5 Final card interaction contract
+
+Every visible card is a persisted capability instance. The card order must be the compiled semantic execution order, not an unrelated layout list.
+
+- A role-preserving transformation card exposes a pointer drag handle plus keyboard-accessible Earlier/Later actions.
+- Drag uses pointer capture and global release/focus-loss/Escape cleanup. A drop may move the card only inside the same semantic audio branch and only when the resulting workflow compiles; invalid/cross-branch drops are rejected without mutation.
+- After a legal drop, the visible card order updates from the rewritten dataflow immediately. Save is still explicit.
+- Optional cards expose Delete when bypass/removal leaves a valid graph. Required source, baseline, dependency, managed fusion and finalization cards show Delete as unavailable with the reason.
+- Stages 01–03 expose product-approved Add/Restore actions. These actions create a typed node, analyzer attachment and evidence edge together; they are not an arbitrary raw graph-node constructor.
+- Stage 04 is one required Engine fusion-policy card. Users choose typed evidence ownership there, but may not add, delete, duplicate or drag Engine-internal normalization, candidate-graph, decode or finalization stages.
+
+## 17.6 Provider presentation per card
+
+The card title remains capability-first, while configured provider intent is always visible as secondary metadata. Cards with multiple truly interchangeable Engine-recognized providers expose a selector after selection; cards with one eligible provider show that fixed provider without a fake dropdown.
+
+A multi-output semantic transformation owns one provider slot per independently generated output. In particular, Vocal / BGM separation displays both:
+
+```text
+Vocal output provider
+BGM / Instrumental output provider
+```
+
+The package may currently have only one eligible Production provider in either slot; the UI must show that truth rather than pretending there are additional choices. Continuous-pitch and note-evidence cards must include the configured model in the visible card heading/metadata so two cards with the same capability label remain distinguishable. Exact resolved generation/backend stays in Plan Preview.
+
+## 17.7 Four-step live DAG
+
+The Advanced DAG is the execution projection of the same four Processing Studio steps, rendered as four horizontal rows:
+
+```text
+01  Pre-processing          → model/audio operations left to right
+02  Lyrics                  → transcription, challenger, fusion, alignment
+03  F0 & singing experts    → one node per concrete expert/model execution
+04  Engine fusion policy    → fusion, candidate graph, decode/quantize/finalize
+```
+
+Each row has a persistent Step label and each DAG node represents exactly one concrete model or Engine-native processing operation. A multi-output card that invokes two models, such as Vocal / BGM separation, expands into separate Vocal extraction and Instrumental extraction DAG nodes while remaining one product-semantic card in Processing Studio. The exact Engine Plan marks an unrequested concrete model node as `Not requested`; a completed sibling must never make it look executed.
+
+During execution, `uta-analyze` emits typed, request-correlated `node_started`, measured `node_progress`, `node_completed`, `node_failed`, `artifact`, `warning`, and `degraded` frames. Frames carry raw Engine node ID, optional Processing Studio presentation-node ID, capability ID, model ID and event timestamp. Studio stores raw and presentation identities separately, highlights only the active node, shows the configured/actual model, and displays a percentage only when the worker supplied a measured fraction/work-unit total. Native stages without measured units remain visibly indeterminate rather than receiving invented stage-order percentages.
+
 ---
 
 # 18. Full candidate execution order
@@ -969,7 +1020,7 @@ EFFECTIVE PROFILE
 Global default + 1 song override + 0 run overrides
 
 READINESS
-Candidate chart    Blocked · GAME not production-usable
+Candidate chart    Ready
 Pitch evidence     Ready
 Transcript         Ready
 
@@ -1031,13 +1082,12 @@ Validation: ProductionPinned
 Status: Ready
 ```
 
-Or:
+A future blocked route is rendered from the exact Runtime Manager fact, for example:
 
 ```text
 Capability: notes.game
 Provider: GAME
-Validation: BenchmarkCandidate
-Status: Blocked under Production policy
+Status: Blocked · model not installed
 ```
 
 ## 21.4 Output list
@@ -1109,10 +1159,10 @@ Example:
 
 ```text
 Analysis preference: Automatic
-GAME not usable
+required model not installed
 → user opens Models & runtime
-→ later GAME becomes Production-usable
-→ Automatic can resolve GAME on the next preview
+→ user explicitly installs it
+→ Automatic can resolve it on the next preview
 ```
 
 Example explicit choice:
@@ -1148,15 +1198,9 @@ Unsupported
 
 When a resource is locally present but not usable, show both facts.
 
-Example:
+Current packaged model routes display `ProductionPinned`; readiness still reports installation, runtime and structural state independently.
 
-```text
-GAME
-Installed
-Benchmark candidate · not usable for Production
-```
-
-This avoids the common mistake of equating downloaded bytes with usable inference.
+A future catalog may again contain Candidate/Experimental routes. This status vocabulary avoids equating downloaded bytes with usable Production inference.
 
 ---
 
@@ -1310,9 +1354,11 @@ Do not silently ignore a visible setting.
 
 ---
 
-# 31. Future Engine preference contract
+# 31. Provider preference contracts
 
-When multiple production providers exist, add a versioned typed mechanism rather than model-name strings scattered through Studio.
+Processing Studio now carries stable card-level provider intent through its versioned `WorkflowExecutionV1` extension. The remaining future work in this section applies to general Settings/Song/Run preferences outside a persisted workflow.
+
+When multiple production providers exist outside Processing Studio, add a versioned typed mechanism rather than model-name strings scattered through Studio.
 
 A future request could conceptually carry:
 
@@ -1380,12 +1426,12 @@ At most it shows informational status per capability.
 
 The actual run action computes readiness from the exact requested artifacts.
 
-For example, while GAME is blocked:
+For example, if GAME is later unavailable:
 
 ```text
 Analysis settings
 Pitch primary       RMVPE · Ready
-Note primary        GAME · Production blocked
+Note primary        GAME · model not installed
 Alignment           Qwen · status...
 ```
 
@@ -1407,7 +1453,7 @@ Use capability/resource-specific messages.
 Good:
 
 ```text
-Candidate chart is unavailable because the required GAME note/boundary expert is not production-usable.
+Candidate chart is unavailable because the required GAME note/boundary expert is not installed.
 ```
 
 Good:
@@ -1537,7 +1583,7 @@ changing Analysis settings does not trigger installation
 changing Song Profile does not start re-analysis
 ```
 
-After a versioned provider-preference contract exists, additionally test:
+For general Settings/Song/Run preferences, after a versioned provider-preference contract exists, additionally test:
 
 ```text
 explicit provider remains selected while resource is missing
@@ -1567,7 +1613,7 @@ settings with unsupported Engine-only parameter return explicit unsupported stat
 
 # 41. Required resource-preference tests
 
-When a versioned provider-preference contract is implemented, cover:
+For the future general Settings/Song/Run provider-preference contract, cover:
 
 ```text
 Automatic + primary ready
@@ -1581,7 +1627,7 @@ preference included in fingerprint
 resolved provider recorded in provenance
 ```
 
-Until that contract exists, do not create tests that pretend v1 honors provider preferences it cannot encode.
+These general preference tests remain deferred until that request contract exists. Processing Studio card-provider tests are valid now because `WorkflowExecutionV1` independently versions and validates that intent.
 
 ---
 
@@ -1697,7 +1743,10 @@ The Studio integration agent may implement the following before the full Engine 
 [ ] Run Analysis dialog request-output selection
 [ ] Plan Preview fixture UI
 [ ] exact preview invalidation rules
-[ ] Processing Studio capability-first labels
+[x] Processing Studio capability-first labels with visible provider metadata
+[x] legal same-branch pointer drag plus immediate semantic-order refresh
+[x] optional Add/Restore/Delete card lifecycle for stages 01–03
+[x] fixed Engine-owned Stage 04 fusion-policy presentation
 [ ] UI tests using Engine/Runtime Manager fixtures
 ```
 

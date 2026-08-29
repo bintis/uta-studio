@@ -3,9 +3,138 @@
 
 //! Compiled Workflow routing helpers kept separate from the core Engine stages.
 
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use super::*;
+
+pub(super) struct DenoiseTask<'a> {
+    pub(super) model_path: &'a Path,
+    pub(super) executable: &'a Path,
+    pub(super) runtime_recipe_digest: Option<&'a str>,
+    pub(super) backend: &'a str,
+    pub(super) ffmpeg: &'a Path,
+    pub(super) input: &'a Path,
+    pub(super) output_root: &'a Path,
+    pub(super) source_duration: u64,
+    pub(super) task_id: &'a str,
+}
+
+pub(super) struct LeadIsolationOutput {
+    pub(super) stem: SeparationOutput,
+    pub(super) lead_profile: crate::audio::SignalProfile,
+    pub(super) residual_profile: crate::audio::SignalProfile,
+}
+
+pub(super) struct DualSeparationOutput {
+    pub(super) vocal: SeparationOutput,
+    pub(super) instrumental: SeparationOutput,
+    pub(super) vocal_profile: crate::audio::SignalProfile,
+    pub(super) instrumental_audio: crate::audio::DecodedAudio,
+}
+
+pub(super) fn workflow_uses_ep317_residual(
+    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+) -> bool {
+    workflow.is_some_and(|workflow| {
+        workflow.nodes.iter().any(|node| {
+            node.execution_invocations.iter().any(|invocation| {
+                invocation.provider_id == "bs_roformer_vocals_ep317"
+                    && invocation
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == "audio.extract_vocals")
+                    && invocation
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == "audio.extract_instrumental")
+                    && invocation.output_ports == ["vocal", "instrumental"]
+            })
+        })
+    })
+}
+
+pub(super) fn materialize_requested_semantic_lead_stem(
+    request: &AnalyzeRequestV1,
+    primary: &crate::contract::AudioSourceV1,
+    ffmpeg: &Path,
+    output_root: &Path,
+    artifacts: &mut AnalysisArtifactsV1,
+    cancellation: &CancellationToken,
+) -> EngineResult<()> {
+    if !request
+        .requested_artifacts
+        .stems
+        .contains(&crate::contract::AudioRole::LeadVocal)
+        || !matches!(
+            primary.role,
+            crate::contract::AudioRole::LeadVocal | crate::contract::AudioRole::CleanLeadVocal
+        )
+    {
+        return Ok(());
+    }
+    let output = crate::separation::materialize_semantic_lead_stem(
+        ffmpeg,
+        &primary.path,
+        output_root,
+        cancellation,
+    )?;
+    artifacts.stems.push(StemArtifactRefV1 {
+        role: output.role,
+        artifact: output.artifact,
+    });
+    Ok(())
+}
+
+pub(super) struct CleanupSpec<'a> {
+    pub(super) model_id: &'a str,
+    pub(super) role: crate::contract::AudioRole,
+    pub(super) node_id: &'a str,
+    pub(super) presentation_node_id: Option<&'a str>,
+    pub(super) semantic_output: &'a str,
+    pub(super) artifact: &'a str,
+    pub(super) worker_directory: &'a str,
+    pub(super) destination: &'a str,
+}
+
+pub(super) fn create_task_dir(root: &Path, relative: &str) -> EngineResult<PathBuf> {
+    let relative = Path::new(relative);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "worker task directory is invalid",
+        ));
+    }
+    let directory = root.join(relative);
+    let parent = directory.parent().ok_or_else(|| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "worker task directory has no parent",
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not create worker parent directory: {error}"),
+        )
+    })?;
+    std::fs::create_dir(&directory).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("worker task directory already exists or cannot be created: {error}"),
+        )
+    })?;
+    directory.canonicalize().map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not authorize worker task directory: {error}"),
+        )
+    })
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn publish_candidate_artifacts(
@@ -14,6 +143,7 @@ pub(super) fn publish_candidate_artifacts(
     request_vocal_chart: bool,
     preserve_continuous_pitch: bool,
     fingerprint: &str,
+    fusion_decision: Option<&FusionDecisionProvenanceV1>,
     singing: Option<&SingingStagesOutput>,
     quantized_candidate_track: Option<&crate::fusion::CanonicalSingingTrack>,
     quantization: Option<&crate::quantization::QuantizationReportV1>,
@@ -36,11 +166,19 @@ pub(super) fn publish_candidate_artifacts(
         )
     })?;
     if request_singing_analysis {
+        let fusion_decision = fusion_decision.ok_or_else(|| {
+            EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                "requested SingingAnalysis has no final fusion decision provenance",
+            )
+        })?;
         let analysis = SingingAnalysisV1::new(
-            singing.track.clone(),
+            &singing.track,
             singing.fusion.candidates.clone(),
+            singing.fusion.hard_boundaries.clone(),
             singing.review_regions.clone(),
             fingerprint,
+            fusion_decision,
         )?;
         artifacts.singing_analysis = Some(write_json_artifact(
             output_root,
@@ -199,6 +337,9 @@ pub(super) fn optional_execution_supported(capability: &str) -> bool {
     matches!(
         capability,
         "pitch.secondary"
+            | "pitch.secondary.rmvpe"
+            | "pitch.secondary.fcpe"
+            | "notes.game"
             | "notes.basic_pitch"
             | "speech.transcribe.challenger"
             | "audio.denoise"
@@ -218,7 +359,18 @@ pub(super) fn execution_policy_for(
         Some(workflow) => workflow
             .policy_for_engine_capability(capability)
             .unwrap_or(default),
-        None => WorkflowExecutionPolicyV1::Always,
+        None => default,
+    }
+}
+
+pub(super) fn execution_policy_for_model(
+    workflow: Option<&WorkflowExecutionV1>,
+    model_id: &str,
+    default: WorkflowExecutionPolicyV1,
+) -> WorkflowExecutionPolicyV1 {
+    match workflow {
+        Some(workflow) => workflow.policy_for_model(model_id).unwrap_or(default),
+        None => default,
     }
 }
 
@@ -240,6 +392,14 @@ pub(super) fn workflow_cleanup_steps(
     resolved: &[uta_runtime_manager::ResolvedModel],
 ) -> Vec<(String, Option<String>)> {
     if let Some(workflow) = workflow {
+        let model_is_resolved = |capability: &str| {
+            let model_id = match capability {
+                "audio.denoise" => "melband_roformer_denoise_aufr33",
+                "audio.dereverb" => "melband_roformer_dereverb_anvuew",
+                _ => return false,
+            };
+            resolved.iter().any(|model| model.model_id == model_id)
+        };
         return workflow
             .nodes
             .iter()
@@ -247,9 +407,7 @@ pub(super) fn workflow_cleanup_steps(
             .filter_map(|node| {
                 node.capabilities
                     .iter()
-                    .find(|capability| {
-                        matches!(capability.as_str(), "audio.denoise" | "audio.dereverb")
-                    })
+                    .find(|capability| model_is_resolved(capability))
                     .map(|capability| (capability.clone(), Some(node.analysis_node.clone())))
             })
             .collect();
@@ -313,19 +471,63 @@ pub(super) fn workflow_bound_audio(
                 ),
             )
         })?;
-    artifacts
-        .get(&(binding.from_node.clone(), binding.from_port.clone()))
-        .cloned()
-        .ok_or_else(|| {
-            EngineError::new(
-                EngineErrorCode::MissingRequiredInput,
-                format!(
-                    "compiled workflow analyzer {} selected unavailable artifact {}:{}",
-                    node.instance_id, binding.from_node, binding.from_port
-                ),
-            )
-            .with_capability(capability)
-        })
+    resolve_workflow_audio(
+        workflow,
+        artifacts,
+        &binding.from_node,
+        &binding.from_port,
+        &mut BTreeSet::new(),
+    )
+    .ok_or_else(|| {
+        EngineError::new(
+            EngineErrorCode::MissingRequiredInput,
+            format!(
+                "compiled workflow analyzer {} selected unavailable artifact {}:{}",
+                node.instance_id, binding.from_node, binding.from_port
+            ),
+        )
+        .with_capability(capability)
+    })
+}
+
+fn resolve_workflow_audio(
+    workflow: &CompiledWorkflowExecutionPlanV1,
+    artifacts: &BTreeMap<(String, String), (PathBuf, String)>,
+    from_node: &str,
+    from_port: &str,
+    visited: &mut BTreeSet<(String, String)>,
+) -> Option<(PathBuf, String)> {
+    let key = (from_node.to_string(), from_port.to_string());
+    if let Some(artifact) = artifacts.get(&key) {
+        return Some(artifact.clone());
+    }
+    if !visited.insert(key) {
+        return None;
+    }
+    let producer = workflow
+        .nodes
+        .iter()
+        .find(|node| node.analysis_node == from_node)?;
+    let optional_cleanup = producer
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "audio.denoise" | "audio.dereverb"));
+    if producer.execution_state == WorkflowNodeExecutionStateV1::Ready && !optional_cleanup {
+        return None;
+    }
+    let input = producer.input_bindings.iter().find(|binding| {
+        !binding.analyzer_attachment
+            && binding.execution_active
+            && binding.semantic_type == "audio"
+            && binding.to_port == "audio"
+    })?;
+    resolve_workflow_audio(
+        workflow,
+        artifacts,
+        &input.from_node,
+        &input.from_port,
+        visited,
+    )
 }
 
 pub(super) fn workflow_transform_input(
@@ -397,6 +599,314 @@ pub(super) fn resolved_model<'a>(
         })
 }
 
+pub(super) fn run_openvino_vocals(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "bs_roformer_vocals_ep317",
+            role: crate::contract::AudioRole::GuideVocals,
+            node_id: "audio.extract_vocals",
+            presentation_node_id: None,
+            semantic_output: "guide_vocals",
+            artifact: "guide_vocals",
+            worker_directory: "worker/guide-vocals",
+            destination: "stems/guide_vocals.flac",
+        },
+        cancellation,
+    )
+}
+
+pub(super) fn run_openvino_denoise(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "melband_roformer_denoise_aufr33",
+            role: crate::contract::AudioRole::CleanLeadVocal,
+            node_id: "audio.denoise",
+            presentation_node_id: None,
+            semantic_output: "dry",
+            artifact: "clean_lead_vocal",
+            worker_directory: "worker/denoise",
+            destination: "stems/clean_lead_vocal.flac",
+        },
+        cancellation,
+    )
+}
+
+pub(super) fn run_openvino_dereverb(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "melband_roformer_dereverb_anvuew",
+            role: crate::contract::AudioRole::CleanLeadVocal,
+            node_id: "audio.dereverb",
+            presentation_node_id: None,
+            semantic_output: "noreverb",
+            artifact: "dereverbed_vocal",
+            worker_directory: "worker/dereverb",
+            destination: "stems/dereverbed_clean_lead_vocal.flac",
+        },
+        cancellation,
+    )
+}
+
+pub(super) fn run_openvino_instrumental(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "melband_roformer_inst_v2",
+            role: crate::contract::AudioRole::Instrumental,
+            node_id: "audio.extract_instrumental",
+            presentation_node_id: None,
+            semantic_output: "instrumental",
+            artifact: "instrumental",
+            worker_directory: "worker/instrumental",
+            destination: "stems/instrumental.flac",
+        },
+        cancellation,
+    )
+}
+
+pub(super) fn run_ep317_vocal_residual(
+    task: &DenoiseTask<'_>,
+    presentation_node_id: Option<&str>,
+    cancellation: &CancellationToken,
+) -> EngineResult<DualSeparationOutput> {
+    let directory = create_task_dir(task.output_root, "worker/ep317-vocal-residual")?;
+    let outputs = SupervisedWorker::run(
+        task.executable,
+        &WorkerExpectation {
+            component: roformer_component(task.backend).to_string(),
+            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+        },
+        &NativeTask {
+            task_id: task.task_id.to_string(),
+            node_id: "audio.extract_vocals".to_string(),
+            presentation_node_id: presentation_node_id.map(str::to_string),
+            model_id: "bs_roformer_vocals_ep317".to_string(),
+            input_artifacts: vec![task.input.to_path_buf()],
+            output_dir: directory.clone(),
+            config: serde_json::json!({
+                "model_path": task.model_path,
+                "backend": task.backend,
+                "semantic_output": "guide_vocals+instrumental_residual"
+            }),
+            timeout: Duration::from_secs(4 * 60 * 60),
+        },
+        cancellation,
+        |_| {},
+    )?;
+    if outputs.len() != 2 {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "EP317 residual strategy must publish exactly GuideVocals and Instrumental",
+        ));
+    }
+    let vocal = typed_worker_output(&outputs, "guide_vocals")?.to_path_buf();
+    let instrumental = typed_worker_output(&outputs, "instrumental")?.to_path_buf();
+    if outputs
+        .iter()
+        .any(|output| output.media_type != "audio/flac")
+    {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "EP317 residual strategy outputs must be lossless FLAC",
+        ));
+    }
+    let vocal_audio = decode_audio(task.ffmpeg, "guide_vocals", &vocal)?;
+    let instrumental_audio = decode_audio(task.ffmpeg, "instrumental", &instrumental)?;
+    for facts in [&vocal_audio.facts, &instrumental_audio.facts] {
+        if facts.sample_rate != 44_100
+            || facts.channels != 2
+            || facts.frame_count == 0
+            || facts.duration.abs_diff(task.source_duration) > 2_000
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::TimelineInvalid,
+                "EP317 residual strategy did not preserve the source timeline",
+            ));
+        }
+    }
+    if cancellation.is_cancelled() {
+        return Err(EngineError::new(
+            EngineErrorCode::Cancelled,
+            "EP317 residual publication was cancelled",
+        ));
+    }
+    let stems = task.output_root.join("stems");
+    std::fs::create_dir_all(&stems).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not create EP317 stem directory: {error}"),
+        )
+    })?;
+    let vocal_relative = PathBuf::from("stems/guide_vocals.flac");
+    let instrumental_relative = PathBuf::from("stems/instrumental.flac");
+    let vocal_destination = task.output_root.join(&vocal_relative);
+    let instrumental_destination = task.output_root.join(&instrumental_relative);
+    if vocal_destination.exists() || instrumental_destination.exists() {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "EP317 residual stem target already exists",
+        ));
+    }
+    std::fs::rename(&vocal, &vocal_destination).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not publish EP317 GuideVocals: {error}"),
+        )
+    })?;
+    if let Err(error) = std::fs::rename(&instrumental, &instrumental_destination) {
+        let _ = std::fs::rename(&vocal_destination, &vocal);
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not publish EP317 Instrumental residual: {error}"),
+        ));
+    }
+    std::fs::remove_dir_all(&directory).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not clean EP317 worker directory: {error}"),
+        )
+    })?;
+    Ok(DualSeparationOutput {
+        vocal: SeparationOutput {
+            role: crate::contract::AudioRole::GuideVocals,
+            artifact: artifact_ref_for_existing(task.output_root, &vocal_relative, "audio/flac")?,
+        },
+        instrumental: SeparationOutput {
+            role: crate::contract::AudioRole::Instrumental,
+            artifact: artifact_ref_for_existing(
+                task.output_root,
+                &instrumental_relative,
+                "audio/flac",
+            )?,
+        },
+        vocal_profile: vocal_audio.profile,
+        instrumental_audio,
+    })
+}
+
+pub(super) fn run_openvino_harmony(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<LeadIsolationOutput> {
+    let directory = create_task_dir(task.output_root, "worker/lead-isolate")?;
+    let outputs = SupervisedWorker::run(
+        task.executable,
+        &WorkerExpectation {
+            component: roformer_component(task.backend).to_string(),
+            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+        },
+        &NativeTask {
+            task_id: task.task_id.to_string(),
+            node_id: "audio.lead_isolate".to_string(),
+            presentation_node_id: None,
+            model_id: "melband_roformer_harmony".to_string(),
+            input_artifacts: vec![task.input.to_path_buf()],
+            output_dir: directory.clone(),
+            config: serde_json::json!({
+                "model_path": task.model_path,
+                "backend": task.backend,
+                "input_semantics": "all_vocals",
+                "semantic_output": "lead_vocal+backing_vocal_residual"
+            }),
+            timeout: Duration::from_secs(4 * 60 * 60),
+        },
+        cancellation,
+        |_| {},
+    )?;
+    if outputs.len() != 2 {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "Karaoke worker must publish exactly lead_vocal and vocal_residual",
+        ));
+    }
+    let lead = typed_worker_output(&outputs, "lead_vocal")?.to_path_buf();
+    let residual = typed_worker_output(&outputs, "vocal_residual")?.to_path_buf();
+    let lead_decoded = decode_audio(task.ffmpeg, "lead_vocal", &lead)?;
+    let residual_decoded = decode_audio(task.ffmpeg, "vocal_residual", &residual)?;
+    for (artifact, decoded) in [
+        ("lead_vocal", &lead_decoded),
+        ("vocal_residual", &residual_decoded),
+    ] {
+        if outputs
+            .iter()
+            .find(|output| output.artifact == artifact)
+            .is_none_or(|output| output.media_type != "audio/flac")
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                format!("Karaoke worker output {artifact} is not lossless FLAC"),
+            ));
+        }
+        let facts = &decoded.facts;
+        if facts.sample_rate != 44_100
+            || facts.channels != 2
+            || facts.frame_count == 0
+            || facts.duration.abs_diff(task.source_duration) > 2_000
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::TimelineInvalid,
+                format!("Karaoke {artifact} did not preserve the vocal input timeline"),
+            ));
+        }
+    }
+    if cancellation.is_cancelled() {
+        return Err(EngineError::new(
+            EngineErrorCode::Cancelled,
+            "lead-isolation publication was cancelled",
+        ));
+    }
+    let relative = PathBuf::from("stems/lead_vocal.flac");
+    let destination = task.output_root.join(&relative);
+    let parent = destination.parent().expect("lead stem has parent");
+    std::fs::create_dir_all(parent).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not create lead stem directory: {error}"),
+        )
+    })?;
+    if destination.exists() {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "lead stem target already exists",
+        ));
+    }
+    std::fs::rename(&lead, &destination).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not atomically publish lead stem: {error}"),
+        )
+    })?;
+    std::fs::remove_dir_all(&directory).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not clean Karaoke worker directory: {error}"),
+        )
+    })?;
+    Ok(LeadIsolationOutput {
+        stem: SeparationOutput {
+            role: crate::contract::AudioRole::LeadVocal,
+            artifact: artifact_ref_for_existing(task.output_root, &relative, "audio/flac")?,
+        },
+        lead_profile: lead_decoded.profile,
+        residual_profile: residual_decoded.profile,
+    })
+}
+
 pub(super) fn run_openvino_workflow_cleanup(
     task: &DenoiseTask<'_>,
     analysis_node: &str,
@@ -420,6 +930,7 @@ pub(super) fn run_openvino_workflow_cleanup(
             model_id: "melband_roformer_denoise_aufr33",
             role: crate::contract::AudioRole::CleanLeadVocal,
             node_id: "audio.denoise",
+            presentation_node_id: Some(analysis_node),
             semantic_output: "dry",
             artifact: "clean_lead_vocal",
             worker_directory: &worker_directory,
@@ -430,6 +941,7 @@ pub(super) fn run_openvino_workflow_cleanup(
             model_id: "melband_roformer_dereverb_anvuew",
             role: crate::contract::AudioRole::CleanLeadVocal,
             node_id: "audio.dereverb",
+            presentation_node_id: Some(analysis_node),
             semantic_output: "noreverb",
             artifact: "dereverbed_vocal",
             worker_directory: &worker_directory,
@@ -442,7 +954,9 @@ pub(super) fn run_openvino_workflow_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::{WorkflowBindingV1, WorkflowExecutionPolicyV1, WorkflowTerminalOutputV1};
+    use crate::workflow::{
+        FusionModeV1, WorkflowBindingV1, WorkflowExecutionPolicyV1, WorkflowTerminalOutputV1,
+    };
     use crate::workflow_executor::{
         WorkflowExecutionNodePlanV1, WorkflowNodeExecutionStateV1, WorkflowPlanIdentityV1,
     };
@@ -460,6 +974,8 @@ mod tests {
             execution_policy: WorkflowExecutionPolicyV1::Always,
             execution_state: WorkflowNodeExecutionStateV1::Ready,
             priority: 0,
+            parameters: serde_json::Value::Object(Default::default()),
+            execution_invocations: Vec::new(),
             depends_on: input
                 .map(|(from, _)| vec![from.to_string()])
                 .unwrap_or_default(),
@@ -506,26 +1022,41 @@ mod tests {
                 ),
             ],
             terminal_outputs: Vec::<WorkflowTerminalOutputV1>::new(),
+            fusion_policy: None,
+            fusion_mode: FusionModeV1::Algorithm,
         }
     }
 
     #[test]
-    fn actual_route_uses_exact_analyzer_binding_and_keeps_duplicate_steps() {
+    fn ep317_residual_strategy_binds_one_invocation_to_both_output_roles() {
+        let mut plan = plan();
+        plan.nodes[0].capabilities = vec![
+            "audio.extract_vocals".to_string(),
+            "audio.extract_instrumental".to_string(),
+        ];
+        plan.nodes[0].execution_invocations =
+            vec![crate::workflow::WorkflowExecutionInvocationV1 {
+                invocation_id: "split".to_string(),
+                provider_id: "bs_roformer_vocals_ep317".to_string(),
+                capabilities: vec![
+                    "audio.extract_vocals".to_string(),
+                    "audio.extract_instrumental".to_string(),
+                ],
+                output_ports: vec!["vocal".to_string(), "instrumental".to_string()],
+            }];
+        assert!(workflow_uses_ep317_residual(Some(&plan)));
+        assert_eq!(plan.nodes[0].execution_invocations.len(), 1);
+    }
+
+    #[test]
+    fn optional_game_execution_is_resolved_before_the_engine_reaches_its_node() {
+        assert!(optional_execution_supported("notes.game"));
+    }
+
+    #[test]
+    fn unresolved_optional_cleanup_is_skipped_and_exact_analyzer_binding_is_kept() {
         let plan = plan();
-        let steps = workflow_cleanup_steps(Some(&plan), &[]);
-        assert_eq!(
-            steps,
-            [
-                (
-                    "audio.denoise".to_string(),
-                    Some("workflow.cleanup-a".to_string())
-                ),
-                (
-                    "audio.denoise".to_string(),
-                    Some("workflow.cleanup-b".to_string())
-                ),
-            ]
-        );
+        assert!(workflow_cleanup_steps(Some(&plan), &[]).is_empty());
         let selected = std::env::temp_dir().join("selected-cleanup.flac");
         let latest = std::env::temp_dir().join("latest-cleanup.flac");
         let artifacts = BTreeMap::from([(
@@ -542,5 +1073,43 @@ mod tests {
         .unwrap();
         assert_eq!(path, selected);
         assert_eq!(role, "lead_vocal");
+    }
+
+    #[test]
+    fn missing_optional_cleanup_artifact_resolves_through_its_compiled_input() {
+        let mut plan = plan();
+        let cleanup = plan
+            .nodes
+            .iter_mut()
+            .find(|node| node.analysis_node == "workflow.cleanup-a")
+            .unwrap();
+        cleanup.depends_on = vec!["workflow.source".to_string()];
+        cleanup.input_bindings = vec![WorkflowBindingV1 {
+            from_node: "workflow.source".to_string(),
+            from_port: "mix".to_string(),
+            to_node: cleanup.analysis_node.clone(),
+            to_port: "audio".to_string(),
+            semantic_type: "audio".to_string(),
+            audio_role: Some("vocal".to_string()),
+            execution_active: true,
+            analyzer_attachment: false,
+        }];
+        let selected = std::env::temp_dir().join("selected-source.flac");
+        let artifacts = BTreeMap::from([(
+            ("workflow.source".to_string(), "mix".to_string()),
+            (selected.clone(), "clean_lead_vocal".to_string()),
+        )]);
+
+        let (path, role) = workflow_bound_audio(
+            Some(&plan),
+            "pitch.track",
+            &artifacts,
+            Path::new("unused-fallback.flac"),
+            "unused",
+        )
+        .unwrap();
+
+        assert_eq!(path, selected);
+        assert_eq!(role, "clean_lead_vocal");
     }
 }

@@ -77,65 +77,12 @@ pub(crate) fn spawn_folders(
             min_height: px(0),
             flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
-            padding: UiRect::axes(px(34), px(26)),
-            row_gap: px(18),
+            padding: UiRect::axes(px(34), px(16)),
+            row_gap: px(12),
             overflow: Overflow::clip(),
             ..default()
         })
         .with_children(|page| {
-            page.spawn((
-                Node {
-                    width: percent(100),
-                    min_height: px(70),
-                    flex_shrink: 0.0,
-                    align_items: AlignItems::FlexEnd,
-                    padding: UiRect::bottom(px(16)),
-                    border: UiRect::bottom(px(1)),
-                    ..default()
-                },
-                BorderColor::all(theme.border.with_alpha(0.45)),
-            ))
-            .with_children(|header| {
-                header
-                    .spawn(Node {
-                        min_width: px(0),
-                        flex_grow: 1.0,
-                        flex_direction: FlexDirection::Column,
-                        ..default()
-                    })
-                    .with_children(|copy| {
-                        spawn_text(copy, font.clone(), "MY LIBRARY", 8.0, theme.primary);
-                        spawn_text(copy, font.clone(), "Folders", 24.0, theme.foreground);
-                        spawn_wrapped_text(
-                            copy,
-                            font.clone(),
-                            "Browse watched source locations and open the configured output folder. Uta! Studio never moves or deletes source media.",
-                            10.0,
-                            theme.muted_foreground,
-                        );
-                    });
-                spawn_toolbar_button(
-                    header,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    UiIcon::Repeat,
-                    "Rescan all",
-                    UiAction::from(LibraryCommand::RescanLibrary),
-                    false,
-                );
-                spawn_toolbar_button(
-                    header,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    UiIcon::Add,
-                    "Add folder",
-                    UiAction::from(LibraryCommand::ChooseFolder),
-                    false,
-                );
-            });
-
             page.spawn(Node {
                 min_width: px(0),
                 min_height: px(0),
@@ -155,11 +102,11 @@ pub(crate) fn spawn_folders(
                         row_gap: px(3),
                         overflow: Overflow::clip(),
                         border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(6)),
+                        border_radius: studio_card_radius(),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.44)),
-                    BorderColor::all(theme.border.with_alpha(0.46)),
+                    studio_card_background(theme),
+                    studio_card_border(theme),
                 ))
                 .with_children(|roots| {
                     spawn_text(
@@ -168,10 +115,7 @@ pub(crate) fn spawn_folders(
                         localized_message(
                             session.config,
                             UiMessage::WatchedLocations,
-                            &[(
-                                "{count}",
-                                &session.config.library_paths().len().to_string(),
-                            )],
+                            &[("{count}", &session.config.library_paths().len().to_string())],
                         ),
                         8.0,
                         theme.muted_foreground,
@@ -317,9 +261,7 @@ pub(crate) fn spawn_folders(
                                             path_copy.spawn((
                                                 Text::new(path.to_string_lossy().into_owned()),
                                                 ui_text_font(font.clone(), 8.0),
-                                                TextColor(
-                                                    theme.muted_foreground.with_alpha(0.64),
-                                                ),
+                                                TextColor(theme.muted_foreground.with_alpha(0.64)),
                                                 TextLayout::no_wrap(),
                                             ));
                                         });
@@ -370,11 +312,11 @@ pub(crate) fn spawn_folders(
                         flex_direction: FlexDirection::Column,
                         overflow: Overflow::clip(),
                         border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(6)),
+                        border_radius: studio_card_radius(),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.42)),
-                    BorderColor::all(theme.border.with_alpha(0.46)),
+                    studio_card_background(theme),
+                    studio_card_border(theme),
                 ))
                 .with_children(|browser| {
                     browser

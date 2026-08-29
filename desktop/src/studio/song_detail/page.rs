@@ -31,177 +31,13 @@ fn analysis_profile_summary(
         app_core::AnalysisDefaultTarget::Instrumental => "Instrumental",
     };
     format!(
-        "Quality: {quality} · Source: {quality_source}. Target: {target} · Source: {target_source}. This changes future analysis for this song; existing chart data changes only after re-analysis."
+        "Quality: {quality} · Source: {quality_source}. Target: {target} · Source: {target_source}. This row is read-only. Edit defaults in Settings > Analysis; use Plan Preview for one run. Existing chart data changes only after re-analysis."
     )
-}
-
-fn spawn_song_quality_choices(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    file_hash: &str,
-    selected: Option<app_core::AnalysisQualityProfile>,
-) {
-    spawn_wrapped_text(
-        parent,
-        font.clone(),
-        "This changes future analysis for this song. Existing chart data changes only after re-analysis.",
-        8.0,
-        theme.muted_foreground,
-    );
-    parent
-        .spawn(Node {
-            width: percent(100),
-            flex_wrap: FlexWrap::Wrap,
-            row_gap: px(6),
-            column_gap: px(6),
-            ..default()
-        })
-        .with_children(|row| {
-            for (quality, label) in [
-                (None, "Inherit global"),
-                (Some(app_core::AnalysisQualityProfile::Fast), "Fast"),
-                (Some(app_core::AnalysisQualityProfile::Balanced), "Balanced"),
-                (Some(app_core::AnalysisQualityProfile::Maximum), "Maximum"),
-            ] {
-                let active = quality == selected;
-                row.spawn((
-                    Button,
-                    UiAction::from(AnalysisCommand::SetSongAnalysisQuality {
-                        file_hash: file_hash.to_string(),
-                        quality,
-                    }),
-                    Node {
-                        min_height: px(32),
-                        padding: UiRect::axes(px(10), px(6)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(6)),
-                        ..default()
-                    },
-                    BackgroundColor(if active {
-                        theme.primary.with_alpha(0.14)
-                    } else {
-                        theme.background.with_alpha(0.32)
-                    }),
-                    BorderColor::all(if active {
-                        theme.primary.with_alpha(0.58)
-                    } else {
-                        theme.border.with_alpha(0.48)
-                    }),
-                    TabIndex(0),
-                ))
-                .with_children(|button| {
-                    spawn_text(
-                        button,
-                        font.clone(),
-                        label,
-                        8.0,
-                        if active {
-                            theme.primary
-                        } else {
-                            theme.foreground
-                        },
-                    );
-                });
-            }
-        });
-}
-
-fn spawn_song_target_choices(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    file_hash: &str,
-    selected: Option<app_core::AnalysisDefaultTarget>,
-) {
-    spawn_wrapped_text(
-        parent,
-        font.clone(),
-        "Requested result for future analysis of this song. The exact run preview remains authoritative.",
-        8.0,
-        theme.muted_foreground,
-    );
-    parent
-        .spawn(Node {
-            width: percent(100),
-            flex_wrap: FlexWrap::Wrap,
-            row_gap: px(6),
-            column_gap: px(6),
-            ..default()
-        })
-        .with_children(|row| {
-            for (target, label) in [
-                (None, "Inherit global target"),
-                (
-                    Some(app_core::AnalysisDefaultTarget::FullCandidate),
-                    "Candidate",
-                ),
-                (
-                    Some(app_core::AnalysisDefaultTarget::Transcript),
-                    "Transcript",
-                ),
-                (
-                    Some(app_core::AnalysisDefaultTarget::Alignment),
-                    "Alignment",
-                ),
-                (
-                    Some(app_core::AnalysisDefaultTarget::PitchEvidence),
-                    "Pitch",
-                ),
-                (
-                    Some(app_core::AnalysisDefaultTarget::Instrumental),
-                    "Instrumental",
-                ),
-            ] {
-                let active = target == selected;
-                row.spawn((
-                    Button,
-                    UiAction::from(AnalysisCommand::SetSongAnalysisTarget {
-                        file_hash: file_hash.to_string(),
-                        target,
-                    }),
-                    Node {
-                        min_height: px(32),
-                        padding: UiRect::axes(px(10), px(6)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(6)),
-                        ..default()
-                    },
-                    BackgroundColor(if active {
-                        theme.primary.with_alpha(0.14)
-                    } else {
-                        theme.background.with_alpha(0.32)
-                    }),
-                    BorderColor::all(if active {
-                        theme.primary.with_alpha(0.58)
-                    } else {
-                        theme.border.with_alpha(0.48)
-                    }),
-                    TabIndex(0),
-                ))
-                .with_children(|button| {
-                    spawn_text(
-                        button,
-                        font.clone(),
-                        label,
-                        8.0,
-                        if active {
-                            theme.primary
-                        } else {
-                            theme.foreground
-                        },
-                    );
-                });
-            }
-        });
 }
 
 pub(crate) fn spawn_song_detail(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    asset_server: &AssetServer,
-    images: &mut Assets<Image>,
-    local_images: &mut LocalImages,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
@@ -242,7 +78,6 @@ pub(crate) fn spawn_song_detail(
         return;
     };
 
-    let cover = album_art_handle(&song, asset_server, images, local_images);
     parent
         .spawn((
             SongDetailContent,
@@ -257,158 +92,6 @@ pub(crate) fn spawn_song_detail(
             },
         ))
         .with_children(|detail| {
-            detail
-                .spawn((
-                    Node {
-                        width: percent(100),
-                        min_height: px(120),
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::SpaceBetween,
-                        flex_wrap: FlexWrap::Wrap,
-                        column_gap: px(24),
-                        row_gap: px(10),
-                        padding: UiRect::axes(px(32), px(14)),
-                        border: UiRect::bottom(px(1)),
-                        ..default()
-                    },
-                    BackgroundColor(theme.background),
-                    BorderColor::all(theme.border.with_alpha(0.45)),
-                ))
-                .with_children(|header| {
-                    header
-                    .spawn(Node {
-                        min_width: px(320),
-                        flex_grow: 1.0,
-                        align_items: AlignItems::Center,
-                        column_gap: px(18),
-                        ..default()
-                    })
-                    .with_children(|identity| {
-                        identity.spawn((
-                            Node {
-                                width: px(92),
-                                height: px(92),
-                                flex_shrink: 0.0,
-                                overflow: Overflow::clip(),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(6)),
-                                ..default()
-                            },
-                            ImageNode::new(cover),
-                            BorderColor::all(theme.border.with_alpha(0.9)),
-                        ));
-                        identity
-                            .spawn(Node {
-                                min_width: px(0),
-                                flex_grow: 1.0,
-                                flex_direction: FlexDirection::Column,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            })
-                            .with_children(|copy| {
-                                spawn_wrapped_text(
-                                    copy,
-                                    font.clone(),
-                                    song.title.clone(),
-                                    28.0,
-                                    theme.foreground,
-                                );
-                                spawn_text(
-                                    copy,
-                                    font.clone(),
-                                    format!(
-                                        "{}{}",
-                                        song.artist,
-                                        if song.album.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" · {}", song.album)
-                                        }
-                                    ),
-                                    12.0,
-                                    theme.muted_foreground,
-                                );
-                                copy.spawn(Node {
-                                    align_items: AlignItems::Center,
-                                    flex_wrap: FlexWrap::Wrap,
-                                    column_gap: px(14),
-                                    row_gap: px(3),
-                                    margin: UiRect::top(px(5)),
-                                    ..default()
-                                })
-                                .with_children(|metadata| {
-                                    spawn_text(metadata, font.clone(), format_duration(song.duration_secs), 9.0, theme.muted_foreground);
-                                    spawn_text(metadata, font.clone(), song.language.as_deref().unwrap_or("Language unknown"), 9.0, theme.muted_foreground);
-                                    if let Some(key) = song.override_key.as_ref().or(song.key.as_ref()) {
-                                        spawn_text(metadata, font.clone(), format!("Key {key}"), 9.0, theme.muted_foreground);
-                                    }
-                                    spawn_text(metadata, font.clone(), format!("{:.1}× playback speed", song.tempo), 9.0, theme.muted_foreground);
-                                });
-                            });
-                    });
-                    header
-                        .spawn(Node {
-                            min_width: px(0),
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::FlexEnd,
-                            flex_wrap: FlexWrap::Wrap,
-                            column_gap: px(8),
-                            row_gap: px(6),
-                            ..default()
-                        })
-                        .with_children(|actions| {
-                            let current = session.library_playback.file_hash.as_deref()
-                                == Some(song.file_hash.as_str())
-                                && session.library_playback.status.loaded;
-                            spawn_compact_action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                if current && session.library_playback.status.playing {
-                                    "Pause"
-                                } else if current {
-                                    "Resume"
-                                } else {
-                                    "Play original"
-                                },
-                                if current {
-                                    UiAction::from(LibraryCommand::ToggleLibraryPlayback)
-                                } else {
-                                    UiAction::from(LibraryCommand::PlayLibrarySong(song.file_hash.clone()))
-                                },
-                            );
-                            spawn_song_primary_actions(actions, font.clone(), &song, session, theme);
-                            spawn_compact_action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                "Processing Studio",
-                                UiAction::from(AnalysisCommand::OpenProcessingStudio(
-                                    song.file_hash.clone(),
-                                )),
-                            );
-                            spawn_compact_action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                "Advanced Graph",
-                                view_song_analysis_action(&song.file_hash),
-                            );
-                            // Secondary actions (phase plan §8.1: "次级操作 Play
-                            // original / Export / Song metadata / More").
-                            // Export moved out of this row into the
-                            // "Authoring & Export" section card (§8.2) --
-                            // this row keeps Play/Settings only now.
-                            spawn_compact_action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                "Settings",
-                                UiAction::from(EditorCommand::OpenSongSettings(song.file_hash.clone())),
-                            );
-                        });
-                });
-
             detail
                 .spawn(Node {
                     width: percent(100),
@@ -449,12 +132,18 @@ pub(crate) fn spawn_song_detail(
                         // the sections are independently legible and can
                         // reflow in the wrap layout.
                         spawn_song_detail_section_card(columns, theme, 360.0, |overview| {
-                            spawn_detail_heading(
+                            spawn_detail_heading_with_action(
                                 overview,
                                 font.clone(),
                                 theme,
                                 "OVERVIEW",
                                 "Track information",
+                                Some((
+                                    "Settings",
+                                    UiAction::from(EditorCommand::OpenSongSettings(
+                                        song.file_hash.clone(),
+                                    )),
+                                )),
                             );
                             for (label, value) in song_overview_rows(&song) {
                                 spawn_detail_value(overview, font.clone(), theme, label, value);
@@ -463,12 +152,48 @@ pub(crate) fn spawn_song_detail(
                         });
 
                         spawn_song_detail_section_card(columns, theme, 420.0, |analysis| {
-                            spawn_detail_heading(
+                            spawn_detail_heading_with_action(
                                 analysis,
                                 font.clone(),
                                 theme,
                                 "ANALYSIS",
                                 "Analysis",
+                                (!song.is_analyzed).then(|| {
+                                    (
+                                        "Analyze now",
+                                        UiAction::from(AnalysisCommand::AnalyzeNow(
+                                            song.file_hash.clone(),
+                                        )),
+                                    )
+                                }),
+                            );
+                            for (label, value) in song_analysis_summary_rows(&song) {
+                                spawn_detail_value(analysis, font.clone(), theme, label, value);
+                            }
+                            spawn_setting_row(
+                                analysis,
+                                font.clone(),
+                                theme,
+                                "Workflow",
+                                if song.is_analyzed {
+                                    "Analyzed. Open the node-graph workflow to inspect or customize how this song's stages are configured."
+                                } else {
+                                    "Not analyzed yet. Open the node-graph workflow to customize stages before running, instead of the one-click default."
+                                },
+                                Some((
+                                    "Open workflow",
+                                    UiAction::from(AnalysisCommand::OpenProcessingStudio(
+                                        song.file_hash.clone(),
+                                    )),
+                                )),
+                            );
+                            spawn_setting_row(
+                                analysis,
+                                font.clone(),
+                                theme,
+                                "Processing queue",
+                                "Add this song to the processing queue using its configured analysis workflow.",
+                                Some(song_analysis_action(&song)),
                             );
                             let song_profile =
                                 app_core::get_song_analysis_profile(&song.file_hash);
@@ -485,60 +210,31 @@ pub(crate) fn spawn_song_detail(
                                         .map(|profile| &profile.analysis_experience),
                                 ),
                                 Some((
-                                    "Open analysis defaults",
+                                    "Environment settings",
                                     UiAction::from(SettingsCommand::SettingsTab(
                                         SettingsTab::Analysis,
                                     )),
                                 )),
                             );
-                            spawn_song_quality_choices(
-                                analysis,
-                                font.clone(),
-                                theme,
-                                &song.file_hash,
-                                song_profile.as_ref().and_then(|profile| {
-                                    profile.analysis_experience.quality_profile
-                                }),
-                            );
-                            spawn_song_target_choices(
-                                analysis,
-                                font.clone(),
-                                theme,
-                                &song.file_hash,
-                                song_profile.as_ref().and_then(|profile| {
-                                    profile.analysis_experience.default_target
-                                }),
-                            );
-                            if analyzed_and_native {
+                            if analyzed_and_native
+                                && matches!(
+                                    app_core::candidate_chart_status(&song.file_hash),
+                                    app_core::CandidateChartStatus::CandidateAvailable(_)
+                                )
+                            {
                                 spawn_setting_row(
                                     analysis,
                                     font.clone(),
                                     theme,
-                                    "Full reanalysis",
-                                    "Recreate stems, lyrics, timing, detected key, musical BPM, and pitch assets.",
+                                    "Candidate analysis",
+                                    "A newer analysis result differs from your saved chart. Compare and choose whether to replace it.",
                                     Some((
-                                        "Reanalyze all",
-                                        UiAction::from(AnalysisCommand::ReanalyzeFull(song.file_hash.clone())),
+                                        "Compare & replace…",
+                                        UiAction::from(AnalysisCommand::RequestReplaceAuthoredChart(
+                                            song.file_hash.clone(),
+                                        )),
                                     )),
                                 );
-                                if matches!(
-                                    app_core::candidate_chart_status(&song.file_hash),
-                                    app_core::CandidateChartStatus::CandidateAvailable(_)
-                                ) {
-                                    spawn_setting_row(
-                                        analysis,
-                                        font.clone(),
-                                        theme,
-                                        "Candidate analysis",
-                                        "A newer analysis result differs from your saved chart. Compare and choose whether to replace it.",
-                                        Some((
-                                            "Compare & replace…",
-                                            UiAction::from(AnalysisCommand::RequestReplaceAuthoredChart(
-                                                song.file_hash.clone(),
-                                            )),
-                                        )),
-                                    );
-                                }
                             }
                         });
 
@@ -555,7 +251,7 @@ pub(crate) fn spawn_song_detail(
                                 font.clone(),
                                 theme,
                                 "Lyrics",
-                                "Paste plain lyrics to realign, or provide timed LRC without replacing source media.",
+                                "Edit plain lyrics or provide timed LRC without replacing source media or starting analysis.",
                                 if native_source {
                                     Some((
                                         "Edit lyrics…".to_string(),
@@ -578,41 +274,6 @@ pub(crate) fn spawn_song_detail(
                                     Some((
                                         "Change language…",
                                         UiAction::from(EditorCommand::OpenLanguageEditor(song.file_hash.clone())),
-                                    )),
-                                );
-                            }
-                            if analyzed_and_native {
-                                spawn_setting_row(
-                                    lyrics,
-                                    font.clone(),
-                                    theme,
-                                    "Word timing",
-                                    "Rebuild timings from current lyrics using the selected alignment backend.",
-                                    Some((
-                                        "Realign",
-                                        UiAction::from(AnalysisCommand::RealignSong(song.file_hash.clone())),
-                                    )),
-                                );
-                                spawn_setting_row(
-                                    lyrics,
-                                    font.clone(),
-                                    theme,
-                                    "Lyrics source",
-                                    "Refetch lyrics and align, or force a fresh transcription from the vocals.",
-                                    Some((
-                                        "Refetch & align",
-                                        UiAction::from(AnalysisCommand::ReanalyzeTranscript(song.file_hash.clone())),
-                                    )),
-                                );
-                                spawn_setting_row(
-                                    lyrics,
-                                    font.clone(),
-                                    theme,
-                                    "Transcription",
-                                    "Ignore online lyrics and transcribe the vocals again.",
-                                    Some((
-                                        "Force transcribe",
-                                        UiAction::from(AnalysisCommand::ForceTranscribe(song.file_hash.clone())),
                                     )),
                                 );
                             }
@@ -665,17 +326,6 @@ pub(crate) fn spawn_song_detail(
                                     UiAction::from(EditorCommand::ShiftSongTempo(song.file_hash.clone(), -1)),
                                     UiAction::from(EditorCommand::ShiftSongTempo(song.file_hash.clone(), 1)),
                                 );
-                                spawn_setting_row(
-                                    audio,
-                                    font.clone(),
-                                    theme,
-                                    "Frequency analysis",
-                                    "Generate or repair the editable pitch guide.",
-                                    Some((
-                                        "Analyze pitch",
-                                        UiAction::from(AnalysisCommand::ReanalyzePitch(song.file_hash.clone())),
-                                    )),
-                                );
                             } else {
                                 spawn_setting_row(
                                     audio,
@@ -693,7 +343,7 @@ pub(crate) fn spawn_song_detail(
                         // Export now lives with the rest of this song's
                         // authoring controls (phase plan §8.2's "Authoring &
                         // Export" section).
-                        spawn_song_detail_section_card(columns, theme, 380.0, |authoring| {
+                        spawn_song_detail_section_card(columns, theme, 430.0, |authoring| {
                             spawn_detail_heading(
                                 authoring,
                                 font.clone(),
@@ -701,6 +351,45 @@ pub(crate) fn spawn_song_detail(
                                 "AUTHORING",
                                 "Authoring & export",
                             );
+                            spawn_setting_row(
+                                authoring,
+                                font.clone(),
+                                theme,
+                                "Chart editor",
+                                if song.editor_ready {
+                                    "Open the active authored or candidate chart for detailed note and lyric editing."
+                                } else {
+                                    song.editor_blocked_reason.as_deref().unwrap_or(
+                                        "A complete chart and playable audio are required before editing.",
+                                    )
+                                },
+                                Some((
+                                    "Open editor",
+                                    UiAction::from(LibraryCommand::OpenEditor(
+                                        song.file_hash.clone(),
+                                    )),
+                                )),
+                            );
+                            if !matches!(
+                                app_core::candidate_chart_status(&song.file_hash),
+                                app_core::CandidateChartStatus::NotAuthoredYet
+                            ) {
+                                spawn_setting_row(
+                                    authoring,
+                                    font.clone(),
+                                    theme,
+                                    "Authored chart",
+                                    "Delete only the authored chart. Source media, CandidateChart and analysis evidence are retained.",
+                                    Some((
+                                        "Delete chart…",
+                                        UiAction::from(
+                                            AnalysisCommand::RequestDeleteAuthoredChart(
+                                                song.file_hash.clone(),
+                                            ),
+                                        ),
+                                    )),
+                                );
+                            }
                             if song.authoring_ready {
                                 spawn_setting_row(
                                     authoring,
@@ -1097,10 +786,8 @@ pub(crate) fn spawn_lyrics_editor(
                             "Edit the lossless segment/word structure. Start/end values must be ordered and every word must remain inside its segment. Unknown extension fields are preserved."
                         } else if editor.mode == LyricsInputMode::TimedLrc {
                             "Paste line-level or enhanced LRC. Existing analyzed songs keep their stems; new songs can author over the original mix or explicitly queue separation."
-                        } else if app_core::AppConfig::load().align_backend() == "mms_karaoke" {
-                            "Enter one lyric phrase per line. MMS Karaoke accepts optional pronunciation overrides such as {漢字|かな} or [display|romaji]. Saving queues alignment and never modifies the source song."
                         } else {
-                            "Enter one lyric phrase per line. Saving queues alignment and never modifies the source song."
+                            "Enter one lyric phrase per line. Saving stores the lyrics without starting analysis or modifying the source song."
                         },
                         10.0,
                         theme.muted_foreground,
@@ -1155,6 +842,14 @@ pub(crate) fn spawn_lyrics_editor(
                                 },
                                 10.0,
                                 UiAction::from(EditorCommand::SearchLrclibLyrics),
+                            );
+                            spawn_text_button(
+                                options,
+                                font.clone(),
+                                theme,
+                                "Extract lyrics",
+                                10.0,
+                                UiAction::from(EditorCommand::ExtractLyrics),
                             );
                         });
                     }

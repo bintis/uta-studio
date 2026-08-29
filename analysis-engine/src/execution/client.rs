@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
+use crate::events::begin_node_for_presentation;
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -107,6 +108,9 @@ pub struct WorkerExpectation {
 pub struct NativeTask {
     pub task_id: String,
     pub node_id: String,
+    /// Optional compiled Processing Studio card identity when multiple cards
+    /// execute the same Engine capability independently.
+    pub presentation_node_id: Option<String>,
     pub model_id: String,
     pub input_artifacts: Vec<PathBuf>,
     pub output_dir: PathBuf,
@@ -119,6 +123,8 @@ pub struct ProgressEvent {
     pub task_id: String,
     pub fraction: f32,
     pub message: String,
+    pub work_units_completed: Option<u64>,
+    pub work_units_total: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +151,13 @@ impl SupervisedWorker {
                 format!("native worker is unavailable: {}", executable.display()),
             ));
         }
+        let lifecycle = begin_node_for_presentation(
+            &task.node_id,
+            &task.node_id,
+            Some(&task.model_id),
+            &expectation.component,
+            task.presentation_node_id.as_deref(),
+        );
         let output_root = task.output_dir.canonicalize().map_err(|error| {
             EngineError::new(
                 EngineErrorCode::OutputValidationFailed,
@@ -159,7 +172,15 @@ impl SupervisedWorker {
             WorkerFrame::Ready {
                 protocol,
                 component,
-            } if protocol == PROTOCOL_VERSION && component == expectation.component => {}
+                runtime_recipe_digest,
+            } if protocol == PROTOCOL_VERSION
+                && component == expectation.component
+                && expectation
+                    .runtime_recipe_digest
+                    .as_ref()
+                    .is_none_or(|expected| {
+                        runtime_recipe_digest.as_deref() == Some(expected.as_str())
+                    }) => {}
             WorkerFrame::Ready { .. } => {
                 return Err(EngineError::new(
                     EngineErrorCode::WorkerProtocolMismatch,
@@ -185,21 +206,64 @@ impl SupervisedWorker {
         })?;
 
         let mut outputs = Vec::new();
+        let mut last_fraction = 0.0_f32;
+        let mut last_work_units: Option<(u64, u64)> = None;
         loop {
             match process.next_frame(deadline, cancellation)? {
                 WorkerFrame::Progress {
                     task_id,
                     fraction,
                     message,
+                    work_units_completed,
+                    work_units_total,
                 } => {
                     ensure_task_id(&task.task_id, &task_id)?;
-                    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
-                        return Err(protocol_error("worker progress fraction is invalid"));
+                    if !fraction.is_finite()
+                        || !(0.0..=1.0).contains(&fraction)
+                        || fraction < last_fraction
+                    {
+                        return Err(protocol_error(
+                            "worker progress fraction is invalid or regressed",
+                        ));
+                    }
+                    last_fraction = fraction;
+                    let work_units = match (work_units_completed, work_units_total) {
+                        (None, None) => None,
+                        (Some(completed), Some(total)) if total > 0 && completed <= total => {
+                            if let Some((previous_completed, previous_total)) = last_work_units
+                                && (total != previous_total || completed < previous_completed)
+                            {
+                                return Err(protocol_error(
+                                    "worker progress work units changed identity or regressed",
+                                ));
+                            }
+                            last_work_units = Some((completed, total));
+                            Some((completed, total))
+                        }
+                        _ => {
+                            return Err(protocol_error(
+                                "worker progress work units are invalid or incomplete",
+                            ));
+                        }
+                    };
+                    let lifecycle_message = format!("[worker task {task_id}] {message}");
+                    if let Some((completed, total)) = work_units {
+                        lifecycle.measured_progress(
+                            fraction,
+                            completed,
+                            total,
+                            task_id.clone(),
+                            lifecycle_message,
+                        );
+                    } else {
+                        lifecycle.worker_progress(fraction, task_id.clone(), lifecycle_message);
                     }
                     progress(ProgressEvent {
                         task_id,
                         fraction,
                         message,
+                        work_units_completed,
+                        work_units_total,
                     });
                 }
                 WorkerFrame::Output {
@@ -212,6 +276,7 @@ impl SupervisedWorker {
                     if artifact.trim().is_empty() || media_type.trim().is_empty() {
                         return Err(protocol_error("worker output declaration is invalid"));
                     }
+                    lifecycle.artifact(&artifact);
                     outputs.push(NativeTaskOutput {
                         artifact,
                         path: confined_output(&output_root, &path)?,
@@ -230,6 +295,7 @@ impl SupervisedWorker {
                         protocol: PROTOCOL_VERSION,
                     })?;
                     process.wait_for_exit(SHUTDOWN_TIMEOUT)?;
+                    lifecycle.complete();
                     return Ok(outputs);
                 }
                 WorkerFrame::Error {
@@ -346,11 +412,15 @@ enum WorkerFrame {
     Ready {
         protocol: u32,
         component: String,
+        #[serde(default)]
+        runtime_recipe_digest: Option<String>,
     },
     Progress {
         task_id: String,
         fraction: f32,
         message: String,
+        work_units_completed: Option<u64>,
+        work_units_total: Option<u64>,
     },
     Output {
         task_id: String,
@@ -605,7 +675,11 @@ fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> Option<Result<
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn cancellation_token_is_shared() {
@@ -631,12 +705,13 @@ mod tests {
 
     fn temporary_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "uta-worker-client-{}-{}",
+            "uta-worker-client-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEMP_ROOT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -655,15 +730,7 @@ mod tests {
 
     #[test]
     fn confined_output_rejects_escape() {
-        let root = std::env::temp_dir().join(format!(
-            "uta-worker-client-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = temporary_root();
         let outside = root.with_extension("outside");
         std::fs::write(&outside, b"outside").unwrap();
         assert_eq!(
@@ -686,7 +753,7 @@ mod tests {
         let executable = worker_script(
             &root,
             &format!(
-                "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-1\",\"fraction\":0.5,\"message\":\"running\"}}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-1\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-1\",\"status\":\"ok\"}}'\nread quit",
+                "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-1\",\"fraction\":0.5,\"message\":\"running\",\"work_units_completed\":2,\"work_units_total\":4}}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-1\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-1\",\"status\":\"ok\"}}'\nread quit",
                 output.display(),
                 output.display()
             ),
@@ -694,6 +761,7 @@ mod tests {
         let task = NativeTask {
             task_id: "task-1".to_string(),
             node_id: "pitch.track".to_string(),
+            presentation_node_id: None,
             model_id: "rmvpe".to_string(),
             input_artifacts: vec![input],
             output_dir: root.clone(),
@@ -715,7 +783,94 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].path, output.canonicalize().unwrap());
         assert_eq!(progress[0].fraction, 0.5);
+        assert_eq!(progress[0].work_units_completed, Some(2));
+        assert_eq!(progress[0].work_units_total, Some(4));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn supervised_worker_rejects_runtime_recipe_mismatch() {
+        let root = temporary_root();
+        let input = root.join("input.wav");
+        std::fs::write(&input, b"input").unwrap();
+        let executable = worker_script(
+            &root,
+            "printf '%s\\n' '{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"other-recipe\"}'\nsleep 1",
+        );
+        let error = SupervisedWorker::run(
+            &executable,
+            &WorkerExpectation {
+                component: "fixture-worker".to_string(),
+                runtime_recipe_digest: Some("expected-recipe".to_string()),
+            },
+            &NativeTask {
+                task_id: "task-mismatch".to_string(),
+                node_id: "pitch.track".to_string(),
+                presentation_node_id: None,
+                model_id: "rmvpe".to_string(),
+                input_artifacts: vec![input],
+                output_dir: root.clone(),
+                config: serde_json::Value::Null,
+                timeout: Duration::from_secs(5),
+            },
+            &CancellationToken::default(),
+            |_| {},
+        )
+        .expect_err("a mismatched native runtime recipe must fail closed");
+        assert_eq!(error.code, EngineErrorCode::WorkerProtocolMismatch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn supervised_worker_rejects_invalid_or_regressing_progress() {
+        let invalid_frames = [
+            r#"{"type":"progress","task_id":"task-invalid","fraction":0.5,"message":"incomplete","work_units_completed":1}"#,
+            r#"{"type":"progress","task_id":"task-invalid","fraction":0.5,"message":"range","work_units_completed":4,"work_units_total":3}"#,
+            r#"{"type":"progress","task_id":"task-invalid","fraction":0.4,"message":"first","work_units_completed":2,"work_units_total":3}
+{"type":"progress","task_id":"task-invalid","fraction":0.5,"message":"regressed","work_units_completed":1,"work_units_total":3}"#,
+            r#"{"type":"progress","task_id":"task-invalid","fraction":0.6,"message":"first"}
+{"type":"progress","task_id":"task-invalid","fraction":0.5,"message":"regressed"}"#,
+        ];
+        for (index, frames) in invalid_frames.into_iter().enumerate() {
+            let root = temporary_root();
+            let input = root.join("input.wav");
+            std::fs::write(&input, b"input").unwrap();
+            let executable = worker_script(
+                &root,
+                &format!(
+                    "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\"}}'\nread command\nprintf '%s\\n' '{frames}'\nsleep 1"
+                ),
+            );
+            let task = NativeTask {
+                task_id: "task-invalid".to_string(),
+                node_id: "pitch.track".to_string(),
+                presentation_node_id: None,
+                model_id: "rmvpe".to_string(),
+                input_artifacts: vec![input],
+                output_dir: root.clone(),
+                config: serde_json::Value::Null,
+                timeout: Duration::from_secs(5),
+            };
+            let error = SupervisedWorker::run(
+                &executable,
+                &WorkerExpectation {
+                    component: "fixture-worker".to_string(),
+                    runtime_recipe_digest: None,
+                },
+                &task,
+                &CancellationToken::default(),
+                |_| {},
+            )
+            .expect_err("invalid progress must fail closed");
+            assert_eq!(
+                error.code,
+                EngineErrorCode::WorkerProtocolMismatch,
+                "case {index}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -731,6 +886,7 @@ mod tests {
         let task = NativeTask {
             task_id: "task-cancel".to_string(),
             node_id: "pitch.track".to_string(),
+            presentation_node_id: None,
             model_id: "rmvpe".to_string(),
             input_artifacts: vec![input],
             output_dir: root.clone(),

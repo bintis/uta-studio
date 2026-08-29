@@ -1,0 +1,28 @@
+{
+  "format": "uta.song",
+  "format_version": "0.2.0",
+  "package_id": "org.example.demo.unsafe-path",
+  "revision": 1,
+  "song": {
+    "title": "Bad",
+    "artist": "Example",
+    "duration_seconds": 30
+  },
+  "audio": {
+    "instrumental": {
+      "path": "../outside.ogg",
+      "media_type": "audio/ogg",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "bytes": 1024
+    }
+  },
+  "charts": {
+    "vocal": {
+      "path": "charts/vocal.json",
+      "media_type": "application/vnd.uta.vocal-chart+json;version=1",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "bytes": 512
+    }
+  },
+  "required_features": ["vocal-chart/1"]
+}

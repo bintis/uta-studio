@@ -5,7 +5,7 @@ These rules are mandatory repository-wide.
 ## Scope and architecture
 
 - `tasks/remaining-models/STATE.md` is the durable model/task index; `docs/KEY_CONCLUSIONS.md` summarizes accepted conclusions. Do not recreate deleted historical logs or reopen completed work without a current source/test blocker.
-- Post-model cards 15–21 and 20A run serially under `tasks/final-features/` and must follow `PROCESS_BOUNDARY_RULES.md` and `STUDIO_BACKEND_UI_PARITY.md`. Cards 15–17 are `READY`, 17A is `SKIPPED_ALREADY_CLOSED`, and 18 is `NEEDS_REVIEW`.
+- Post-model cards 15–20, 20A, and follow-up 21D are `READY`; 17A is `SKIPPED_ALREADY_CLOSED`. Card 21 is `NEEDS_REVIEW` because the newly approved AI-judgment fusion design postdates audit revision 4, and follow-up 21E is `PENDING` until Runtime Manager tool ownership/provenance/privacy/UI convergence is implemented.
 - `docs/design/README.md` and its current linked architecture documents are authoritative over earlier monolithic/refactor assumptions.
 - Studio communicates with packaged `uta-analyze` / `uta-runtime` machine protocols only. Never import `uta_analysis_engine::` or `uta_runtime_manager::` into `app-core/**` or `desktop/**`.
 - Reserve `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`, whole-workspace checks, and Nix packaging for the later explicit release pass.
@@ -18,7 +18,7 @@ These rules are mandatory repository-wide.
 
 ## Runtime
 
-- Prefer packaged native workers and host/packaged `ffmpeg`, using `UTA_STUDIO_NATIVE_ANALYZER_PATH`, component worker variables, and `UTA_STUDIO_FFMPEG_PATH`; use normal executable discovery only where supported.
+- Studio launches packaged `uta-analyze` and `uta-runtime` through `UTA_STUDIO_ANALYSIS_CLI_PATH` and `UTA_STUDIO_RUNTIME_CLI_PATH`. Backend components own packaged worker variables; use host/packaged `ffmpeg` through `UTA_STUDIO_FFMPEG_PATH` and normal executable discovery only where supported.
 - Production inference is native-only. CPU is a reference/diagnostic lane, not an automatic production fallback; do not add script-runtime or network-service fallbacks.
 - Treat configured model directories as user data: tests must not delete or replace them, and destructive cache operations require explicit user action.
 

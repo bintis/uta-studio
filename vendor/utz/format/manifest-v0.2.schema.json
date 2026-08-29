@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bintis/utz/main/format/manifest-v0.2.schema.json",
+  "title": "Uta song package manifest 0.2",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "package_id",
+    "revision",
+    "song",
+    "audio",
+    "charts",
+    "required_features"
+  ],
+  "properties": {
+    "format": { "const": "uta.song" },
+    "format_version": { "type": "string", "pattern": "^0\\.2\\.[0-9]+$" },
+    "package_id": {
+      "description": "Stable identity of the song package across revisions. Reverse-DNS under a namespace the producer controls (org.example.artist.song) or a UUIDv4 in lowercase hex. Producers are responsible for uniqueness within their namespace.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "revision": {
+      "description": "Monotonically increasing edition counter for the same package_id. A library replaces its copy when it sees the same package_id with a higher revision.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "song": { "$ref": "#/$defs/song" },
+    "audio": {
+      "type": "object",
+      "required": ["instrumental"],
+      "properties": {
+        "instrumental": { "$ref": "#/$defs/asset" },
+        "guide_vocals": { "$ref": "#/$defs/asset" },
+        "original": { "$ref": "#/$defs/asset" },
+        "loudness": {
+          "description": "Advisory EBU R 128 integrated loudness per stem, for playback gain matching.",
+          "type": "object",
+          "properties": {
+            "instrumental_lufs": { "$ref": "#/$defs/lufs" },
+            "guide_vocals_lufs": { "$ref": "#/$defs/lufs" },
+            "original_lufs": { "$ref": "#/$defs/lufs" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "charts": {
+      "type": "object",
+      "required": ["vocal"],
+      "properties": {
+        "vocal": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": false
+    },
+    "analysis": {
+      "type": "object",
+      "properties": {
+        "pitch_evidence": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": false
+    },
+    "visuals": {
+      "type": "object",
+      "properties": {
+        "cover": { "$ref": "#/$defs/asset" },
+        "video": { "$ref": "#/$defs/asset" },
+        "video_offset_seconds": {
+          "description": "Instrumental time in seconds at which video time zero is presented. Negative values start the video before the instrumental.",
+          "type": "number",
+          "default": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "scoring": {
+      "description": "Optional advisory hint naming the scoring engine the chart was authored against. Consumers MAY use it to pick matching parameters and MUST NOT reject a package over an unknown engine.",
+      "type": "object",
+      "required": ["engine", "version"],
+      "properties": {
+        "engine": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "octave_tolerance": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": true
+    },
+    "required_features": {
+      "type": "array",
+      "contains": { "const": "vocal-chart/1" },
+      "items": { "$ref": "#/$defs/feature" },
+      "uniqueItems": true
+    },
+    "optional_features": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/feature" },
+      "uniqueItems": true,
+      "default": []
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/feature" },
+      "additionalProperties": { "$ref": "#/$defs/asset" },
+      "default": {}
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "generator": { "type": "string" },
+        "source": { "type": "string" },
+        "rights": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "feature": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*/[1-9][0-9]*$"
+    },
+    "lufs": {
+      "type": ["number", "null"],
+      "minimum": -70,
+      "maximum": 0
+    },
+    "asset": {
+      "type": "object",
+      "required": ["path", "media_type", "sha256", "bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "song": {
+      "type": "object",
+      "required": ["title", "artist", "duration_seconds"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "artist": { "type": "string", "minLength": 1 },
+        "album": { "type": ["string", "null"] },
+        "language": { "type": ["string", "null"] },
+        "duration_seconds": { "type": "number", "minimum": 0 },
+        "bpm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "key": { "type": ["string", "null"] },
+        "title_sort": {
+          "description": "Collation key for the title: kana reading for Japanese, pinyin for Chinese, article-stripped text for English.",
+          "type": ["string", "null"]
+        },
+        "artist_sort": { "type": ["string", "null"] },
+        "genre": { "type": ["string", "null"] },
+        "year": { "type": ["integer", "null"], "minimum": 0 },
+        "creator": {
+          "description": "Person or tool credited with authoring the chart, not the recording artist.",
+          "type": ["string", "null"]
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "default": []
+        },
+        "preview_start_seconds": {
+          "description": "Instrumental time in seconds where song-select preview playback should begin, typically the hook.",
+          "type": ["number", "null"],
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
