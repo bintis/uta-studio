@@ -179,7 +179,8 @@ impl Planner {
             }
         }
 
-        if intent.requests_instrumental {
+        if intent.requests_instrumental && !capability_satisfied(request, "audio.extract_instrumental")
+        {
             require_workflow_baseline(workflow.as_ref(), "audio.extract_instrumental", request)?;
             let provider = workflow
                 .as_ref()
@@ -270,6 +271,7 @@ impl Planner {
             requirements.add("firered_asr2_aed", false, "speech.transcribe.challenger");
         }
         if intent.needs_vocal_analysis_input
+            && !capability_satisfied(request, "audio.denoise")
             && workflow_selects(
                 workflow.as_ref(),
                 "audio.denoise",
@@ -280,6 +282,7 @@ impl Planner {
             requirements.add("melband_roformer_denoise_aufr33", false, "audio.denoise");
         }
         if intent.needs_vocal_analysis_input
+            && !capability_satisfied(request, "audio.dereverb")
             && workflow_selects(
                 workflow.as_ref(),
                 "audio.dereverb",
@@ -440,12 +443,15 @@ impl Planner {
             );
         let run_denoise = has_model("melband_roformer_denoise_aufr33");
         let run_dereverb = has_model("melband_roformer_dereverb_anvuew");
+        let run_extract_instrumental = intent.requests_instrumental
+            && !capability_satisfied(request, "audio.extract_instrumental");
         let preparation = preparation_capabilities(
             primary_role,
             &intent,
             analyze_with_lead_isolate,
             run_denoise,
             run_dereverb,
+            run_extract_instrumental,
         );
         let mut nodes = vec![node("decode", "audio.decode", true, &[])];
         let mut analysis_parent = append_preparation_nodes(
@@ -454,6 +460,7 @@ impl Planner {
             &intent,
             run_lead_isolate,
             analyze_with_lead_isolate,
+            run_extract_instrumental,
         );
         if run_denoise {
             nodes.push(node("denoise", "audio.denoise", false, &[&analysis_parent]));
@@ -812,6 +819,17 @@ fn require_workflow_baseline(
     }
 }
 
+/// True when the caller has asserted (via `satisfied_capabilities`) that the
+/// supplied primary audio source already reflects this capability's output,
+/// so it must not be re-requested this run. See the field's doc comment in
+/// `contract::request` for why this exists alongside `primary_role`.
+fn capability_satisfied(request: &AnalyzeRequestV1, capability: &str) -> bool {
+    request
+        .satisfied_capabilities
+        .iter()
+        .any(|satisfied| satisfied == capability)
+}
+
 fn workflow_selects(
     workflow: Option<&WorkflowExecutionV1>,
     capability: &str,
@@ -881,6 +899,7 @@ fn preparation_capabilities(
     analyze_with_lead_isolate: bool,
     run_denoise: bool,
     run_dereverb: bool,
+    run_extract_instrumental: bool,
 ) -> Vec<CapabilityId> {
     let mut result = Vec::new();
     match role {
@@ -891,7 +910,7 @@ fn preparation_capabilities(
             if intent.needs_vocal_analysis_input && analyze_with_lead_isolate {
                 result.push(CapabilityId::from_static("audio.lead_isolate"));
             }
-            if intent.requests_instrumental {
+            if run_extract_instrumental {
                 result.push(CapabilityId::from_static("audio.extract_instrumental"));
             }
         }
@@ -918,6 +937,7 @@ fn append_preparation_nodes(
     intent: &AnalysisIntent,
     run_lead_isolate: bool,
     analyze_with_lead_isolate: bool,
+    run_extract_instrumental: bool,
 ) -> String {
     let mut analysis_parent = "decode".to_string();
     match role {
@@ -943,7 +963,7 @@ fn append_preparation_nodes(
                     analysis_parent = "lead-isolate".to_string();
                 }
             }
-            if intent.requests_instrumental {
+            if run_extract_instrumental {
                 // Production instrumental extraction is independent from the
                 // analysis-lead branch and always consumes the decoded mix.
                 nodes.push(node(
@@ -1060,7 +1080,11 @@ fn quality_gates(profile: AnalysisProfile, nodes: &[ExecutionNode]) -> Vec<Strin
     if profile != AnalysisProfile::Fast && (has("audio.denoise") || has("audio.dereverb")) {
         gates.push(CLEANUP_CONSISTENCY_GATE.to_string());
     }
-    if has("fusion.singing") {
+    // Vocal topology needs the independent foreground/residual pair produced
+    // by the selected lead-isolation route. A normal Vocal -> analyzers bypass
+    // is valid workflow intent; absence of an unselected preprocessing node is
+    // not an unknown/failed quality measurement.
+    if has("fusion.singing") && has("audio.lead_isolate") {
         gates.push(VOCAL_TOPOLOGY_GATE.to_string());
     }
     gates
@@ -1475,6 +1499,91 @@ mod tests {
     }
 
     #[test]
+    fn satisfied_cleanup_capabilities_are_skipped_even_though_the_workflow_enables_them() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: true,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: Vec::new(),
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            pitch_workflow_with_enabled_cleanup(),
+        );
+        request.satisfied_capabilities = vec!["audio.denoise".to_string(), "audio.dereverb".to_string()];
+
+        let requirements = Planner::requirements(&request).unwrap();
+        let resources = resource_ids(&requirements);
+        assert!(!resources.contains("model:melband_roformer_denoise_aufr33"));
+        assert!(!resources.contains("model:melband_roformer_dereverb_anvuew"));
+
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(!has_node(&plan, "audio.denoise"));
+        assert!(!has_node(&plan, "audio.dereverb"));
+        assert_eq!(
+            plan.source_route
+                .preparation
+                .iter()
+                .map(CapabilityId::as_str)
+                .collect::<Vec<_>>(),
+            ["audio.extract_vocals"]
+        );
+    }
+
+    #[test]
+    fn satisfying_only_denoise_still_requests_dereverb() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+            vocal_chart: false,
+            pitch_evidence: true,
+            singing_analysis: false,
+            transcript: false,
+            alignment: false,
+            stems: Vec::new(),
+        };
+        request.extensions.insert(
+            crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+            pitch_workflow_with_enabled_cleanup(),
+        );
+        request.satisfied_capabilities = vec!["audio.denoise".to_string()];
+
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(!has_node(&plan, "audio.denoise"));
+        assert!(has_node(&plan, "audio.dereverb"));
+        assert_eq!(
+            plan.execution_nodes
+                .iter()
+                .find(|node| node.capability.as_str() == "audio.dereverb")
+                .unwrap()
+                .depends_on,
+            ["extract-vocals"]
+        );
+    }
+
+    #[test]
+    fn satisfied_extract_instrumental_is_skipped_even_when_requested() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.requested_artifacts.stems.push(AudioRole::Instrumental);
+        request.satisfied_capabilities = vec!["audio.extract_instrumental".to_string()];
+
+        let requirements = Planner::requirements(&request).unwrap();
+        assert!(!resource_ids(&requirements).contains("model:melband_roformer_inst_v2"));
+        let plan = Planner::plan(&request, None).unwrap();
+        assert!(!has_node(&plan, "audio.extract_instrumental"));
+    }
+
+    #[test]
+    fn an_unrecognized_satisfied_capability_is_rejected() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        request.satisfied_capabilities = vec!["audio.lead_isolate".to_string()];
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+    }
+
+    #[test]
     fn original_mix_default_bypasses_optional_preprocessing() {
         let request = valid_request(AudioRole::OriginalMix);
         let requirements = Planner::requirements(&request).unwrap();
@@ -1644,7 +1753,6 @@ mod tests {
                 CLIPPING_GATE,
                 SILENCE_RATIO_GATE,
                 ENERGY_RATIO_GATE,
-                VOCAL_TOPOLOGY_GATE,
             ]
         );
 
@@ -1659,9 +1767,19 @@ mod tests {
                 CLIPPING_GATE,
                 SILENCE_RATIO_GATE,
                 ENERGY_RATIO_GATE,
-                VOCAL_TOPOLOGY_GATE,
             ]
         );
+
+        let mut isolated_nodes = balanced.execution_nodes.clone();
+        isolated_nodes.push(ExecutionNode {
+            id: "lead-isolate".to_string(),
+            capability: CapabilityId::from_static("audio.lead_isolate"),
+            required: true,
+            depends_on: vec!["extract-vocals".to_string()],
+        });
+        let isolated_gates = quality_gates(AnalysisProfile::Balanced, &isolated_nodes);
+        assert!(isolated_gates.contains(&LEAD_PURITY_GATE.to_string()));
+        assert!(isolated_gates.contains(&VOCAL_TOPOLOGY_GATE.to_string()));
 
         let mut clean_pitch = valid_request(AudioRole::CleanLeadVocal);
         clean_pitch.analysis.profile = AnalysisProfile::Balanced;
@@ -1714,6 +1832,8 @@ mod tests {
             text: "唱".to_string(),
             reading: None,
             phonemes: None,
+            start: None,
+            end: None,
         }];
         let requirements = Planner::requirements(&request).unwrap();
         assert!(
@@ -1803,6 +1923,8 @@ mod tests {
             text: "sing".to_string(),
             reading: None,
             phonemes: None,
+            start: None,
+            end: None,
         }];
         request.requested_artifacts.vocal_chart = false;
         request.requested_artifacts.pitch_evidence = false;
@@ -1824,6 +1946,8 @@ mod tests {
             text: "唱".to_string(),
             reading: None,
             phonemes: None,
+            start: None,
+            end: None,
         }];
         request.requested_artifacts.vocal_chart = false;
         request.requested_artifacts.pitch_evidence = false;

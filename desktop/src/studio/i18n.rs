@@ -276,6 +276,8 @@ pub(crate) enum UiMessage {
     FolderStoppedWatching,
     AnalysisEngineSelected,
     DiagnosticsSummary,
+    CanonicalLyricsAvailablePlain,
+    CanonicalLyricsAvailableTimedLrc,
 }
 
 impl UiMessage {
@@ -300,6 +302,10 @@ impl UiMessage {
             Self::FolderStoppedWatching => "message.folder_stopped_watching",
             Self::AnalysisEngineSelected => "message.analysis_engine_selected",
             Self::DiagnosticsSummary => "message.diagnostics_summary",
+            Self::CanonicalLyricsAvailablePlain => "message.canonical_lyrics_available_plain",
+            Self::CanonicalLyricsAvailableTimedLrc => {
+                "message.canonical_lyrics_available_timed_lrc"
+            }
         }
     }
 
@@ -329,6 +335,12 @@ impl UiMessage {
             }
             Self::DiagnosticsSummary => {
                 "{passed} passed · {failed} failed · {skipped} skipped · {apis} APIs"
+            }
+            Self::CanonicalLyricsAvailablePlain => {
+                "Known lyrics available: {count} line(s) of plain text will feed forced alignment directly, skipping transcription."
+            }
+            Self::CanonicalLyricsAvailableTimedLrc => {
+                "Known lyrics available: {count} line(s) from Timed LRC will feed forced alignment directly, skipping transcription."
             }
         }
     }
@@ -626,6 +638,53 @@ mod tests {
                     .get(key)
                     .unwrap_or_else(|| panic!("{locale} is missing {key}"));
                 assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn remove_song_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "Remove from library…",
+            "Remove this song from your library?",
+            "This removes “{title}” and any generated stems, previews, or chart data from Uta! Studio's library. The source audio file is not touched and can be rescanned later.",
+            "Remove from library",
+            "Removed from your library. The source audio file was not changed.",
+            "Could not remove this song: {error}",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_lyrics_status_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "message.canonical_lyrics_available_plain",
+            "message.canonical_lyrics_available_timed_lrc",
+        ] {
+            let english_value = english
+                .get(key)
+                .unwrap_or_else(|| panic!("English is missing {key}"));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(
+                    translated, english_value,
+                    "{locale} fell back to English for {key}"
+                );
             }
         }
     }

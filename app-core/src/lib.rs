@@ -14,6 +14,7 @@ mod audio_processing;
 mod authoring;
 mod backend_cli;
 mod cache;
+mod chain_cache;
 mod chart;
 mod config;
 mod editor;
@@ -73,7 +74,8 @@ pub use analyzer::{
     clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
     delete_cache, enqueue_all, enqueue_one, load_analysis_history, load_analysis_node_attempts,
     load_analysis_tasks, realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch,
-    reanalyze_transcript, resolve_song_authoring_state, start_queued_analysis, stop_analysis_run,
+    reanalyze_transcript, remove_song_from_library, resolve_song_authoring_state,
+    start_queued_analysis, stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -139,8 +141,9 @@ pub use library_db::{init_library, library_db_path, load_song_by_hash, load_song
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};
 pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsStore};
 pub use lyrics::{
-    LrclibCandidate, LyricsFile, apply_timed_lyrics, load_lyrics_file, provide_lrc, save_lyrics,
-    search_lrclib_for_hash,
+    CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsFile, apply_timed_lyrics,
+    canonical_lyrics_status, load_lyrics_file, lrc_transcript_line_segments, provide_lrc,
+    save_lyrics, search_lrclib_for_hash,
 };
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
@@ -186,7 +189,8 @@ pub use workflow::{
     preview_workflow_compile, remove_workflow_node, reorder_audio_transformation,
     save_song_workflow, separation_strategy_descriptor, separation_strategy_options,
     set_workflow_execution_policy, set_workflow_node_model, set_workflow_parameter,
-    set_workflow_priority, set_workflow_separation_strategy, validate_workflow,
+    set_workflow_priority, set_workflow_separation_strategy, set_workflow_skip_if_unchanged,
+    validate_workflow,
     workflow_definition_digest, workflow_has_optional_card, workflow_model_label,
     workflow_model_options,
 };

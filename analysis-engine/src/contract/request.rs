@@ -33,9 +33,26 @@ pub struct AnalyzeRequestV1 {
     pub requested_artifacts: RequestedArtifactsV1,
     #[serde(default)]
     pub execution_policy: ExecutionPolicyV1,
+    /// Capabilities the caller asserts are already reflected in the supplied
+    /// primary audio source and should not be re-requested, even though
+    /// their normal inclusion check (`workflow_selects`/`requested_artifacts`)
+    /// would otherwise select them. This exists because `audio.denoise`,
+    /// `audio.dereverb`, and `audio.extract_instrumental` have no distinct
+    /// `AudioRole` checkpoint the way `audio.extract_vocals`/
+    /// `audio.lead_isolate` do (see the `primary_role` match in
+    /// `planner::plan`), so role injection alone cannot skip them when a
+    /// caller has cached their output.
+    #[serde(default)]
+    pub satisfied_capabilities: Vec<String>,
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
 }
+
+pub const SATISFIABLE_CAPABILITIES: &[&str] = &[
+    "audio.extract_instrumental",
+    "audio.denoise",
+    "audio.dereverb",
+];
 
 impl AnalyzeRequestV1 {
     pub fn validate(&self) -> EngineResult<()> {
@@ -96,6 +113,13 @@ impl AnalyzeRequestV1 {
         self.validate_constraints()?;
         self.analysis.validate()?;
         self.requested_artifacts.validate()?;
+        for capability in &self.satisfied_capabilities {
+            if !SATISFIABLE_CAPABILITIES.contains(&capability.as_str()) {
+                return Err(invalid(format!(
+                    "satisfied_capabilities contains an unrecognized capability: {capability}"
+                )));
+            }
+        }
         if !self.requested_artifacts.requests_anything() {
             return Err(EngineError::new(
                 EngineErrorCode::MissingRequiredInput,
@@ -328,6 +352,11 @@ impl LyricsV1 {
             if !ids.insert(&token.id) {
                 return Err(invalid(format!("duplicate lyric token id: {}", token.id)));
             }
+            if let (Some(start), Some(end)) = (token.start, token.end)
+                && start >= end
+            {
+                return Err(invalid("lyric token time anchor is not ordered"));
+            }
             text_bytes = text_bytes.saturating_add(token.text.len());
         }
         if text_bytes > MAX_LYRIC_BYTES {
@@ -354,6 +383,14 @@ pub struct LyricTokenV1 {
     pub reading: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phonemes: Option<Vec<String>>,
+    /// This token's known real-audio time range (`CANONICAL_TIMEBASE`
+    /// units), when one exists -- e.g. a Timed LRC line's own stamped span.
+    /// Lets `speech.align` search near where this token actually is instead
+    /// of a position blindly inferred from its index among all tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<CanonicalTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<CanonicalTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -548,6 +585,7 @@ impl RequestedArtifactsV1 {
                 AudioRole::Instrumental
                     | AudioRole::GuideVocals
                     | AudioRole::LeadVocal
+                    | AudioRole::CleanLeadVocal
                     | AudioRole::BackingVocal
                     | AudioRole::HarmonyVocal
             ) {
@@ -693,6 +731,7 @@ pub(crate) mod tests {
                 stems: Vec::new(),
             },
             execution_policy: ExecutionPolicyV1::default(),
+            satisfied_capabilities: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
@@ -866,6 +905,11 @@ pub(crate) mod tests {
             EngineErrorCode::InvalidContract
         );
         request.requested_artifacts.stems = vec![AudioRole::GuideVocals];
+        request.validate().unwrap();
+        // The Step 1 "skip if unchanged" cache requests this so a combined
+        // denoise+dereverb cleanup output can be published and later
+        // fingerprint-matched -- it must not be rejected as unexportable.
+        request.requested_artifacts.stems = vec![AudioRole::CleanLeadVocal];
         request.validate().unwrap();
     }
 }

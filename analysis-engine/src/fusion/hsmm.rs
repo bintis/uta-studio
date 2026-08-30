@@ -1043,6 +1043,57 @@ struct PairState {
 const MAX_PAIR_STATES: usize = 65_536;
 const MAX_PAIR_TRANSITIONS: usize = 2_000_000;
 
+/// `expand_pitch_alternative_states` turns one boundary expert's segment
+/// into one candidate *per distinct cross-expert pitch alternative* for
+/// that same time slot -- with every boundary-detection expert enabled at
+/// once (the "select every Step 3 model" configuration), several experts'
+/// pitch estimates pile onto the same slot, so many candidates end up
+/// sharing the exact same (start, end) range. `decode_component`'s pairing
+/// at a junction is the full cross-product of everything ending there
+/// against everything starting there, not a sum, so a handful of crowded
+/// slots multiply into far more pair-states than the total candidate count
+/// would suggest -- confirmed against a real "all three boundary experts +
+/// maximum profile" run that blew through `MAX_PAIR_STATES` on total
+/// candidate volume well under `MAX_EXPANDED_CANDIDATES`. The decoder never
+/// benefits from weighing more than a few of the best-scoring alternatives
+/// for one slot anyway, so keep only the top `MAX_RANGE_DUPLICATES` per
+/// exact range -- ranked by the same emission score the decoder itself
+/// uses to choose between them, so pruning can only discard candidates the
+/// decoder would have lost to a same-range rival regardless.
+const MAX_RANGE_DUPLICATES: usize = 8;
+
+/// Indices into `ordered` to keep once same-range pitch-alternative
+/// duplicates beyond `MAX_RANGE_DUPLICATES` are pruned. Every exact
+/// (start, end) range keeps at least one candidate, so `coverage_components`
+/// (computed on the unpruned pool) still exactly matches what decoding
+/// actually sees.
+fn prune_redundant_range_duplicates(
+    ordered: &[SegmentCandidate],
+    emissions: &[f32],
+) -> std::collections::BTreeSet<usize> {
+    let mut by_range = std::collections::BTreeMap::<(u64, u64), Vec<usize>>::new();
+    for (index, candidate) in ordered.iter().enumerate() {
+        by_range
+            .entry((candidate.range.start, candidate.range.end))
+            .or_default()
+            .push(index);
+    }
+    let mut kept = std::collections::BTreeSet::new();
+    for mut group in by_range.into_values() {
+        if group.len() > MAX_RANGE_DUPLICATES {
+            group.sort_by(|&left, &right| {
+                emissions[right]
+                    .partial_cmp(&emissions[left])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| ordered[left].id.cmp(&ordered[right].id))
+            });
+            group.truncate(MAX_RANGE_DUPLICATES);
+        }
+        kept.extend(group);
+    }
+    kept
+}
+
 #[derive(Default)]
 struct DecodeWorkBudget {
     examined_pair_states: usize,
@@ -1209,8 +1260,12 @@ pub fn decode_candidate_graph_with_boundaries(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let components = coverage_components(&ordered);
+    let kept = prune_redundant_range_duplicates(&ordered, &emissions);
     let mut members_by_component = vec![Vec::new(); components.len()];
     for (index, candidate) in ordered.iter().enumerate() {
+        if !kept.contains(&index) {
+            continue;
+        }
         let component_index =
             components.partition_point(|component| component.end <= candidate.range.start);
         if let Some(component) = components.get(component_index)

@@ -27,7 +27,8 @@ pub fn load_meta_sql() -> rusqlite::Result<SongsMeta> {
                 r.get(0)
             })?;
         let analyzed_count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM songs WHERE is_analyzed != 0",
+            "SELECT COUNT(*) FROM songs s WHERE s.is_analyzed != 0
+             AND NOT EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status = 'failed')",
             [],
             |r| r.get(0),
         )?;
@@ -132,7 +133,10 @@ fn append_structural_filters(
     }
     if let Some(q) = query.filter(|s| !s.is_empty()) {
         match q {
-            "analysed" => where_parts.push("s.is_analyzed = 1".to_string()),
+            "analysed" => where_parts.push(
+                "s.is_analyzed = 1 AND NOT EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status = 'failed')"
+                    .to_string(),
+            ),
             "queued" => where_parts.push(
                 "EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status IN ('staged', 'queued', 'analyzing'))"
                     .to_string(),
@@ -553,4 +557,96 @@ pub fn query_library_menu_items() -> rusqlite::Result<LibraryMenuItems> {
             playlists,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::song::{Song, SongOrigin};
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-charts-filter-test-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp db root");
+        path
+    }
+
+    fn analyzed_song(root: &std::path::Path, file_hash: &str, title: &str) -> Song {
+        Song {
+            path: root.join(format!("{file_hash}.flac")),
+            file_hash: file_hash.to_string(),
+            title: title.to_string(),
+            artist: "Test".to_string(),
+            album: "Test".to_string(),
+            duration_secs: 1.0,
+            album_art_path: None,
+            is_analyzed: true,
+            language: None,
+            transcript_source: None,
+            key: None,
+            override_key: None,
+            bpm: None,
+            tempo: 1.0,
+            key_offset: 0,
+            is_video: false,
+            usdx: None,
+            origin: SongOrigin::LocalFile,
+            no_stems: false,
+            authoring_ready: false,
+            authoring_missing: Vec::new(),
+            editor_ready: false,
+            editor_blocked_reason: None,
+            override_bpm: None,
+            composer: None,
+            country: None,
+            background_video_path: None,
+        }
+    }
+
+    /// A song that already has a chart from a prior successful run must
+    /// disappear from the Charts tab while its current re-analysis attempt
+    /// is failed -- the immutable artifact contract keeps the old chart on
+    /// disk, but surfacing it as a normal Charts entry would let a user open
+    /// what looks like a broken/incomplete result.
+    #[test]
+    fn the_analysed_query_excludes_a_song_whose_current_queue_attempt_failed() {
+        let root = temp_root("excludes-failed");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+
+        let ready = analyzed_song(&root, "ready-song", "Ready");
+        let failed = analyzed_song(&root, "failed-song", "Failed");
+        super::super::songs::replace_all_songs_sorted(&[ready, failed]).unwrap();
+        super::super::analysis_queue_upsert_row(
+            "failed-song",
+            "failed",
+            None,
+            Some("worker_failed: example"),
+        )
+        .unwrap();
+
+        let params = LoadSongsParams {
+            search: None,
+            filters: LibraryMenuFilters {
+                query: Some("analysed".to_string()),
+                ..Default::default()
+            },
+            skip: 0,
+            take: 50,
+        };
+        let store = load_songs_page(&params).unwrap();
+
+        let titles: Vec<&str> = store.processed.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["Ready"]);
+
+        let meta = load_meta_sql().unwrap();
+        assert_eq!(meta.analyzed_count, 1);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

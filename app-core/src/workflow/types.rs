@@ -195,6 +195,12 @@ pub struct WorkflowNodeInstance {
     pub execution_policy: ExecutionPolicy,
     #[serde(default)]
     pub priority: i32,
+    /// When true, re-running this node with unchanged inputs/parameters and
+    /// a prior successful result reuses that result instead of recomputing.
+    /// Only meaningful for the Step 1 audio-chain nodes; see
+    /// `app-core::analysis_engine_adapter::chain_cache`.
+    #[serde(default)]
+    pub skip_if_unchanged: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]

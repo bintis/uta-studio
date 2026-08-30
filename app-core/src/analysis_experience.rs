@@ -114,7 +114,15 @@ impl AnalysisOutputSelection {
                 pitch_evidence: true,
                 transcript: true,
                 alignment: true,
-                instrumental: false,
+                // Editor readiness (`Song::refresh_authoring_state`) requires
+                // a materialized instrumental stem, not just a chart -- a
+                // "full" analysis that skipped it left every song unable to
+                // ever reach `editor_ready` through the normal Analyze
+                // action (confirmed against the current library: zero songs
+                // had one). Bundling it here costs a second separation pass
+                // per analysis, but a one-step "analyze, then edit" is worth
+                // that over a silent dead end.
+                instrumental: true,
             },
             AnalysisDefaultTarget::Transcript => Self {
                 candidate_chart: false,

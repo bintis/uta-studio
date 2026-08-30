@@ -31,6 +31,27 @@ fn analysis_engine_error_copy(error: &app_core::EngineErrorHistoryProjection) ->
     }
 }
 
+/// Why a specific capability was never requested, for the handful of
+/// capabilities where "not requested" isn't self-explanatory from the
+/// toggle the user actually clicked in Processing Studio. `notes.stars` and
+/// `technique.analyze` both resolve to the STARS model, which the Engine
+/// planner (`analysis-engine/src/planner/plan.rs`) only requests for `zh`/
+/// `yue` lyrics regardless of the Step 3 selection -- confirmed against a
+/// real song where enabling both cards still left them NotRequested because
+/// its lyrics were Japanese. Only `GraphNodeState::NotRequested` gets this
+/// treatment; other states already carry a self-explanatory override text.
+fn not_requested_reason(state: GraphNodeState, capability_id: &str) -> Option<&'static str> {
+    if state != GraphNodeState::NotRequested {
+        return None;
+    }
+    match capability_id {
+        "notes.stars" | "technique.analyze" => {
+            Some("Not requested · STARS requires Chinese/Cantonese lyrics")
+        }
+        _ => None,
+    }
+}
+
 fn select_context_snapshot<'a, T>(
     requires_frozen: bool,
     frozen: Option<&'a T>,
@@ -1039,63 +1060,21 @@ fn spawn_analysis_session_surface(
                                             layout,
                                             zoom,
                                         );
-                                        for (edge_index, edge) in
-                                            render_graph.edges.iter().enumerate()
-                                        {
-                                            let Some(path) = routed.path(&edge.from, &edge.to)
-                                            else {
-                                                continue;
-                                            };
-                                            let selected_edge =
-                                                session.selected_graph_edge.as_ref().is_some_and(
-                                                    |selected| selected.matches_render(edge),
-                                                );
-                                            let emphasis =
-                                                crate::studio::analysis_model::render_edge_emphasis(
-                                                    &render_graph,
-                                                    edge_index,
-                                                    session.selected_analysis_node.as_deref(),
-                                                );
-                                            let dimmed = matches!(
-                                                emphasis,
-                                                crate::studio::analysis_model::RenderEdgeEmphasis::Secondary
-                                            );
-                                            let points: Vec<Vec2> = path
-                                                .iter()
-                                                .map(|point| {
-                                                    Vec2::new(point.x * zoom, point.y * zoom)
-                                                })
-                                                .collect();
-                                            let show_label = selected_edge
-                                                || matches!(
-                                                    emphasis,
-                                                    crate::studio::analysis_model::RenderEdgeEmphasis::Contextual
-                                                );
-                                            spawn_analysis_graph_binding_path(
-                                                graph,
-                                                font.clone(),
-                                                theme,
-                                                &points,
-                                                edge,
-                                                selected_edge,
-                                                dimmed,
-                                                show_label,
-                                                zoom,
-                                            );
-                                        }
+                                        // Connecting lines were removed: with
+                                        // not-requested cards already hidden
+                                        // (Mini View), the remaining cards'
+                                        // lane position already conveys
+                                        // pipeline order without needing
+                                        // explicit binding paths drawn between
+                                        // them. `render_graph.edges` still
+                                        // feeds layout/routing above; only the
+                                        // path visuals are skipped here.
                                         for node in &render_graph.nodes {
                                             let Some(rect) = layout.rect(&node.id) else {
                                                 continue;
                                             };
                                             let bounds = zoomed_box(rect, zoom);
                                             let lineage_dimmed = false;
-                                            let edge_endpoint = session
-                                                .selected_graph_edge
-                                                .as_ref()
-                                                .is_some_and(|selected| {
-                                                    selected.from == node.id.as_str()
-                                                        || selected.to == node.id.as_str()
-                                                });
                                             let (input_ports, output_ports) = port_counts
                                                 .get(&node.id)
                                                 .copied()
@@ -1118,7 +1097,22 @@ fn spawn_analysis_session_surface(
                                                             node.state == GraphNodeState::Complete,
                                                         );
                                                     if let Some(text) = override_text {
-                                                        route = text.to_string();
+                                                        // Mini View already drops every
+                                                        // `NotRequested` card before this loop
+                                                        // (`filter_render_graph_for_mini_view`),
+                                                        // so a capability-specific reason here
+                                                        // is only ever seen in Advanced View --
+                                                        // exactly where a card that looked
+                                                        // selected in Processing Studio but
+                                                        // still shows a bare "Not requested"
+                                                        // needs to explain itself.
+                                                        route =
+                                                            not_requested_reason(
+                                                                node.state,
+                                                                capability_id,
+                                                            )
+                                                            .unwrap_or(text)
+                                                            .to_string();
                                                         warning =
                                                             node.state == GraphNodeState::Failed;
                                                     } else if matches!(
@@ -1162,8 +1156,7 @@ fn spawn_analysis_session_surface(
                                                             selected: session
                                                                 .selected_analysis_node
                                                                 .as_deref()
-                                                                == Some(node.id.as_str())
-                                                                || edge_endpoint,
+                                                                == Some(node.id.as_str()),
                                                             route: &route,
                                                             warning,
                                                             dimmed: lineage_dimmed,
@@ -1477,6 +1470,29 @@ mod source_selection_tests {
     fn frozen_execution_context_never_falls_back_to_the_current_editable_snapshot() {
         let current = "current draft";
         assert_eq!(select_context_snapshot(true, None, Some(&current)), None);
+    }
+
+    #[test]
+    fn not_requested_reason_explains_only_the_stars_capabilities() {
+        assert_eq!(
+            not_requested_reason(GraphNodeState::NotRequested, "notes.stars"),
+            Some("Not requested · STARS requires Chinese/Cantonese lyrics")
+        );
+        assert_eq!(
+            not_requested_reason(GraphNodeState::NotRequested, "technique.analyze"),
+            Some("Not requested · STARS requires Chinese/Cantonese lyrics")
+        );
+        assert_eq!(
+            not_requested_reason(GraphNodeState::NotRequested, "notes.game"),
+            None
+        );
+        // A capability id that happens to be STARS-backed but isn't in the
+        // NotRequested state must not be relabeled -- other states already
+        // carry their own self-explanatory override text.
+        assert_eq!(
+            not_requested_reason(GraphNodeState::Deferred, "notes.stars"),
+            None
+        );
     }
 
     #[test]

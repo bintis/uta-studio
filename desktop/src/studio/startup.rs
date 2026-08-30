@@ -951,6 +951,9 @@ fn spawn_overlay_region(
             if let Some(file_hash) = session.pending_chart_replace.as_deref() {
                 spawn_chart_replace_confirmation(overlay, font.clone(), theme, file_hash);
             }
+            if let Some(file_hash) = session.pending_song_removal.as_deref() {
+                spawn_song_removal_confirmation(overlay, font.clone(), theme, file_hash);
+            }
             if session.about_open {
                 spawn_about_dialog(
                     overlay,

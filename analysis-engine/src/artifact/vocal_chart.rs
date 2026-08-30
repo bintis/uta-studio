@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::fusion::{
-    CanonicalNote, CanonicalSingingTrack, CanonicalWordBoundary, validate_canonical_singing_track,
+    CanonicalNote, CanonicalSingingTrack, CanonicalWordBoundary, TimeRange,
+    validate_canonical_singing_track,
 };
 use crate::quantization::QuantizationReportV1;
 use utz::{
@@ -18,7 +19,7 @@ pub type CandidateVocalChartV1 = VocalChartV1;
 pub fn finalize_candidate_vocal_chart(
     track: &CanonicalSingingTrack,
     execution_fingerprint: &str,
-    _preserve_continuous_pitch: bool,
+    preserve_continuous_pitch: bool,
     quantization: Option<&QuantizationReportV1>,
 ) -> EngineResult<CandidateVocalChartV1> {
     if track.schema_version != 1 || execution_fingerprint.trim().is_empty() {
@@ -47,6 +48,7 @@ pub fn finalize_candidate_vocal_chart(
             notes_by_word
                 .remove(word.word_id.as_str())
                 .unwrap_or_default(),
+            preserve_continuous_pitch,
         )?;
     }
     notes.sort_by_key(|note| (note.start, note.id.clone()));
@@ -74,11 +76,59 @@ pub fn finalize_candidate_vocal_chart(
     Ok(chart)
 }
 
+/// Two independently-measured fragments this close together, at the exact
+/// same MIDI pitch, are frame-boundary rounding between the boundary
+/// experts, not a real gap -- confirmed against real Japanese pop vocal
+/// runs where a single held syllable was over-segmented into a dozen
+/// back-to-back same-pitch candidates a few milliseconds apart. A real
+/// silence, breath, or consonant-driven cut leaves a gap well past this.
+const CONTINUOUS_PITCH_MERGE_GAP: crate::contract::CanonicalTime = 20_000;
+
+/// One or more `CanonicalNote` fragments at a continuously held pitch,
+/// collapsed into the single note a singer actually sang. This is what
+/// `preserve_continuous_pitch` requests: without it, boundary detection's
+/// raw over-segmentation (vibrato and frame jitter routinely split one
+/// sustained pitch into several near-identical short candidates) publishes
+/// straight through to the Candidate chart.
+struct MergedNote {
+    id: String,
+    range: TimeRange,
+    midi_note: u8,
+    center_offset_cents: f32,
+}
+
+fn merge_continuous_pitch_runs(candidates: &[&CanonicalNote]) -> Vec<MergedNote> {
+    let mut merged: Vec<MergedNote> = Vec::new();
+    for note in candidates {
+        if let Some(last) = merged.last_mut()
+            && last.midi_note == note.midi_note
+            && note.range.start.saturating_sub(last.range.end) <= CONTINUOUS_PITCH_MERGE_GAP
+        {
+            let previous_duration = (last.range.end - last.range.start) as f64;
+            let next_duration = (note.range.end - note.range.start) as f64;
+            last.center_offset_cents = ((last.center_offset_cents as f64 * previous_duration
+                + note.center_offset_cents as f64 * next_duration)
+                / (previous_duration + next_duration)) as f32;
+            last.range = TimeRange::new(last.range.start, last.range.end.max(note.range.end))
+                .expect("merging two positive-duration ranges keeps a positive-duration range");
+            continue;
+        }
+        merged.push(MergedNote {
+            id: note.id.clone(),
+            range: note.range,
+            midi_note: note.midi_note,
+            center_offset_cents: note.center_offset_cents,
+        });
+    }
+    merged
+}
+
 fn append_word_notes(
     output: &mut Vec<VocalNote>,
     word_index: usize,
     word: &CanonicalWordBoundary,
     mut candidates: Vec<&CanonicalNote>,
+    preserve_continuous_pitch: bool,
 ) -> EngineResult<()> {
     candidates.sort_by_key(|note| (note.range.start, note.range.end, note.id.as_str()));
     let lyric_id = word.word_id.clone();
@@ -105,10 +155,26 @@ fn append_word_notes(
         return Ok(());
     }
 
-    for (index, note) in candidates.into_iter().enumerate() {
+    for note in &candidates {
         if note.range.end <= note.range.start {
             return Err(invalid("Candidate note has an invalid range"));
         }
+    }
+    let notes: Vec<MergedNote> = if preserve_continuous_pitch {
+        merge_continuous_pitch_runs(&candidates)
+    } else {
+        candidates
+            .into_iter()
+            .map(|note| MergedNote {
+                id: note.id.clone(),
+                range: note.range,
+                midi_note: note.midi_note,
+                center_offset_cents: note.center_offset_cents,
+            })
+            .collect()
+    };
+
+    for (index, note) in notes.into_iter().enumerate() {
         let lyrics = if index == 0 {
             vec![LyricToken::Text(LyricTextToken {
                 id: lyric_id.clone(),
@@ -123,7 +189,7 @@ fn append_word_notes(
             }]
         };
         output.push(VocalNote {
-            id: note.id.clone(),
+            id: note.id,
             start: note.range.start,
             duration: note.range.end - note.range.start,
             pitch: Some(NotePitch {
@@ -263,12 +329,65 @@ mod tests {
     }
 
     #[test]
-    fn explicit_continuous_pitch_setting_does_not_change_vocal_chart_geometry() {
+    fn explicit_continuous_pitch_setting_only_changes_geometry_when_fragments_exist_to_merge() {
+        // The single-note fixture has nothing to merge, so both settings
+        // must still agree -- `preserve_continuous_pitch` never invents
+        // geometry, it only collapses genuine over-segmentation.
         let track = track();
         let preserved =
             finalize_candidate_vocal_chart(&track, &"b".repeat(64), true, None).unwrap();
         let omitted = finalize_candidate_vocal_chart(&track, &"b".repeat(64), false, None).unwrap();
         assert_eq!(preserved, omitted);
+    }
+
+    #[test]
+    fn continuous_pitch_setting_merges_touching_same_pitch_fragments_into_one_note() {
+        // Real repro this exists for: boundary detection over-segments one
+        // sustained pitch (vibrato/frame jitter) into several back-to-back
+        // same-MIDI candidates a few milliseconds apart. `preserve_continuous_pitch`
+        // should collapse those into the single note a singer actually held.
+        let mut track = track();
+        track.notes[0].range = TimeRange::new(100_001, 300_002).unwrap();
+        track.notes[0].center_offset_cents = -10.0;
+        let mut fragment = track.notes[0].clone();
+        fragment.id = "note-2".to_string();
+        fragment.range = TimeRange::new(300_012, 500_003).unwrap(); // 10us gap: rounding, not a real one.
+        fragment.center_offset_cents = 10.0;
+        track.notes.push(fragment);
+
+        let merged = finalize_candidate_vocal_chart(&track, &"f".repeat(64), true, None).unwrap();
+        let merged_notes = &merged.tracks[0].phrases[0].notes;
+        assert_eq!(merged_notes.len(), 1);
+        assert_eq!(merged_notes[0].id, "note-1");
+        assert_eq!(merged_notes[0].start, 100_001);
+        assert_eq!(merged_notes[0].duration, 500_003 - 100_001);
+        // Duration-weighted average of two equal-length fragments at -10/+10.
+        assert_eq!(merged_notes[0].pitch.unwrap().cents, 0);
+        merged.validate().unwrap();
+
+        let unmerged =
+            finalize_candidate_vocal_chart(&track, &"f".repeat(64), false, None).unwrap();
+        let unmerged_notes = &unmerged.tracks[0].phrases[0].notes;
+        assert_eq!(
+            unmerged_notes
+                .iter()
+                .map(|note| note.id.as_str())
+                .collect::<Vec<_>>(),
+            ["note-1", "note-2"]
+        );
+    }
+
+    #[test]
+    fn continuous_pitch_setting_never_merges_across_a_real_gap_or_a_pitch_change() {
+        let mut track = track();
+        track.notes[0].range = TimeRange::new(100_001, 300_002).unwrap();
+        let mut far_same_pitch = track.notes[0].clone();
+        far_same_pitch.id = "note-2".to_string();
+        far_same_pitch.range = TimeRange::new(400_000, 500_003).unwrap(); // ~100ms real gap.
+        track.notes.push(far_same_pitch);
+
+        let chart = finalize_candidate_vocal_chart(&track, &"g".repeat(64), true, None).unwrap();
+        assert_eq!(chart.tracks[0].phrases[0].notes.len(), 2);
     }
 
     #[test]

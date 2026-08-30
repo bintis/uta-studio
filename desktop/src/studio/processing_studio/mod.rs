@@ -232,6 +232,18 @@ fn uses_binary_preprocessing_switch(capability: &app_core::NodeCapability) -> bo
     )
 }
 
+/// Step 1 audio-chain capabilities whose output the "skip if unchanged"
+/// cache can reuse across runs (app-core resolves this when compiling the
+/// Engine request). `audio.separate_vocal_bgm` is included even though it
+/// can never be disabled -- unlike the other three, its own toggle only
+/// controls cache reuse, not whether the step runs at all.
+fn is_step1_cacheable(capability_id: &str) -> bool {
+    matches!(
+        capability_id,
+        "audio.separate_vocal_bgm" | "audio.lead_isolate" | "audio.denoise" | "audio.dereverb"
+    )
+}
+
 fn workflow_stage(capability: &app_core::NodeCapability) -> u8 {
     let id = capability.id.as_str();
     if capability.class == app_core::CapabilityClass::Source {
@@ -1225,12 +1237,35 @@ fn node_card(
                             )),
                         );
                     }
+                    if is_step1_cacheable(capability.id.as_str()) {
+                        policy_choice_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Skip if unchanged",
+                            UiAction::from(AnalysisCommand::SetWorkflowSkipIfUnchanged(
+                                node.instance_id.to_string(),
+                                !node.skip_if_unchanged,
+                            )),
+                            node.skip_if_unchanged,
+                            true,
+                        );
+                    }
                 });
                 if capability.class == app_core::CapabilityClass::Analyzer {
                     spawn_wrapped_text(
                         card,
                         font.clone(),
                         "Priority changes scheduling preference only; it is not a hard dependency.",
+                        8.0,
+                        theme.muted_foreground,
+                    );
+                }
+                if is_step1_cacheable(capability.id.as_str()) {
+                    spawn_wrapped_text(
+                        card,
+                        font.clone(),
+                        "Skip if unchanged: on re-run, reuse this step's last successful result instead of recomputing it, as long as its inputs and settings are unchanged.",
                         8.0,
                         theme.muted_foreground,
                     );
@@ -1463,15 +1498,32 @@ pub(crate) fn spawn_processing_studio(
                 width: percent(100),
                 min_height: px(18),
                 flex_shrink: 0.0,
+                align_items: AlignItems::Center,
+                column_gap: px(10),
                 ..default()
             })
             .with_children(|status| {
-                spawn_wrapped_text(
+                status
+                    .spawn(Node {
+                        min_width: px(0),
+                        flex_grow: 1.0,
+                        ..default()
+                    })
+                    .with_children(|notice| {
+                        spawn_wrapped_text(
+                            notice,
+                            font.clone(),
+                            session.notice.as_deref().unwrap_or(""),
+                            9.0,
+                            theme.foreground,
+                        );
+                    });
+                spawn_compact_action_button(
                     status,
                     font.clone(),
-                    session.notice.as_deref().unwrap_or(""),
-                    9.0,
-                    theme.foreground,
+                    theme,
+                    "Re-run",
+                    UiAction::from(AnalysisCommand::RunWorkflow),
                 );
             });
 
@@ -1575,6 +1627,30 @@ pub(crate) fn spawn_processing_studio(
                                     theme.muted_foreground,
                                 );
                             } else if stage == 2 {
+                                if let Some(status) = session
+                                    .selected_song
+                                    .as_deref()
+                                    .and_then(app_core::canonical_lyrics_status)
+                                {
+                                    let count = status.line_count.to_string();
+                                    let message = match status.source {
+                                        app_core::CanonicalLyricsSource::Plain => {
+                                            localized_message(
+                                                session.config,
+                                                UiMessage::CanonicalLyricsAvailablePlain,
+                                                &[("{count}", &count)],
+                                            )
+                                        }
+                                        app_core::CanonicalLyricsSource::TimedLrc => {
+                                            localized_message(
+                                                session.config,
+                                                UiMessage::CanonicalLyricsAvailableTimedLrc,
+                                                &[("{count}", &count)],
+                                            )
+                                        }
+                                    };
+                                    spawn_wrapped_text(lane, font.clone(), message, 8.0, theme.primary);
+                                }
                                 spawn_wrapped_text(
                                     lane,
                                     font.clone(),

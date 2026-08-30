@@ -84,6 +84,12 @@ pub enum AudioRoleWireV1 {
     HarmonyVocal,
 }
 
+impl Default for AudioRoleWireV1 {
+    fn default() -> Self {
+        Self::OriginalMix
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioSourceKindWireV1 {
@@ -123,6 +129,12 @@ pub struct LyricTokenWireV1 {
     pub reading: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phonemes: Option<Vec<String>>,
+    /// This token's known real-audio time range (`CANONICAL_TIMEBASE`
+    /// units), when one exists -- e.g. a Timed LRC line's own stamped span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +297,8 @@ pub struct AnalyzeRequestWireV1 {
     pub requested_artifacts: RequestedArtifactsWireV1,
     #[serde(default = "production_execution_policy")]
     pub execution_policy: ExecutionPolicyWireV1,
+    #[serde(default)]
+    pub satisfied_capabilities: Vec<String>,
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
 }

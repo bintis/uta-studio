@@ -696,6 +696,16 @@ pub(crate) fn spawn_song_context_menu(
                 11.0,
                 UiAction::from(LibraryCommand::OpenSong(context.song.file_hash.clone())),
             );
+            spawn_text_button(
+                menu,
+                font.clone(),
+                theme,
+                "Remove from library…",
+                11.0,
+                UiAction::from(AnalysisCommand::RequestRemoveSong(
+                    context.song.file_hash.clone(),
+                )),
+            );
             if context.song.authoring_ready {
                 spawn_text_button(
                     menu,

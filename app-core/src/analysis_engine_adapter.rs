@@ -88,6 +88,15 @@ pub struct StudioLyricToken {
     pub reading: Option<String>,
     #[serde(default)]
     pub phonemes: Option<Vec<String>>,
+    /// This token's known real-audio time range, in `CANONICAL_TIMEBASE`
+    /// units (microseconds), when one exists -- e.g. a Timed LRC line's own
+    /// stamped span. `None` for untimed known lyrics. Lets forced alignment
+    /// search near where this token actually is instead of a position
+    /// blindly inferred from its index among all tokens.
+    #[serde(default)]
+    pub start: Option<u64>,
+    #[serde(default)]
+    pub end: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -358,6 +367,8 @@ fn lyrics_context_for_song(
                 text,
                 reading: None,
                 phonemes: None,
+                start: None,
+                end: None,
             })
             .collect::<Vec<_>>();
         if !tokens.is_empty() {
@@ -368,10 +379,37 @@ fn lyrics_context_for_song(
             });
         }
     }
-    if matches!(
-        song.transcript_source,
-        Some(crate::song::TranscriptSource::Lrc | crate::song::TranscriptSource::Usdx)
-    ) && (requested_outputs.candidate_chart || requested_outputs.alignment)
+    if song.transcript_source == Some(crate::song::TranscriptSource::Lrc)
+        && (requested_outputs.candidate_chart || requested_outputs.alignment)
+    {
+        // Timed LRC's line text is caller-canonical lyrics, same as plain
+        // known lyrics above -- it just came from a different editor mode.
+        // Route it through the same skip-ASR, feed-forced-alignment path
+        // instead of refusing to align a song whose lyrics are already known.
+        let tokens =
+            crate::lyrics::lrc_transcript_line_segments(&crate::cache::CacheDir::new(), file_hash)
+                .into_iter()
+                .enumerate()
+                .map(|(index, (start, end, text))| StudioLyricToken {
+                    id: format!("lrc-{index}"),
+                    text,
+                    reading: None,
+                    phonemes: None,
+                    start: Some((start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+                    end: Some((end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+                })
+                .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            return Err("Timed lyrics cannot be represented as exact Engine v1 alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
+        }
+        return Ok(StudioLyricsContext {
+            mode: StudioLyricsMode::Canonical,
+            language_hint: song.language,
+            tokens,
+        });
+    }
+    if song.transcript_source == Some(crate::song::TranscriptSource::Usdx)
+        && (requested_outputs.candidate_chart || requested_outputs.alignment)
     {
         return Err("Timed lyrics cannot be represented as exact Engine v1 alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
     }
@@ -419,6 +457,36 @@ pub fn compile_analyze_request_v1(
     if outputs.candidate_chart && lyrics.mode == LyricsModeWireV1::Canonical {
         requested_artifacts.transcript = false;
     }
+    // The Step 1 audio chain's "skip if unchanged" cache only ever applies
+    // when the source hasn't already been given an explicit, non-default
+    // role by the caller -- an explicit role is a deliberate decision this
+    // function must not second-guess.
+    let mut source_path = intent.source.path;
+    let mut source_role = intent.source.role;
+    let mut satisfied_capabilities = Vec::new();
+    let mut extensions = BTreeMap::new();
+    if source_role == AudioRoleWireV1::OriginalMix
+        && let Ok(stored_workflow) = crate::workflow::load_song_workflow(&intent.source.library_file_hash)
+    {
+        let decision =
+            crate::chain_cache::plan_chain_cache(&intent.source.library_file_hash, &stored_workflow.definition);
+        if let Some(cached_path) = decision.source_path {
+            source_path = cached_path;
+            source_role = decision.role;
+        }
+        satisfied_capabilities = decision.satisfied_capabilities;
+        if let Ok(fingerprints) = serde_json::to_value(&decision.fingerprints) {
+            extensions.insert(
+                crate::chain_cache::CHAIN_FINGERPRINTS_EXTENSION_KEY.to_string(),
+                fingerprints,
+            );
+        }
+        for role in crate::chain_cache::stems_to_request_for_caching(&stored_workflow.definition) {
+            if !requested_artifacts.stems.contains(&role) {
+                requested_artifacts.stems.push(role);
+            }
+        }
+    }
     Ok(AnalyzeRequestWireV1 {
         contract: ANALYZE_REQUEST_CONTRACT.to_string(),
         version: ANALYZE_REQUEST_VERSION,
@@ -426,9 +494,9 @@ pub fn compile_analyze_request_v1(
         audio_sources: vec![AudioSourceWireV1 {
             id: "true_source".to_string(),
             kind: AudioSourceKindWireV1::LocalFile,
-            path: intent.source.path,
+            path: source_path,
             sha256: intent.source.sha256,
-            role: intent.source.role,
+            role: source_role,
             primary: true,
             timeline: SourceTimelineWireV1 {
                 timebase: CANONICAL_TIMEBASE,
@@ -522,7 +590,8 @@ pub fn compile_analyze_request_v1(
                 })
                 .collect::<Result<_, String>>()?,
         },
-        extensions: BTreeMap::new(),
+        satisfied_capabilities,
+        extensions,
     })
 }
 
@@ -554,6 +623,8 @@ fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWireV1, String> {
                 text: token.text,
                 reading: token.reading,
                 phonemes: token.phonemes,
+                start: token.start,
+                end: token.end,
             })
             .collect(),
     })
@@ -566,10 +637,20 @@ fn requested_artifacts(outputs: AnalysisOutputSelection) -> RequestedArtifactsWi
         singing_analysis: outputs.candidate_chart,
         transcript: outputs.transcript,
         alignment: outputs.alignment,
+        // `instrumental` requests the authoring audio pair, not just the
+        // accompaniment track: `Song::refresh_authoring_state`/`get_audio_paths`
+        // read a matching `vocals` compatibility file unconditionally, and
+        // GuideVocals is already computed as an internal byproduct of
+        // separation regardless (needed for pitch/alignment) -- confirmed
+        // against a real song where requesting only Instrumental left the
+        // editor's vocals slot pointing at a compatibility path that was
+        // never published, so its stem never actually loaded. Publishing it
+        // alongside Instrumental costs nothing extra to compute.
         stems: outputs
             .instrumental
-            .then_some(AudioRoleWireV1::Instrumental)
+            .then_some([AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals])
             .into_iter()
+            .flatten()
             .collect(),
     };
     // Candidate compilation needs all singing evidence. These are Engine
@@ -957,6 +1038,8 @@ fn studio_lyrics_from_wire(lyrics: &LyricsWireV1) -> StudioLyricsContext {
                 text: token.text.clone(),
                 reading: token.reading.clone(),
                 phonemes: token.phonemes.clone(),
+                start: token.start,
+                end: token.end,
             })
             .collect(),
     }
@@ -1042,6 +1125,8 @@ mod tests {
                                 text: "歌".to_string(),
                                 reading: None,
                                 phonemes: None,
+                                start: None,
+                                end: None,
                             }],
                         }
                     } else {
@@ -1075,7 +1160,7 @@ mod tests {
                 }
                 AnalysisDefaultTarget::Instrumental => assert_eq!(
                     request.requested_artifacts.stems,
-                    [AudioRoleWireV1::Instrumental]
+                    [AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals]
                 ),
                 AnalysisDefaultTarget::FullCandidate => unreachable!(),
             }
@@ -1114,7 +1199,7 @@ mod tests {
         assert!(request.requested_artifacts.transcript);
         assert_eq!(
             request.requested_artifacts.stems,
-            [AudioRoleWireV1::Instrumental]
+            [AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals]
         );
         assert!(!request.requested_artifacts.vocal_chart);
         assert!(!request.requested_artifacts.pitch_evidence);
@@ -1256,6 +1341,8 @@ mod tests {
                         text: "歌".to_string(),
                         reading: None,
                         phonemes: None,
+                        start: None,
+                        end: None,
                     }],
                 },
                 target_override: Some(AnalysisDefaultTarget::FullCandidate),
@@ -1319,6 +1406,8 @@ mod tests {
                 text: "sing".to_string(),
                 reading: None,
                 phonemes: None,
+                start: None,
+                end: None,
             }],
         };
         let projection = project_lyrics_context(&context, AnalysisDefaultTarget::Alignment);

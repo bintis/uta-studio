@@ -1,6 +1,6 @@
 use crate::artifact::{TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1};
 use crate::contract::{
-    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, LyricTokenV1,
+    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, LyricTokenV1, LyricsMode,
     ResolvedResourceProvenanceV1,
 };
 
@@ -60,6 +60,33 @@ pub(super) fn caller_transcript(request: &AnalyzeRequestV1) -> EngineResult<Tran
     };
     artifact.validate()?;
     Ok(artifact)
+}
+
+/// Per-line `{start, end}` seconds for `speech.align`'s `line_anchors`
+/// config, built only when every caller-canonical token carries its own
+/// known time range (a Timed LRC import) -- `None` for ASR-derived or
+/// untimed known lyrics, which fall back to the aligner's blind windowing.
+/// Anchoring each window to its own line's real time keeps one mistimed
+/// line's failure from cascading into every window after it (see
+/// `plan_alignment_segments_from_anchors` in the Qwen worker).
+pub(super) fn line_anchors_for_lyrics(
+    lyrics: &crate::contract::LyricsV1,
+) -> Option<serde_json::Value> {
+    if lyrics.mode != LyricsMode::Canonical || lyrics.tokens.is_empty() {
+        return None;
+    }
+    let anchors = lyrics
+        .tokens
+        .iter()
+        .map(|token| {
+            let (start, end) = (token.start?, token.end?);
+            Some(serde_json::json!({
+                "start": start as f64 / f64::from(crate::contract::CANONICAL_TIMEBASE),
+                "end": end as f64 / f64::from(crate::contract::CANONICAL_TIMEBASE),
+            }))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(serde_json::Value::Array(anchors))
 }
 
 pub(super) fn request_lyrics_text(request: &AnalyzeRequestV1) -> String {
@@ -182,7 +209,72 @@ mod tests {
             text: text.to_string(),
             reading: None,
             phonemes: None,
+            start: None,
+            end: None,
         }
+    }
+
+    fn timed_token(id: &str, text: &str, start_seconds: f64, end_seconds: f64) -> LyricTokenV1 {
+        LyricTokenV1 {
+            start: Some((start_seconds * f64::from(crate::contract::CANONICAL_TIMEBASE)) as u64),
+            end: Some((end_seconds * f64::from(crate::contract::CANONICAL_TIMEBASE)) as u64),
+            ..token(id, text)
+        }
+    }
+
+    fn lyrics(mode: LyricsMode, tokens: Vec<LyricTokenV1>) -> crate::contract::LyricsV1 {
+        crate::contract::LyricsV1 {
+            mode,
+            language: None,
+            tokens,
+        }
+    }
+
+    #[test]
+    fn line_anchors_are_built_only_for_canonical_lyrics_with_every_token_timed() {
+        let all_timed = lyrics(
+            LyricsMode::Canonical,
+            vec![
+                timed_token("line-1", "first", 40.67, 47.16),
+                timed_token("line-2", "second", 167.18, 201.57),
+            ],
+        );
+        assert_eq!(
+            line_anchors_for_lyrics(&all_timed),
+            Some(serde_json::json!([
+                {"start": 40.67, "end": 47.16},
+                {"start": 167.18, "end": 201.57},
+            ]))
+        );
+
+        // ASR-derived transcripts (mode None/Reference) never carry anchors.
+        assert_eq!(
+            line_anchors_for_lyrics(&lyrics(LyricsMode::None, Vec::new())),
+            None
+        );
+        assert_eq!(
+            line_anchors_for_lyrics(&lyrics(
+                LyricsMode::Reference,
+                vec![timed_token("line-1", "first", 0.0, 1.0)]
+            )),
+            None
+        );
+
+        // A partially-timed set (e.g. known lyrics with no timing at all)
+        // must not produce a partial/misleading anchor list.
+        let partially_timed = lyrics(
+            LyricsMode::Canonical,
+            vec![
+                timed_token("line-1", "first", 40.67, 47.16),
+                token("line-2", "second"),
+            ],
+        );
+        assert_eq!(line_anchors_for_lyrics(&partially_timed), None);
+
+        assert_eq!(
+            line_anchors_for_lyrics(&lyrics(LyricsMode::Canonical, Vec::new())),
+            None
+        );
     }
 
     #[test]

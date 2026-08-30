@@ -247,6 +247,7 @@
   "CHART CHECKS": "譜面チェック",
   "Chart editing is available, but native audio is unavailable: {error}": "譜面は編集できますがネイティブ音声を利用できません：{error}",
   "Chart editor": "譜面エディター",
+  "Chart editor unavailable": "譜面エディターを利用できません",
   "CHART INSPECTOR": "譜面インスペクター",
   "Chart issue count": "譜面問題数",
   "Chart issues": "譜面の問題",
@@ -714,6 +715,8 @@
   "message.audio_waveform": "音声波形 · {duration}",
   "message.cache_recalculating": "バックグラウンドで再計算中。最新スキャン：{size}",
   "message.cache_stats_failed": "キャッシュ統計を計算できませんでした：{error}",
+  "message.canonical_lyrics_available_plain": "既知の歌詞があります：プレーンテキストの {count} 行が強制アラインメントに直接使われ、書き起こしはスキップされます。",
+  "message.canonical_lyrics_available_timed_lrc": "既知の歌詞があります：タイムド LRC 由来の {count} 行が強制アラインメントに直接使われ、書き起こしはスキップされます。",
   "message.diagnostics_summary": "{passed} 合格 · {failed} 失敗 · {skipped} スキップ · {apis} API",
   "message.flac_estimated_upper_bound": "FLAC 圧縮前の推定上限：{size} MiB。",
   "message.folder_read_failed": "このフォルダーを読み取れませんでした：{error}",
@@ -884,6 +887,7 @@
   "Paste": "貼り付け",
   "Paste at playhead": "再生位置に貼り付け",
   "Paste line-level or enhanced LRC. Existing analyzed songs keep their stems; new songs can author over the original mix or explicitly queue separation.": "行単位または拡張 LRC を貼り付けます。解析済みの曲はステムを保持し、新しい曲は原曲ミックス上で作成するか、明示的に分離をキューへ追加できます。",
+  "Paste line-level or enhanced LRC. Its line timestamps are treated as authoritative. Already-analyzed songs keep their existing stems; new songs are authored directly over the original mix.": "行単位または拡張 LRC を貼り付けます。その行タイムスタンプは正とみなされます。解析済みの曲は既存のステムを保持し、新しい曲は原曲ミックス上で直接作成されます。",
   "Paste plain lyrics to realign, or provide timed LRC without replacing source media.": "プレーン歌詞を貼り付けて再整列するか、元メディアを置き換えずにタイム付き LRC を入力します。",
   "Pasted note(s) at the playhead.": "再生位置にノートを貼り付けました。",
   "Pause": "一時停止",
@@ -1724,5 +1728,11 @@
   "Independent vocal + Instrumental specialists": "独立したボーカル／インストゥルメンタル専用モデル",
   "One EP317 inference estimates GuideVocals; the same native invocation publishes SourceMix − GuideVocals as the deterministic Instrumental residual.": "1 回の EP317 推論で GuideVocals を推定し、同じネイティブ呼び出しが SourceMix − GuideVocals を決定論的な Instrumental 残差として出力します。",
   "EP317 extracts GuideVocals and MelBand Inst V2 independently extracts Instrumental, with separate progress and logs.": "EP317 が GuideVocals を抽出し、MelBand Inst V2 が Instrumental を独立して抽出します。進行状況とログも個別です。",
-  "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.": "1 回の実際の呼び出しが 1 枚の実行カードになります。独立したプロバイダーは進行状況、ログ、モデル ID を個別に保持します。ランタイム準備状況はプランプレビューだけで解決されます。"
+  "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.": "1 回の実際の呼び出しが 1 枚の実行カードになります。独立したプロバイダーは進行状況、ログ、モデル ID を個別に保持します。ランタイム準備状況はプランプレビューだけで解決されます。",
+  "Remove from library…": "ライブラリから削除…",
+  "Remove this song from your library?": "この曲をライブラリから削除しますか？",
+  "This removes “{title}” and any generated stems, previews, or chart data from Uta! Studio's library. The source audio file is not touched and can be rescanned later.": "「{title}」と、生成されたステム、プレビュー、譜面データが Uta! Studio のライブラリから削除されます。元の音声ファイルは変更されず、後で再スキャンして復元できます。",
+  "Remove from library": "ライブラリから削除",
+  "Removed from your library. The source audio file was not changed.": "ライブラリから削除しました。元の音声ファイルは変更されていません。",
+  "Could not remove this song: {error}": "削除できませんでした：{error}"
 }

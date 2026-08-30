@@ -35,6 +35,21 @@ const ALIGN_WINDOW_TARGET_SECONDS: f64 = 110.0;
 const ALIGN_WINDOW_MAX_SECONDS: f64 = 140.0;
 const ALIGN_TIMESTAMP_TICK_SECONDS: f64 = 0.08;
 const ALIGN_CONTEXT_UNITS: usize = 3;
+/// Fixed search margin either side of each anchored window's real line span.
+/// Real singing commonly starts a beat before/after a crowd-sourced LRC
+/// line's own stamped time. Not widened on retry -- confirmed against a
+/// real song that a wider margin let the model attribute a short line's
+/// content to unrelated audio elsewhere in the larger window instead of
+/// finding it more reliably.
+const ALIGN_ANCHOR_MARGIN_SECONDS: f64 = 6.0;
+/// A single LRC line's own claimed [start, end) span is capped here before
+/// the margin above is added. Timed LRC only stamps line *starts*; `end` is
+/// synthesized from the *next* line's start (see `lrc::parse_lrc`), so one
+/// mistimed neighbor can make an individual line's claimed span balloon to
+/// tens of seconds -- confirmed against a real song where a stale/duplicate
+/// timestamp left one line claiming a 34-second span. Capping keeps that
+/// anchor's own search window bounded without discarding the anchor.
+const ALIGN_ANCHOR_MAX_SPAN_SECONDS: f64 = 25.0;
 const MAX_ENGINE_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const ENGINE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ASR_RUNTIME_ARGS: &[&str] = &[
@@ -947,6 +962,14 @@ struct AlignmentSegmentPlan {
     context_unit_start: usize,
     target_unit_start: usize,
     target_unit_end: usize,
+    /// This plan's own claimed line start (seconds, before margin/capping),
+    /// for anchored plans only. The LRC's own stated line boundary is a more
+    /// trustworthy seam point than a tick-split of two independently
+    /// (and, for a short line given a wide search margin, sometimes badly)
+    /// mismeasured windows -- confirmed against a real seam where a widened
+    /// retry margin let the model attribute a single character a
+    /// 17-second duration, drifting into the neighboring line's territory.
+    anchor_start: Option<f64>,
 }
 
 fn alignment_text_units(transcript: &str) -> Vec<String> {
@@ -963,6 +986,10 @@ fn alignment_text_units(transcript: &str) -> Vec<String> {
 
 fn tick_floor(seconds: f64) -> f64 {
     (seconds / ALIGN_TIMESTAMP_TICK_SECONDS).floor() * ALIGN_TIMESTAMP_TICK_SECONDS
+}
+
+fn tick_round(seconds: f64) -> f64 {
+    (seconds / ALIGN_TIMESTAMP_TICK_SECONDS).round() * ALIGN_TIMESTAMP_TICK_SECONDS
 }
 
 fn plan_alignment_segments(
@@ -1006,9 +1033,167 @@ fn plan_alignment_segments(
             context_unit_start: target_unit_start.saturating_sub(ALIGN_CONTEXT_UNITS),
             target_unit_start,
             target_unit_end,
+            anchor_start: None,
         });
     }
     Ok(plans)
+}
+
+/// One window per caller-supplied line, searched only near that line's own
+/// given time range instead of a position blindly inferred from its index
+/// among all lyric units. Blind planning (`plan_alignment_segments`) assumes
+/// every unit occupies an equal share of the source duration; real lines
+/// vary from a few seconds to tens of seconds, so once one line is unusually
+/// long every later window's assumed position drifts from where that text
+/// actually is -- confirmed against a real song where this produced a
+/// window whose measurement collapsed 14 characters into 0.16 seconds and
+/// left a 30+ second stretch of the song with no usable alignment at all.
+///
+/// Windows still cover *several* consecutive lines each, like blind
+/// planning -- not one line per window. An earlier one-line-per-window
+/// design measured every line boundary independently against windows that
+/// deliberately overlap (each line's own margin), and on a real song that
+/// made *most* line-to-line seams a genuine reconciliation gamble between
+/// two independent measurements instead of the rare edge case blind
+/// planning's seam logic was built for. Grouping lines the same way blind
+/// planning does keeps that seam logic rare and well-exercised; only the
+/// *position* of each group's window comes from real anchor times instead
+/// of an even split, which is what actually fixes the original bug.
+fn plan_alignment_segments_from_anchors(
+    line_anchors: &[(f64, f64)],
+    text_unit_count: usize,
+    source_duration_seconds: f64,
+    window_target_seconds: f64,
+    margin_seconds: f64,
+) -> Result<Vec<AlignmentSegmentPlan>, String> {
+    if !source_duration_seconds.is_finite() || source_duration_seconds <= 0.0 {
+        return Err("Qwen alignment source duration is invalid".to_string());
+    }
+    if !window_target_seconds.is_finite() || window_target_seconds <= 0.0 {
+        return Err("Qwen alignment window target is invalid".to_string());
+    }
+    if !margin_seconds.is_finite() || margin_seconds < 0.0 {
+        return Err("Qwen alignment anchor margin is invalid".to_string());
+    }
+    if line_anchors.is_empty() {
+        return Err("Qwen alignment requires at least one anchored line".to_string());
+    }
+    // `alignment_text_units` splits the *whole* joined transcript on any
+    // whitespace, including the `\n` between lines, so one caller line
+    // becomes exactly one global unit -- but only when that holds; a line
+    // containing its own internal whitespace (e.g. multi-word English)
+    // would silently desync anchor index from unit index. Fail closed
+    // instead of guessing: confirmed against a real bug where computing
+    // each line's own unit count separately (falling back to a
+    // per-*character* split for whitespace-free CJK lines) desynced from
+    // the global line-level index, making a later window's "one line"
+    // target swell to include a dozen unrelated lines.
+    if text_unit_count != line_anchors.len() {
+        return Err(format!(
+            "Qwen alignment line_anchors count ({}) does not match transcript unit count ({}); anchored windowing requires exactly one lyric unit per anchored line",
+            line_anchors.len(),
+            text_unit_count
+        ));
+    }
+    for (index, &(start, end)) in line_anchors.iter().enumerate() {
+        if !start.is_finite() || !end.is_finite() || end <= start || start < 0.0 {
+            return Err(format!(
+                "Qwen alignment line_anchors[{index}] has an invalid time range"
+            ));
+        }
+    }
+    // One line's own claimed span is capped before it can grow a group --
+    // otherwise the exact anomaly this function exists to contain (a single
+    // mistimed line claiming tens of seconds) would just inflate whichever
+    // group it lands in instead.
+    let capped_ends = line_anchors
+        .iter()
+        .map(|&(start, end)| start + (end - start).min(ALIGN_ANCHOR_MAX_SPAN_SECONDS))
+        .collect::<Vec<_>>();
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut group_first = 0_usize;
+    // `index` is also used as a plain value (recorded into `groups`, and to
+    // update `group_first`), not just to index `capped_ends`, so this isn't
+    // a clean `enumerate()` rewrite.
+    #[allow(clippy::needless_range_loop)]
+    for index in 1..line_anchors.len() {
+        if capped_ends[index] - line_anchors[group_first].0 > window_target_seconds {
+            groups.push((group_first, index - 1));
+            group_first = index;
+        }
+    }
+    groups.push((group_first, line_anchors.len() - 1));
+
+    let mut plans = Vec::with_capacity(groups.len());
+    for (plan_index, &(first, last)) in groups.iter().enumerate() {
+        let raw_start = line_anchors[first].0;
+        let audio_start_seconds = tick_floor((raw_start - margin_seconds).max(0.0));
+        let audio_end_seconds = (capped_ends[last] + margin_seconds)
+            .min(source_duration_seconds)
+            .min(audio_start_seconds + ALIGN_WINDOW_MAX_SECONDS)
+            .max(audio_start_seconds + ALIGN_TIMESTAMP_TICK_SECONDS);
+        // A preceding line only belongs in the *searched text* if its own
+        // claimed content is actually inside the *audio* sliced for this
+        // window; a fixed "3 units back" can otherwise name text nowhere in
+        // this window's audio and confuse the model into finding nothing at
+        // all. Compare each candidate's own claimed *end*, not start: a
+        // line that started slightly before this window's audio but still
+        // mostly falls inside it is still useful context.
+        let mut context_unit_start = first;
+        for back in 1..=ALIGN_CONTEXT_UNITS {
+            let Some(candidate) = first.checked_sub(back) else {
+                break;
+            };
+            if capped_ends[candidate] < audio_start_seconds {
+                break;
+            }
+            context_unit_start = candidate;
+        }
+        plans.push(AlignmentSegmentPlan {
+            index: plan_index,
+            audio_start_seconds,
+            audio_end_seconds,
+            context_unit_start,
+            target_unit_start: first,
+            target_unit_end: last + 1,
+            anchor_start: Some(raw_start),
+        });
+    }
+    Ok(plans)
+}
+
+fn parsed_line_anchors(config: &serde_json::Value) -> Result<Option<Vec<(f64, f64)>>, String> {
+    let Some(value) = config.get("line_anchors") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let array = value
+        .as_array()
+        .ok_or_else(|| "Qwen Forced Aligner line_anchors must be an array".to_string())?;
+    if array.is_empty() {
+        return Ok(None);
+    }
+    array
+        .iter()
+        .map(|entry| {
+            let start = entry
+                .get("start")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| {
+                    "Qwen Forced Aligner line_anchors entry is missing start".to_string()
+                })?;
+            let end = entry
+                .get("end")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| {
+                    "Qwen Forced Aligner line_anchors entry is missing end".to_string()
+                })?;
+            Ok((start, end))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map(Some)
 }
 
 fn compact_character_count(text: &str) -> usize {
@@ -1079,24 +1264,65 @@ fn reconcile_alignment_seam(
     if next_word.start >= previous_word.end {
         return Ok(());
     }
-    let overlap_ticks =
-        ((previous_word.end - next_word.start) / ALIGN_TIMESTAMP_TICK_SECONDS).round() as i64;
-    let split_ticks = overlap_ticks.max(0) / 2;
-    let seam = next_word.start + split_ticks as f64 * ALIGN_TIMESTAMP_TICK_SECONDS;
     let window_lower = previous_plan
         .audio_start_seconds
         .max(next_plan.audio_start_seconds);
     let window_upper = previous_plan
         .audio_end_seconds
         .min(next_plan.audio_end_seconds);
-    if seam - previous_word.start > EPSILON
-        && next_word.end - seam > EPSILON
-        && seam >= window_lower - EPSILON
-        && seam <= window_upper + EPSILON
-    {
-        previous_word.end = seam;
-        next_word.start = seam;
-        return Ok(());
+    let tick_split_seam = {
+        let overlap_ticks =
+            ((previous_word.end - next_word.start) / ALIGN_TIMESTAMP_TICK_SECONDS).round() as i64;
+        let split_ticks = overlap_ticks.max(0) / 2;
+        next_word.start + split_ticks as f64 * ALIGN_TIMESTAMP_TICK_SECONDS
+    };
+    // Prefer the next line's own LRC-stamped start over a tick-split of the
+    // two windows' independent measurements: it is the caller's ground truth
+    // for where this lyrical line actually begins, not a guess derived from
+    // two windows that -- for a short line given a wide search margin --
+    // can both drift by many seconds (confirmed against a real seam where a
+    // widened retry margin let the model attribute a single character a
+    // 17-second duration). Only anchored plans carry this hint; blind
+    // planning falls straight through to the tick-split candidate.
+    // LRC starts are arbitrary centiseconds, while the worker's published
+    // alignment contract requires every boundary to remain on the model's
+    // 80 ms timestamp grid. Reconciliation happens after per-window timing
+    // normalization, so inserting the raw LRC start here would otherwise
+    // create an artifact that the Engine correctly rejects even though the
+    // worker reports `done/ok` (real repro: 127.13s and 263.03s seams).
+    let anchor_seam = next_plan.anchor_start.map(tick_round);
+    for seam in [anchor_seam, Some(tick_split_seam)].into_iter().flatten() {
+        if seam - previous_word.start > EPSILON
+            && next_word.end - seam > EPSILON
+            && seam >= window_lower - EPSILON
+            && seam <= window_upper + EPSILON
+        {
+            previous_word.end = seam;
+            next_word.start = seam;
+            return Ok(());
+        }
+    }
+    // Blind planning keeps the strict fail-closed contract above: a
+    // continuous single measurement disagreeing with itself at an internal
+    // seam is unexpected and worth surfacing loudly. Anchored planning
+    // measures each line independently against windows that overlap by
+    // design (every anchor's own margin), so two adjacent-but-different
+    // lines' independent measurements disagreeing by a few seconds is the
+    // expected cost of that independence, not a sign the whole run is
+    // unusable. Fall back to a directional clamp instead of discarding the
+    // run: trust whichever word's own boundary sits inside the other's
+    // span, and only fail closed when the two truly invert (one line's
+    // entire measured span precedes the other's start) -- confirmed
+    // against real seams from both directions on a real song.
+    if next_plan.anchor_start.is_some() {
+        if next_word.start > previous_word.start && next_word.start < previous_word.end {
+            previous_word.end = next_word.start;
+            return Ok(());
+        }
+        if previous_word.end > next_word.start && previous_word.end < next_word.end {
+            next_word.start = previous_word.end;
+            return Ok(());
+        }
     }
     Err(
         "Qwen long-form alignment windows produced overlapping timing that could not be \
@@ -1104,6 +1330,24 @@ fn reconcile_alignment_seam(
             .to_string(),
     )
 }
+
+/// A parse failure here means the pinned aligner's JSON *write* was
+/// corrupted, not that its measurement was wrong -- two different real
+/// repros so far ("control character ... at line 4 column 0" and "key must
+/// be a string at line 10 column 5") land at different byte offsets for
+/// unchanged audio/text/window-plan input, which a genuine measurement
+/// disagreement would not do (see the determinism note on
+/// `is_retryable_window_measurement_error` below: unlike output corruption,
+/// a real measurement problem reproduces identically on an unmodified
+/// retry, which is exactly why that retry class re-plans with a different
+/// window instead of just re-running). That points at a transient
+/// write/flush race in the external engine process rather than content the
+/// model actually got wrong, so a bounded retry of just this window's
+/// run+parse step -- unmodified, unlike the seam/measurement retries -- is
+/// the appropriate fix here. `is_retryable_window_measurement_error` does
+/// not match this error's text, so this retry is the only thing that
+/// covers it; the two mechanisms handle disjoint failure classes.
+const ALIGNMENT_WINDOW_PARSE_ATTEMPTS: u32 = 3;
 
 fn execute_alignment_window(
     runtime: &ValidatedRuntime,
@@ -1113,36 +1357,100 @@ fn execute_alignment_window(
     text: &str,
     runtime_language: Option<&str>,
 ) -> Result<Vec<AlignmentWord>, String> {
-    let mut command = Command::new(&runtime.engine);
-    command
-        .args(["-m"])
-        .arg(model)
-        .args(["-f"])
-        .arg(audio)
-        .args(["-o"])
-        .arg(raw)
-        .args(["--align", "--text", text, "--no-timing"])
-        .env("GGML_VK_VISIBLE_DEVICES", "0")
-        .env("QWEN_USE_VRAM", "1")
-        .env("QWEN_REQUIRE_GPU", "1");
-    if let Some(language) = runtime_language {
-        command.args(["-l", language]);
+    let mut last_error = String::new();
+    for attempt in 1..=ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
+        let mut command = Command::new(&runtime.engine);
+        command
+            .args(["-m"])
+            .arg(model)
+            .args(["-f"])
+            .arg(audio)
+            .args(["-o"])
+            .arg(raw)
+            .args(["--align", "--text", text, "--no-timing"])
+            .env("GGML_VK_VISIBLE_DEVICES", "0")
+            .env("QWEN_USE_VRAM", "1")
+            .env("QWEN_REQUIRE_GPU", "1");
+        if let Some(language) = runtime_language {
+            command.args(["-l", language]);
+        }
+        run_engine(&mut command)?;
+        let raw_bytes = std::fs::read(raw).map_err(|error| error.to_string())?;
+        // The pinned aligner's own JSON writer has been observed emitting raw,
+        // unescaped control bytes (e.g. a literal newline) inside string values
+        // -- invalid per the JSON spec, and fatal to serde_json (real repro:
+        // "control character ... found while parsing a string at line 4 column
+        // 0"). Escape control bytes that fall inside string literals before
+        // parsing; whitespace between tokens outside strings is left untouched
+        // since it's valid JSON as-is.
+        match serde_json::from_slice::<RawAlignment>(&sanitize_json_control_characters(&raw_bytes))
+        {
+            Ok(raw_alignment) => {
+                let _ = std::fs::remove_file(raw);
+                return Ok(raw_alignment.words);
+            }
+            Err(error) => {
+                last_error = format!("Qwen alignment output is invalid: {error}");
+                if attempt < ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
+                    eprintln!(
+                        "[uta-qwen-worker engine] alignment output was corrupt on attempt {attempt}/{ALIGNMENT_WINDOW_PARSE_ATTEMPTS}, retrying: {last_error}"
+                    );
+                }
+            }
+        }
     }
-    run_engine(&mut command)?;
-    let raw_alignment: RawAlignment =
-        serde_json::from_slice(&std::fs::read(raw).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("Qwen alignment output is invalid: {error}"))?;
-    let _ = std::fs::remove_file(raw);
-    Ok(raw_alignment.words)
+    Err(last_error)
+}
+
+/// Escapes raw ASCII control bytes (0x00-0x1F) that occur inside JSON string
+/// literals, leaving insignificant whitespace between tokens untouched.
+fn sanitize_json_control_characters(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in raw {
+        if !in_string {
+            if byte == b'"' {
+                in_string = true;
+            }
+            out.push(byte);
+            continue;
+        }
+        if escaped {
+            out.push(byte);
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => {
+                escaped = true;
+                out.push(byte);
+            }
+            b'"' => {
+                in_string = false;
+                out.push(byte);
+            }
+            0x00..=0x1F => match byte {
+                b'\n' => out.extend_from_slice(b"\\n"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\t' => out.extend_from_slice(b"\\t"),
+                other => out.extend_from_slice(format!("\\u{other:04x}").as_bytes()),
+            },
+            _ => out.push(byte),
+        }
+    }
+    out
 }
 
 /// The pinned aligner is deterministic for a fixed audio/text/window-plan
 /// input, so retrying an *unmodified* failing window plan against unchanged
 /// audio bytes reproduces the identical failure (confirmed against a real
 /// production song: identical window plan failed identically on every
-/// retry). What genuinely varies run to run is the upstream GPU separation
-/// stage: repeated real production runs of the same source measured ~0.14%
-/// of PCM samples differing by a few least-significant bits (real GPU
+/// retry, on both the Vulkan and CPU backends -- ruling out a GPU race and
+/// pointing at the model's own measurement for that exact window). What
+/// genuinely varies run to run is the upstream GPU separation stage:
+/// repeated real production runs of the same source measured ~0.14% of PCM
+/// samples differing by a few least-significant bits (real GPU
 /// floating-point non-associativity in the separation compute), and for at
 /// least one real seam that sits on a genuine ambiguity (audio spanning a
 /// verbatim-repeated lyric block), that tiny separation-stage difference was
@@ -1156,11 +1464,62 @@ fn execute_alignment_window(
 /// enforced identically regardless of which window plan produced it.
 const ALIGN_SEAM_RETRY_ATTEMPTS: u32 = 3;
 
+/// Whether a `run_align_once` failure came from one window's own measurement
+/// being unusable -- as opposed to a structural/config error (bad input,
+/// missing runtime, invalid manifest) that an unmodified retry cannot fix --
+/// and is therefore worth a re-planned retry under `ALIGN_SEAM_RETRY_ATTEMPTS`.
+///
+/// Confirmed against the real production song this was diagnosed from: the
+/// same window (a verbatim-repeated chorus block, deep in a ~5-minute track)
+/// deterministically returned every word pinned to a single timestamp --
+/// `normalize_alignment_words`'s "no measured boundaries" fail-closed path --
+/// on *both* the Vulkan and CPU backends, so this is the aligner's own
+/// measurement degrading for that window's specific text/audio boundaries,
+/// the same class of run-to-run-sensitive failure the seam case already
+/// retries for.
+///
+/// `execute_alignment_window`'s own bounded retry (`ALIGNMENT_WINDOW_PARSE_ATTEMPTS`)
+/// already re-runs an unmodified failing window up to 3x on an output-parse
+/// failure, on the theory that the write corruption is a transient race.
+/// Confirmed against a real second production repro that it is not always:
+/// the identical "key must be a string at line 10 column 5" corruption
+/// recurred, at the identical byte offset, on a completely separate run of
+/// the same window's unchanged audio/text -- i.e. deterministic for that
+/// window's content, exactly like a measurement disagreement, just at the
+/// JSON-write layer instead of the model's own output. Retrying unmodified
+/// cannot fix a deterministic failure; only changing what content the
+/// window actually contains can, which is exactly what the re-planned
+/// retry below already does for measurement errors.
+fn is_retryable_window_measurement_error(error: &str) -> bool {
+    // `starts_with`, not exact equality: callers append which window/plan
+    // failed for diagnostics, and that suffix must not change retry
+    // classification.
+    error.contains("could not be reconciled at the window seam")
+        || error.starts_with("Qwen Forced Aligner returned no measured boundaries")
+        || error.starts_with("Qwen alignment output has invalid word timing")
+        || error.starts_with("Qwen alignment output has overlapping word timing")
+        || error.starts_with("Qwen alignment output is invalid:")
+}
+
 /// Halved per retry attempt (110s -> 55s -> 27.5s), each roughly doubling the
 /// window count so the seam under test is very unlikely to land on the exact
 /// same text/audio boundary as the previous attempt.
 fn align_window_target_seconds(attempt: u32) -> f64 {
     ALIGN_WINDOW_TARGET_SECONDS / 2f64.powi(attempt as i32)
+}
+
+/// Anchored grouping gets its own (smaller) target instead of reusing blind
+/// planning's 110s: confirmed against a real song with a verbatim-repeated
+/// chorus that a 110s anchored window -- correctly positioned by real
+/// anchor times, but still spanning *both* occurrences of the repeated
+/// block -- let the model confuse which occurrence it was hearing and
+/// collapse a ten-line span into one degenerate measurement. A window
+/// short enough to rarely span two repeats of the same block measured the
+/// same real audio far more completely.
+const ALIGN_ANCHOR_WINDOW_TARGET_SECONDS: f64 = 50.0;
+
+fn anchor_window_target_seconds(attempt: u32) -> f64 {
+    ALIGN_ANCHOR_WINDOW_TARGET_SECONDS / 2f64.powi(attempt as i32)
 }
 
 fn run_align(
@@ -1171,6 +1530,9 @@ fn run_align(
     config: &serde_json::Value,
     progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
+    let anchored = config
+        .get("line_anchors")
+        .is_some_and(|value| !value.is_null());
     let mut last_error = String::new();
     for attempt in 0..ALIGN_SEAM_RETRY_ATTEMPTS {
         // Each attempt's real per-window progress is buffered rather than
@@ -1190,7 +1552,12 @@ fn run_align(
             audio,
             output_dir,
             config,
-            align_window_target_seconds(attempt),
+            if anchored {
+                anchor_window_target_seconds(attempt)
+            } else {
+                align_window_target_seconds(attempt)
+            },
+            ALIGN_ANCHOR_MARGIN_SECONDS,
             &mut buffer_progress,
         ) {
             Ok(destination) => {
@@ -1199,11 +1566,27 @@ fn run_align(
                 }
                 return Ok(destination);
             }
-            Err(error) if error.contains("could not be reconciled at the window seam") => {
+            Err(error) if is_retryable_window_measurement_error(&error) => {
                 last_error = error;
                 if attempt + 1 < ALIGN_SEAM_RETRY_ATTEMPTS {
                     continue;
                 }
+            }
+            // A later attempt's halved window target can ask for more
+            // windows than this transcript has lyric units to split across
+            // (`plan_alignment_segments`'s own floor). That is a planning
+            // artifact of the retry shrink, not a real measurement, and
+            // every subsequent attempt only shrinks further -- it can never
+            // become feasible. Prefer a real prior attempt's measurement
+            // error, which is the more accurate explanation of the actual
+            // failure; only surface the planning error itself when it is
+            // the very first attempt (the default window was already too
+            // fine for this transcript, so there is no better error to show).
+            Err(error)
+                if !last_error.is_empty()
+                    && error.starts_with("Qwen long-form alignment requires at least ") =>
+            {
+                return Err(last_error);
             }
             Err(error) => return Err(error),
         }
@@ -1211,6 +1594,7 @@ fn run_align(
     Err(last_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_align_once(
     runtime: &ValidatedRuntime,
     model: &Path,
@@ -1218,17 +1602,29 @@ fn run_align_once(
     output_dir: &Path,
     config: &serde_json::Value,
     window_target_seconds: f64,
+    anchor_margin_seconds: f64,
     progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     let input = normalize_alignment_input(config)?;
     let destination = output_dir.join("qwen-alignment-evidence.json");
     let source_duration_seconds = audio::wav_duration_seconds(audio)?;
     let text_units = alignment_text_units(&input.transcript);
-    let plans = plan_alignment_segments(
-        source_duration_seconds,
-        text_units.len(),
-        window_target_seconds,
-    )?;
+    let line_anchors = parsed_line_anchors(config)?;
+    let plans = if let Some(anchors) = line_anchors.as_ref() {
+        plan_alignment_segments_from_anchors(
+            anchors,
+            text_units.len(),
+            source_duration_seconds,
+            window_target_seconds,
+            anchor_margin_seconds,
+        )?
+    } else {
+        plan_alignment_segments(
+            source_duration_seconds,
+            text_units.len(),
+            window_target_seconds,
+        )?
+    };
     let mut words: Vec<AlignmentWord> = Vec::new();
     let mut segment_evidence = Vec::with_capacity(plans.len());
     for plan in &plans {
@@ -1274,7 +1670,12 @@ fn run_align_once(
             word.start += plan.audio_start_seconds;
             word.end += plan.audio_start_seconds;
         }
-        let mut normalized = normalize_alignment_words(target_words)?;
+        let mut normalized = normalize_alignment_words(target_words).map_err(|error| {
+            format!(
+                "{error} (window {}: audio=[{:.2}s, {:.2}s] target=\"{target_text}\")",
+                plan.index, plan.audio_start_seconds, plan.audio_end_seconds
+            )
+        })?;
         if plan.index > 0
             && let Some(next_word) = normalized.first_mut()
             && let Some(previous_word) = words.last_mut()
@@ -1337,6 +1738,25 @@ fn run_align_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_json_control_characters_escapes_only_bytes_inside_strings() {
+        // Real repro: the pinned aligner wrote a literal newline inside a
+        // string value, which broke serde_json at "line 4 column 0".
+        let raw = b"{\n  \"words\": [\"foo\nbar\", \"baz\"]\n}";
+        let sanitized = sanitize_json_control_characters(raw);
+        let parsed: serde_json::Value = serde_json::from_slice(&sanitized).unwrap();
+        assert_eq!(parsed["words"][0], "foo\nbar");
+        assert_eq!(parsed["words"][1], "baz");
+    }
+
+    #[test]
+    fn sanitize_json_control_characters_escapes_a_raw_quote_breaking_control_byte() {
+        let raw = b"{\"word\": \"a\x01b\"}";
+        let sanitized = sanitize_json_control_characters(raw);
+        let parsed: serde_json::Value = serde_json::from_slice(&sanitized).unwrap();
+        assert_eq!(parsed["word"], "a\u{1}b");
+    }
 
     fn word(text: &str, start: f64, end: f64) -> AlignmentWord {
         AlignmentWord {
@@ -1613,6 +2033,131 @@ mod tests {
     }
 
     #[test]
+    fn anchored_plan_windows_each_line_near_its_own_claimed_time_not_its_index_position() {
+        // Real repro data: line 15 of a 26-line Timed LRC import (Asphodelos)
+        // claimed a 34-second span (167.18s-201.57s) because Timed LRC only
+        // stamps line starts and this line's `end` was synthesized from a
+        // mistimed next line. Blind index-proportional planning let that one
+        // bad line drag every later window's assumed position off by tens of
+        // seconds, producing a real failure: 14 characters of the next line
+        // collapsed into a 0.16-second measurement.
+        let anchors = [
+            (40.67, 47.16),
+            (167.18, 201.57), // the mistimed line
+            (201.57, 213.99),
+        ];
+        // A small window target keeps each line in its own group here, so
+        // this test can check each window's own position/capping in
+        // isolation; `anchored_plan_groups_several_lines_per_window_like_blind_planning`
+        // below covers the (default-sized) grouped case.
+        let plans = plan_alignment_segments_from_anchors(
+            &anchors,
+            3,
+            305.813,
+            20.0,
+            ALIGN_ANCHOR_MARGIN_SECONDS,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 3);
+        // Real repro bug: computing each line's own unit count separately
+        // (via `alignment_text_units` on that line's bare text) falls back
+        // to a per-*character* split for whitespace-free CJK text, desyncing
+        // from the global transcript's line-level unit index -- so a later
+        // window's "one line" target silently grew to include a dozen
+        // unrelated lines. Each anchor must map to exactly one global unit.
+        assert_eq!(
+            plans
+                .iter()
+                .map(|plan| (plan.target_unit_start, plan.target_unit_end))
+                .collect::<Vec<_>>(),
+            [(0, 1), (1, 2), (2, 3)]
+        );
+        // The mistimed line's own window is capped, not left to balloon to
+        // its full 34-second claim.
+        let mistimed = &plans[1];
+        assert!(
+            mistimed.audio_end_seconds - mistimed.audio_start_seconds
+                <= ALIGN_ANCHOR_MAX_SPAN_SECONDS + 2.0 * ALIGN_ANCHOR_MARGIN_SECONDS + 0.1
+        );
+        // Each window still starts near its own line's real claimed time,
+        // not at some position inferred from unit index within the whole
+        // transcript.
+        assert!((plans[0].audio_start_seconds - (40.67 - ALIGN_ANCHOR_MARGIN_SECONDS)).abs() < 0.2);
+        assert!(
+            (plans[2].audio_start_seconds - (201.57 - ALIGN_ANCHOR_MARGIN_SECONDS)).abs() < 0.2
+        );
+        // A later line's window position does not depend on an earlier
+        // line's mistiming: it is anchored to its own claimed start.
+        assert!(plans[2].audio_start_seconds < 220.0);
+    }
+
+    #[test]
+    fn anchored_plan_groups_several_lines_per_window_like_blind_planning() {
+        // One window per line measures every line boundary independently
+        // against windows that overlap by design (each line's own margin);
+        // on a real song that made *most* seams a genuine reconciliation
+        // gamble instead of the rare edge case blind planning's seam logic
+        // was built for. Grouping several consecutive lines per window --
+        // window *position* still comes from real anchor times, not an
+        // even split -- keeps seams rare, like blind planning.
+        let anchors = [
+            (0.0, 5.0),
+            (5.0, 10.0),
+            (10.0, 15.0),
+            (200.0, 205.0), // far enough away to force a new window
+        ];
+        let plans = plan_alignment_segments_from_anchors(
+            &anchors,
+            4,
+            305.813,
+            110.0,
+            ALIGN_ANCHOR_MARGIN_SECONDS,
+        )
+        .unwrap();
+        assert_eq!(
+            plans
+                .iter()
+                .map(|plan| (plan.target_unit_start, plan.target_unit_end))
+                .collect::<Vec<_>>(),
+            [(0, 3), (3, 4)]
+        );
+        assert!(plans[0].audio_end_seconds - plans[0].audio_start_seconds <= 110.0 + 20.0);
+    }
+
+    #[test]
+    fn anchored_plan_rejects_a_mismatched_anchor_and_unit_count() {
+        assert!(plan_alignment_segments_from_anchors(&[(0.0, 1.0)], 2, 10.0, 110.0, 5.0).is_err());
+    }
+
+    #[test]
+    fn anchored_plan_rejects_an_inverted_or_non_finite_anchor() {
+        assert!(plan_alignment_segments_from_anchors(&[(5.0, 5.0)], 1, 10.0, 110.0, 5.0).is_err());
+        assert!(
+            plan_alignment_segments_from_anchors(&[(f64::NAN, 5.0)], 1, 10.0, 110.0, 5.0).is_err()
+        );
+    }
+
+    #[test]
+    fn line_anchors_config_parses_a_present_array_and_treats_absence_or_null_as_blind_mode() {
+        let with_anchors = serde_json::json!({
+            "text": "a b",
+            "line_anchors": [{"start": 1.0, "end": 2.0}, {"start": 2.5, "end": 4.0}]
+        });
+        assert_eq!(
+            parsed_line_anchors(&with_anchors).unwrap(),
+            Some(vec![(1.0, 2.0), (2.5, 4.0)])
+        );
+        let absent = serde_json::json!({"text": "a b"});
+        assert_eq!(parsed_line_anchors(&absent).unwrap(), None);
+        let null = serde_json::json!({"text": "a b", "line_anchors": null});
+        assert_eq!(parsed_line_anchors(&null).unwrap(), None);
+        let empty = serde_json::json!({"text": "a b", "line_anchors": []});
+        assert_eq!(parsed_line_anchors(&empty).unwrap(), None);
+        let malformed = serde_json::json!({"text": "a b", "line_anchors": [{"start": 1.0}]});
+        assert!(parsed_line_anchors(&malformed).is_err());
+    }
+
+    #[test]
     fn window_context_is_removed_without_dropping_target_text() {
         let selected = target_words_from_context(
             vec![
@@ -1640,6 +2185,7 @@ mod tests {
             context_unit_start: 0,
             target_unit_start: 0,
             target_unit_end: 1,
+            anchor_start: None,
         }
     }
 
@@ -1705,6 +2251,23 @@ mod tests {
         assert_eq!(previous.end, next.start);
         assert!(previous.start < previous.end);
         assert!(next.start < next.end);
+    }
+
+    #[test]
+    fn anchored_seam_reconciliation_keeps_the_published_tick_grid() {
+        let previous_plan = seam_plan(0, 40.64, 133.12);
+        let mut next_plan = seam_plan(1, 121.12, 169.84);
+        // Real Timed LRC repro: this centisecond anchor is not representable
+        // on Qwen's 80 ms output grid.
+        next_plan.anchor_start = Some(127.13);
+        let mut previous = word("憶で", 126.32, 128.00);
+        let mut next = word("失った", 127.04, 162.72);
+
+        reconcile_alignment_seam(&previous_plan, &next_plan, &mut previous, &mut next).unwrap();
+
+        assert!((previous.end - 127.12).abs() < 1e-9);
+        assert_eq!(previous.end, next.start);
+        assert!((previous.end / ALIGN_TIMESTAMP_TICK_SECONDS).fract().abs() < 1e-9);
     }
 
     #[test]
@@ -1864,6 +2427,85 @@ mod tests {
             );
             previous_end = end;
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_alignment_window_retries_an_unmodified_call_after_corrupt_output() {
+        // Real repro class: the external engine's own JSON write came out
+        // structurally broken in a way `sanitize_json_control_characters`
+        // can't repair (truncated mid-object, unlike the raw-control-byte
+        // case that function does fix). Two consecutive real failures
+        // landed at different byte offsets for otherwise-identical input,
+        // which is what motivated retrying the unmodified call rather than
+        // trying to parse harder.
+        let test_dir = fixture_dir("align-window-corrupt-retry");
+        let control = test_dir.join("control");
+        std::fs::write(control.join("response-0"), b"{\"words\": [{\"word\": \"a\"".to_vec())
+            .unwrap();
+        std::fs::write(
+            control.join("response-1"),
+            serde_json::to_vec(&serde_json::json!({
+                "words": [{"word": "a", "start": 0.0, "end": 1.0}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(1.0)).unwrap();
+        let raw_path = test_dir.join("raw.json");
+        let words = execute_alignment_window(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &raw_path,
+            "a",
+            None,
+        )
+        .unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].word, "a");
+        assert!(!raw_path.exists(), "successful parse should clean up the raw file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_alignment_window_fails_closed_after_exhausting_corrupt_output_retries() {
+        let test_dir = fixture_dir("align-window-corrupt-exhausted");
+        let control = test_dir.join("control");
+        for attempt in 0..ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
+            std::fs::write(control.join(format!("response-{attempt}")), b"not json".to_vec())
+                .unwrap();
+        }
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(1.0)).unwrap();
+        let raw_path = test_dir.join("raw.json");
+        let error = execute_alignment_window(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &raw_path,
+            "a",
+            None,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Qwen alignment output is invalid:"));
+        assert_eq!(
+            std::fs::read_to_string(control.join("count")).unwrap().trim(),
+            ALIGNMENT_WINDOW_PARSE_ATTEMPTS.to_string()
+        );
     }
 
     #[cfg(unix)]
@@ -2089,6 +2731,255 @@ mod tests {
                 .unwrap()
                 .trim(),
             (attempt0.len() + attempt1.len()).to_string()
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    /// The real production failure this retry path was widened for: not a
+    /// seam conflict, but a window whose raw output collapses to every word
+    /// pinned at a single timestamp (`normalize_alignment_words`'s "no
+    /// measured boundaries" fail-closed path). `run_align_once` bails out of
+    /// window 0 immediately via `?`, so attempt 0 only ever spends one real
+    /// call before this retries with a re-planned (shorter-target) window
+    /// set, exactly like the seam case.
+    #[cfg(unix)]
+    #[test]
+    fn run_align_retries_a_real_measurement_after_a_transient_all_zero_window() {
+        let test_dir = fixture_dir("retry-success-zero-boundaries");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙蝶恋花千古佳话";
+        let text_units = alignment_text_units(transcript);
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        // Attempt 0, window 0: every word pinned to the same timestamp, so
+        // `normalize_alignment_words` finds nothing measured and fails
+        // closed. `run_align_once` never asks for window 1's response.
+        std::fs::write(
+            control.join("response-0"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "风", "start": 0.0, "end": 0.0},
+                {"word": "吹", "start": 0.0, "end": 0.0},
+                {"word": "沙", "start": 0.0, "end": 0.0},
+                {"word": "蝶", "start": 0.0, "end": 0.0},
+                {"word": "恋", "start": 0.0, "end": 0.0}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Attempt 1 (retry, a shorter target -> more/different windows):
+        // every window is measured with simple sequential, non-conflicting
+        // timestamps, so this attempt succeeds cleanly on its own merits.
+        // Attempt 0 consumed exactly one real call (it bailed on window 0),
+        // so attempt 1's responses continue the global call index at 1.
+        let attempt1 = plan_alignment_segments(200.0, 10, align_window_target_seconds(1)).unwrap();
+        for plan in &attempt1 {
+            std::fs::write(
+                control.join(format!("response-{}", 1 + plan.index)),
+                sequential_context_response(&text_units, plan),
+            )
+            .unwrap();
+        }
+
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress_calls = Vec::new();
+        let mut progress = |completed: u64, total: u64, _message: &'static str| {
+            progress_calls.push((completed, total));
+            Ok(())
+        };
+        let destination = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        let words = evidence["words"].as_array().unwrap();
+        assert_eq!(words.len(), 10);
+        assert_words_are_ordered_and_non_overlapping(words);
+        let recovered: String = words
+            .iter()
+            .map(|word| word["word"].as_str().unwrap())
+            .collect();
+        assert_eq!(recovered, transcript);
+        // The failed attempt's progress is never surfaced.
+        assert_eq!(progress_calls.len(), attempt1.len());
+        // Attempt 0's single bailed-out call + attempt 1's real windows:
+        // bounded, not endless.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            (1 + attempt1.len()).to_string()
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    /// The real production failure the previous test's fix immediately ran
+    /// into: a sparsely-segmented transcript where the *next* attempt's
+    /// halved window target needs more windows than there are lyric units,
+    /// so `plan_alignment_segments` itself fails before any engine call.
+    /// That planning artifact must never replace a real prior attempt's
+    /// measurement error -- every later attempt only shrinks the window
+    /// further, so it can never become feasible, and reporting "not enough
+    /// lyric units" instead of the real "no measured boundaries" would send
+    /// whoever reads it chasing the wrong problem.
+    #[cfg(unix)]
+    #[test]
+    fn run_align_prefers_a_real_measurement_error_over_a_later_infeasible_plan() {
+        let test_dir = fixture_dir("retry-infeasible-plan");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙"; // 3 lyric units.
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        let attempt0 = plan_alignment_segments(200.0, 3, align_window_target_seconds(0)).unwrap();
+        assert_eq!(
+            attempt0.len(),
+            2,
+            "test fixture assumes 2 windows at attempt 0"
+        );
+        let attempt1 = plan_alignment_segments(200.0, 3, align_window_target_seconds(1));
+        assert!(
+            attempt1.is_err(),
+            "test fixture assumes attempt 1 needs more windows (4) than lyric units (3)"
+        );
+
+        // Attempt 0, window 0: every word pinned to the same timestamp, so
+        // `normalize_alignment_words` fails closed with "no measured
+        // boundaries". `run_align_once` never asks for window 1's response,
+        // and attempt 1 never reaches the engine at all -- its own plan is
+        // rejected before any window is built.
+        std::fs::write(
+            control.join("response-0"),
+            serde_json::to_vec(&serde_json::json!({"words": [
+                {"word": "风", "start": 0.0, "end": 0.0},
+                {"word": "吹", "start": 0.0, "end": 0.0}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+        let error = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Qwen Forced Aligner returned no measured boundaries"));
+        // Exactly one real call: attempt 0's window 0. Attempt 1 never
+        // reaches the engine because its plan is rejected first.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            "1"
+        );
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_align_retries_a_persistent_output_corruption_with_a_reshaped_window() {
+        // Real repro: a specific window's audio/text corrupted the aligner's
+        // JSON write identically -- same error, same byte offset -- on every
+        // one of `execute_alignment_window`'s own unmodified retries, and
+        // again on a completely separate later run of the same unchanged
+        // window. That rules out a transient write race for this failure;
+        // only a *different* window (this test's outer re-planned retry)
+        // has a real chance of not tripping whatever in the window's content
+        // corrupts the write.
+        let test_dir = fixture_dir("retry-persistent-corruption");
+        let control = test_dir.join("control");
+        let transcript = "风吹沙蝶恋花千古佳话";
+        let text_units = alignment_text_units(transcript);
+        let audio_path = test_dir.join("source.wav");
+        std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+        // Attempt 0, window 0: corrupted (not just invalid JSON, but
+        // corrupted in the "no sanitizer can save it" sense) on every one of
+        // `ALIGNMENT_WINDOW_PARSE_ATTEMPTS` real calls. Window 1 is never
+        // called: `run_align_once`'s per-window loop bails on window 0 first.
+        for index in 0..ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
+            std::fs::write(control.join(format!("response-{index}")), b"not json".to_vec())
+                .unwrap();
+        }
+
+        // Attempt 1 (re-planned, shorter target -> more/different windows):
+        // clean responses for every window this attempt actually needs.
+        // The global call index continues at ALIGNMENT_WINDOW_PARSE_ATTEMPTS.
+        let attempt1 = plan_alignment_segments(200.0, 10, align_window_target_seconds(1)).unwrap();
+        for plan in &attempt1 {
+            std::fs::write(
+                control.join(format!(
+                    "response-{}",
+                    ALIGNMENT_WINDOW_PARSE_ATTEMPTS + plan.index as u32
+                )),
+                sequential_context_response(&text_units, plan),
+            )
+            .unwrap();
+        }
+
+        let script_path = test_dir.join("engine.sh");
+        write_fake_engine(&script_path, &control);
+        let runtime = crate::runtime::ValidatedRuntime {
+            engine: script_path,
+            manifest_sha256: "0".repeat(64),
+        };
+        let config = serde_json::json!({"text": transcript});
+        let mut progress = |_: u64, _: u64, _: &'static str| Ok(());
+        let destination = run_align(
+            &runtime,
+            Path::new("/fake-model.gguf"),
+            &audio_path,
+            &test_dir,
+            &config,
+            &mut progress,
+        )
+        .unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        let words = evidence["words"].as_array().unwrap();
+        assert_eq!(words.len(), 10);
+        assert_words_are_ordered_and_non_overlapping(words);
+        let recovered: String = words
+            .iter()
+            .map(|word| word["word"].as_str().unwrap())
+            .collect();
+        assert_eq!(recovered, transcript);
+        // Exactly the corrupt window's exhausted inner retries, plus attempt
+        // 1's real windows: bounded, not endless, and the corruption did not
+        // silently eat a whole outer attempt's budget for nothing.
+        assert_eq!(
+            std::fs::read_to_string(control.join("count"))
+                .unwrap()
+                .trim(),
+            (ALIGNMENT_WINDOW_PARSE_ATTEMPTS as usize + attempt1.len()).to_string()
         );
 
         std::fs::remove_dir_all(&test_dir).unwrap();

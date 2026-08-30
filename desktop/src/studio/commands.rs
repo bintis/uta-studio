@@ -132,6 +132,7 @@ pub(crate) enum AnalysisCommand {
     AddOptionalWorkflowCard(String, String, app_core::OptionalWorkflowCardV1),
     SetWorkflowParameter(String, String, serde_json::Value),
     SetWorkflowPolicy(String, app_core::ExecutionPolicy),
+    SetWorkflowSkipIfUnchanged(String, bool),
     AdjustWorkflowPriority(String, i32),
     RebindWorkflowAnalyzer(String, String, String),
     SaveWorkflow,
@@ -167,6 +168,9 @@ pub(crate) enum AnalysisCommand {
     RequestReplaceAuthoredChart(String),
     CancelReplaceAuthoredChart,
     ConfirmReplaceAuthoredChart,
+    RequestRemoveSong(String),
+    CancelRemoveSong,
+    ConfirmRemoveSong,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,7 +178,6 @@ pub(crate) enum EditorCommand {
     OpenLyricsEditor(String),
     CloseLyricsEditor,
     ToggleLyricsInputMode,
-    ToggleLyricsSeparateStems,
     SearchLrclibLyrics,
     ExtractLyrics,
     PreviousLrclibCandidate,
@@ -282,7 +285,10 @@ impl UiCommand {
                 | AnalysisCommand::ConfirmDeleteAuthoredChart
                 | AnalysisCommand::RequestReplaceAuthoredChart(_)
                 | AnalysisCommand::CancelReplaceAuthoredChart
-                | AnalysisCommand::ConfirmReplaceAuthoredChart,
+                | AnalysisCommand::ConfirmReplaceAuthoredChart
+                | AnalysisCommand::RequestRemoveSong(_)
+                | AnalysisCommand::CancelRemoveSong
+                | AnalysisCommand::ConfirmRemoveSong,
             ) => UiDirtyRegion::Dialog,
             Self::Analysis(_) => UiDirtyRegion::Analysis,
             Self::Editor(
@@ -303,7 +309,6 @@ impl UiCommand {
                 EditorCommand::OpenLyricsEditor(_)
                 | EditorCommand::CloseLyricsEditor
                 | EditorCommand::ToggleLyricsInputMode
-                | EditorCommand::ToggleLyricsSeparateStems
                 | EditorCommand::SearchLrclibLyrics
                 | EditorCommand::ExtractLyrics
                 | EditorCommand::PreviousLrclibCandidate

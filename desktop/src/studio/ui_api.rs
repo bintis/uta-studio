@@ -151,6 +151,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.add_optional_workflow_card",
     "ui.analysis.set_workflow_parameter",
     "ui.analysis.set_workflow_policy",
+    "ui.analysis.set_workflow_skip_if_unchanged",
     "ui.analysis.adjust_workflow_priority",
     "ui.analysis.rebind_workflow_analyzer",
     "ui.analysis.save_workflow",
@@ -185,13 +186,15 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.request_replace_authored_chart",
     "ui.analysis.cancel_replace_authored_chart",
     "ui.analysis.confirm_replace_authored_chart",
+    "ui.analysis.request_remove_song",
+    "ui.analysis.cancel_remove_song",
+    "ui.analysis.confirm_remove_song",
 ];
 
 const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.open_lyrics_editor",
     "ui.editor.close_lyrics_editor",
     "ui.editor.toggle_lyrics_input_mode",
-    "ui.editor.toggle_lyrics_separate_stems",
     "ui.editor.search_lrclib_lyrics",
     "ui.editor.extract_lyrics",
     "ui.editor.previous_lrclib_candidate",
@@ -256,7 +259,6 @@ const EDITOR_COMMANDS: &[&str] = &[
 const POINTER_COMMANDS: &[&str] = &[
     "ui.pointer.analysis_node.primary",
     "ui.pointer.analysis_node.secondary",
-    "ui.pointer.analysis_edge.primary",
     "ui.pointer.song.primary",
     "ui.pointer.song.secondary",
     "ui.pointer.folder_entry.primary",

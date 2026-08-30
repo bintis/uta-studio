@@ -33,7 +33,7 @@ use crate::contract::{
     AnalyzeRequestV1, BoundaryAuthority, CapabilityDescriptor, DecodedAudioFactsV1, EngineError,
     EngineErrorCode, EngineRequirementsV1, EngineResult, ExportRequestV1,
     FUSION_AGENT_ADAPTER_RESOURCE, FUSION_AGENT_PROTOCOL, FusionDecisionProvenanceV1,
-    HSMM_VITERBI_SELECTOR, LyricsMode, StemArtifactRefV1,
+    HSMM_VITERBI_SELECTOR, LyricsMode, StemArtifactRefV1, VOCAL_TOPOLOGY_GATE,
 };
 use crate::events::{EngineEventSink, begin_node, emit_degraded, emit_warning, with_event_sink};
 use crate::execution::{
@@ -56,8 +56,9 @@ mod runtime_route;
 mod workflow_execution;
 use output_guard::OutputRunGuard;
 use runtime_route::{
-    caller_transcript, cancelled, execution_device, fingerprint_request, openvino_backend,
-    request_lyrics_text, resource_provenance, roformer_backend, roformer_component,
+    caller_transcript, cancelled, execution_device, fingerprint_request, line_anchors_for_lyrics,
+    openvino_backend, request_lyrics_text, resource_provenance, roformer_backend,
+    roformer_component,
 };
 use workflow_execution::*;
 
@@ -664,13 +665,27 @@ impl AnalysisEngine {
                 artifact: output.artifact,
             });
         }
-        let vocal_topology = estimate_vocal_topology(
-            source_start,
-            source_duration,
-            isolation_profiles.as_ref().map(|profiles| &profiles.0),
-            isolation_profiles.as_ref().map(|profiles| &profiles.1),
-        )?;
-        let topology_reviews = topology_review_regions(&vocal_topology);
+        // Topology is applicable only when the exact plan selected the
+        // foreground/residual-producing lead-isolation route. Do not turn an
+        // intentionally bypassed optional processor into a whole-track
+        // `Unknown` review or an `ok_degraded` result.
+        let vocal_topology = plan
+            .quality_gates
+            .iter()
+            .any(|gate| gate == VOCAL_TOPOLOGY_GATE)
+            .then(|| {
+                estimate_vocal_topology(
+                    source_start,
+                    source_duration,
+                    isolation_profiles.as_ref().map(|profiles| &profiles.0),
+                    isolation_profiles.as_ref().map(|profiles| &profiles.1),
+                )
+            })
+            .transpose()?;
+        let topology_reviews = vocal_topology
+            .as_ref()
+            .map(topology_review_regions)
+            .unwrap_or_default();
         let instrumental_quality = instrumental_audio.as_ref().map(|instrumental| {
             estimate_instrumental_quality(
                 source_start,
@@ -871,6 +886,14 @@ impl AnalysisEngine {
             })?;
             let model = resolved_model(&resolved, "qwen3_forced_aligner_0_6b")?;
             let directory = create_task_dir(&output_root, "worker/alignment")?;
+            let mut align_config = serde_json::json!({
+                "model_path": model.model_path,
+                "text": transcript.text,
+                "language": transcript.language
+            });
+            if let Some(anchors) = line_anchors_for_lyrics(&request.lyrics) {
+                align_config["line_anchors"] = anchors;
+            }
             let outputs = run_native_task(
                 model,
                 "uta-qwen-align-worker",
@@ -878,11 +901,7 @@ impl AnalysisEngine {
                 "speech.align",
                 &input,
                 &directory,
-                serde_json::json!({
-                    "model_path": model.model_path,
-                    "text": transcript.text,
-                    "language": transcript.language
-                }),
+                align_config,
                 cancellation,
             )?;
             Some(parse_qwen_alignment(
@@ -1574,7 +1593,7 @@ impl AnalysisEngine {
             source: primary_decoded.metrics,
             analyzed: analyzed_audio.metrics,
             cleanup: cleanup_comparison,
-            vocal_topology: Some(&vocal_topology),
+            vocal_topology: vocal_topology.as_ref(),
             instrumental: instrumental_quality.as_ref(),
         })
         .map_err(|error| error.for_request(&request.request_id))?;

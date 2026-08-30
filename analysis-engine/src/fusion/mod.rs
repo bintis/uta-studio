@@ -128,6 +128,45 @@ mod tests {
             .collect()
     }
 
+    /// Companion to `dense_candidates` for exactly one junction: the same
+    /// `widths[0] * widths[1]` pair count, but no two candidates share an
+    /// identical (start, end) -- the "before" side staggers its start, the
+    /// "after" side staggers its end, so `prune_redundant_range_duplicates`
+    /// has nothing to collapse and the raw `MAX_PAIR_STATES` budget is what
+    /// gets exercised, not the range-duplicate pruning `dense_candidates`
+    /// now represents.
+    fn distinct_dense_candidates(widths: [usize; 2]) -> Vec<SegmentCandidate> {
+        const JUNCTION: f64 = 0.5;
+        const STEP: f64 = 1e-6; // exactly one canonical microsecond tick.
+        let before = (0..widths[0])
+            .map(|index| candidate(&format!("before-{index:04}"), index as f64 * STEP, JUNCTION, 69));
+        let after = (0..widths[1]).map(|index| {
+            candidate(
+                &format!("after-{index:04}"),
+                JUNCTION,
+                JUNCTION + (index + 1) as f64 * STEP,
+                69,
+            )
+        });
+        before.chain(after).collect()
+    }
+
+    fn distinct_shifted_dense_component(
+        widths: [usize; 2],
+        prefix: &str,
+        offset: u64,
+    ) -> Vec<SegmentCandidate> {
+        distinct_dense_candidates(widths)
+            .into_iter()
+            .map(|mut candidate| {
+                candidate.id = format!("{prefix}-{}", candidate.id);
+                candidate.range.start += offset;
+                candidate.range.end += offset;
+                candidate
+            })
+            .collect()
+    }
+
     #[test]
     fn unavailable_evidence_is_not_serialized_as_a_measured_zero() {
         let frame = EvidenceFrame {
@@ -564,18 +603,73 @@ mod tests {
     }
 
     #[test]
+    fn range_duplicate_pitch_alternatives_are_pruned_before_the_pair_state_budget() {
+        // `dense_candidates` piles many *identical-range* candidates into one
+        // layer -- exactly the shape `expand_pitch_alternative_states` produces
+        // when several boundary experts each propose a pitch alternative for
+        // the same slot. What used to fail closed on the raw pair-state
+        // budget now succeeds: `prune_redundant_range_duplicates` keeps only
+        // the best few per exact range before decode ever counts a pair, so
+        // "many experts, one slot" no longer costs anything near this budget.
+        let previously_at_limit = dense_candidates(&[256, 256]);
+        decode_candidate_graph(&previously_at_limit)
+            .expect("range-duplicate density is pruned, not raw pair-state limited");
+        let previously_above_limit = dense_candidates(&[256, 257]);
+        decode_candidate_graph(&previously_above_limit).expect(
+            "pruning does not care which side of the junction has one more redundant duplicate",
+        );
+    }
+
+    #[test]
+    fn range_duplicate_pruning_keeps_the_best_scoring_alternatives_not_arbitrary_ones() {
+        // Pruning must rank by the same emission score the decoder itself
+        // uses, so it can only ever discard a candidate the decoder would
+        // have lost to a same-range rival regardless -- never the genuinely
+        // best pitch alternative for a slot just because a boundary expert
+        // happened to list it late.
+        let mut candidates = (0..20)
+            .map(|index| {
+                let mut state = candidate(&format!("dup-{index:02}"), 0.0, 0.5, 69);
+                // `boundary_support` (unset by default) adds `support * 0.25`
+                // to `emission_utility`, so the highest-index duplicate is
+                // unambiguously the best-scoring one.
+                state.boundary_support = Some(index as f32 / 20.0);
+                state
+            })
+            .collect::<Vec<_>>();
+        // A candidate with a *different* range is its own pruning group of
+        // one and is untouched -- it also gives the component something to
+        // chain onto so the winning duplicate is unambiguous in the output.
+        candidates.push(candidate("decoy", 0.5, 1.0, 71));
+
+        let selected = decode_candidate_graph(&candidates).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["dup-19", "decoy"],
+            "the single best-scoring duplicate (highest boundary_support) must be the one kept and selected"
+        );
+    }
+
+    #[test]
     fn dense_candidate_graph_has_exact_pair_state_limit_semantics() {
-        let at_limit = dense_candidates(&[256, 256]);
+        // Distinct (start, end) ranges on both sides of one junction: nothing
+        // for range-duplicate pruning to collapse, so this exercises the raw
+        // `MAX_PAIR_STATES` safety valve directly, proving it still exists
+        // for genuinely dense (non-redundant) candidate meshes.
+        let at_limit = distinct_dense_candidates([256, 256]);
         let selected = decode_candidate_graph(&at_limit).unwrap();
         assert_eq!(
             selected
                 .iter()
                 .map(|candidate| candidate.id.as_str())
                 .collect::<Vec<_>>(),
-            ["dense-0-0000", "dense-1-0000"]
+            ["before-0000", "after-0255"]
         );
 
-        let above_limit = dense_candidates(&[256, 257]);
+        let above_limit = distinct_dense_candidates([256, 257]);
         let error = decode_candidate_graph(&above_limit)
             .expect_err("one pair state above the documented limit must fail closed");
         assert!(error.contains("bounded pair-state limit"), "{error}");
@@ -583,10 +677,10 @@ mod tests {
 
     #[test]
     fn disconnected_components_share_the_pair_state_budget() {
-        let mut at_limit = shifted_dense_component(&[256, 128], "first", 0);
-        at_limit.extend(shifted_dense_component(&[256, 128], "second", 2_000_000));
+        let mut at_limit = distinct_shifted_dense_component([256, 128], "first", 0);
+        at_limit.extend(distinct_shifted_dense_component([256, 128], "second", 2_000_000));
         decode_candidate_graph(&at_limit).unwrap();
-        at_limit.extend(shifted_dense_component(&[1, 1], "over", 4_000_000));
+        at_limit.extend(distinct_shifted_dense_component([1, 1], "over", 4_000_000));
         assert!(
             decode_candidate_graph(&at_limit)
                 .unwrap_err()
@@ -595,38 +689,30 @@ mod tests {
     }
 
     #[test]
-    fn dense_candidate_graph_has_exact_transition_limit_semantics() {
-        let at_limit = dense_candidates(&[100, 100, 200]);
-        let selected = decode_candidate_graph(&at_limit).unwrap();
-        assert_eq!(
-            selected
-                .iter()
-                .map(|candidate| candidate.id.as_str())
-                .collect::<Vec<_>>(),
-            ["dense-0-0000", "dense-1-0000", "dense-2-0000"]
-        );
-
-        let above_limit = dense_candidates(&[100, 100, 201]);
-        let error = decode_candidate_graph(&above_limit)
-            .expect_err("one transition batch above the documented limit must fail closed");
-        assert!(error.contains("bounded transition limit"), "{error}");
+    fn range_duplicate_pitch_alternatives_are_pruned_before_the_transition_budget() {
+        // Same mechanism as the pair-state case, one layer deeper: the
+        // transition budget only ever counts triples built from *already
+        // recorded* pair-states, so pruning redundant range-duplicates out
+        // of every layer bounds the transition count too. What used to fail
+        // closed now succeeds.
+        let previously_at_limit = dense_candidates(&[100, 100, 200]);
+        decode_candidate_graph(&previously_at_limit)
+            .expect("range-duplicate density is pruned, not raw transition limited");
+        let previously_above_limit = dense_candidates(&[100, 100, 201]);
+        decode_candidate_graph(&previously_above_limit)
+            .expect("pruning does not care which layer has one more redundant duplicate");
     }
 
     #[test]
-    fn disconnected_components_share_the_transition_budget() {
-        let mut at_limit = shifted_dense_component(&[100, 100, 100], "first", 0);
-        at_limit.extend(shifted_dense_component(
+    fn range_duplicate_pruning_applies_independently_to_each_disconnected_component() {
+        let mut previously_at_limit = shifted_dense_component(&[100, 100, 100], "first", 0);
+        previously_at_limit.extend(shifted_dense_component(
             &[100, 100, 100],
             "second",
             2_000_000,
         ));
-        decode_candidate_graph(&at_limit).unwrap();
-        at_limit.extend(shifted_dense_component(&[1, 1, 1], "over", 4_000_000));
-        assert!(
-            decode_candidate_graph(&at_limit)
-                .unwrap_err()
-                .contains("bounded transition limit")
-        );
+        decode_candidate_graph(&previously_at_limit)
+            .expect("range-duplicate density is pruned per component, not raw transition limited");
     }
 
     #[test]

@@ -205,13 +205,13 @@ pub(crate) fn build_workflow_render_graph(
                             "vocal",
                             "audio.extract_vocals",
                             node.provider_preferences.primary.as_deref(),
-                            "01 · Vocal extraction",
+                            "Vocal extraction",
                         ),
                         (
                             "instrumental",
                             "audio.extract_instrumental",
                             node.provider_preferences.instrumental.as_deref(),
-                            "01 · BGM / Instrumental extraction",
+                            "BGM / Instrumental extraction",
                         ),
                     ]
                     .into_iter()
@@ -255,11 +255,11 @@ pub(crate) fn build_workflow_render_graph(
                         };
                         let combined = invocation.output_ports.len() > 1;
                         let label = if combined {
-                            "01 · Vocal / Instrumental separation"
+                            "Vocal / Instrumental separation"
                         } else if invocation.output_ports.iter().any(|port| port == "vocal") {
-                            "01 · Vocal extraction"
+                            "Vocal extraction"
                         } else {
-                            "01 · BGM / Instrumental extraction"
+                            "BGM / Instrumental extraction"
                         };
                         RenderNode {
                             id: AnalysisNodeId::new(&invocation.invocation_id),
@@ -291,15 +291,9 @@ pub(crate) fn build_workflow_render_graph(
             vec![RenderNode {
                 id: AnalysisNodeId::new(&node.instance_id),
                 kind: RenderNodeKind::Compute,
-                label: {
-                    let label = capability
-                        .map(|capability| capability.label.clone())
-                        .unwrap_or_else(|| node.instance_id.clone());
-                    format!(
-                        "{:02} · {label}",
-                        workflow_graph_step(Some(&node.capability_id))
-                    )
-                },
+                label: capability
+                    .map(|capability| capability.label.clone())
+                    .unwrap_or_else(|| node.instance_id.clone()),
                 detail: format!(
                     "{} · {} · priority {}",
                     app_core::workflow_model_label(model),
@@ -337,25 +331,36 @@ pub(crate) fn build_workflow_render_graph(
             } else {
                 RenderEdgeRole::ComputeDependency
             };
-            let from = split_invocations
-                .get(binding.from_node.as_str())
-                .and_then(|invocations| {
-                    invocations
-                        .iter()
-                        .find(|invocation| {
-                            invocation
-                                .output_ports
-                                .iter()
-                                .any(|port| port == &binding.from_port)
-                        })
-                        .map(|invocation| invocation.invocation_id.clone())
-                })
-                .or_else(|| {
-                    legacy_split_nodes
-                        .contains(binding.from_node.as_str())
-                        .then(|| format!("{}.{}", binding.from_node, binding.from_port))
-                })
-                .unwrap_or_else(|| binding.from_node.clone());
+            // A confirmed split node's real render nodes are named by
+            // invocation id (or, for the legacy empty-invocations shape,
+            // by `{instance_id}.{port}`) -- never by the bare workflow
+            // instance id. Falling through to `binding.from_node` for a
+            // split node whose compiled invocations don't cover this
+            // binding's port would create an edge to a node id that does
+            // not exist in `nodes`, which corrupts the topological sort
+            // and blanks the entire DAG instead of just this one edge
+            // (real repro: a binding on the instrumental port when this
+            // run's exact plan only compiled a vocal-only separation
+            // invocation). Only nodes that are not split nodes at all may
+            // use the raw instance id.
+            let from = match split_invocations.get(binding.from_node.as_str()) {
+                Some(invocations) if !invocations.is_empty() => invocations
+                    .iter()
+                    .find(|invocation| {
+                        invocation
+                            .output_ports
+                            .iter()
+                            .any(|port| port == &binding.from_port)
+                    })
+                    .map(|invocation| invocation.invocation_id.clone()),
+                Some(_) => legacy_split_nodes
+                    .contains(binding.from_node.as_str())
+                    .then(|| format!("{}.{}", binding.from_node, binding.from_port)),
+                None => Some(binding.from_node.clone()),
+            };
+            let Some(from) = from else {
+                return Vec::new();
+            };
             let targets = split_invocations
                 .get(binding.to_node.as_str())
                 .map(|invocations| {
@@ -562,6 +567,49 @@ mod tests {
                 .node(&AnalysisNodeId::new("vocal_bgm_split"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_binding_on_a_port_no_compiled_invocation_produced_is_dropped_not_dangling() {
+        // Real repro: an exact plan whose separation invocation only
+        // produced the vocal port (e.g. instrumental wasn't requested this
+        // run) still has the abstract workflow's binding to the
+        // instrumental port. That binding used to fall through to the bare
+        // `vocal_bgm_split` instance id, which isn't a real render node
+        // once invocations are non-empty -- a dangling edge that corrupts
+        // the DAG's topological sort and blanks the whole canvas.
+        let mut workflow = wire(&app_core::default_workflow("song"));
+        let separation = workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.instance_id == "vocal_bgm_split")
+            .unwrap();
+        separation.execution_invocations = vec![app_core::WorkflowExecutionInvocationWireV1 {
+            invocation_id: "vocal-only-invocation".to_string(),
+            provider_id: "vocal-only-provider".to_string(),
+            capabilities: vec!["audio.extract_vocals".to_string()],
+            output_ports: vec!["vocal".to_string()],
+        }];
+        let graph = build_workflow_render_graph(&workflow, None, None, false);
+        assert!(
+            graph
+                .node(&AnalysisNodeId::new("vocal-only-invocation"))
+                .is_some()
+        );
+        assert!(
+            graph
+                .node(&AnalysisNodeId::new("vocal_bgm_split"))
+                .is_none()
+        );
+        let node_ids = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for edge in &graph.edges {
+            assert!(node_ids.contains(&edge.from), "dangling edge from {:?}", edge.from);
+            assert!(node_ids.contains(&edge.to), "dangling edge to {:?}", edge.to);
+        }
     }
 
     #[test]

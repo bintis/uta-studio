@@ -3,7 +3,7 @@
 //! Nodes and bindings come from the exact workflow snapshot used by Engine
 //! Preview/Execution; Bevy rendering and layout consume only this model.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use app_core::AnalysisNodeId;
 
@@ -67,6 +67,14 @@ pub(crate) enum RenderEdgeRole {
     InactiveBinding,
 }
 
+// The DAG view no longer draws per-edge binding lines (they made the graph
+// unreadable), so nothing currently reads an edge's port/semantic/role
+// detail outside of `analysis_model::workflow`'s own tests, which assert
+// these are computed correctly from the exact compiled workflow bindings.
+// Kept -- not display metadata, but real derived data a future bindings
+// inspector could read -- with dead_code silenced rather than deleting
+// tested binding-resolution correctness coverage.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct RenderEdge {
     pub(crate) from: AnalysisNodeId,
@@ -81,74 +89,6 @@ pub(crate) struct RenderEdge {
 impl RenderEdge {
     pub(crate) fn endpoints(&self) -> (AnalysisNodeId, AnalysisNodeId) {
         (self.from.clone(), self.to.clone())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RenderEdgeEmphasis {
-    Mainline,
-    Contextual,
-    Secondary,
-}
-
-fn edge_mainline_priority(edge: &RenderEdge, destination_order: usize) -> (u8, u8, u8, usize) {
-    let role = match edge.role {
-        RenderEdgeRole::ComputeDependency => 0,
-        RenderEdgeRole::AnalyzerAttachment => 1,
-        RenderEdgeRole::InactiveBinding => 2,
-    };
-    let audio_role = match edge.audio_role.as_deref() {
-        Some("lead_vocal" | "vocal" | "clean_lead_vocal") => 0,
-        Some("instrumental" | "music") => 2,
-        Some(_) => 1,
-        None => 1,
-    };
-    let semantic = if edge.semantic_type.contains("audio") {
-        0
-    } else {
-        1
-    };
-    (role, audio_role, semantic, destination_order)
-}
-
-/// Presentation-only edge classification. It never modifies, filters, or
-/// recompiles exact workflow bindings; it only ensures a card has at most one
-/// solid outgoing continuation until the user asks for its local context.
-pub(crate) fn render_edge_emphasis(
-    graph: &RenderGraph,
-    edge_index: usize,
-    selected_node_id: Option<&str>,
-) -> RenderEdgeEmphasis {
-    let Some(edge) = graph.edges.get(edge_index) else {
-        return RenderEdgeEmphasis::Secondary;
-    };
-    if selected_node_id
-        .is_some_and(|selected| edge.from.as_str() == selected || edge.to.as_str() == selected)
-    {
-        return RenderEdgeEmphasis::Contextual;
-    }
-    let node_order = graph
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id.clone(), index))
-        .collect::<BTreeMap<_, _>>();
-    let mainline = graph
-        .edges
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| candidate.from == edge.from)
-        .min_by_key(|(_, candidate)| {
-            edge_mainline_priority(
-                candidate,
-                node_order.get(&candidate.to).copied().unwrap_or(usize::MAX),
-            )
-        })
-        .map(|(index, _)| index);
-    if mainline == Some(edge_index) {
-        RenderEdgeEmphasis::Mainline
-    } else {
-        RenderEdgeEmphasis::Secondary
     }
 }
 
@@ -189,82 +129,4 @@ pub(crate) fn filter_render_graph_for_mini_view(mut render: RenderGraph) -> Rend
         .edges
         .retain(|edge| visible.contains(&edge.from) && visible.contains(&edge.to));
     render
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn edge(to: &str, role: RenderEdgeRole, audio_role: Option<&str>) -> RenderEdge {
-        RenderEdge {
-            from: AnalysisNodeId::new("separator"),
-            from_port: "audio".to_string(),
-            to: AnalysisNodeId::new(to),
-            to_port: "audio".to_string(),
-            semantic_type: "audio".to_string(),
-            audio_role: audio_role.map(str::to_string),
-            role,
-        }
-    }
-
-    #[test]
-    fn default_presentation_has_one_solid_outgoing_edge_per_card() {
-        let graph = RenderGraph {
-            nodes: Vec::new(),
-            edges: vec![
-                edge(
-                    "instrumental",
-                    RenderEdgeRole::ComputeDependency,
-                    Some("instrumental"),
-                ),
-                edge(
-                    "lead",
-                    RenderEdgeRole::ComputeDependency,
-                    Some("lead_vocal"),
-                ),
-                edge("analyzer", RenderEdgeRole::AnalyzerAttachment, None),
-            ],
-        };
-        let emphases = (0..graph.edges.len())
-            .map(|index| render_edge_emphasis(&graph, index, None))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            emphases
-                .iter()
-                .filter(|emphasis| **emphasis == RenderEdgeEmphasis::Mainline)
-                .count(),
-            1
-        );
-        assert_eq!(emphases[1], RenderEdgeEmphasis::Mainline);
-        assert_eq!(emphases[0], RenderEdgeEmphasis::Secondary);
-        assert_eq!(emphases[2], RenderEdgeEmphasis::Secondary);
-    }
-
-    #[test]
-    fn selecting_a_card_reveals_every_exact_incident_binding() {
-        let graph = RenderGraph {
-            nodes: Vec::new(),
-            edges: vec![
-                edge(
-                    "instrumental",
-                    RenderEdgeRole::ComputeDependency,
-                    Some("instrumental"),
-                ),
-                edge(
-                    "lead",
-                    RenderEdgeRole::ComputeDependency,
-                    Some("lead_vocal"),
-                ),
-                edge("analyzer", RenderEdgeRole::AnalyzerAttachment, None),
-            ],
-        };
-        assert!((0..graph.edges.len()).all(|index| {
-            render_edge_emphasis(&graph, index, Some("separator")) == RenderEdgeEmphasis::Contextual
-        }));
-        assert_eq!(
-            graph.edges.len(),
-            3,
-            "classification must not hide DAG truth"
-        );
-    }
 }

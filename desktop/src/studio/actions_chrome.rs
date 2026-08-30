@@ -480,6 +480,29 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowSkipIfUnchanged(node_id, skip_if_unchanged)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::set_workflow_skip_if_unchanged(
+                    &mut workflow.definition,
+                    &app_core::WorkflowNodeId::new(node_id),
+                    *skip_if_unchanged,
+                ) {
+                    Ok(()) => {
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(if *skip_if_unchanged {
+                            "This step will be skipped and its last successful result reused if nothing about it changed.".to_string()
+                        } else {
+                            "This step will always recompute on the next run.".to_string()
+                        });
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
         UiCommand::Analysis(AnalysisCommand::AdjustWorkflowPriority(node_id, delta)) => {
             if let Some(workflow) = studio.analysis.workflow.as_mut() {
                 let node_id = app_core::WorkflowNodeId::new(node_id);
@@ -665,7 +688,6 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView) => {
             studio.analysis.analysis_mini_view = !studio.analysis.analysis_mini_view;
-            studio.analysis.selected_graph_edge = None;
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
             invalidated.invalidate(UiDirtyRegion::Analysis);
