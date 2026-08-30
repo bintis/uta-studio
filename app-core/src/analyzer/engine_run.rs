@@ -10,27 +10,18 @@ use crate::analysis_artifact::{
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::backend_cli::{
     ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AUDIO_QUALITY_REPORT_CONTRACT,
-    AUDIO_QUALITY_REPORT_VERSION, AnalysisCancelHandle, AnalysisCliClient,
-    AnalysisLifecycleFrameWireV1, AnalysisPlanWireV1, AnalysisResultManifestWireV1,
-    AnalysisReusePolicyWireV1, AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1,
-    AudioQualityReportWireV1, AudioRoleWireV1, AudioSourceWireV1, BackendCliError,
-    FusionDecisionProvenanceWireV1, FusionModeWireV1, QualityGateRequirementWireV1,
-    QualityGateStatusWireV1, QualityRegionWireV1, VocalTopologyModeWireV1,
+    AUDIO_QUALITY_REPORT_VERSION, AnalysisCliClient, AnalysisLifecycleFrameWireV1,
+    AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalysisReusePolicyWireV1,
+    AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1, AudioQualityReportWireV1,
+    AudioRoleWireV1, BackendCliError, FusionDecisionProvenanceWireV1, FusionModeWireV1,
+    QualityGateRequirementWireV1, QualityGateStatusWireV1, QualityRegionWireV1,
+    VocalTopologyModeWireV1,
 };
 use crate::library_db::EngineQueueIntent;
-
-static ACTIVE_ENGINE_CANCELS: LazyLock<Mutex<HashMap<String, (String, AnalysisCancelHandle)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const SOURCE_DURATION_METADATA_TOLERANCE: u64 = 100_000;
 const SUPPORTED_AUDIO_QUALITY_ALGORITHMS: [&str; 2] =
     ["audio-quality-gates-v1", "audio-quality-gates-v2"];
-
-pub(crate) fn cancel_active_engine(file_hash: &str) -> Option<Result<(), String>> {
-    let guard = ACTIVE_ENGINE_CANCELS.lock().unwrap();
-    let (request_id, handle) = guard.get(file_hash)?;
-    Some(handle.cancel(request_id).map_err(|error| error.to_string()))
-}
 
 pub(crate) fn process_engine_queue_intent(
     file_hash: &str,
@@ -100,6 +91,7 @@ pub(crate) fn process_engine_queue_intent(
             append_analysis_log_path(log_path.as_deref(), "Engine result validated and published");
             finish_analysis_history(file_hash, "completed", None);
             remove_from_queue(file_hash);
+            remove_engine_progress_plan(file_hash);
             LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
         }
         Err(error) => {
@@ -126,8 +118,11 @@ pub(crate) fn process_engine_queue_intent(
                         )
                     },
                 );
-                snapshot.node_event =
-                    Some(if cancelled { "cancelled" } else { "failed" }.to_string());
+                if cancelled {
+                    mark_snapshot_cancelled(snapshot, &error);
+                } else {
+                    snapshot.node_event = Some("failed".to_string());
+                }
             }
             if cancelled {
                 finish_analysis_history(file_hash, "cancelled", Some(&error));
@@ -136,6 +131,7 @@ pub(crate) fn process_engine_queue_intent(
                 finish_analysis_history(file_hash, "failed", Some(&error));
                 update_queue_status(file_hash, QueuedStatus::Failed(error));
             }
+            remove_engine_progress_plan(file_hash);
             LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
         }
     }
@@ -147,6 +143,9 @@ fn execute_exact_intent(
     intent: &EngineQueueIntent,
     log_path: Option<&Path>,
 ) -> Result<AnalysisResultManifestWireV1, String> {
+    if take_force_stop_request(file_hash) {
+        return Err("cancelled: analysis was force-stopped".to_string());
+    }
     let request: AnalyzeRequestWireV1 = serde_json::from_str(&intent.request_json)
         .map_err(|error| format!("persisted Engine request is malformed: {error}"))?;
     let plan: AnalysisPlanWireV1 = serde_json::from_str(&intent.plan_json)
@@ -168,18 +167,10 @@ fn execute_exact_intent(
     {
         return Err("persisted Engine request or plan contract is unsupported".to_string());
     }
+    register_engine_progress_plan(file_hash, &plan);
     let source = crate::analysis_engine_adapter::resolve_true_source(file_hash)?;
     let expected_source_duration = app_owned_source_duration(file_hash)?;
-    let primary = validated_primary_source_binding(&request, &plan)?;
-    if source.path != intent.source_path
-        || primary.path != source.path
-        || primary.role != source.role
-    {
-        return Err(
-            "source_identity_changed: queued TrueSource no longer matches the exact preview"
-                .to_string(),
-        );
-    }
+    validate_exact_execution_source_binding(&request, &plan, &source.path, &intent.source_path)?;
 
     let runs_root = cache.path.join("engine-runs");
     std::fs::create_dir_all(&runs_root)
@@ -198,18 +189,26 @@ fn execute_exact_intent(
         serde_json::from_str(&intent.request_json).map_err(|error| error.to_string())?;
     let outcome = (|| {
         let mut client = AnalysisCliClient::connect().map_err(|error| error.to_string())?;
-        ACTIVE_ENGINE_CANCELS.lock().unwrap().insert(
-            file_hash.to_string(),
-            (intent.request_id.clone(), client.cancellation_handle()),
-        );
-        let analysis =
+        let cancellation = client.cancellation_handle();
+        register_active_engine(file_hash, cancellation.clone());
+        let analysis = if force_stop_was_requested(file_hash) {
+            cancellation.force_stop().and_then(|()| {
+                Err(BackendCliError::UnexpectedExit(
+                    "force-stopped before analysis execution".to_string(),
+                ))
+            })
+        } else {
             client.analyze_with_events(&request_value, &intent.request_id, &output_root, |event| {
                 apply_engine_lifecycle_event(file_hash, log_path, event)
-            });
-        ACTIVE_ENGINE_CANCELS.lock().unwrap().remove(file_hash);
+            })
+        };
+        remove_active_engine(file_hash);
         let stderr = client.stderr_log();
         if !stderr.is_empty() {
             append_analysis_log_path(log_path, &format!("uta-analyze stderr: {stderr}"));
+        }
+        if take_force_stop_request(file_hash) {
+            return Err("cancelled: analysis was force-stopped".to_string());
         }
         let manifest = analysis.map_err(|error| {
             preserve_engine_error(file_hash, &error);
@@ -230,24 +229,6 @@ fn execute_exact_intent(
         let _ = std::fs::remove_dir_all(&output_root);
     }
     outcome
-}
-
-fn validated_primary_source_binding<'a>(
-    request: &'a AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
-) -> Result<&'a AudioSourceWireV1, String> {
-    let mut primaries = request.audio_sources.iter().filter(|source| source.primary);
-    let primary = primaries
-        .next()
-        .ok_or_else(|| "persisted Engine request has no primary source".to_string())?;
-    if primaries.next().is_some()
-        || primary.timeline.timebase != crate::backend_cli::CANONICAL_TIMEBASE
-        || plan.source_route.primary_source_id != primary.id
-        || plan.source_route.input_role != primary.role
-    {
-        return Err("Engine request and Plan primary-source binding is invalid".to_string());
-    }
-    Ok(primary)
 }
 
 fn audio_role_name(role: AudioRoleWireV1) -> &'static str {
@@ -392,6 +373,7 @@ fn apply_engine_lifecycle_event(
     event: AnalysisLifecycleFrameWireV1,
 ) {
     append_analysis_lifecycle_log(log_path, &event);
+    let weighted_overall = update_engine_overall_progress(file_hash, &event);
     let presentation_node_id = event
         .presentation_node_id
         .clone()
@@ -404,14 +386,13 @@ fn apply_engine_lifecycle_event(
         .model_id
         .clone()
         .unwrap_or_else(|| "Engine native".to_string());
-    let measured_progress = event
-        .work_units_completed
-        .zip(event.work_units_total)
-        .zip(event.worker_task_id.as_deref())
-        .and_then(|((completed, total), task_id)| {
-            (total > 0 && completed <= total && !task_id.trim().is_empty())
-                .then_some(((completed.saturating_mul(100) / total).min(100)) as usize)
-        });
+    // `fraction` measures the complete worker operation, including phases
+    // which do not naturally expose integer work units. Work units remain
+    // useful detail, but must not suppress a model's real reported percent.
+    let reported_progress = event
+        .progress
+        .filter(|fraction| fraction.is_finite())
+        .map(|fraction| (fraction.clamp(0.0, 1.0) * 100.0).floor() as usize);
     let terminal = matches!(event.frame_type.as_str(), "node_completed" | "node_failed");
     let started = matches!(
         event.frame_type.as_str(),
@@ -427,6 +408,7 @@ fn apply_engine_lifecycle_event(
         snapshot.node_event = Some(event.frame_type);
         return;
     }
+    let previous_overall = snapshot.overall_progress;
     let previous_measured_progress = snapshot
         .stage_routes
         .iter()
@@ -441,7 +423,7 @@ fn apply_engine_lifecycle_event(
     snapshot.stage_progress = if event.frame_type == "node_completed" {
         100
     } else if event.frame_type == "node_progress" {
-        measured_progress.unwrap_or(0)
+        reported_progress.unwrap_or(0)
     } else if event.frame_type == "node_started" {
         0
     } else {
@@ -517,6 +499,15 @@ fn apply_engine_lifecycle_event(
     }
     if terminal {
         route.finished_at_ms = Some(event.event_at_ms);
+    }
+    if let Some(weighted_overall) = weighted_overall {
+        snapshot.overall_progress = snapshot.overall_progress.max(weighted_overall);
+    }
+    let overall_changed = snapshot.overall_progress != previous_overall;
+    let overall_progress = snapshot.overall_progress;
+    drop(live);
+    if overall_changed {
+        update_queue_status(file_hash, QueuedStatus::Analyzing(overall_progress));
     }
 }
 
@@ -1969,8 +1960,8 @@ mod tests {
             event("node_progress", Some(0.9), None, None),
         );
         let unitless = LIVE_ANALYSIS.lock().unwrap().remove(file_hash).unwrap();
-        assert_eq!(unitless.stage_progress, 0);
-        assert_eq!(unitless.stage_routes[0].stage_progress, 0);
+        assert_eq!(unitless.stage_progress, 90);
+        assert_eq!(unitless.stage_routes[0].stage_progress, 90);
         assert_eq!(unitless.stage_routes[0].work_units_completed, None);
         assert_eq!(unitless.stage_routes[0].work_units_total, None);
         assert_eq!(unitless.stage_routes[0].worker_task_id, None);

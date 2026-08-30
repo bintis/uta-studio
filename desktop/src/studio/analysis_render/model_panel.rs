@@ -58,6 +58,25 @@ pub(crate) fn spawn_analysis_header_toolbar(
     session: &StudioSessionView<'_>,
     file_hash: &str,
 ) {
+    if session.analysis_tasks.iter().any(|task| {
+        matches!(
+            task.status,
+            app_core::QueuedStatus::Staged
+                | app_core::QueuedStatus::Queued
+                | app_core::QueuedStatus::Analyzing(_)
+        )
+    }) {
+        spawn_toolbar_button(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            UiIcon::Close,
+            "Stop analysis",
+            UiAction::from(AnalysisCommand::ForceStopAllAnalysis),
+            true,
+        );
+    }
     for (icon, label, action, selected) in [
         (
             UiIcon::Settings,
@@ -118,10 +137,19 @@ fn snapshot_node_status(
         _ if route.finished_at_ms.is_some() => Some("COMPLETE"),
         _ => None,
     });
-    route_status.map(str::to_string).or_else(|| {
-        (live_running && snapshot.node_id.as_deref() == Some(node_id))
-            .then(|| "RUNNING".to_string())
-    })
+    route_status
+        .map(str::to_string)
+        .or_else(|| {
+            (live_running && snapshot.node_id.as_deref() == Some(node_id))
+                .then(|| "RUNNING".to_string())
+        })
+        .or_else(|| {
+            matches!(
+                snapshot.node_event.as_deref(),
+                Some("cancelled" | "node_cancelled")
+            )
+            .then(|| "CANCELLED".to_string())
+        })
 }
 
 fn planned_node_status(
@@ -610,11 +638,11 @@ mod execution_status_tests {
         assert_eq!(vocal_capability, Some("audio.extract_vocals"));
         assert_eq!(
             presentation_model(vocal, vocal_capability).as_deref(),
-            Some("bs_roformer_vocals_ep317")
+            Some("bs_roformer_leap_xe90_vocals")
         );
         assert_eq!(
             presentation_model(instrumental, instrumental_capability).as_deref(),
-            Some("melband_roformer_inst_v2")
+            Some("bs_polarformer_public_instrumental")
         );
     }
 

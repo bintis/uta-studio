@@ -434,7 +434,7 @@ fn build_bundle(documents: &[LocaleDocument], app_version: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"schema_version\":1,\"app_version_range\":\">=0.6.0,<0.7.0\",\"built_for_version\":\"{}\",\"document_revision\":\"{}\",\"semantic_links\":{{{}}},\"locales\":{{{}}}}}\n",
+        "{{\"schema_version\":1,\"app_version_range\":\">=0.8.0,<0.9.0\",\"built_for_version\":\"{}\",\"document_revision\":\"{}\",\"semantic_links\":{{{}}},\"locales\":{{{}}}}}\n",
         json_escape(app_version),
         DOCUMENT_REVISION,
         semantic_links,

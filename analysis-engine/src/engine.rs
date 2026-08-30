@@ -6,9 +6,10 @@ use uta_runtime_manager::{RuntimeManager, StorePaths};
 
 use crate::artifact::{
     AdvancedNoteEvidenceV1, AlignmentArtifactV1, BasicPitchEvidenceV3, DependencyKind,
-    PitchEvidenceV03, SingingAnalysisV1, TechniqueEvidenceV1, artifact_ref_for_existing,
-    finalize_candidate_vocal_chart, parse_advanced_note_evidence, parse_game_evidence,
-    parse_qwen_alignment, parse_qwen_transcript, parse_rmvpe_pitch, write_json_artifact,
+    Jbm555ExpectedInputsV1, PitchEvidenceV03, SingingAnalysisV1, TechniqueEvidenceV1,
+    TimedNoteExpertEvidenceV1, artifact_ref_for_existing, finalize_candidate_vocal_chart,
+    parse_advanced_note_evidence, parse_game_evidence, parse_jbm555_evidence, parse_qwen_alignment,
+    parse_qwen_transcript, parse_rmvpe_pitch, write_json_artifact,
 };
 use crate::audio::{
     CleanupComparison, QualityEvaluationInput, analyze_acoustic_evidence, decode_audio,
@@ -19,8 +20,8 @@ use crate::audio::{
 use crate::candidate_pipeline::{
     CandidatePathDecisionV1, FusionDecisionModeV1, SingingStagesOutput,
     build_baseline_review_regions, build_transcript_disagreement_regions,
-    execute_candidate_graph_stage, execute_singing_fusion_stage, fuse_alignment_stage,
-    fuse_transcript_stage,
+    execute_candidate_graph_stage, execute_singing_fusion_stage_with_timed_notes,
+    fuse_alignment_stage, fuse_transcript_stage,
 };
 use crate::conditional_scheduler::{
     ConditionalScheduleRecordV1, ConditionalScheduleRequest, ScheduleSkipReason,
@@ -53,6 +54,7 @@ use crate::workflow_executor::{CompiledWorkflowExecutionPlanV1, WorkflowNodeExec
 
 mod output_guard;
 mod runtime_route;
+mod worker_tasks;
 mod workflow_execution;
 use output_guard::OutputRunGuard;
 use runtime_route::{
@@ -60,6 +62,7 @@ use runtime_route::{
     openvino_backend, request_lyrics_text, resource_provenance, roformer_backend,
     roformer_component,
 };
+use worker_tasks::{run_native_task, typed_worker_output};
 use workflow_execution::*;
 
 const TRANSCRIPT_MEDIA_TYPE: &str = "application/vnd.uta.transcript+json;version=1";
@@ -323,109 +326,43 @@ impl AnalysisEngine {
             &analysis_input,
             analysis_role,
         );
-        let ep317_residual = workflow_uses_ep317_residual(plan.workflow_execution.as_ref());
-        let mut ep317_residual_executed = false;
         if has_capability(&plan, "audio.extract_vocals") {
-            let model = resolved_model(&resolved, "bs_roformer_vocals_ep317")?;
-            if ep317_residual {
-                let output = run_ep317_vocal_residual(
-                    &DenoiseTask {
-                        model_path: &model.model_path,
-                        executable: &model.runtime_executable,
-                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                        backend: roformer_backend(model)?,
-                        ffmpeg: &ffmpeg,
-                        input: &primary.path,
-                        output_root: &output_root,
-                        source_duration,
-                        task_id: &format!("{}-ep317-vocal-residual", request.request_id),
-                    },
-                    plan.workflow_execution
-                        .as_ref()
-                        .and_then(|workflow| workflow.node_for_capability("audio.extract_vocals"))
-                        .and_then(|node| node.execution_invocations.first())
-                        .map(|invocation| invocation.invocation_id.as_str()),
-                    cancellation,
-                )?;
-                analysis_input = output_root.join(&output.vocal.artifact.path);
-                guide_vocal_profile = Some(output.vocal_profile);
-                instrumental_audio = Some(output.instrumental_audio);
-                ep317_residual_executed = true;
-                analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
-                record_workflow_audio(
-                    plan.workflow_execution.as_ref(),
-                    "audio.extract_vocals",
-                    "vocal",
-                    &mut workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                );
-                let instrumental_path = output_root.join(&output.instrumental.artifact.path);
-                record_workflow_audio(
-                    plan.workflow_execution.as_ref(),
-                    "audio.extract_instrumental",
-                    "instrumental",
-                    &mut workflow_audio,
-                    &instrumental_path,
-                    crate::contract::AudioRole::Instrumental.as_str(),
-                );
-                if request
-                    .requested_artifacts
-                    .stems
-                    .contains(&crate::contract::AudioRole::GuideVocals)
-                {
-                    artifacts.stems.push(StemArtifactRefV1 {
-                        role: output.vocal.role,
-                        artifact: output.vocal.artifact,
-                    });
-                }
-                if request
-                    .requested_artifacts
-                    .stems
-                    .contains(&crate::contract::AudioRole::Instrumental)
-                {
-                    artifacts.stems.push(StemArtifactRefV1 {
-                        role: output.instrumental.role,
-                        artifact: output.instrumental.artifact,
-                    });
-                }
-            } else {
-                let output = run_openvino_vocals(
-                    &DenoiseTask {
-                        model_path: &model.model_path,
-                        executable: &model.runtime_executable,
-                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                        backend: roformer_backend(model)?,
-                        ffmpeg: &ffmpeg,
-                        input: &primary.path,
-                        output_root: &output_root,
-                        source_duration,
-                        task_id: &format!("{}-extract-vocals", request.request_id),
-                    },
-                    cancellation,
-                )?;
-                analysis_input = output_root.join(&output.artifact.path);
-                guide_vocal_profile =
-                    Some(decode_audio(&ffmpeg, "guide_vocals", &analysis_input)?.profile);
-                analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
-                record_workflow_audio(
-                    plan.workflow_execution.as_ref(),
-                    "audio.extract_vocals",
-                    "vocal",
-                    &mut workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                );
-                if request
-                    .requested_artifacts
-                    .stems
-                    .contains(&crate::contract::AudioRole::GuideVocals)
-                {
-                    artifacts.stems.push(StemArtifactRefV1 {
-                        role: output.role,
-                        artifact: output.artifact,
-                    });
-                }
+            let model = resolved_model(&resolved, "bs_roformer_leap_xe90_vocals")?;
+            let output = run_openvino_vocals(
+                &DenoiseTask {
+                    model_path: &model.model_path,
+                    executable: &model.runtime_executable,
+                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                    backend: roformer_backend(model)?,
+                    ffmpeg: &ffmpeg,
+                    input: &primary.path,
+                    output_root: &output_root,
+                    source_duration,
+                    task_id: &format!("{}-extract-vocals", request.request_id),
+                },
+                cancellation,
+            )?;
+            analysis_input = output_root.join(&output.artifact.path);
+            guide_vocal_profile =
+                Some(decode_audio(&ffmpeg, "guide_vocals", &analysis_input)?.profile);
+            analysis_role = crate::contract::AudioRole::GuideVocals.as_str();
+            record_workflow_audio(
+                plan.workflow_execution.as_ref(),
+                "audio.extract_vocals",
+                "vocal",
+                &mut workflow_audio,
+                &analysis_input,
+                analysis_role,
+            );
+            if request
+                .requested_artifacts
+                .stems
+                .contains(&crate::contract::AudioRole::GuideVocals)
+            {
+                artifacts.stems.push(StemArtifactRefV1 {
+                    role: output.role,
+                    artifact: output.artifact,
+                });
             }
         }
         materialize_requested_semantic_lead_stem(
@@ -482,75 +419,36 @@ impl AnalysisEngine {
                 });
             }
         }
-        if has_capability(&plan, "audio.extract_instrumental") && !ep317_residual_executed {
-            if ep317_residual {
-                let model = resolved_model(&resolved, "bs_roformer_vocals_ep317")?;
-                let output = run_ep317_vocal_residual(
-                    &DenoiseTask {
-                        model_path: &model.model_path,
-                        executable: &model.runtime_executable,
-                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                        backend: roformer_backend(model)?,
-                        ffmpeg: &ffmpeg,
-                        input: &primary.path,
-                        output_root: &output_root,
-                        source_duration,
-                        task_id: &format!("{}-ep317-vocal-residual", request.request_id),
-                    },
-                    plan.workflow_execution
-                        .as_ref()
-                        .and_then(|workflow| {
-                            workflow.node_for_capability("audio.extract_instrumental")
-                        })
-                        .and_then(|node| node.execution_invocations.first())
-                        .map(|invocation| invocation.invocation_id.as_str()),
-                    cancellation,
-                )?;
-                let path = output_root.join(&output.instrumental.artifact.path);
-                instrumental_audio = Some(output.instrumental_audio);
-                record_workflow_audio(
-                    plan.workflow_execution.as_ref(),
-                    "audio.extract_instrumental",
-                    "instrumental",
-                    &mut workflow_audio,
-                    &path,
-                    crate::contract::AudioRole::Instrumental.as_str(),
-                );
-                artifacts.stems.push(StemArtifactRefV1 {
-                    role: output.instrumental.role,
-                    artifact: output.instrumental.artifact,
-                });
-            } else {
-                let model = resolved_model(&resolved, "melband_roformer_inst_v2")?;
-                let output = run_openvino_instrumental(
-                    &DenoiseTask {
-                        model_path: &model.model_path,
-                        executable: &model.runtime_executable,
-                        runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                        backend: roformer_backend(model)?,
-                        ffmpeg: &ffmpeg,
-                        input: &primary.path,
-                        output_root: &output_root,
-                        source_duration,
-                        task_id: &format!("{}-instrumental", request.request_id),
-                    },
-                    cancellation,
-                )?;
-                let path = output_root.join(&output.artifact.path);
-                instrumental_audio = Some(decode_audio(&ffmpeg, "instrumental", &path)?);
-                record_workflow_audio(
-                    plan.workflow_execution.as_ref(),
-                    "audio.extract_instrumental",
-                    "instrumental",
-                    &mut workflow_audio,
-                    &path,
-                    crate::contract::AudioRole::Instrumental.as_str(),
-                );
-                artifacts.stems.push(StemArtifactRefV1 {
-                    role: output.role,
-                    artifact: output.artifact,
-                });
-            }
+        if has_capability(&plan, "audio.extract_instrumental") {
+            let model = resolved_model(&resolved, "bs_polarformer_public_instrumental")?;
+            let output = run_openvino_instrumental(
+                &DenoiseTask {
+                    model_path: &model.model_path,
+                    executable: &model.runtime_executable,
+                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                    backend: roformer_backend(model)?,
+                    ffmpeg: &ffmpeg,
+                    input: &primary.path,
+                    output_root: &output_root,
+                    source_duration,
+                    task_id: &format!("{}-instrumental", request.request_id),
+                },
+                cancellation,
+            )?;
+            let path = output_root.join(&output.artifact.path);
+            instrumental_audio = Some(decode_audio(&ffmpeg, "instrumental", &path)?);
+            record_workflow_audio(
+                plan.workflow_execution.as_ref(),
+                "audio.extract_instrumental",
+                "instrumental",
+                &mut workflow_audio,
+                &path,
+                crate::contract::AudioRole::Instrumental.as_str(),
+            );
+            artifacts.stems.push(StemArtifactRefV1 {
+                role: output.role,
+                artifact: output.artifact,
+            });
         }
         let raw_cleanup_input = analysis_input.clone();
         let raw_cleanup_role = analysis_role.to_string();
@@ -1427,12 +1325,82 @@ impl AnalysisEngine {
                 }
             }
         }
+        let mut timed_note_evidence = Vec::<TimedNoteExpertEvidenceV1>::new();
+        if has_capability(&plan, "notes.jbm555") {
+            let model = resolved_model(&resolved, "jbm555_cectc_80")?;
+            let separator_generation = resolved
+                .iter()
+                .find(|resource| resource.model_id == "bs_roformer_leap_xe90_vocals")
+                .map(|resource| resource.generation.as_str())
+                .unwrap_or("caller-vocal");
+            let directory = create_task_dir(&output_root, "worker/jbm555")?;
+            let backend = openvino_backend(model)?;
+            let outputs = SupervisedWorker::run(
+                &model.runtime_executable,
+                &WorkerExpectation {
+                    component: "uta-openvino-worker".to_string(),
+                    runtime_recipe_digest: model.runtime_recipe_digest.clone(),
+                },
+                &NativeTask {
+                    task_id: format!("{}-jbm555", request.request_id),
+                    node_id: "notes.jbm555".to_string(),
+                    presentation_node_id: None,
+                    model_id: model.model_id.clone(),
+                    input_artifacts: vec![primary.path.clone(), analysis_input.clone()],
+                    output_dir: directory,
+                    config: serde_json::json!({
+                        "model_path": model.model_path,
+                        "backend": backend,
+                        "source_start": source_start,
+                        "source_duration": source_duration,
+                        "model_generation": model.generation,
+                        "mix_audio_identity": "task-mix",
+                        "vocal_audio_identity": "task-vocal",
+                        "separator_model_generation": separator_generation,
+                        "vocal_preparation_generation": "native-44k1"
+                    }),
+                    timeout: Duration::from_secs(4 * 60 * 60),
+                },
+                cancellation,
+                |_| {},
+            );
+            match outputs {
+                Ok(outputs) => {
+                    let evidence = parse_jbm555_evidence(
+                        typed_worker_output(&outputs, "jbm555_note_evidence")?,
+                        Jbm555ExpectedInputsV1 {
+                            source_start,
+                            source_duration,
+                            mix_audio_identity: "task-mix",
+                            vocal_audio_identity: "task-vocal",
+                            separator_model_generation: separator_generation,
+                            vocal_preparation_generation: "native-44k1",
+                        },
+                    )?;
+                    timed_note_evidence.push(evidence.timed_note_evidence(
+                        Jbm555ExpectedInputsV1 {
+                            source_start,
+                            source_duration,
+                            mix_audio_identity: "task-mix",
+                            vocal_audio_identity: "task-vocal",
+                            separator_model_generation: separator_generation,
+                            vocal_preparation_generation: "native-44k1",
+                        },
+                    )?);
+                }
+                Err(error) if error.code == EngineErrorCode::Cancelled => return Err(error),
+                Err(error) => degraded_reasons.push(format!(
+                    "optional capability notes.jbm555 failed: {}",
+                    error.message
+                )),
+            }
+        }
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
         let singing_fusion = if has_capability(&plan, "fusion.singing") {
             let lifecycle = begin_node("singing-fusion", "fusion.singing", None, FUSION_VERSION);
-            let output = execute_singing_fusion_stage(
+            let output = execute_singing_fusion_stage_with_timed_notes(
                 transcript.as_ref().ok_or_else(|| {
                     EngineError::new(
                         EngineErrorCode::MissingRequiredInput,
@@ -1457,6 +1425,7 @@ impl AnalysisEngine {
                 game_evidence.as_ref(),
                 acoustic_evidence.as_ref(),
                 &advanced_note_evidence,
+                &timed_note_evidence,
                 &technique_evidence,
                 &request.boundary_constraints,
                 source_start,
@@ -1869,142 +1838,6 @@ impl AnalysisEngine {
         )
         .for_request(&request.request_id))
     }
-}
-
-fn run_openvino_cleanup(
-    task: &DenoiseTask<'_>,
-    spec: &CleanupSpec<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    let directory = create_task_dir(task.output_root, spec.worker_directory)?;
-    let outputs = SupervisedWorker::run(
-        task.executable,
-        &WorkerExpectation {
-            component: roformer_component(task.backend).to_string(),
-            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
-        },
-        &NativeTask {
-            task_id: task.task_id.to_string(),
-            node_id: spec.node_id.to_string(),
-            presentation_node_id: spec.presentation_node_id.map(str::to_string),
-            model_id: spec.model_id.to_string(),
-            input_artifacts: vec![task.input.to_path_buf()],
-            output_dir: directory.clone(),
-            config: serde_json::json!({
-                "model_path": task.model_path,
-                "backend": task.backend,
-                "semantic_output": spec.semantic_output
-            }),
-            timeout: Duration::from_secs(4 * 60 * 60),
-        },
-        cancellation,
-        |_| {},
-    )?;
-    let worker_output = typed_worker_output(&outputs, spec.artifact)?;
-    if outputs
-        .iter()
-        .find(|output| output.artifact == spec.artifact)
-        .is_none_or(|output| output.media_type != "audio/flac")
-    {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "MelBand worker did not publish its declared lossless FLAC stem",
-        ));
-    }
-    let facts = decode_audio(task.ffmpeg, spec.node_id, worker_output)?.facts;
-    if facts.sample_rate != 44_100
-        || facts.channels != 2
-        || facts.frame_count == 0
-        || facts.duration.abs_diff(task.source_duration) > 2_000
-    {
-        return Err(EngineError::new(
-            EngineErrorCode::TimelineInvalid,
-            "MelBand separation did not preserve the 44.1 kHz stereo source timeline",
-        ));
-    }
-    let relative = PathBuf::from(spec.destination);
-    let destination = task.output_root.join(&relative);
-    let parent = destination.parent().expect("cleanup stem has parent");
-    std::fs::create_dir_all(parent).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not create cleanup stem directory: {error}"),
-        )
-    })?;
-    if destination.exists() {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "cleanup stem target already exists",
-        ));
-    }
-    std::fs::rename(worker_output, &destination).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not atomically publish cleanup stem: {error}"),
-        )
-    })?;
-    std::fs::remove_dir_all(&directory).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not clean cleanup worker directory: {error}"),
-        )
-    })?;
-    Ok(SeparationOutput {
-        role: spec.role,
-        artifact: artifact_ref_for_existing(task.output_root, &relative, "audio/flac")?,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_native_task(
-    model: &uta_runtime_manager::ResolvedModel,
-    component: &str,
-    task_id: &str,
-    node_id: &str,
-    input: &Path,
-    output_dir: &Path,
-    config: serde_json::Value,
-    cancellation: &CancellationToken,
-) -> EngineResult<Vec<NativeTaskOutput>> {
-    SupervisedWorker::run(
-        &model.runtime_executable,
-        &WorkerExpectation {
-            component: component.to_string(),
-            runtime_recipe_digest: model.runtime_recipe_digest.clone(),
-        },
-        &NativeTask {
-            task_id: task_id.to_string(),
-            node_id: node_id.to_string(),
-            presentation_node_id: None,
-            model_id: model.model_id.clone(),
-            input_artifacts: vec![input.to_path_buf()],
-            output_dir: output_dir.to_path_buf(),
-            config,
-            timeout: Duration::from_secs(4 * 60 * 60),
-        },
-        cancellation,
-        |_| {},
-    )
-}
-
-fn typed_worker_output<'a>(
-    outputs: &'a [NativeTaskOutput],
-    artifact: &str,
-) -> EngineResult<&'a Path> {
-    let mut matching = outputs.iter().filter(|output| output.artifact == artifact);
-    let output = matching.next().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("worker omitted required typed output {artifact}"),
-        )
-    })?;
-    if matching.next().is_some() {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("worker emitted duplicate typed output {artifact}"),
-        ));
-    }
-    Ok(&output.path)
 }
 
 #[cfg(test)]

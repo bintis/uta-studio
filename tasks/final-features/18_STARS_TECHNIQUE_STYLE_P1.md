@@ -139,7 +139,7 @@ If style has no current public capability, keep it as a typed optional evidence 
 
 Set card 18's current state/result in `tasks/remaining-models/STATE.md` and update `docs/KEY_CONCLUSIONS.md` with any durable STARS technique/style, dependency or calibration conclusion. Do not create a completion log under `docs/`.
 
-Include graph/artifact hashes, taxonomy, parity summary, dependency contract, capability state, and any retained calibration/license blocker.
+Include graph/artifact hashes, taxonomy, parity summary, dependency contract, capability state, and any retained calibration limit and license advisory.
 
 Stop after this card and reap all STARS/OpenVINO processes.
 

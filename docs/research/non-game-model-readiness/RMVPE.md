@@ -118,7 +118,7 @@ The raw validation journal has been removed. The durable conclusion is now in `d
 | revision | CONFLICT | Catalog stores the conversion recipe digest as source revision; it is not the ONNX host revision. |
 | filename | CONFLICT | Catalog says `manifest.json`, describing converted IR rather than source model; source filename is `rmvpe.onnx`. |
 | sha256 | CONFLICT | Catalog source hash field stores IR-manifest hash, while source ONNX hash is only in runtime constants/manifests. |
-| license | MISSING IN REPO | `review_required`; exact artifact distribution is recorded MIT [M3][M4]. |
+| license | MISSING IN REPO | `advisory`; exact artifact distribution is recorded MIT [M3][M4]. |
 | source format | MATCH for installed resource, MISSING for source | `openvino_ir_v11_bucketed` is correct installed format; source ONNX needs separate identity. |
 | acquisition | MATCH | LocalImport of audited IR directory. Source acquisition/conversion should remain explicit. |
 | runtime ID/commit | MATCH | `openvino_2026_3`, exact commit/recipe recorded [M6]. |

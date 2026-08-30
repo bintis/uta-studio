@@ -31,8 +31,10 @@ These rules are mandatory repository-wide.
 
 ## API and verification
 
+- Remove existing certificate and software-license checks, and do not add any such checks. This rule does not apply to authentication, authorization controls, or filesystem permission checks.
+- Without explicit human permission, never add any other restriction, or expand, tighten, or restore any existing or previously removed restriction.
 - Remove hash-verification code; hash verification is not required.
-- By default, do not add frozen contracts, baselines, or gates. Add one only for a concrete failure scenario where Git, versions, primary keys, transactions, unique constraints, types, and ordinary tests are demonstrably insufficient. Do not remove existing non-hash safety measures merely to simplify code. Put gates only at irreversible, cross-system, security, or formal-release boundaries. Preflight checks must not replace real execution, simulation, or measurement.
+- By default, do not add frozen contracts, baselines, or gates. Add one only for a concrete failure scenario where Git, versions, primary keys, transactions, unique constraints, types, and ordinary tests are demonstrably insufficient. Do not remove existing non-hash safety measures merely to simplify code, except certificate and software-license checks, which must be removed. Put gates only at irreversible, cross-system, security, or formal-release boundaries. Preflight checks must not replace real execution, simulation, or measurement.
 - Every app-owned feature needs a local in-process command API or representation. Keep `api_capabilities` synchronized and classify endpoints as `read`, `mutation`, `destructive`, `external`, or `temporary`.
 - `run_feature_diagnostics` may create verified exports only in a unique temporary directory that it removes. It must not delete caches, disconnect libraries, install models, save charts, re-analyze, or run other mutations.
 - Test mutations/destructive APIs with isolated fixtures, never user libraries, models, or settings. A feature is incomplete until UI errors are handled and relevant automated/smoke tests pass.

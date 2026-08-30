@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{
     CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult, FusionDecisionProvenanceV1,
 };
-use crate::execution::candidate_set_digest;
 use crate::fingerprint::{FUSION_VERSION, HSMM_VERSION};
 use crate::fusion::{
-    CanonicalSingingTrack, HardBoundarySetV1, SegmentCandidate, SingingFusionEvidence,
-    SingingReviewRegion, validate_candidate_path_with_boundaries, validate_canonical_singing_track,
+    CanonicalSingingTrack, HardBoundarySetV1, SegmentCandidate, SingingReviewRegion,
+    validate_candidate_path_with_boundaries, validate_canonical_singing_track,
 };
 
 pub const SINGING_ANALYSIS_CONTRACT: &str = "uta.analysis-engine.singing-analysis";
@@ -178,29 +177,19 @@ impl SingingAnalysisV1 {
             return Err(invalid("SingingAnalysis candidate evidence is invalid"));
         }
         if let Some(decision) = self.provenance.fusion_decision.as_ref() {
-            let (expected_digest, selected_ids) = match decision {
+            let selected_ids = match decision {
                 FusionDecisionProvenanceV1::Algorithm {
-                    candidate_set_digest,
                     selected_candidate_ids,
                     ..
                 }
                 | FusionDecisionProvenanceV1::AiJudgment {
-                    candidate_set_digest,
                     selected_candidate_ids,
                     ..
-                } => (candidate_set_digest, selected_candidate_ids),
+                } => selected_candidate_ids,
             };
-            let identity = SingingFusionEvidence {
-                schema_version: 2,
-                candidates: self.candidate_evidence.clone(),
-                hard_boundaries: self.candidate_hard_boundaries.clone(),
-            };
-            let actual_digest =
-                candidate_set_digest(&identity).map_err(|error| invalid(error.message))?;
-            if &actual_digest != expected_digest
-                || selected_ids
-                    .iter()
-                    .any(|id| !candidate_ids.contains(id.as_str()))
+            if selected_ids
+                .iter()
+                .any(|id| !candidate_ids.contains(id.as_str()))
             {
                 return Err(invalid(
                     "SingingAnalysis decision does not match its candidate evidence",

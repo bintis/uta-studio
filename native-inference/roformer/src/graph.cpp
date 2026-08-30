@@ -8,7 +8,9 @@
 #include <stdexcept>
 #include <cstring>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -151,10 +153,16 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
     std::cout << "Architecture: " << architecture_ << std::endl;
 
     // Normalization for legacy models (if any) or simplified internal handling
-    if (architecture_ == "bs") architecture_ = "bs_roformer";
-    if (architecture_ == "mel_band") architecture_ = "mel_band_roformer";
+    if (architecture_ == "bs" || architecture_ == "bs-roformer") {
+        architecture_ = "bs_roformer";
+    }
+    if (architecture_ == "mel_band" || architecture_ == "mel-band-roformer") {
+        architecture_ = "mel_band_roformer";
+    }
 
     std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "mel_band_roformer."
+    public_bs_schema_ = architecture_ == "bs_roformer"
+        && gguf_find_key(ctx_gguf, "bs_roformer.n_bands") >= 0;
 
     // Set internal flags based on architecture
     if (architecture_ == "bs_roformer") {
@@ -168,27 +176,43 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
 
     // 2. Read Hyperparameters using key prefix
 
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_n_fft").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "n_fft" : "stft_n_fft")).c_str());
     if (kv_idx >= 0) n_fft_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_hop_length").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "hop_length" : "stft_hop_length")).c_str());
     if (kv_idx >= 0) hop_length_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_win_length").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "win_length" : "stft_win_length")).c_str());
     if (kv_idx >= 0) win_length_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     kv_idx = gguf_find_key(ctx_gguf, (kp + "dim").c_str());
     if (kv_idx >= 0) dim_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "num_bands").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "n_bands" : "num_bands")).c_str());
     if (kv_idx >= 0) num_bands_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     kv_idx = gguf_find_key(ctx_gguf, (kp + "depth").c_str());
     if (kv_idx >= 0) depth_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     // New Parameters
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "num_stems").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "n_stems" : "num_stems")).c_str());
     if (kv_idx >= 0) num_stems_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+
+    if (public_bs_schema_) {
+        kv_idx = gguf_find_key(ctx_gguf, (kp + "heads").c_str());
+        if (kv_idx >= 0) heads_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+        kv_idx = gguf_find_key(ctx_gguf, (kp + "dim_head").c_str());
+        if (kv_idx >= 0) dim_head_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+        kv_idx = gguf_find_key(ctx_gguf, (kp + "mask_layers").c_str());
+        if (kv_idx >= 0) mask_estimator_depth_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+        kv_idx = gguf_find_key(ctx_gguf, (kp + "has_final_norm").c_str());
+        if (kv_idx >= 0) has_final_norm_ = gguf_get_val_bool(ctx_gguf, kv_idx);
+    }
 
     kv_idx = gguf_find_key(ctx_gguf, (kp + "skip_connection").c_str());
     if (kv_idx >= 0) skip_connection_ = gguf_get_val_bool(ctx_gguf, kv_idx);
@@ -209,7 +233,8 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
     if (kv_idx >= 0) sample_rate_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     // RoformerRuntime defaults (optional, fallback to hardcoded values)
-    kv_idx = gguf_find_key(ctx_gguf, (kp + "default_chunk_size").c_str());
+    kv_idx = gguf_find_key(ctx_gguf,
+        (kp + (public_bs_schema_ ? "chunk_size" : "default_chunk_size")).c_str());
     if (kv_idx >= 0) default_chunk_size_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     kv_idx = gguf_find_key(ctx_gguf, (kp + "default_num_overlap").c_str());
@@ -221,6 +246,25 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
         if (lin_depth > 0) {
             std::cerr << "\n[WARNING] Model uses Linear Attention (depth=" << lin_depth
                       << "). This is NOT supported yet. Results will be incorrect.\n" << std::endl;
+        }
+    }
+
+    if (public_bs_schema_) {
+        kv_idx = gguf_find_key(ctx_gguf, (kp + "band_widths").c_str());
+        if (kv_idx >= 0 && gguf_get_kv_type(ctx_gguf, kv_idx) == GGUF_TYPE_ARRAY
+            && gguf_get_arr_type(ctx_gguf, kv_idx) == GGUF_TYPE_INT32) {
+            const auto* widths = static_cast<const std::int32_t*>(
+                gguf_get_arr_data(ctx_gguf, kv_idx));
+            const size_t count = gguf_get_arr_n(ctx_gguf, kv_idx);
+            num_freqs_per_band_.assign(widths, widths + count);
+            for (int& width : num_freqs_per_band_) {
+                width /= 4;
+            }
+            const int frequency_channels = std::accumulate(
+                num_freqs_per_band_.begin(), num_freqs_per_band_.end(), 0) * 2;
+            freq_indices_.resize(frequency_channels);
+            std::iota(freq_indices_.begin(), freq_indices_.end(), 0);
+            num_bands_per_freq_.assign(n_fft_ / 2 + 1, 1);
         }
     }
 
@@ -292,16 +336,20 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
     int n_tensors = gguf_get_n_tensors(ctx_gguf);
     std::cout << "Loaded " << n_tensors << " tensors" << std::endl;
 
-    // Dynamic MLP detection
-    // Try to find mask_est.0.freq.0.mlp.{N}.weight
-    mlp_num_layers_ = 0;
-    const int MAX_MLP_LAYERS = 20;
-    for (int idx = 0; idx <= MAX_MLP_LAYERS; idx += 2) {  // Check indices 0, 2, 4... up to MAX
-        std::string probe = "mask_est.0.freq.0.mlp." + std::to_string(idx) + ".weight";
-        if (GetWeight(probe) != nullptr) {
-            mlp_num_layers_++;
-        } else {
-            break;
+    if (public_bs_schema_) {
+        mlp_num_layers_ = mask_estimator_depth_;
+    } else {
+        // Dynamic MLP detection
+        // Try to find mask_est.0.freq.0.mlp.{N}.weight
+        mlp_num_layers_ = 0;
+        const int MAX_MLP_LAYERS = 20;
+        for (int idx = 0; idx <= MAX_MLP_LAYERS; idx += 2) {
+            std::string probe = "mask_est.0.freq.0.mlp." + std::to_string(idx) + ".weight";
+            if (GetWeight(probe) != nullptr) {
+                mlp_num_layers_++;
+            } else {
+                break;
+            }
         }
     }
     std::cout << "Detected MLP layers: " << mlp_num_layers_ << std::endl;
@@ -323,7 +371,7 @@ std::vector<int> UtaRoformerGraph::GetDimInputs() const {
 }
 
 int UtaRoformerGraph::GetTotalDimInput() const {
-    if (architecture_ == "bs") {
+    if (architecture_ == "bs_roformer") {
         // BS: All frequencies * stereo * complex
         int n_freq = n_fft_ / 2 + 1;
         return n_freq * 2 * 2;  // freq * stereo * complex
@@ -363,10 +411,14 @@ ggml_tensor* UtaRoformerGraph::BuildBandSplitGraph(
                                                dim_in, n_frames, batch,
                                                input->nb[1], input->nb[2],
                                                offset_elements * sizeof(float));
+        if (public_bs_schema_) {
+            band_input = ggml_cont(ctx, band_input);
+        }
 
         // Get RMSNorm gamma weight
         // band_split.{i}.norm.weight
-        std::string gamma_name = "band_split." + std::to_string(i) + ".norm.weight";
+        std::string gamma_name = "band_split." + std::to_string(i)
+            + (public_bs_schema_ ? ".norm" : ".norm.weight");
         ggml_tensor* gamma = GetWeight(gamma_name);
         if (!gamma) {
             std::cerr << "Missing weight: " << gamma_name << std::endl;
@@ -379,8 +431,10 @@ ggml_tensor* UtaRoformerGraph::BuildBandSplitGraph(
 
         // Get Linear weight and bias
         // band_split.{i}.linear.weight
-        std::string w_name = "band_split." + std::to_string(i) + ".linear.weight";
-        std::string b_name = "band_split." + std::to_string(i) + ".linear.bias";
+        std::string w_name = "band_split." + std::to_string(i)
+            + (public_bs_schema_ ? ".w" : ".linear.weight");
+        std::string b_name = "band_split." + std::to_string(i)
+            + (public_bs_schema_ ? ".b" : ".linear.bias");
         ggml_tensor* weight = GetWeight(w_name);
         ggml_tensor* bias = GetWeight(b_name);
 
@@ -422,6 +476,126 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
     const int DIM_HEAD = dim_head_;
     const int DIM_INNER = HEADS * DIM_HEAD;
 
+    if (public_bs_schema_) {
+        ggml_tensor* pos_time = ggml_view_1d(ctx, pos_time_exp, T, 0);
+        ggml_tensor* pos_freq = ggml_view_1d(ctx, pos_freq_exp, F, 0);
+
+        auto attention = [&](ggml_tensor* sequence,
+                             ggml_tensor* positions,
+                             const std::string& prefix) -> ggml_tensor* {
+            const int sequence_length = static_cast<int>(sequence->ne[1]);
+            const int sequence_batch = static_cast<int>(sequence->ne[2]);
+
+            ggml_tensor* norm = GetWeight(prefix + ".attn_norm");
+            ggml_tensor* qkv_weight = GetWeight(prefix + ".qkv");
+            ggml_tensor* gate_weight = GetWeight(prefix + ".gates_w");
+            ggml_tensor* gate_bias = GetWeight(prefix + ".gates_b");
+            ggml_tensor* out_weight = GetWeight(prefix + ".out");
+            if (!norm || !qkv_weight || !gate_weight || !gate_bias || !out_weight) {
+                std::cerr << "Missing public BS attention weights: " << prefix << "\n";
+                return nullptr;
+            }
+
+            ggml_tensor* normalized = ggml_mul(
+                ctx, ggml_rms_norm(ctx, sequence, 1e-12f), norm);
+            ggml_tensor* qkv = ggml_mul_mat(ctx, qkv_weight, normalized);
+
+            auto qkv_part = [&](int index) {
+                ggml_tensor* part = ggml_view_3d(
+                    ctx, qkv, DIM_INNER, sequence_length, sequence_batch,
+                    qkv->nb[1], qkv->nb[2],
+                    static_cast<size_t>(index * DIM_INNER) * sizeof(float));
+                part = ggml_cont(ctx, part);
+                return ggml_reshape_4d(
+                    ctx, part, DIM_HEAD, HEADS, sequence_length, sequence_batch);
+            };
+
+            ggml_tensor* query = qkv_part(0);
+            ggml_tensor* key = qkv_part(1);
+            ggml_tensor* value = qkv_part(2);
+            query = ggml_rope_ext(
+                ctx, query, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
+                0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+            key = ggml_rope_ext(
+                ctx, key, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
+                0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+            auto attention_layout = [&](ggml_tensor* tensor) {
+                return ggml_cont(ctx, ggml_permute(ctx, tensor, 0, 2, 1, 3));
+            };
+            query = attention_layout(query);
+            key = attention_layout(key);
+            value = attention_layout(value);
+
+            ggml_tensor* key_f16 = ggml_cast(ctx, key, GGML_TYPE_F16);
+            ggml_tensor* value_f16 = ggml_cast(ctx, value, GGML_TYPE_F16);
+            ggml_tensor* attended = ggml_flash_attn_ext(
+                ctx, query, key_f16, value_f16, nullptr,
+                1.0f / std::sqrt(static_cast<float>(DIM_HEAD)), 0.0f, 0.0f);
+            ggml_flash_attn_ext_set_prec(attended, GGML_PREC_F32);
+
+            ggml_tensor* gates = ggml_mul_mat(ctx, gate_weight, normalized);
+            gates = ggml_sigmoid(ctx, ggml_add(ctx, gates, gate_bias));
+            gates = ggml_reshape_4d(
+                ctx, gates, 1, HEADS, sequence_length, sequence_batch);
+            attended = ggml_mul(ctx, attended, gates);
+            attended = ggml_reshape_3d(
+                ctx, attended, DIM_INNER, sequence_length, sequence_batch);
+            return ggml_add(ctx, sequence, ggml_mul_mat(ctx, out_weight, attended));
+        };
+
+        auto feed_forward = [&](ggml_tensor* sequence,
+                                const std::string& prefix) -> ggml_tensor* {
+            ggml_tensor* norm = GetWeight(prefix + ".ff_norm");
+            ggml_tensor* weight_1 = GetWeight(prefix + ".ff1_w");
+            ggml_tensor* bias_1 = GetWeight(prefix + ".ff1_b");
+            ggml_tensor* weight_2 = GetWeight(prefix + ".ff2_w");
+            ggml_tensor* bias_2 = GetWeight(prefix + ".ff2_b");
+            if (!norm || !weight_1 || !bias_1 || !weight_2 || !bias_2) {
+                std::cerr << "Missing public BS feed-forward weights: " << prefix << "\n";
+                return nullptr;
+            }
+            ggml_tensor* hidden = ggml_mul(
+                ctx, ggml_rms_norm(ctx, sequence, 1e-12f), norm);
+            hidden = ggml_add(ctx, ggml_mul_mat(ctx, weight_1, hidden), bias_1);
+            hidden = ggml_gelu(ctx, hidden);
+            hidden = ggml_add(ctx, ggml_mul_mat(ctx, weight_2, hidden), bias_2);
+            return ggml_add(ctx, sequence, hidden);
+        };
+
+        ggml_tensor* public_x = input;
+        for (int layer = 0; layer < depth_; ++layer) {
+            const std::string block = "blk." + std::to_string(layer);
+
+            public_x = ggml_cont(ctx, ggml_permute(ctx, public_x, 0, 2, 1, 3));
+            ggml_tensor* time_sequence = ggml_reshape_3d(ctx, public_x, D, T, F * B);
+            time_sequence = attention(time_sequence, pos_time, block + ".time");
+            if (!time_sequence) return nullptr;
+            time_sequence = feed_forward(time_sequence, block + ".time");
+            if (!time_sequence) return nullptr;
+            public_x = ggml_reshape_4d(ctx, time_sequence, D, T, F, B);
+            public_x = ggml_cont(ctx, ggml_permute(ctx, public_x, 0, 2, 1, 3));
+
+            ggml_tensor* freq_sequence = ggml_reshape_3d(ctx, public_x, D, F, T * B);
+            freq_sequence = attention(freq_sequence, pos_freq, block + ".freq");
+            if (!freq_sequence) return nullptr;
+            freq_sequence = feed_forward(freq_sequence, block + ".freq");
+            if (!freq_sequence) return nullptr;
+            public_x = ggml_reshape_4d(ctx, freq_sequence, D, F, T, B);
+        }
+
+        if (has_final_norm_) {
+            ggml_tensor* final_norm = GetWeight("final_norm");
+            if (!final_norm) {
+                std::cerr << "Missing public BS final_norm\n";
+                return nullptr;
+            }
+            public_x = ggml_mul(
+                ctx, ggml_rms_norm(ctx, public_x, 1e-12f), final_norm);
+        }
+        return public_x;
+    }
+
     ggml_tensor* x = input;
     std::vector<ggml_tensor*> skip_outputs;
 
@@ -441,19 +615,24 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
         int fb = F * B;
         ggml_tensor* x_packed = ggml_reshape_3d(ctx, x, D, T, fb);
 
-        std::string time_prefix = "blk." + std::to_string(layer) + ".time_attn";
-        std::string time_ff_prefix = "blk." + std::to_string(layer) + ".time_ff";
+        std::string time_prefix = "blk." + std::to_string(layer)
+            + (public_bs_schema_ ? ".time" : ".time_attn");
+        std::string time_ff_prefix = "blk." + std::to_string(layer)
+            + (public_bs_schema_ ? ".time" : ".time_ff");
 
         // Attention Block
         // blk.{l}.time_attn_norm.weight
-        ggml_tensor* t_attn_norm_w = GetWeight(time_prefix + "_norm.weight");
+        const std::string time_attn_norm_name = time_prefix
+            + (public_bs_schema_ ? ".attn_norm" : "_norm.weight");
+        ggml_tensor* t_attn_norm_w = GetWeight(time_attn_norm_name);
         if (!t_attn_norm_w) { std::cerr << "Missing: " << time_prefix << "_norm.weight\n"; return nullptr; }
 
         ggml_tensor* x_norm = ggml_rms_norm(ctx, x_packed, 1e-12f);
         x_norm = ggml_mul(ctx, x_norm, t_attn_norm_w);
 
         // blk.{l}.time_attn_qkv.weight
-        ggml_tensor* t_qkv_w = GetWeight(time_prefix + "_qkv.weight");
+        ggml_tensor* t_qkv_w = GetWeight(time_prefix
+            + (public_bs_schema_ ? ".qkv" : "_qkv.weight"));
         if (!t_qkv_w) { std::cerr << "Missing: " << time_prefix << "_qkv.weight\n"; return nullptr; }
 
         ggml_tensor* V = nullptr;
@@ -527,8 +706,10 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
         // Gates
         // blk.{l}.time_attn_gate.weight/bias
-        ggml_tensor* t_gate_w = GetWeight(time_prefix + "_gate.weight");
-        ggml_tensor* t_gate_b = GetWeight(time_prefix + "_gate.bias");
+        ggml_tensor* t_gate_w = GetWeight(time_prefix
+            + (public_bs_schema_ ? ".gates_w" : "_gate.weight"));
+        ggml_tensor* t_gate_b = GetWeight(time_prefix
+            + (public_bs_schema_ ? ".gates_b" : "_gate.bias"));
         if (!t_gate_w || !t_gate_b) { std::cerr << "Missing gates weights\n"; return nullptr; }
 
         ggml_tensor* gates = ggml_mul_mat(ctx, t_gate_w, x_norm);
@@ -545,7 +726,8 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
         SetTensorName(out_flat, "t" + std::to_string(layer) + ".out.flat");
 
         // blk.{l}.time_attn_out.weight
-        ggml_tensor* t_attn_out_w = GetWeight(time_prefix + "_out.weight");
+        ggml_tensor* t_attn_out_w = GetWeight(time_prefix
+            + (public_bs_schema_ ? ".out" : "_out.weight"));
         if (!t_attn_out_w) { std::cerr << "Missing to_out_weight\n"; return nullptr; }
 
         ggml_tensor* attn_block_out = ggml_mul_mat(ctx, t_attn_out_w, out_flat);
@@ -553,15 +735,18 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
         // FeedForward Block
         // blk.{l}.time_ff_norm.weight
-        ggml_tensor* t_ff_norm_w = GetWeight(time_ff_prefix + "_norm.weight");
+        ggml_tensor* t_ff_norm_w = GetWeight(time_ff_prefix
+            + (public_bs_schema_ ? ".ff_norm" : "_norm.weight"));
         if (!t_ff_norm_w) { std::cerr << "Missing ff norm\n"; return nullptr; }
 
         ggml_tensor* x_resid1_norm = ggml_rms_norm(ctx, x_resid1, 1e-12f);
         x_resid1_norm = ggml_mul(ctx, x_resid1_norm, t_ff_norm_w);
 
         // blk.{l}.time_ff_in.weight/bias
-        ggml_tensor* t_ff_in_w = GetWeight(time_ff_prefix + "_in.weight");
-        ggml_tensor* t_ff_in_b = GetWeight(time_ff_prefix + "_in.bias");
+        ggml_tensor* t_ff_in_w = GetWeight(time_ff_prefix
+            + (public_bs_schema_ ? ".ff1_w" : "_in.weight"));
+        ggml_tensor* t_ff_in_b = GetWeight(time_ff_prefix
+            + (public_bs_schema_ ? ".ff1_b" : "_in.bias"));
         if (!t_ff_in_w || !t_ff_in_b) { std::cerr << "Missing ff in weights\n"; return nullptr; }
 
         ggml_tensor* ff_proj_in = ggml_mul_mat(ctx, t_ff_in_w, x_resid1_norm);
@@ -572,8 +757,10 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
         // blk.{l}.time_ff_out.weight/bias
-        ggml_tensor* t_ff_out_w = GetWeight(time_ff_prefix + "_out.weight");
-        ggml_tensor* t_ff_out_b = GetWeight(time_ff_prefix + "_out.bias");
+        ggml_tensor* t_ff_out_w = GetWeight(time_ff_prefix
+            + (public_bs_schema_ ? ".ff2_w" : "_out.weight"));
+        ggml_tensor* t_ff_out_b = GetWeight(time_ff_prefix
+            + (public_bs_schema_ ? ".ff2_b" : "_out.bias"));
         if (!t_ff_out_w || !t_ff_out_b) { std::cerr << "Missing ff out weights\n"; return nullptr; }
 
         ggml_tensor* ff_block_out = ggml_mul_mat(ctx, t_ff_out_w, gelu_out);
@@ -606,10 +793,13 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
 
-        std::string freq_prefix = "blk." + std::to_string(layer) + ".freq_attn";
-        std::string freq_ff_prefix = "blk." + std::to_string(layer) + ".freq_ff";
+        std::string freq_prefix = "blk." + std::to_string(layer)
+            + (public_bs_schema_ ? ".freq" : ".freq_attn");
+        std::string freq_ff_prefix = "blk." + std::to_string(layer)
+            + (public_bs_schema_ ? ".freq" : ".freq_ff");
 
-        ggml_tensor* f_attn_norm_w = GetWeight(freq_prefix + "_norm.weight");
+        ggml_tensor* f_attn_norm_w = GetWeight(freq_prefix
+            + (public_bs_schema_ ? ".attn_norm" : "_norm.weight"));
         if (!f_attn_norm_w) { std::cerr << "Missing freq norm\n"; return nullptr; }
 
         ggml_tensor* x_fnorm = ggml_rms_norm(ctx, x_freq_packed, 1e-12f);
@@ -617,7 +807,8 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
 
-        ggml_tensor* f_qkv_w = GetWeight(freq_prefix + "_qkv.weight");
+        ggml_tensor* f_qkv_w = GetWeight(freq_prefix
+            + (public_bs_schema_ ? ".qkv" : "_qkv.weight"));
         if (!f_qkv_w) { std::cerr << "Missing freq qkv\n"; return nullptr; }
 
         ggml_tensor* fV = nullptr;
@@ -687,8 +878,10 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
         ggml_tensor* f_attn_out_fa = ggml_flash_attn_ext(ctx, fQ_fa, fK_fa, fV_fa, nullptr, scale, 0.0f, 0.0f);
         SetTensorName(f_attn_out_fa, "f" + std::to_string(layer) + ".fa.out");
 
-        ggml_tensor* f_gate_w = GetWeight(freq_prefix + "_gate.weight");
-        ggml_tensor* f_gate_b = GetWeight(freq_prefix + "_gate.bias");
+        ggml_tensor* f_gate_w = GetWeight(freq_prefix
+            + (public_bs_schema_ ? ".gates_w" : "_gate.weight"));
+        ggml_tensor* f_gate_b = GetWeight(freq_prefix
+            + (public_bs_schema_ ? ".gates_b" : "_gate.bias"));
         if (!f_gate_w || !f_gate_b) { std::cerr << "Missing freq gates\n"; return nullptr; }
 
         ggml_tensor* f_gates = ggml_mul_mat(ctx, f_gate_w, x_fnorm);
@@ -706,7 +899,8 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
 
-        ggml_tensor* f_attn_out_w = GetWeight(freq_prefix + "_out.weight");
+        ggml_tensor* f_attn_out_w = GetWeight(freq_prefix
+            + (public_bs_schema_ ? ".out" : "_out.weight"));
         if (!f_attn_out_w) { std::cerr << "Missing freq to_out\n"; return nullptr; }
 
         ggml_tensor* f_attn_block_out = ggml_mul_mat(ctx, f_attn_out_w, f_out_flat);
@@ -715,14 +909,17 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
         // Freq FeedForward
-        ggml_tensor* f_ff_norm_w = GetWeight(freq_ff_prefix + "_norm.weight");
+        ggml_tensor* f_ff_norm_w = GetWeight(freq_ff_prefix
+            + (public_bs_schema_ ? ".ff_norm" : "_norm.weight"));
         if (!f_ff_norm_w) { std::cerr << "Missing freq ff norm\n"; return nullptr; }
 
         ggml_tensor* f_x_resid1_norm = ggml_rms_norm(ctx, f_x_resid1, 1e-12f);
         f_x_resid1_norm = ggml_mul(ctx, f_x_resid1_norm, f_ff_norm_w);
 
-        ggml_tensor* f_ff_in_w = GetWeight(freq_ff_prefix + "_in.weight");
-        ggml_tensor* f_ff_in_b = GetWeight(freq_ff_prefix + "_in.bias");
+        ggml_tensor* f_ff_in_w = GetWeight(freq_ff_prefix
+            + (public_bs_schema_ ? ".ff1_w" : "_in.weight"));
+        ggml_tensor* f_ff_in_b = GetWeight(freq_ff_prefix
+            + (public_bs_schema_ ? ".ff1_b" : "_in.bias"));
         if (!f_ff_in_w || !f_ff_in_b) { std::cerr << "Missing freq ff in\n"; return nullptr; }
 
         ggml_tensor* f_ff_proj_in = ggml_mul_mat(ctx, f_ff_in_w, f_x_resid1_norm);
@@ -732,8 +929,10 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
 
 
-        ggml_tensor* f_ff_out_w = GetWeight(freq_ff_prefix + "_out.weight");
-        ggml_tensor* f_ff_out_b = GetWeight(freq_ff_prefix + "_out.bias");
+        ggml_tensor* f_ff_out_w = GetWeight(freq_ff_prefix
+            + (public_bs_schema_ ? ".ff2_w" : "_out.weight"));
+        ggml_tensor* f_ff_out_b = GetWeight(freq_ff_prefix
+            + (public_bs_schema_ ? ".ff2_b" : "_out.bias"));
         if (!f_ff_out_w || !f_ff_out_b) { std::cerr << "Missing freq ff out\n"; return nullptr; }
 
         ggml_tensor* f_ff_block_out = ggml_mul_mat(ctx, f_ff_out_w, f_gelu_out);
@@ -761,7 +960,8 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
 
     // Global Final Norm (BS Roformer only)
     if (has_final_norm_) {
-        ggml_tensor* final_norm_w = GetWeight("final_norm.weight");
+        ggml_tensor* final_norm_w = GetWeight(
+            public_bs_schema_ ? "final_norm" : "final_norm.weight");
         if (!final_norm_w) { std::cerr << "Missing: final_norm.weight\n"; return nullptr; }
         x = ggml_rms_norm(ctx, x, 1e-12f);
         x = ggml_mul(ctx, x, final_norm_w);
@@ -794,8 +994,10 @@ ggml_tensor* UtaRoformerGraph::BuildMaskEstimatorGraph(
     int last_mlp_idx = (mlp_num_layers_ - 1) * 2;
 
     for (int b = 0; b < NUM_BANDS; ++b) {
-        // mask_est.0.freq.{b}.mlp.{last}.weight
-        std::string w_last_name = "mask_est.0.freq." + std::to_string(b) + ".mlp." + std::to_string(last_mlp_idx) + ".weight";
+        std::string w_last_name = public_bs_schema_
+            ? "mask.0." + std::to_string(b) + ".w2"
+            : "mask_est.0.freq." + std::to_string(b) + ".mlp."
+                + std::to_string(last_mlp_idx) + ".weight";
         ggml_tensor* w_last = GetWeight(w_last_name);
         if (!w_last) {
             std::cerr << "Missing weight for dim check: " << w_last_name << std::endl;
@@ -823,33 +1025,41 @@ ggml_tensor* UtaRoformerGraph::BuildMaskEstimatorGraph(
                                                 x->nb[2], x->nb[3],
                                                 b * x->nb[1]);
 
-            // mask_est.{s}.freq.{b}.mlp...
-            std::string prefix = "mask_est." + std::to_string(s) + ".freq." + std::to_string(b) + ".mlp.";
-
-            // MLP Layer 0
-            // Dynamic MLP Construction
             ggml_tensor* mlp_current = band_in;
-
-            for (int layer_idx = 0; layer_idx < mlp_num_layers_; ++layer_idx) {
-                int seq_idx = layer_idx * 2; // 0, 2, 4...
-
-                std::string w_name = prefix + std::to_string(seq_idx) + ".weight";
-                std::string b_name = prefix + std::to_string(seq_idx) + ".bias";
-
-                ggml_tensor* w = GetWeight(w_name);
-                ggml_tensor* b = GetWeight(b_name);
-
-                if (!w || !b) {
-                    std::cerr << "Missing mask weights s=" << s << " b=" << b << " l=" << seq_idx << "\n";
+            if (public_bs_schema_) {
+                const std::string prefix = "mask." + std::to_string(s) + "."
+                    + std::to_string(b);
+                ggml_tensor* w1 = GetWeight(prefix + ".w1");
+                ggml_tensor* b1 = GetWeight(prefix + ".b1");
+                ggml_tensor* w2 = GetWeight(prefix + ".w2");
+                ggml_tensor* b2 = GetWeight(prefix + ".b2");
+                if (!w1 || !b1 || !w2 || !b2) {
+                    std::cerr << "Missing public BS mask weights s=" << s
+                              << " b=" << b << "\n";
                     return nullptr;
                 }
-
-                mlp_current = ggml_mul_mat(ctx, w, mlp_current);
-                mlp_current = ggml_add(ctx, mlp_current, b);
-
-                // Activation (Tanh) for all but last layer
-                if (layer_idx < mlp_num_layers_ - 1) {
-                    mlp_current = ggml_tanh(ctx, mlp_current);
+                mlp_current = ggml_add(ctx, ggml_mul_mat(ctx, w1, mlp_current), b1);
+                mlp_current = ggml_tanh(ctx, mlp_current);
+                mlp_current = ggml_add(ctx, ggml_mul_mat(ctx, w2, mlp_current), b2);
+            } else {
+                const std::string prefix = "mask_est." + std::to_string(s)
+                    + ".freq." + std::to_string(b) + ".mlp.";
+                for (int layer_idx = 0; layer_idx < mlp_num_layers_; ++layer_idx) {
+                    int seq_idx = layer_idx * 2;
+                    std::string w_name = prefix + std::to_string(seq_idx) + ".weight";
+                    std::string b_name = prefix + std::to_string(seq_idx) + ".bias";
+                    ggml_tensor* w = GetWeight(w_name);
+                    ggml_tensor* bias = GetWeight(b_name);
+                    if (!w || !bias) {
+                        std::cerr << "Missing mask weights s=" << s << " b=" << b
+                                  << " l=" << seq_idx << "\n";
+                        return nullptr;
+                    }
+                    mlp_current = ggml_mul_mat(ctx, w, mlp_current);
+                    mlp_current = ggml_add(ctx, mlp_current, bias);
+                    if (layer_idx < mlp_num_layers_ - 1) {
+                        mlp_current = ggml_tanh(ctx, mlp_current);
+                    }
                 }
             }
 

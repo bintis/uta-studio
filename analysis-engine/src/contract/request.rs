@@ -668,8 +668,7 @@ fn independently_pinned_vulkan_model(model_id: &str) -> bool {
         model_id,
         "qwen3_asr_1_7b"
             | "qwen3_forced_aligner_0_6b"
-            | "bs_roformer_vocals_ep317"
-            | "melband_roformer_inst_v2"
+            | "bs_roformer_leap_xe90_vocals"
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
@@ -772,7 +771,7 @@ pub(crate) mod tests {
         );
         for model_id in [
             "qwen3_asr_1_7b",
-            "bs_roformer_vocals_ep317",
+            "bs_roformer_leap_xe90_vocals",
             "melband_roformer_denoise_aufr33",
             "melband_roformer_dereverb_anvuew",
         ] {

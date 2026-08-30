@@ -185,17 +185,17 @@ pub fn model_install_statuses() -> Vec<ModelInstallStatus> {
     analysis_runtime_status().models
 }
 
-const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 5] = [
+const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 6] = [
     (
         "vocal_extraction",
         "Vocal extraction",
-        "bs_roformer_vocals_ep317",
+        "bs_roformer_leap_xe90_vocals",
         "audio.extract_vocals",
     ),
     (
         "instrumental_extraction",
         "Instrumental extraction",
-        "melband_roformer_inst_v2",
+        "bs_polarformer_public_instrumental",
         "audio.extract_instrumental",
     ),
     (
@@ -206,6 +206,12 @@ const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 5] = [
     ),
     ("pitch", "Continuous pitch", "rmvpe", "pitch.track"),
     ("note_boundaries", "Note boundaries", "game", "notes.game"),
+    (
+        "japanese_note_boundaries",
+        "Japanese note boundaries",
+        "jbm555_cectc_80",
+        "notes.jbm555",
+    ),
 ];
 
 pub(super) fn strategy_resource_statuses_from_details(

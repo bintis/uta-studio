@@ -9,7 +9,8 @@ use crate::studio::*;
 mod graph_view_polish_tests {
     use super::{
         ANALYSIS_GRAPH_ZOOM_DEFAULT, analysis_graph_center_target, analysis_graph_fit_zoom,
-        analysis_graph_focus_target, clamp_analysis_graph_zoom, format_epoch_ms, zoomed_box,
+        analysis_graph_focus_target, analysis_node_tile_span, clamp_analysis_graph_zoom,
+        format_epoch_ms, zoomed_box,
     };
     use crate::studio::LayoutRect;
 
@@ -28,6 +29,17 @@ mod graph_view_polish_tests {
             clamp_analysis_graph_zoom(ANALYSIS_GRAPH_ZOOM_DEFAULT),
             ANALYSIS_GRAPH_ZOOM_DEFAULT
         );
+    }
+
+    #[test]
+    fn expensive_model_operations_receive_large_metro_tiles() {
+        assert_eq!(
+            analysis_node_tile_span(Some("audio.separate_vocal_bgm")),
+            (2, 2)
+        );
+        assert_eq!(analysis_node_tile_span(Some("analysis.asr")), (2, 2));
+        assert_eq!(analysis_node_tile_span(Some("analysis.pitch_f0")), (2, 1));
+        assert_eq!(analysis_node_tile_span(Some("audio.source")), (1, 1));
     }
 
     #[test]

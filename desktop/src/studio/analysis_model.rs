@@ -19,6 +19,7 @@ pub(crate) enum GraphNodeState {
     Waiting,
     Running,
     Complete,
+    Cancelled,
     Failed,
     Deferred,
     ProfileSkipped,

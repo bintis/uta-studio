@@ -207,7 +207,7 @@ process-boundary decoupling gates are clean
 no false capability/model Production claim exists
 ```
 
-If a model/license limitation is genuinely outside code control, report it explicitly rather than calling the implementation incomplete; release acceptance still decides whether such a retained blocker is acceptable.
+If a model limitation or license advisory is genuinely outside code control, report it explicitly rather than calling the implementation incomplete; release acceptance still decides whether such a retained advisory is acceptable.
 
 ## Durable completion update
 

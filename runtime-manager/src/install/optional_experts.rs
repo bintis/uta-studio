@@ -284,7 +284,7 @@ fn invalid_identity(resource: &ResourceRef, message: &str) -> RuntimeManagerErro
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::json;
@@ -498,10 +498,7 @@ mod tests {
     }
 
     fn confirmed() -> MutationOptions {
-        MutationOptions {
-            confirmed: true,
-            accepted_licenses: BTreeSet::new(),
-        }
+        MutationOptions { confirmed: true }
     }
 
     fn digest(bytes: &[u8]) -> String {

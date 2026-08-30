@@ -364,7 +364,7 @@ fn ndjson_mutation_uses_structured_start_resource_and_error_events() {
     let store_arg = store.to_string_lossy().into_owned();
     let output = run(&[
         "install",
-        "model:bs_roformer_vocals_ep317",
+        "model:jbm555_cectc_80",
         "--yes",
         "--output",
         "ndjson",

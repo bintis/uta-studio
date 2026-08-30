@@ -269,7 +269,7 @@ mod tests {
                 "identity": {
                     "contract": "uta.workflow-execution",
                     "version": 1,
-                    "workflow_schema_version": 2,
+                    "workflow_schema_version": app_core::WORKFLOW_SCHEMA_VERSION,
                     "workflow_id": "song:test",
                     "workflow_revision": 3,
                     "definition_digest": "a".repeat(32)
@@ -361,7 +361,7 @@ mod tests {
                 "identity": {
                     "contract": "uta.workflow-execution",
                     "version": 1,
-                    "workflow_schema_version": 2,
+                    "workflow_schema_version": app_core::WORKFLOW_SCHEMA_VERSION,
                     "workflow_id": "song:topology",
                     "workflow_revision": 1,
                     "definition_digest": "b".repeat(32)

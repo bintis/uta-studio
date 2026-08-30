@@ -74,6 +74,8 @@ mod tests {
             boundary_hard: false,
             boundary_support: None,
             target_pitch_source: "game".to_string(),
+            target_pitch_source_local_score: None,
+            target_pitch_calibrated_confidence: None,
             center_pitch_hz: 440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0),
             rmvpe_center_hz: None,
             rmvpe_confidence: None,
@@ -138,8 +140,14 @@ mod tests {
     fn distinct_dense_candidates(widths: [usize; 2]) -> Vec<SegmentCandidate> {
         const JUNCTION: f64 = 0.5;
         const STEP: f64 = 1e-6; // exactly one canonical microsecond tick.
-        let before = (0..widths[0])
-            .map(|index| candidate(&format!("before-{index:04}"), index as f64 * STEP, JUNCTION, 69));
+        let before = (0..widths[0]).map(|index| {
+            candidate(
+                &format!("before-{index:04}"),
+                index as f64 * STEP,
+                JUNCTION,
+                69,
+            )
+        });
         let after = (0..widths[1]).map(|index| {
             candidate(
                 &format!("after-{index:04}"),
@@ -446,6 +454,9 @@ mod tests {
             kind: BoundaryEvidenceKind::Constraint,
             fractional_midi: None,
             source_local_score: None,
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: true,
         });
         let without_carrier = decode_candidate_graph_with_boundaries(
@@ -465,6 +476,23 @@ mod tests {
                 .map(|candidate| &candidate.id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn invalid_normalized_confidence_fails_candidate_pool_validation() {
+        let mut item = candidate("invalid-confidence", 0.0, 0.5, 69);
+        item.boundary_alternatives.push(BoundaryAlternative {
+            source_expert: "timed-note".to_string(),
+            range: range(0.0, 0.5),
+            kind: BoundaryEvidenceKind::AdvancedNote,
+            fractional_midi: Some(69.0),
+            source_local_score: None,
+            source_local_pitch_score: Some(f32::NAN),
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
+            hard: false,
+        });
+        assert!(decode_candidate_graph(&[item]).is_err());
     }
 
     #[test]
@@ -678,7 +706,11 @@ mod tests {
     #[test]
     fn disconnected_components_share_the_pair_state_budget() {
         let mut at_limit = distinct_shifted_dense_component([256, 128], "first", 0);
-        at_limit.extend(distinct_shifted_dense_component([256, 128], "second", 2_000_000));
+        at_limit.extend(distinct_shifted_dense_component(
+            [256, 128],
+            "second",
+            2_000_000,
+        ));
         decode_candidate_graph(&at_limit).unwrap();
         at_limit.extend(distinct_shifted_dense_component([1, 1], "over", 4_000_000));
         assert!(

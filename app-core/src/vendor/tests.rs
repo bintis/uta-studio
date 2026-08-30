@@ -38,16 +38,21 @@ fn exact_strategy_status_crosses_the_runtime_cli_without_bundle_projection() {
         "exact-strategies",
     ))
     .unwrap();
-    assert_eq!(statuses.len(), 5);
+    assert_eq!(statuses.len(), 6);
     assert!(statuses.iter().any(|status| {
         status.strategy_id == "vocal_extraction"
-            && status.model_id == "bs_roformer_vocals_ep317"
+            && status.model_id == "bs_roformer_leap_xe90_vocals"
             && status.capability == "audio.extract_vocals"
     }));
     assert!(statuses.iter().any(|status| {
         status.strategy_id == "instrumental_extraction"
-            && status.model_id == "melband_roformer_inst_v2"
+            && status.model_id == "bs_polarformer_public_instrumental"
             && status.capability == "audio.extract_instrumental"
+    }));
+    assert!(statuses.iter().any(|status| {
+        status.strategy_id == "japanese_note_boundaries"
+            && status.model_id == "jbm555_cectc_80"
+            && status.capability == "notes.jbm555"
     }));
 }
 
@@ -93,12 +98,12 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
 
     let mut returned = vec![
         details(
-            "bs_roformer_vocals_ep317",
+            "bs_roformer_leap_xe90_vocals",
             "audio.extract_vocals",
             true,
         ),
         details(
-            "melband_roformer_inst_v2",
+            "bs_polarformer_public_instrumental",
             "audio.extract_instrumental",
             false,
         ),
@@ -109,6 +114,7 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
         ),
         details("rmvpe", "pitch.track", false),
         details("game", "notes.game", false),
+        details("jbm555_cectc_80", "notes.jbm555", false),
     ];
     returned.push(details(
         "melband_roformer_denoise_aufr33",
@@ -127,6 +133,6 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
         .unwrap();
     assert!(vocal.available);
     assert!(!instrumental.available);
-    assert_eq!(vocal.model_id, "bs_roformer_vocals_ep317");
+    assert_eq!(vocal.model_id, "bs_roformer_leap_xe90_vocals");
     assert_eq!(vocal.capability, "audio.extract_vocals");
 }

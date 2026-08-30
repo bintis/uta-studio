@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -393,32 +392,16 @@ fn option_takes_value(argument: &str) -> bool {
             | "--from"
             | "--source"
             | "--path"
-            | "--accept-license"
     )
 }
 
-fn mutation_options(arguments: &[String], confirmed: bool) -> MutationOptions {
-    let mut accepted_licenses = BTreeSet::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        if arguments[index] == "--accept-license" {
-            if let Some(value) = arguments.get(index + 1) {
-                accepted_licenses.insert(value.clone());
-            }
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
-    MutationOptions {
-        confirmed,
-        accepted_licenses,
-    }
+fn mutation_options(confirmed: bool) -> MutationOptions {
+    MutationOptions { confirmed }
 }
 
 fn confirmed_mutation_options(arguments: &[String]) -> CliResult<MutationOptions> {
     if has_flag(arguments, "--yes") || has_flag(arguments, "--confirm") {
-        return Ok(mutation_options(arguments, true));
+        return Ok(mutation_options(true));
     }
     if !std::io::stdin().is_terminal() {
         return Err(CliError {
@@ -439,7 +422,7 @@ fn confirmed_mutation_options(arguments: &[String]) -> CliResult<MutationOptions
         .read_line(&mut line)
         .map_err(|error| CliError::from(RuntimeManagerError::internal(error.to_string())))?;
     if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(mutation_options(arguments, true))
+        Ok(mutation_options(true))
     } else {
         Err(CliError {
             error: RuntimeManagerError::new("cancelled", "operation cancelled"),
@@ -619,7 +602,7 @@ fn exit_code_for_error(code: &str) -> i32 {
         | "publish_failed"
         | "smoke_failed" => 14,
         "resource_in_use" | "unmanaged_files_present" => 15,
-        "confirmation_required" | "license_required" => 16,
+        "confirmation_required" => 16,
         "cancelled" => 17,
         _ => 70,
     }
@@ -656,16 +639,7 @@ mod tests {
 
     #[test]
     fn mutation_requires_explicit_confirmation_flag() {
-        let options = mutation_options(
-            &[
-                "install".to_string(),
-                "--yes".to_string(),
-                "--accept-license".to_string(),
-                "license:qwen".to_string(),
-            ],
-            true,
-        );
+        let options = mutation_options(true);
         assert!(options.confirmed);
-        assert!(options.accepted_licenses.contains("license:qwen"));
     }
 }

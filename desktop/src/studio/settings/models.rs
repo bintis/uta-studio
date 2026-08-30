@@ -191,7 +191,9 @@ fn validation_label(validation: app_core::RuntimeValidationPresentation) -> &'st
 
 fn model_backend_display_name(model_id: &str) -> String {
     match model_id {
-        "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317".to_string(),
+        "bs_roformer_leap_xe90_vocals" => "BS-RoFormer Leap XE90 Vocals".to_string(),
+        "bs_polarformer_public_instrumental" => "BS-PolarFormer Public Instrumental".to_string(),
+        "jbm555_cectc_80" => "JBM555 CE-CTC 80".to_string(),
         "melband_roformer_denoise_aufr33" => "MelBand RoFormer Denoise".to_string(),
         "melband_roformer_dereverb_anvuew" => "MelBand RoFormer Dereverb".to_string(),
         "melband_roformer_inst_v2" => "MelBand RoFormer Instrumental V2".to_string(),

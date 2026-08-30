@@ -335,12 +335,20 @@ fn real_runtime_cli_result_error_status_and_read_paths_are_non_mutating() {
 
 #[cfg(unix)]
 fn fixture_script(label: &str, body: &str) -> PathBuf {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::temp_dir().join(format!("uta-studio-cli-{label}-{}", std::process::id()));
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    let staging = path.with_extension("part");
+    {
+        let mut file = std::fs::File::create(&staging).unwrap();
+        file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .unwrap();
+        file.sync_all().unwrap();
+    }
+    let mut permissions = std::fs::metadata(&staging).unwrap().permissions();
     permissions.set_mode(0o755);
-    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::set_permissions(&staging, permissions).unwrap();
+    std::fs::rename(staging, &path).unwrap();
     path
 }
 
@@ -567,6 +575,67 @@ fn analysis_cancel_handle_correlates_with_the_active_request() {
 
 #[cfg(unix)]
 #[test]
+fn analysis_force_stop_terminates_the_worker_process_tree() {
+    let child_pid_path = std::env::temp_dir().join(format!(
+        "uta-studio-force-stop-child-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&child_pid_path);
+    let fixture = fixture_script(
+        "force-stop",
+        &format!(
+            "{READY}\nread analyze\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nprintf '%s\\n' '{{\"type\":\"analysis_started\",\"request_id\":\"force-stop\"}}'\nwhile :; do sleep 30; done",
+            child_pid_path.display()
+        ),
+    );
+    let mut client = AnalysisCliClient::connect_path(&fixture).unwrap();
+    let stop = client.cancellation_handle();
+    let request = analysis_request("force-stop");
+    let worker =
+        std::thread::spawn(move || client.analyze(&request, "force-stop", &std::env::temp_dir()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !child_pid_path.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let child_pid = std::fs::read_to_string(&child_pid_path)
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+
+    stop.force_stop().unwrap();
+    assert!(worker.join().unwrap().is_err());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while unix_process_is_running(child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !unix_process_is_running(child_pid),
+        "force-stop left descendant process {child_pid} alive"
+    );
+    let _ = std::fs::remove_file(child_pid_path);
+    let _ = std::fs::remove_file(fixture);
+}
+
+#[cfg(unix)]
+fn unix_process_is_running(pid: u32) -> bool {
+    // SAFETY: signal 0 performs existence/permission checking only.
+    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && stat
+            .rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_ascii_whitespace().next())
+            == Some("Z")
+    {
+        return false;
+    }
+    true
+}
+
+#[cfg(unix)]
+#[test]
 fn analysis_client_can_reconnect_after_a_worker_crash() {
     let marker = std::env::temp_dir().join(format!(
         "uta-studio-cli-restart-marker-{}",
@@ -605,7 +674,10 @@ fn runtime_client_rejects_schema_mismatch_and_missing_executables() {
         "printf '%s\\n' '{\"schema\":\"uta.runtime.result\",\"schema_version\":2,\"type\":\"result\",\"command\":\"list\",\"status\":\"ok\",\"data\":[]}'",
     );
     let error = RuntimeCliClient::new(&fixture).list().unwrap_err();
-    assert!(matches!(error, BackendCliError::ProtocolMismatch(_)));
+    assert!(
+        matches!(error, BackendCliError::ProtocolMismatch(_)),
+        "unexpected runtime client error: {error:?}"
+    );
     let missing = std::env::temp_dir().join("uta-studio-missing-analysis-cli");
     assert!(matches!(
         AnalysisCliClient::connect_path(missing),

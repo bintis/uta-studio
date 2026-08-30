@@ -211,22 +211,28 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
     }
 
     let matrix = [
-        ("stem-only-vocals", vec!["model:bs_roformer_vocals_ep317"]),
+        (
+            "stem-only-vocals",
+            vec!["model:bs_roformer_leap_xe90_vocals"],
+        ),
         (
             "lead-stem-only",
             vec![
-                "model:bs_roformer_vocals_ep317",
+                "model:bs_roformer_leap_xe90_vocals",
                 "model:melband_roformer_harmony",
             ],
         ),
-        ("instrumental-only", vec!["model:melband_roformer_inst_v2"]),
+        (
+            "instrumental-only",
+            vec!["model:bs_polarformer_public_instrumental"],
+        ),
         ("transcript-only", vec!["model:qwen3_asr_1_7b"]),
         ("alignment-only", vec!["model:qwen3_forced_aligner_0_6b"]),
         ("pitch-only", vec!["model:rmvpe"]),
         (
             "full-candidate",
             vec![
-                "model:bs_roformer_vocals_ep317",
+                "model:bs_roformer_leap_xe90_vocals",
                 "model:qwen3_asr_1_7b",
                 "model:qwen3_forced_aligner_0_6b",
                 "model:rmvpe",
@@ -312,7 +318,7 @@ fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
     value["extensions"]["uta.workflow_execution.v1"] = serde_json::json!({
         "contract": "uta.workflow-execution",
         "version": 1,
-        "workflow_schema_version": 2,
+        "workflow_schema_version": uta_analysis_engine::workflow::WORKFLOW_SCHEMA_VERSION,
         "workflow_id": "song:test:f0-derived",
         "workflow_revision": 1,
         "quality_mode": "fast",
@@ -324,7 +330,7 @@ fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
         },
         "nodes": [
             workflow_node("source", "audio.source", None, "always", 1000, "native_dsp", serde_json::json!({})),
-            workflow_node("split", "audio.separate_vocal_bgm", Some("bs_roformer_vocals_ep317"), "always", 900, "vulkan", serde_json::json!({})),
+            workflow_node("split", "audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals"), "always", 900, "vulkan", serde_json::json!({})),
             workflow_node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), "always", 800, "vulkan", serde_json::json!({})),
             workflow_node("asr", "analysis.asr", Some("qwen3_asr_1_7b"), "always", 700, "pinned_qwen_asr_vulkan", serde_json::json!({})),
             workflow_node("transcript", "fusion.transcript", None, "always", 690, "native_dsp", serde_json::json!({})),

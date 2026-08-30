@@ -268,12 +268,16 @@ pub(crate) fn fit_analysis_graph_to_viewport(
         }
         return;
     }
+    // Metro geometry is already packed against the measured viewport. Never
+    // shrink it below 100% just to expose empty canvas on both axes; an
+    // unusually deep workflow scrolls vertically like a tile surface.
     let fitted = analysis_graph_fit_zoom(
         canvas.unscaled_width,
         canvas.unscaled_height,
         viewport.x,
         viewport.y,
-    );
+    )
+    .max(ANALYSIS_GRAPH_ZOOM_DEFAULT);
     // `ComputedNode::size` is in the scaled UI coordinate space. The graph
     // geometry and zoom helpers use logical pixels, so persist the same
     // inverse-scaled width used by Fit above. Mixing the two spaces expands

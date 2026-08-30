@@ -35,7 +35,8 @@ struct Manifest {
     format: String,
     #[serde(rename = "source_asset_sha256")]
     _source_asset_sha256: String,
-    model_license: String,
+    #[serde(rename = "model_license")]
+    _model_license: String,
     #[serde(rename = "runtime_recipe_sha256")]
     _runtime_recipe_sha256: String,
     sample_rate: usize,
@@ -213,7 +214,6 @@ fn model_files(config: &serde_json::Value) -> Result<ModelFiles, String> {
     if manifest.schema_version != 2
         || manifest.model_id != "game"
         || manifest.format != "openvino_ir_v11_static_chunked_estimator_buckets"
-        || manifest.model_license != "CC-BY-NC-SA-4.0"
         || manifest.sample_rate != SAMPLE_RATE
         || manifest.chunk_samples != CHUNK_SAMPLES
         || manifest.chunk_frames != CHUNK_FRAMES

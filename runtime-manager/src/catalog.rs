@@ -7,8 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resource::{ModelId, ResourceKind, ResourceRef};
 use crate::runtime_lock::{
-    BASIC_PITCH_IR_MANIFEST_SHA256, BASIC_PITCH_SOURCE_SHA256,
-    BS_ROFORMER_CONVERSION_RECIPE_SHA256, BS_ROFORMER_IR_MANIFEST_SHA256, FCPE_IR_MANIFEST_SHA256,
+    BASIC_PITCH_IR_MANIFEST_SHA256, BASIC_PITCH_SOURCE_SHA256, FCPE_IR_MANIFEST_SHA256,
     FCPE_SOURCE_SHA256, FIRERED_IR_MANIFEST_SHA256, GAME_IR_MANIFEST_SHA256,
     OPENVINO_WORKER_RECIPE_SHA256, RMVPE_CONVERSION_RECIPE_SHA256, RMVPE_IR_MANIFEST_SHA256,
     RMVPE_SOURCE_SHA256, ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256,
@@ -20,6 +19,8 @@ use crate::runtime_lock::{
     native_runtime_lock, runtime_recipe_digest,
 };
 use crate::state::ValidationState;
+
+mod candidates;
 
 pub const RUNTIME_CATALOG_VERSION: &str = "runtime-manager-p0-a-v1";
 
@@ -346,8 +347,7 @@ impl ResourceCatalog {
     }
 
     fn add_ggml_roformer_routes(&mut self) -> RuntimeManagerResult<()> {
-        const ROFORMER_MODELS: [&str; 5] = [
-            "bs_roformer_vocals_ep317",
+        const ROFORMER_MODELS: [&str; 4] = [
             "melband_roformer_inst_v2",
             "melband_roformer_harmony",
             "melband_roformer_denoise_aufr33",
@@ -434,6 +434,8 @@ impl ResourceCatalog {
                 "basic_pitch",
                 "stars",
                 "rosvot",
+                "bs_polarformer_public_instrumental",
+                "jbm555_cectc_80",
             ]
             .into_iter()
             .map(str::to_string)
@@ -458,7 +460,7 @@ impl ResourceCatalog {
             )],
             executable_component_id: "ggml_vulkan_v1".to_string(),
             supported_models: [
-                "bs_roformer_vocals_ep317",
+                "bs_roformer_leap_xe90_vocals",
                 "melband_roformer_inst_v2",
                 "melband_roformer_harmony",
                 "melband_roformer_denoise_aufr33",
@@ -519,12 +521,10 @@ impl ResourceCatalog {
     fn add_default_models(&mut self) -> RuntimeManagerResult<()> {
         use NativeBackend::*;
         use ValidationState::*;
+        for model in candidates::task_23_models()? {
+            self.insert_model(model)?;
+        }
         let roformer = [
-            (
-                "bs_roformer_vocals_ep317",
-                "BS-RoFormer Vocals EP317",
-                "audio.extract_vocals",
-            ),
             (
                 "melband_roformer_inst_v2",
                 "MelBand-RoFormer Inst V2",
@@ -548,43 +548,6 @@ impl ResourceCatalog {
         ];
         for (id, display_name, capability) in roformer {
             let (mut source, license, estimated_download_bytes) = roformer_source(id);
-            if id == "bs_roformer_vocals_ep317" {
-                source.converted_artifact = Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_explicit_cpu_gpu_islands".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: BS_ROFORMER_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: BS_ROFORMER_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                });
-                self.insert_model(ModelCatalogEntry {
-                    id: ModelId::new(id)?,
-                    display_name: display_name.to_string(),
-                    purpose: "Exact-context 44.1 kHz stereo GuideVocals extraction".to_string(),
-                    capabilities: vec![capability.to_string()],
-                    source,
-                    license,
-                    acquisition: vec![acquisition(
-                        AcquisitionMethod::LocalImport,
-                        "explicit import of the accepted 34-island BS-RoFormer OpenVINO generation",
-                    )],
-                    dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![BackendCapability {
-                        backend: OpenVino,
-                        validation: BenchmarkCandidate,
-                        evidence_id: Some(
-                            "validation:bs-roformer-exact-context-split-openvino".to_string(),
-                        ),
-                    }],
-                    pinned_backend: Some(OpenVino),
-                    estimated_download_bytes,
-                    estimated_installed_bytes: Some(646_225_000),
-                    recipe_digest: catalog_recipe_digest(id),
-                    runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-                })?;
-                continue;
-            }
             if id == "melband_roformer_inst_v2" {
                 source.converted_artifact = Some(ConvertedArtifactIdentity {
                     format: "openvino_ir_v11_explicit_cpu_gpu_islands".to_string(),
@@ -1173,7 +1136,7 @@ impl ResourceCatalog {
                 display_name: "RoFormer family".to_string(),
                 purpose: "Convenience dependency set; not an inference identity".to_string(),
                 dependencies: [
-                    "bs_roformer_vocals_ep317",
+                    "bs_roformer_leap_xe90_vocals",
                     "melband_roformer_inst_v2",
                     "melband_roformer_harmony",
                     "melband_roformer_denoise_aufr33",
@@ -1191,7 +1154,7 @@ impl ResourceCatalog {
                 display_name: "Engine Fast baseline resources".to_string(),
                 purpose: "Convenience set for the first Analysis Engine path".to_string(),
                 dependencies: [
-                    "bs_roformer_vocals_ep317",
+                    "bs_roformer_leap_xe90_vocals",
                     "melband_roformer_harmony",
                     "qwen3_asr_1_7b",
                     "qwen3_forced_aligner_0_6b",
@@ -1350,10 +1313,6 @@ fn openvino_artifact(format: &str, manifest_sha256: &str) -> ConvertedArtifactId
 
 fn ggml_roformer_artifact(model_id: &str) -> (ConvertedArtifactIdentity, u64) {
     let (sha256, size_bytes) = match model_id {
-        "bs_roformer_vocals_ep317" => (
-            "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de",
-            320_092_800,
-        ),
         "melband_roformer_denoise_aufr33" => (
             "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
             457_008_736,
@@ -1396,15 +1355,6 @@ fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
 
 fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
     let (repository, revision, filename, sha256, bytes, attribution, source_page) = match id {
-        "bs_roformer_vocals_ep317" => (
-            "https://github.com/TRvlvr/model_repo",
-            "all_public_uvr_models",
-            "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
-            "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa",
-            639_000_000,
-            "UVR public model catalog / TRvlvr",
-            "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models",
-        ),
         "melband_roformer_inst_v2" => (
             "pcunwa/Mel-Band-Roformer-Inst",
             "f86cd9e99d63eb9499b00fca424bc4ed8a8aeaba",
@@ -1505,7 +1455,9 @@ mod tests {
     fn catalog_contains_initial_required_resources() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
         for model in [
-            "bs_roformer_vocals_ep317",
+            "bs_roformer_leap_xe90_vocals",
+            "bs_polarformer_public_instrumental",
+            "jbm555_cectc_80",
             "melband_roformer_inst_v2",
             "melband_roformer_harmony",
             "melband_roformer_denoise_aufr33",
@@ -1534,10 +1486,6 @@ mod tests {
     fn roformer_sources_are_independent_and_exactly_pinned() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
         let expected = [
-            (
-                "bs_roformer_vocals_ep317",
-                "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa",
-            ),
             (
                 "melband_roformer_inst_v2",
                 "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2",
@@ -1573,6 +1521,9 @@ mod tests {
                 Some("4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a")
             );
         }
+        let leap = catalog.model("bs_roformer_leap_xe90_vocals").unwrap();
+        assert_eq!(leap.source.sha256, None);
+        assert_eq!(leap.pinned_backend, Some(NativeBackend::Vulkan));
         assert_eq!(
             catalog
                 .model("melband_roformer_inst_v2")
@@ -1592,7 +1543,7 @@ mod tests {
             Some("cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06")
         );
         let bundle = catalog.bundles.get("roformer").unwrap();
-        assert_eq!(bundle.dependencies.len(), expected.len());
+        assert_eq!(bundle.dependencies.len(), expected.len() + 1);
         assert!(expected.iter().all(|(id, _)| {
             bundle
                 .dependencies
@@ -1603,26 +1554,19 @@ mod tests {
     #[test]
     fn acquisition_and_worker_capabilities_are_truthful() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let roformer = catalog.model("bs_roformer_vocals_ep317").unwrap();
-        assert_eq!(
-            roformer.source.sha256.as_deref(),
-            Some("5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa")
-        );
+        let roformer = catalog.model("bs_roformer_leap_xe90_vocals").unwrap();
+        assert_eq!(roformer.source.sha256, None);
         assert!(
             roformer
                 .acquisition
                 .iter()
-                .all(|spec| spec.method == AcquisitionMethod::LocalImport)
+                .all(|spec| spec.method == AcquisitionMethod::ManagedDownload)
         );
         assert_eq!(roformer.pinned_backend, Some(NativeBackend::Vulkan));
-        let converted = roformer.source.converted_artifact.as_ref().unwrap();
-        assert_eq!(converted.format, "gguf_f16");
-        assert_eq!(converted.manifest_filename, "model-fp16.gguf");
         assert_eq!(
-            converted.manifest_sha256,
-            "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de"
+            roformer.source.filename.as_deref(),
+            Some("bs_leap_xe_voc-F32.gguf")
         );
-        assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
         let align = catalog.model("qwen3_forced_aligner_0_6b").unwrap();
         assert!(
             align
@@ -1785,7 +1729,7 @@ mod tests {
         let catalog = ResourceCatalog::default_catalog().unwrap();
         let openvino = catalog.runtime("openvino_2026_3").unwrap();
         for model_id in [
-            "bs_roformer_vocals_ep317",
+            "bs_roformer_leap_xe90_vocals",
             "melband_roformer_inst_v2",
             "melband_roformer_harmony",
             "melband_roformer_denoise_aufr33",
@@ -1802,13 +1746,11 @@ mod tests {
                 backend.backend == NativeBackend::Vulkan
                     && backend.validation == ValidationState::ProductionPinned
             }));
-            let converted = model.source.converted_artifact.as_ref().unwrap();
-            assert_eq!(converted.format, "gguf_f16");
-            assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
-            assert_eq!(
-                converted.runtime_commit,
-                "8c63e70982c95ceb862e3a1073a2c1beef75d60a"
-            );
+            if model_id != "bs_roformer_leap_xe90_vocals" {
+                let converted = model.source.converted_artifact.as_ref().unwrap();
+                assert_eq!(converted.format, "gguf_f16");
+                assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
+            }
             assert!(
                 !model
                     .capabilities
@@ -1931,7 +1873,7 @@ mod tests {
                     && backend.validation == ValidationState::Experimental
             }));
         }
-        assert_eq!(ir_models, 7);
+        assert_eq!(ir_models, 9);
         for qwen in ["qwen3_asr_1_7b", "qwen3_forced_aligner_0_6b"] {
             assert!(
                 catalog
@@ -1947,11 +1889,16 @@ mod tests {
     #[test]
     fn every_effective_model_and_runtime_route_is_production_pinned() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        assert_eq!(catalog.models.len(), 14);
-        for model in catalog.models.values() {
+        let effective_models = catalog
+            .models
+            .values()
+            .filter(|model| !model.backends.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(effective_models.len(), 16);
+        for model in effective_models {
             let pinned = model
                 .pinned_backend
-                .expect("every model must declare its effective backend");
+                .expect("every effective model must declare its backend");
             assert!(
                 model.backends.iter().any(|capability| {
                     capability.backend == pinned

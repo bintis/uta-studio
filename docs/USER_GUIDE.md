@@ -1,6 +1,6 @@
 # Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta! Studio 0.7.0
+**Applies to:** Uta! Studio 0.8.0
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,11 +27,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.7.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release 0.8.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
 
 #### Windows
 
-1. Download `uta-studio-0.7.0-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-0.8.0-x86_64-windows.zip`.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,33 +41,23 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.7.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.7.0-x86_64-linux.bin
-./uta-studio-0.7.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.0-x86_64-linux.bin
+./uta-studio-0.8.0-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
-
-#### Verify a download
-
-Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
-
-```sh
-sha256sum -c uta-studio-0.7.0-linux-deb.sha256
-```
-
-Use the checksum file matching the package type you downloaded.
 
 ### 3. First launch
 
@@ -470,11 +460,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.7.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
 
 #### Windows
 
-1. 下载 `uta-studio-0.7.0-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-0.8.0-x86_64-windows.zip`。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -484,33 +474,23 @@ Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.7.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.7.0-x86_64-linux.bin
-./uta-studio-0.7.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.0-x86_64-linux.bin
+./uta-studio-0.8.0-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
-
-#### 校验下载文件
-
-从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
-
-```sh
-sha256sum -c uta-studio-0.7.0-linux-deb.sha256
-```
-
-校验文件必须与下载的包类型一致。
 
 ### 3. 首次启动
 
@@ -913,11 +893,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.7.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
 
 #### Windows
 
-1. `uta-studio-0.7.0-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-0.8.0-x86_64-windows.zip` をダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -927,33 +907,23 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.7.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.0-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.7.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.7.0-x86_64-linux.bin
-./uta-studio-0.7.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.0-x86_64-linux.bin
+./uta-studio-0.8.0-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
-
-#### ダウンロードの検証
-
-ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
-
-```sh
-sha256sum -c uta-studio-0.7.0-linux-deb.sha256
-```
-
-ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
 
 ### 3. 初回起動
 

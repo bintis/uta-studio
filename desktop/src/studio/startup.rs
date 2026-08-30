@@ -38,6 +38,7 @@ pub fn run() {
         .insert_resource(LocalImages::default())
         .insert_resource(EditorPointerCapture::default())
         .insert_resource(ProcessingStudioPointerCapture::default())
+        .insert_resource(AnalysisTileFlipState::default())
         .insert_resource(EditorViewportRebuildThrottle::default())
         .insert_resource(UiInvalidated::default())
         .insert_resource(UiRebuildMetrics::default())
@@ -163,6 +164,7 @@ pub fn run() {
                 .before(rebuild_ui),
         )
         .add_systems(Update, rebuild_ui.after(handle_actions))
+        .add_systems(Update, animate_analysis_tile_flip.after(rebuild_ui))
         .add_systems(Update, audit_ui_api_coverage.after(rebuild_ui))
         .add_systems(Update, localize_ui_text.after(rebuild_ui))
         .add_systems(Update, update_button_visuals.after(rebuild_ui))

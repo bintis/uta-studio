@@ -621,6 +621,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn cancellation_kills_and_reaps_stalled_decode() {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!("uta-acoustic-cancel-{}", std::process::id()));
@@ -629,8 +630,14 @@ mod tests {
         let input = root.join("input.wav");
         std::fs::write(&input, b"fixture").unwrap();
         let ffmpeg = root.join("ffmpeg");
-        std::fs::write(&ffmpeg, b"#!/bin/sh\nsleep 30\n").unwrap();
-        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let staging = root.join("ffmpeg.part");
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(b"#!/bin/sh\nwhile :; do :; done\n").unwrap();
+            file.sync_all().unwrap();
+        }
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::rename(staging, &ffmpeg).unwrap();
         let cancellation = CancellationToken::default();
         let other = cancellation.clone();
         let canceller = std::thread::spawn(move || {

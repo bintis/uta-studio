@@ -23,7 +23,6 @@ use crate::state::{InstallState, ReadinessReason, ResourceOrigin, RuntimePolicy,
 use crate::store::{CurrentPointer, StorePaths};
 
 mod advanced_notes;
-mod bs_roformer;
 mod game;
 mod optional_experts;
 mod rmvpe;
@@ -64,7 +63,6 @@ pub struct MutationResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MutationOptions {
     pub confirmed: bool,
-    pub accepted_licenses: BTreeSet<String>,
 }
 
 impl RuntimeManager {
@@ -233,11 +231,14 @@ impl RuntimeManager {
                 .acquisition
                 .iter()
                 .any(|spec| spec.method == AcquisitionMethod::ManagedDownload)
-                && model.source.source_format.as_deref() == Some("gguf"))
+                && model
+                    .source
+                    .source_format
+                    .as_deref()
+                    .is_some_and(|format| format.starts_with("gguf")))
         {
             return Err(not_acquirable(resource, "no audited import recipe exists"));
         }
-        ensure_license_accepted(&model.acquisition, options)?;
         let converted_file = model
             .source
             .converted_artifact
@@ -245,9 +246,6 @@ impl RuntimeManager {
             .filter(|artifact| artifact.format.starts_with("gguf"));
         if source.is_dir() && converted_file.is_none() {
             let imported = match resource.id.as_str() {
-                "bs_roformer_vocals_ep317" => Some(bs_roformer::import_bs_roformer_ir_directory(
-                    self, resource, model, source,
-                )?),
                 "game" => Some(game::import_game_ir_directory(
                     self, resource, model, source,
                 )?),
@@ -522,10 +520,9 @@ fn planned_resource_for(
 fn acquire_planned_resource(
     manager: &RuntimeManager,
     item: &PlannedResource,
-    options: &MutationOptions,
+    _options: &MutationOptions,
     transport: &dyn AcquisitionTransport,
 ) -> RuntimeManagerResult<()> {
-    ensure_license_accepted(&item.acquisition, options)?;
     match item.resource.kind {
         ResourceKind::Model => {
             let model = manager
@@ -674,24 +671,6 @@ fn validate_leaf_filename(filename: &str) -> RuntimeManagerResult<()> {
     {
         Err(RuntimeManagerError::invalid_catalog(
             "catalog artifact filename is not a safe leaf name",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn ensure_license_accepted(
-    acquisition: &[AcquisitionSpec],
-    options: &MutationOptions,
-) -> RuntimeManagerResult<()> {
-    if let Some(license) = acquisition
-        .iter()
-        .filter_map(|spec| spec.license_id.as_ref())
-        .find(|license| !options.accepted_licenses.contains(*license))
-    {
-        Err(RuntimeManagerError::new(
-            "license_required",
-            format!("license acknowledgement is required: {license}"),
         ))
     } else {
         Ok(())

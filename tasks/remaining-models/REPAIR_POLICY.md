@@ -17,7 +17,7 @@ effective integration state = READY
 
 The active all-model repair agent computes current effective state from current source/tests and the durable state documents, not from deleted historical logs.
 
-Production and integration remain separate, but the repository license gate is intentionally permissive:
+Production and integration remain separate, but the repository license metadata policy is intentionally permissive:
 
 ```text
 repair technically succeeds + explicit open-source/open-model license
@@ -79,7 +79,7 @@ Runtime Manager state
 Engine integration state
 integration_ready yes/no
 production_ready yes/no
-license identity/note; only missing, ambiguous, or non-open licensing may remain a license blocker
+license identity/note; licensing remains advisory and non-blocking
 ```
 
 Do not retain command transcripts or process-by-process completion journals under `docs/`.
@@ -118,4 +118,4 @@ R03 READY integration_ready=yes
 => Denoise is integration-ready for later feature work.
 ```
 
-If `production_ready=no` remains for technical/external validation or because license identity is missing, ambiguous, or non-open, the Production aggregate bubble may still be skipped/blocked while later feature implementation proceeds under the integration/Production dual-gate policy. Restrictive conditions on an explicit open license alone do not block technical Production.
+If `production_ready=no` remains for technical/external validation , the Production aggregate bubble may still be skipped/blocked only for technical or external-validation reasons while later feature implementation proceeds under the integration/Production dual-gate policy. Restrictive conditions on an explicit open license alone do not block technical Production.

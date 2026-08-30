@@ -217,7 +217,7 @@ A model may finish:
 
 ```text
 technical READY
-release/package BLOCKED_LICENSE
+release/package ADVISORY_LICENSE
 ```
 
 Do not fabricate checkpoint license terms from source-code/runtime licenses.

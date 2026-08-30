@@ -275,6 +275,8 @@ pub(crate) enum UiMessage {
     LanguageReprocessQueued,
     FolderStoppedWatching,
     AnalysisEngineSelected,
+    AnalysisForceStopped,
+    AnalysisForceStopFailed,
     DiagnosticsSummary,
     CanonicalLyricsAvailablePlain,
     CanonicalLyricsAvailableTimedLrc,
@@ -301,6 +303,8 @@ impl UiMessage {
             Self::LanguageReprocessQueued => "message.language_reprocess_queued",
             Self::FolderStoppedWatching => "message.folder_stopped_watching",
             Self::AnalysisEngineSelected => "message.analysis_engine_selected",
+            Self::AnalysisForceStopped => "message.analysis_force_stopped",
+            Self::AnalysisForceStopFailed => "message.analysis_force_stop_failed",
             Self::DiagnosticsSummary => "message.diagnostics_summary",
             Self::CanonicalLyricsAvailablePlain => "message.canonical_lyrics_available_plain",
             Self::CanonicalLyricsAvailableTimedLrc => {
@@ -333,6 +337,8 @@ impl UiMessage {
             Self::AnalysisEngineSelected => {
                 "{engine} selected. Existing charts change only after re-analysis."
             }
+            Self::AnalysisForceStopped => "All analysis work was force-stopped.",
+            Self::AnalysisForceStopFailed => "Could not force-stop analysis: {error}",
             Self::DiagnosticsSummary => {
                 "{passed} passed · {failed} failed · {skipped} skipped · {apis} APIs"
             }
@@ -538,10 +544,8 @@ mod tests {
             "Choose Algorithm or AI judgment for final candidate-path selection. Evidence participation is configured in Stage 3.",
             "Selected strategy · {strategy}\n{providers}",
             "SEPARATION STRATEGY",
-            "EP317 vocal + residual Instrumental",
             "Independent vocal + Instrumental specialists",
-            "One EP317 inference estimates GuideVocals; the same native invocation publishes SourceMix − GuideVocals as the deterministic Instrumental residual.",
-            "EP317 extracts GuideVocals and MelBand Inst V2 independently extracts Instrumental, with separate progress and logs.",
+            "Leap XE90 extracts GuideVocals and public PolarFormer independently extracts Instrumental, with separate native progress and logs.",
             "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.",
             "Delete chart",
             "Delete chart?",

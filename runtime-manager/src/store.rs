@@ -113,8 +113,7 @@ impl StorePaths {
     pub fn ggml_model_path(&self, model_id: &str) -> Option<PathBuf> {
         let directory = match model_id {
             "melband_roformer_harmony" => "melband_roformer_karaoke_aufr33_viperx",
-            "bs_roformer_vocals_ep317"
-            | "melband_roformer_inst_v2"
+            "melband_roformer_inst_v2"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew" => model_id,
             _ => return None,

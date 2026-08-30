@@ -41,6 +41,8 @@ pub struct LrclibCandidate {
 #[ts(export)]
 pub struct LyricsFile {
     pub lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed_lrc: Option<String>,
 }
 
 pub fn lrclib_candidates(song: &Song) -> Vec<LrclibCandidate> {
@@ -231,6 +233,15 @@ pub struct CanonicalLyricsStatus {
 /// run is ever queued.
 pub fn canonical_lyrics_status(file_hash: &str) -> Option<CanonicalLyricsStatus> {
     if let Some(lyrics) = load_lyrics_file(file_hash) {
+        if let Some(timed_lrc) = lyrics.timed_lrc.as_deref()
+            && let Ok(parsed) = lrc::parse_lrc(timed_lrc)
+            && !parsed.segments.is_empty()
+        {
+            return Some(CanonicalLyricsStatus {
+                source: CanonicalLyricsSource::TimedLrc,
+                line_count: parsed.segments.len(),
+            });
+        }
         let line_count = lyrics
             .lines
             .iter()
@@ -275,6 +286,38 @@ pub fn save_lyrics(file_hash: &str, lines: Vec<String>) -> Result<(), String> {
     }
 
     save_lyrics_to_cache(&CacheDir::new(), file_hash, lines)
+}
+
+pub fn save_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String> {
+    if is_usdx_song(file_hash) {
+        return Err("Cannot edit lyrics for USDX songs".to_string());
+    }
+
+    let parsed = lrc::parse_lrc(lrc_text)?;
+    let lines = parsed
+        .segments
+        .into_iter()
+        .map(|segment| segment.text.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Err("Lyrics cannot be empty".to_string());
+    }
+
+    let lyrics = LyricsFile {
+        lines,
+        timed_lrc: Some(lrc_text.trim().to_string()),
+    };
+    let out = CacheDir::new().lyrics_path(file_hash);
+    std::fs::write(&out, serde_json::to_string_pretty(&lyrics).unwrap())
+        .map_err(|error| format!("Failed to write lyrics file: {error}"))?;
+
+    // Timed lyrics are user input, not an analysis command. Never call
+    // provide_lrc, apply_timed_lyrics, reanalysis, or queue APIs from this
+    // save path. Saving must not create transcript/chart artifacts, alter
+    // analysis state/history, or spend compute; only an explicit analysis
+    // action may consume this input later.
+    Ok(())
 }
 
 fn save_lyrics_to_cache(

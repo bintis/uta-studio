@@ -194,12 +194,15 @@ pub(crate) fn apply_content_action(
         }
         UiCommand::Editor(EditorCommand::OpenLyricsEditor(file_hash)) => {
             let song = app_core::load_song_by_hash(file_hash).ok().flatten();
-            let mode = if song.as_ref().is_some_and(|song| {
-                matches!(
-                    song.transcript_source,
-                    Some(app_core::TranscriptSource::Lrc)
-                )
-            }) {
+            let has_saved_timed_lyrics = app_core::load_lyrics_file(file_hash)
+                .is_some_and(|lyrics| lyrics.timed_lrc.is_some());
+            let mode = if has_saved_timed_lyrics
+                || song.as_ref().is_some_and(|song| {
+                    matches!(
+                        song.transcript_source,
+                        Some(app_core::TranscriptSource::Lrc)
+                    )
+                }) {
                 LyricsInputMode::TimedLrc
             } else {
                 LyricsInputMode::Plain
@@ -445,16 +448,12 @@ pub(crate) fn apply_content_action(
                     invalidated.invalidate(action.0.dirty_region());
                     return;
                 }
-                let song = app_core::load_song_by_hash(&editor.file_hash)
-                    .ok()
-                    .flatten();
                 let plain_lyrics = editor.mode == LyricsInputMode::Plain;
                 let result = if editor.mode == LyricsInputMode::TimedLrc {
-                    if song.as_ref().is_some_and(|song| song.is_analyzed) {
-                        app_core::apply_timed_lyrics(&editor.file_hash, &value)
-                    } else {
-                        app_core::provide_lrc(&editor.file_hash, &value)
-                    }
+                    // Saving Timed LRC is never permission to analyze. Do not
+                    // route this through provide_lrc/apply_timed_lyrics or add
+                    // queue/reanalysis calls here; save only the lyrics input.
+                    app_core::save_timed_lyrics(&editor.file_hash, &value)
                 } else {
                     app_core::save_lyrics(
                         &editor.file_hash,
@@ -811,6 +810,23 @@ pub(crate) fn apply_content_action(
                 Err(error) => format!("Could not cancel: {error}"),
             });
             invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::ForceStopAllAnalysis) => {
+            studio.shell.notice = Some(match app_core::force_stop_all_analysis() {
+                Ok(_) => {
+                    localized_message(&studio.shell.config, UiMessage::AnalysisForceStopped, &[])
+                }
+                Err(error) => localized_message(
+                    &studio.shell.config,
+                    UiMessage::AnalysisForceStopFailed,
+                    &[("{error}", &error)],
+                ),
+            });
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.analysis.analysis_history = app_core::load_analysis_history(100);
+            studio.library.refresh();
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Analysis(AnalysisCommand::ConfirmDeleteSongCache) => {
             if let Some(file_hash) = studio.dialogs.pending_cache_delete.take() {

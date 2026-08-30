@@ -72,10 +72,10 @@ pub use analyzer::{
     EngineRunHistoryProjection, NodeAttempt, NodeAttemptComparison, QueuedStatus,
     SongAuthoringState, analysis_log_lines, analysis_log_path_for, cancel_analysis_run,
     clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
-    delete_cache, enqueue_all, enqueue_one, load_analysis_history, load_analysis_node_attempts,
-    load_analysis_tasks, realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch,
-    reanalyze_transcript, remove_song_from_library, resolve_song_authoring_state,
-    start_queued_analysis, stop_analysis_run,
+    delete_cache, enqueue_all, enqueue_one, force_stop_all_analysis, load_analysis_history,
+    load_analysis_node_attempts, load_analysis_tasks, realign, reanalyze_force_transcribe,
+    reanalyze_full, reanalyze_pitch, reanalyze_transcript, remove_song_from_library,
+    resolve_song_authoring_state, start_queued_analysis, stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
@@ -143,7 +143,7 @@ pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsSto
 pub use lyrics::{
     CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsFile, apply_timed_lyrics,
     canonical_lyrics_status, load_lyrics_file, lrc_transcript_line_segments, provide_lrc,
-    save_lyrics, search_lrclib_for_hash,
+    save_lyrics, save_timed_lyrics, search_lrclib_for_hash,
 };
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
@@ -177,22 +177,21 @@ pub use workflow::{
     CompiledArtifactBinding, CompiledNodeBinding, ConditionalExecution, ExecutionPolicy,
     FusionModeV1, NodeCapability, NodePosition, OptionalWorkflowCardV1, QualityMode,
     SeparationOutputRoleV1, SeparationProviderExecutionV1, SeparationStrategyOptionV1,
-    SeparationStrategyV1, StoredWorkflow, WORKFLOW_EXECUTION_EXTENSION_KEY, WorkflowBindingWireV1,
-    WorkflowCompileError, WorkflowDefinition, WorkflowEdge, WorkflowExecutionInvocationWireV1,
-    WorkflowExecutionSnapshot, WorkflowExecutionWireV1, WorkflowId, WorkflowLayout,
-    WorkflowModelOption, WorkflowNodeId, WorkflowNodeInstance, WorkflowNodeWireV1, WorkflowPortRef,
-    WorkflowPortSpec, WorkflowPortType, WorkflowProviderPreferencesWireV1,
-    WorkflowTerminalOutputWireV1, WorkflowValidationCode, WorkflowValidationIssue,
-    WorkflowValidationReport, add_optional_workflow_card, bind_workflow_analyzer, compile_workflow,
-    default_workflow, duplicate_audio_transformation, fusion_mode,
-    insert_audio_transformation_after_output, list_workflow_capabilities, load_song_workflow,
-    preview_workflow_compile, remove_workflow_node, reorder_audio_transformation,
-    save_song_workflow, separation_strategy_descriptor, separation_strategy_options,
-    set_workflow_execution_policy, set_workflow_node_model, set_workflow_parameter,
-    set_workflow_priority, set_workflow_separation_strategy, set_workflow_skip_if_unchanged,
-    validate_workflow,
-    workflow_definition_digest, workflow_has_optional_card, workflow_model_label,
-    workflow_model_options,
+    SeparationStrategyV1, StoredWorkflow, WORKFLOW_EXECUTION_EXTENSION_KEY,
+    WORKFLOW_SCHEMA_VERSION, WorkflowBindingWireV1, WorkflowCompileError, WorkflowDefinition,
+    WorkflowEdge, WorkflowExecutionInvocationWireV1, WorkflowExecutionSnapshot,
+    WorkflowExecutionWireV1, WorkflowId, WorkflowLayout, WorkflowModelOption, WorkflowNodeId,
+    WorkflowNodeInstance, WorkflowNodeWireV1, WorkflowPortRef, WorkflowPortSpec, WorkflowPortType,
+    WorkflowProviderPreferencesWireV1, WorkflowTerminalOutputWireV1, WorkflowValidationCode,
+    WorkflowValidationIssue, WorkflowValidationReport, add_optional_workflow_card,
+    bind_workflow_analyzer, compile_workflow, default_workflow, duplicate_audio_transformation,
+    fusion_mode, insert_audio_transformation_after_output, list_workflow_capabilities,
+    load_song_workflow, preview_workflow_compile, remove_workflow_node,
+    reorder_audio_transformation, save_song_workflow, separation_strategy_descriptor,
+    separation_strategy_options, set_workflow_execution_policy, set_workflow_node_model,
+    set_workflow_parameter, set_workflow_priority, set_workflow_separation_strategy,
+    set_workflow_skip_if_unchanged, validate_workflow, workflow_definition_digest,
+    workflow_has_optional_card, workflow_model_label, workflow_model_options,
 };
 
 pub fn startup() -> Result<(), String> {

@@ -108,7 +108,8 @@ fn merge_continuous_pitch_runs(candidates: &[&CanonicalNote]) -> Vec<MergedNote>
             let next_duration = (note.range.end - note.range.start) as f64;
             last.center_offset_cents = ((last.center_offset_cents as f64 * previous_duration
                 + note.center_offset_cents as f64 * next_duration)
-                / (previous_duration + next_duration)) as f32;
+                / (previous_duration + next_duration))
+                as f32;
             last.range = TimeRange::new(last.range.start, last.range.end.max(note.range.end))
                 .expect("merging two positive-duration ranges keeps a positive-duration range");
             continue;
@@ -290,6 +291,8 @@ mod tests {
                     presence_decision_parameter: Some(0.2),
                     boundary_calibrated_confidence: None,
                     target_pitch_source: "game".to_string(),
+                    target_pitch_source_local_score: None,
+                    target_pitch_calibrated_confidence: None,
                     rmvpe_center_hz: Some(439.95),
                     rmvpe_confidence: Some(0.9),
                     rmvpe_cents_difference: Some(-0.2),

@@ -487,6 +487,9 @@ fn basic_pitch_onset_challengers(
                     kind: BoundaryEvidenceKind::BasicPitchOnset,
                     fractional_midi: None,
                     source_local_score: peak_scores.get(&pair[0]).copied(),
+                    source_local_pitch_score: None,
+                    calibrated_boundary_confidence: None,
+                    calibrated_pitch_confidence: None,
                     hard: false,
                 })
         }));
@@ -584,6 +587,9 @@ fn partition_context_challengers(
                 kind,
                 fractional_midi: None,
                 source_local_score: pair[0].score,
+                source_local_pitch_score: None,
+                calibrated_boundary_confidence: None,
+                calibrated_pitch_confidence: None,
                 hard: false,
             });
         }
@@ -727,6 +733,9 @@ fn constraint_partition_challengers(
             kind: BoundaryEvidenceKind::Constraint,
             fractional_midi: None,
             source_local_score: None,
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: false,
         }));
     }
@@ -921,9 +930,15 @@ fn build_segment_candidate(
             source_expert: boundary.source_expert.clone(),
             center_hz,
             cents_from_target: 1_200.0 * (center_hz / center_pitch_hz).log2(),
-            confidence: None,
+            confidence: boundary.calibrated_pitch_confidence,
         });
     }
+    let selected_boundary_evidence = all_boundary_evidence.iter().find(|alternative| {
+        alternative.source_expert == source_expert
+            && alternative.range == segment.range
+            && alternative.kind == boundary_kind
+            && alternative.fractional_midi == segment.fractional_midi
+    });
 
     Ok(SegmentCandidate {
         id: format!("{source_expert}-segment-{index}"),
@@ -935,20 +950,17 @@ fn build_segment_candidate(
         boundary_fractional_midi: segment.fractional_midi,
         boundary_decision_parameter: segment.boundary_decision_parameter,
         presence_decision_parameter: segment.presence_decision_parameter,
-        boundary_hard: all_boundary_evidence.iter().any(|alternative| {
-            alternative.source_expert == source_expert
-                && alternative.range == segment.range
-                && alternative.fractional_midi == segment.fractional_midi
-                && alternative.hard
-        }),
-        boundary_support: all_boundary_evidence
-            .iter()
-            .find(|alternative| {
-                alternative.source_expert == source_expert
-                    && alternative.range == segment.range
-                    && alternative.fractional_midi == segment.fractional_midi
-            })
+        boundary_hard: selected_boundary_evidence.is_some_and(|alternative| alternative.hard),
+        boundary_support: selected_boundary_evidence
             .and_then(|alternative| alternative.source_local_score),
+        boundary_calibrated_confidence: selected_boundary_evidence
+            .and_then(|alternative| alternative.calibrated_boundary_confidence),
+        target_pitch_source_local_score: selected_boundary_evidence
+            .filter(|_| target_pitch_source == source_expert)
+            .and_then(|alternative| alternative.source_local_pitch_score),
+        target_pitch_calibrated_confidence: selected_boundary_evidence
+            .filter(|_| target_pitch_source == source_expert)
+            .and_then(|alternative| alternative.calibrated_pitch_confidence),
         target_pitch_source,
         center_pitch_hz,
         rmvpe_center_hz: rmvpe.center_hz,
@@ -973,7 +985,6 @@ fn build_segment_candidate(
         basic_pitch: basic_pitch
             .map(|evidence| summarize_basic_pitch(segment.range, evidence))
             .transpose()?,
-        boundary_calibrated_confidence: None,
         boundary_alternatives: all_boundary_evidence
             .iter()
             .filter(|alternative| {
@@ -1149,6 +1160,27 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
                         .into_iter()
                         .flatten()
                         .max_by(f32::total_cmp);
+                existing.source_local_pitch_score = [
+                    existing.source_local_pitch_score,
+                    alternative.source_local_pitch_score,
+                ]
+                .into_iter()
+                .flatten()
+                .max_by(f32::total_cmp);
+                existing.calibrated_boundary_confidence = [
+                    existing.calibrated_boundary_confidence,
+                    alternative.calibrated_boundary_confidence,
+                ]
+                .into_iter()
+                .flatten()
+                .max_by(f32::total_cmp);
+                existing.calibrated_pitch_confidence = [
+                    existing.calibrated_pitch_confidence,
+                    alternative.calibrated_pitch_confidence,
+                ]
+                .into_iter()
+                .flatten()
+                .max_by(f32::total_cmp);
             })
             .or_insert(alternative);
     }
@@ -1188,6 +1220,9 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
             kind: boundaries.kind,
             fractional_midi: segment.fractional_midi,
             source_local_score: None,
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: false,
         })
         .chain(
@@ -1212,6 +1247,27 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
                     .into_iter()
                     .flatten()
                     .max_by(f32::total_cmp);
+            existing.source_local_pitch_score = [
+                existing.source_local_pitch_score,
+                alternative.source_local_pitch_score,
+            ]
+            .into_iter()
+            .flatten()
+            .max_by(f32::total_cmp);
+            existing.calibrated_boundary_confidence = [
+                existing.calibrated_boundary_confidence,
+                alternative.calibrated_boundary_confidence,
+            ]
+            .into_iter()
+            .flatten()
+            .max_by(f32::total_cmp);
+            existing.calibrated_pitch_confidence = [
+                existing.calibrated_pitch_confidence,
+                alternative.calibrated_pitch_confidence,
+            ]
+            .into_iter()
+            .flatten()
+            .max_by(f32::total_cmp);
         } else {
             boundary_evidence_index.insert(key, all_boundary_evidence.len());
             all_boundary_evidence.push(alternative);

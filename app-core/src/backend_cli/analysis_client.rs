@@ -16,6 +16,7 @@ use super::runtime_wire::RuntimePolicyWireV1;
 #[derive(Clone)]
 pub struct AnalysisCancelHandle {
     stdin: Arc<Mutex<ChildStdin>>,
+    process_tree: Arc<AnalysisProcessTree>,
 }
 
 impl AnalysisCancelHandle {
@@ -28,6 +29,230 @@ impl AnalysisCancelHandle {
             }),
         )
     }
+
+    /// Immediately terminates the packaged Analysis Engine and every process
+    /// it spawned. Unlike `cancel`, this does not wait for a model or adapter
+    /// to observe a cooperative cancellation token.
+    pub fn force_stop(&self) -> Result<(), BackendCliError> {
+        self.process_tree.force_stop()
+    }
+}
+
+struct AnalysisProcessTree {
+    root_pid: u32,
+    terminated: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    job: usize,
+}
+
+impl AnalysisProcessTree {
+    fn attach(child: &Child) -> Result<Self, BackendCliError> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
+            };
+
+            // SAFETY: the returned Job Object handle is owned by this value,
+            // every pointer references a live local, and Drop closes it once.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return Err(BackendCliError::SpawnFailed(format!(
+                        "could not create Analysis Engine Job Object: {}",
+                        std::io::Error::last_os_error()
+                    )));
+                }
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(limits).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(BackendCliError::SpawnFailed(format!(
+                        "could not configure Analysis Engine Job Object: {error}"
+                    )));
+                }
+                if AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(BackendCliError::SpawnFailed(format!(
+                        "could not contain Analysis Engine process tree: {error}"
+                    )));
+                }
+                return Ok(Self {
+                    root_pid: child.id(),
+                    terminated: std::sync::atomic::AtomicBool::new(false),
+                    job: job as usize,
+                });
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(Self {
+                root_pid: child.id(),
+                terminated: std::sync::atomic::AtomicBool::new(false),
+            })
+        }
+    }
+
+    fn force_stop(&self) -> Result<(), BackendCliError> {
+        use std::sync::atomic::Ordering;
+
+        if self.terminated.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let result = {
+            #[cfg(target_os = "linux")]
+            {
+                force_stop_linux_process_tree(self.root_pid)
+            }
+            #[cfg(all(unix, not(target_os = "linux")))]
+            {
+                // SAFETY: `connect_path` makes the packaged Engine the leader
+                // of a fresh process group, so the negative PID cannot target
+                // Studio.
+                let result = unsafe { libc::kill(-(self.root_pid as i32), libc::SIGKILL) };
+                if result == 0
+                    || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    Ok(())
+                } else {
+                    Err(BackendCliError::Io(format!(
+                        "could not force-stop Analysis Engine process group: {}",
+                        std::io::Error::last_os_error()
+                    )))
+                }
+            }
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::HANDLE;
+                use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+                // SAFETY: `self.job` is a live Job Object owned by this value.
+                if unsafe { TerminateJobObject(self.job as HANDLE, 137) } != 0 {
+                    Ok(())
+                } else {
+                    Err(BackendCliError::Io(format!(
+                        "could not force-stop Analysis Engine process tree: {}",
+                        std::io::Error::last_os_error()
+                    )))
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                Err(BackendCliError::Io(
+                    "force-stopping the Analysis Engine process tree is unsupported on this platform"
+                        .to_string(),
+                ))
+            }
+        };
+        if result.is_err() {
+            self.terminated.store(false, Ordering::Release);
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+impl Drop for AnalysisProcessTree {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::HANDLE;
+        // SAFETY: this value uniquely owns the Job Object handle.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.job as HANDLE);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_tree(root_pid: u32) -> Vec<u32> {
+    let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![root_pid];
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some(after_name) = stat.rsplit_once(')').map(|(_, fields)| fields.trim()) else {
+            continue;
+        };
+        let Some(parent) = after_name
+            .split_ascii_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        children.entry(parent).or_default().push(pid);
+    }
+    let mut tree = vec![root_pid];
+    let mut cursor = 0;
+    while cursor < tree.len() {
+        if let Some(direct) = children.get(&tree[cursor]) {
+            tree.extend(direct.iter().copied());
+        }
+        cursor += 1;
+    }
+    tree
+}
+
+#[cfg(target_os = "linux")]
+fn signal_linux_processes(pids: &[u32], signal: i32) {
+    for pid in pids {
+        // SAFETY: signals are sent only to the recorded packaged Engine tree.
+        unsafe {
+            libc::kill(*pid as i32, signal);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn force_stop_linux_process_tree(root_pid: u32) -> Result<(), BackendCliError> {
+    // Freeze the root and its current descendants first. A second snapshot
+    // catches a child created immediately before its parent observed SIGSTOP.
+    let first = linux_process_tree(root_pid);
+    signal_linux_processes(&first, libc::SIGSTOP);
+    let second = linux_process_tree(root_pid);
+    signal_linux_processes(&second, libc::SIGSTOP);
+    let mut all = first;
+    all.extend(second);
+    all.sort_unstable();
+    all.dedup();
+    for pid in all.into_iter().rev() {
+        // SAFETY: every PID came from a descendant walk rooted at the packaged
+        // Analysis Engine process started by this client.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+    // Report only a genuine root-signal failure; ESRCH means the process
+    // exited between the snapshot and signal, which is already stopped.
+    let result = unsafe { libc::kill(root_pid as i32, libc::SIGKILL) };
+    let error = std::io::Error::last_os_error();
+    if result == 0 || error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(BackendCliError::Io(format!(
+            "could not force-stop Analysis Engine process tree: {error}"
+        )))
+    }
 }
 
 pub struct AnalysisCliClient {
@@ -38,6 +263,7 @@ pub struct AnalysisCliClient {
     stderr: Arc<Mutex<Vec<u8>>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
     ready: AnalysisWorkerReadyV1,
+    process_tree: Arc<AnalysisProcessTree>,
 }
 
 impl AnalysisCliClient {
@@ -64,6 +290,11 @@ impl AnalysisCliClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let ffmpeg = crate::vendor::ffmpeg_path();
         if ffmpeg.is_file() {
             command.env("UTA_STUDIO_FFMPEG_PATH", ffmpeg);
@@ -71,6 +302,14 @@ impl AnalysisCliClient {
         let mut child = command
             .spawn()
             .map_err(|error| BackendCliError::SpawnFailed(error.to_string()))?;
+        let process_tree = match AnalysisProcessTree::attach(&child) {
+            Ok(process_tree) => Arc::new(process_tree),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let stdin = child.stdin.take().ok_or_else(|| {
             BackendCliError::SpawnFailed("analysis worker stdin was unavailable".to_string())
         })?;
@@ -96,6 +335,7 @@ impl AnalysisCliClient {
                 engine_version: String::new(),
                 contract_versions: Vec::new(),
             },
+            process_tree,
         };
         let frame = client
             .next_frame()?
@@ -118,6 +358,7 @@ impl AnalysisCliClient {
     pub fn cancellation_handle(&self) -> AnalysisCancelHandle {
         AnalysisCancelHandle {
             stdin: Arc::clone(&self.stdin),
+            process_tree: Arc::clone(&self.process_tree),
         }
     }
 

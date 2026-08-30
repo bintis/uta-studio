@@ -386,7 +386,10 @@ mod tests {
     fn model_backend_preferences_are_explicit_and_invalid_values_are_removed() {
         let repaired = AppConfig {
             model_backend_overrides: BTreeMap::from([
-                ("bs_roformer_vocals_ep317".to_string(), "vulkan".to_string()),
+                (
+                    "bs_roformer_leap_xe90_vocals".to_string(),
+                    "vulkan".to_string(),
+                ),
                 ("rmvpe".to_string(), "automatic_fallback".to_string()),
             ]),
             model_backend_note: String::new(),
@@ -396,7 +399,7 @@ mod tests {
         assert_eq!(
             repaired
                 .model_backend_overrides
-                .get("bs_roformer_vocals_ep317")
+                .get("bs_roformer_leap_xe90_vocals")
                 .map(String::as_str),
             Some("vulkan")
         );
@@ -409,7 +412,10 @@ mod tests {
     fn model_device_preferences_are_explicit_and_invalid_values_are_removed() {
         let repaired = AppConfig {
             model_device_overrides: BTreeMap::from([
-                ("bs_roformer_vocals_ep317".to_string(), "gpu".to_string()),
+                (
+                    "bs_roformer_leap_xe90_vocals".to_string(),
+                    "gpu".to_string(),
+                ),
                 (
                     "melband_roformer_harmony".to_string(),
                     "integrated_gpu".to_string(),
@@ -422,7 +428,7 @@ mod tests {
         assert_eq!(
             repaired
                 .model_device_overrides
-                .get("bs_roformer_vocals_ep317")
+                .get("bs_roformer_leap_xe90_vocals")
                 .map(String::as_str),
             Some("gpu")
         );

@@ -79,40 +79,24 @@ pub struct SeparationStrategyOptionV1 {
     pub executions: &'static [SeparationProviderExecutionV1],
 }
 
-const EP317_DUAL_ROLES: &[SeparationOutputRoleV1] = &[
-    SeparationOutputRoleV1::Vocal,
-    SeparationOutputRoleV1::Instrumental,
-];
 const VOCAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Vocal];
 const INSTRUMENTAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Instrumental];
-const EP317_DUAL_EXECUTIONS: &[SeparationProviderExecutionV1] = &[SeparationProviderExecutionV1 {
-    provider_id: "bs_roformer_vocals_ep317",
-    output_roles: EP317_DUAL_ROLES,
-}];
 const SPECIALIST_EXECUTIONS: &[SeparationProviderExecutionV1] = &[
     SeparationProviderExecutionV1 {
-        provider_id: "bs_roformer_vocals_ep317",
+        provider_id: "bs_roformer_leap_xe90_vocals",
         output_roles: VOCAL_ROLE,
     },
     SeparationProviderExecutionV1 {
-        provider_id: "melband_roformer_inst_v2",
+        provider_id: "bs_polarformer_public_instrumental",
         output_roles: INSTRUMENTAL_ROLE,
     },
 ];
-const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[
-    SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::Ep317VocalResidual,
-        label: "EP317 vocal + residual Instrumental",
-        description: "One EP317 inference estimates GuideVocals; the same native invocation publishes SourceMix − GuideVocals as the deterministic Instrumental residual.",
-        executions: EP317_DUAL_EXECUTIONS,
-    },
-    SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::IndependentSpecialists,
-        label: "Independent vocal + Instrumental specialists",
-        description: "EP317 extracts GuideVocals and MelBand Inst V2 independently extracts Instrumental, with separate progress and logs.",
-        executions: SPECIALIST_EXECUTIONS,
-    },
-];
+const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[SeparationStrategyOptionV1 {
+    strategy: SeparationStrategyV1::IndependentSpecialists,
+    label: "Independent vocal + Instrumental specialists",
+    description: "Leap XE90 extracts GuideVocals and public PolarFormer independently extracts Instrumental, with separate native progress and logs.",
+    executions: SPECIALIST_EXECUTIONS,
+}];
 
 pub fn separation_strategy_options() -> &'static [SeparationStrategyOptionV1] {
     SEPARATION_STRATEGIES
@@ -121,6 +105,9 @@ pub fn separation_strategy_options() -> &'static [SeparationStrategyOptionV1] {
 pub fn separation_strategy_descriptor(
     strategy: SeparationStrategyV1,
 ) -> &'static SeparationStrategyOptionV1 {
+    if strategy == SeparationStrategyV1::Ep317VocalResidual {
+        return &SEPARATION_STRATEGIES[0];
+    }
     SEPARATION_STRATEGIES
         .iter()
         .find(|option| option.strategy == strategy)
@@ -129,8 +116,9 @@ pub fn separation_strategy_descriptor(
 
 pub fn workflow_model_label(model_id: &str) -> &str {
     match model_id {
-        "bs_roformer_vocals_ep317" => "BS-RoFormer Vocals EP317",
-        "melband_roformer_inst_v2" => "MelBand-RoFormer Inst V2",
+        "bs_roformer_leap_xe90_vocals" => "BS-RoFormer Leap XE90 Vocals",
+        "bs_polarformer_public_instrumental" => "BS-PolarFormer Public Instrumental",
+        "jbm555_cectc_80" => "JBM555 CE-CTC 80",
         "melband_roformer_harmony" => "MelBand-RoFormer Lead Isolation",
         "melband_roformer_denoise_aufr33" => "MelBand-RoFormer Denoise",
         "melband_roformer_dereverb_anvuew" => "MelBand-RoFormer Dereverb",
@@ -177,6 +165,10 @@ pub fn workflow_model_options(capability_id: &CapabilityId) -> &'static [Workflo
         WorkflowModelOption {
             model_id: "stars",
             label: "STARS",
+        },
+        WorkflowModelOption {
+            model_id: "jbm555_cectc_80",
+            label: "JBM555 CE-CTC 80 (Japanese)",
         },
     ];
     const EMPTY: &[WorkflowModelOption] = &[];

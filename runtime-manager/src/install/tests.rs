@@ -41,10 +41,13 @@ fn import_is_confirmed_and_atomically_published_without_hash_rejection() {
 fn roformer_gguf_directory_import_uses_current_vulkan_artifact_identity() {
     let fixture = Fixture::new();
     let manager = fixture.manager();
-    let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
+    let resource = ResourceRef::model("bs_roformer_leap_xe90_vocals").unwrap();
     let source = fixture.root.join("roformer-import");
     std::fs::create_dir(&source).unwrap();
-    fixture.write("roformer-import/model-fp16.gguf", b"roformer gguf fixture");
+    fixture.write(
+        "roformer-import/bs_leap_xe_voc-F32.gguf",
+        b"roformer gguf fixture",
+    );
 
     manager
         .import_resource(&resource, &source, &confirmed())
@@ -53,25 +56,35 @@ fn roformer_gguf_directory_import_uses_current_vulkan_artifact_identity() {
     let pointer = read_current_pointer(
         &fixture
             .root
-            .join("models/bs_roformer_vocals_ep317/current.json"),
+            .join("models/bs_roformer_leap_xe90_vocals/current.json"),
     )
     .unwrap();
     let manifest = read_install_manifest(
         &fixture
             .root
-            .join("models/bs_roformer_vocals_ep317/generations")
+            .join("models/bs_roformer_leap_xe90_vocals/generations")
             .join(pointer.generation),
     )
     .unwrap();
     assert_eq!(manifest.files.len(), 1);
-    assert_eq!(manifest.files[0].path, Path::new("model-fp16.gguf"));
-    assert_eq!(
-        manifest.source_sha256.as_deref(),
-        Some("8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de")
-    );
+    assert_eq!(manifest.files[0].path, Path::new("bs_leap_xe_voc-F32.gguf"));
+    assert_eq!(manifest.source_sha256, None);
     assert_eq!(
         manifest.runtime_recipe_digest.as_deref(),
         Some("4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a")
+    );
+}
+
+#[test]
+fn task_23_managed_downloads_resolve_to_exact_hugging_face_revisions() {
+    let catalog = ResourceCatalog::default_catalog().unwrap();
+    assert_eq!(
+        managed_download_url(catalog.model("bs_roformer_leap_xe90_vocals").unwrap()).unwrap(),
+        "https://huggingface.co/scragnog/HOT-Step-CPP-SuperSep/resolve/440487b8300dcd61453cc52ec244a38150b03456/bs_leap_xe_voc-F32.gguf"
+    );
+    assert_eq!(
+        managed_download_url(catalog.model("bs_polarformer_public_instrumental").unwrap()).unwrap(),
+        "https://huggingface.co/bgkb/bs_polarformer/resolve/9158719ee2173edd480a735764627526506fe4af/bs_polarformer_fp16.onnx"
     );
 }
 
@@ -382,7 +395,10 @@ fn managed_repair_replaces_a_corrupt_current_without_deleting_it_first() {
 fn one_roformer_generation_does_not_install_the_family_bundle() {
     let fixture = Fixture::new();
     let mut catalog = fixture.catalog();
-    let model = catalog.models.get_mut("bs_roformer_vocals_ep317").unwrap();
+    let model = catalog
+        .models
+        .get_mut("bs_roformer_leap_xe90_vocals")
+        .unwrap();
     model.source.repository = Some("fixture/roformer".to_string());
     model.source.revision = Some("pinned".to_string());
     model.source.filename = Some("vocals.gguf".to_string());
@@ -403,7 +419,7 @@ fn one_roformer_generation_does_not_install_the_family_bundle() {
             .with_store_root(&fixture.root)
             .with_runtime_override("openvino_2026_3", worker),
     );
-    let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
+    let resource = ResourceRef::model("bs_roformer_leap_xe90_vocals").unwrap();
     manager
         .install_with_transport(
             std::slice::from_ref(&resource),
@@ -473,7 +489,7 @@ fn managed_download_reinstall_does_not_reject_payload_by_hash() {
 }
 
 #[test]
-fn confirmation_does_not_implicitly_accept_a_model_license() {
+fn license_metadata_never_blocks_confirmed_installation() {
     let fixture = Fixture::new();
     let mut catalog = fixture.catalog();
     catalog
@@ -494,16 +510,16 @@ fn confirmation_does_not_implicitly_accept_a_model_license() {
     );
     let resource = ResourceRef::model("qwen3_asr_1_7b").unwrap();
     let transport = FixtureTransport::success(b"audited fixture");
-    let error = manager
+    let result = manager
         .install_with_transport(
             std::slice::from_ref(&resource),
             RuntimePolicy::Benchmark,
             &confirmed(),
             &transport,
         )
-        .unwrap_err();
-    assert_eq!(error.code, "license_required");
-    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        .unwrap();
+    assert_eq!(result.changed, vec![resource]);
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -735,10 +751,7 @@ fn plan_is_offline_and_does_not_create_store_paths() {
 }
 
 fn confirmed() -> MutationOptions {
-    MutationOptions {
-        confirmed: true,
-        accepted_licenses: BTreeSet::new(),
-    }
+    MutationOptions { confirmed: true }
 }
 
 struct Fixture {

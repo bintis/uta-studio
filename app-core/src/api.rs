@@ -399,7 +399,14 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "stop_analysis_run",
         "mutation",
         false,
-        "Stop a queued or running analysis while preserving committed outputs"
+        "Force-stop one queued or running analysis process tree while preserving committed outputs"
+    ),
+    capability!(
+        "analysis",
+        "force_stop_all_analysis",
+        "mutation",
+        false,
+        "Immediately terminate the active Analysis Engine process tree and stop all pending analyses"
     ),
     capability!(
         "analysis",
@@ -618,6 +625,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "mutation",
         false,
         "Save edited lyrics"
+    ),
+    capability!(
+        "lyrics",
+        "save_timed_lyrics",
+        "mutation",
+        false,
+        "Save timed lyrics without starting analysis"
     ),
     capability!(
         "lyrics",
@@ -1009,6 +1023,7 @@ mod tests {
             "realign",
             "reanalyze_force_transcribe",
             "stop_analysis_run",
+            "force_stop_all_analysis",
         ] {
             assert!(commands.contains(required), "missing {required}");
         }

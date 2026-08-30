@@ -57,8 +57,8 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         ),
     ];
     nodes[1].separation_strategy = Some(super::SeparationStrategyV1::IndependentSpecialists);
-    debug_assert_eq!(DEFAULT_VOCAL_MODEL_ID, "bs_roformer_vocals_ep317");
-    debug_assert_eq!(DEFAULT_BGM_MODEL_ID, "melband_roformer_inst_v2");
+    debug_assert_eq!(DEFAULT_VOCAL_MODEL_ID, "bs_roformer_leap_xe90_vocals");
+    debug_assert_eq!(DEFAULT_BGM_MODEL_ID, "bs_polarformer_public_instrumental");
     let mut edges = vec![edge("source", "mix", "vocal_bgm_split", "audio")];
 
     nodes.push(node(
@@ -174,6 +174,15 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             640,
         ),
         node(
+            "boundary_jbm555",
+            "analysis.note_boundary",
+            Some("jbm555_cectc_80"),
+            ExecutionPolicy::Conditional {
+                condition: ConditionalExecution::MaximumOnly,
+            },
+            642,
+        ),
+        node(
             "technique_stars",
             "analysis.technique",
             Some("stars"),
@@ -252,6 +261,12 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             "boundaries",
         ),
         edge(
+            "boundary_jbm555",
+            "boundaries",
+            "evidence_fusion",
+            "boundaries",
+        ),
+        edge(
             "forced_alignment",
             "alignment",
             "evidence_fusion",
@@ -284,6 +299,7 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         "boundary_basic_pitch",
         "boundary_rosvot",
         "boundary_stars",
+        "boundary_jbm555",
         "technique_stars",
         "acoustic_dsp",
     ]

@@ -15,11 +15,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。{{APP_VERSION}} では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版と、それぞれの SHA-256 チェックサムが提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。{{APP_VERSION}} では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
 
 #### Windows
 
-1. `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` と対応するチェックサムをダウンロードします。
+1. `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` をダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -46,16 +46,6 @@ chmod +x uta-studio-{{APP_VERSION}}-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
-
-#### ダウンロードの検証
-
-ミラーや共有ストレージから取得した場合は、インストール前に対応する `.sha256` ファイルで検証してください。
-
-```sh
-sha256sum -c uta-studio-{{APP_VERSION}}-linux-deb.sha256
-```
-
-ダウンロードしたパッケージ種別と同じチェックサムファイルを使用します。
 
 ### 3. 初回起動
 

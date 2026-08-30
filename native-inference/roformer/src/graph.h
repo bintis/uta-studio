@@ -152,7 +152,8 @@ private:
     int mlp_expansion_factor_ = 4;
 
     // BS Roformer Specific
-    std::string architecture_ = "mel_band";  // "mel_band" or "bs"
+    std::string architecture_ = "mel_band";
+    bool public_bs_schema_ = false;
     bool has_final_norm_ = false;            // BS has a global final norm
     bool transformer_norm_output_ = true;    // MelBand=true, BS=false
     int mlp_num_layers_ = 3;                 // Detected from weights (BS=2 for depth=2)

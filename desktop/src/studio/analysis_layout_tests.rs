@@ -117,31 +117,25 @@ fn routed_edges_end_on_their_real_nodes() {
 }
 
 #[test]
-fn four_step_layout_places_each_product_step_on_one_horizontal_row() {
+fn metro_layout_fills_the_viewport_and_gives_heavy_work_more_area() {
     let spacing = LayoutSpacing::canvas();
+    let mut heavy = LayoutNodeSpec::fixed(id("heavy"), spacing, 1);
+    heavy.width *= 2.0;
+    heavy.height *= 2.0;
     let specs = [
-        (LayoutNodeSpec::fixed(id("a"), spacing, 0), 1),
-        (LayoutNodeSpec::fixed(id("b"), spacing, 1), 1),
-        (LayoutNodeSpec::fixed(id("c"), spacing, 2), 2),
-        (LayoutNodeSpec::fixed(id("d"), spacing, 3), 3),
-        (LayoutNodeSpec::fixed(id("e"), spacing, 4), 4),
+        (LayoutNodeSpec::fixed(id("source"), spacing, 0), 1),
+        (heavy, 1),
+        (LayoutNodeSpec::fixed(id("result"), spacing, 2), 4),
     ];
-    let edges = [
-        (id("a"), id("b")),
-        (id("b"), id("c")),
-        (id("c"), id("d")),
-        (id("d"), id("e")),
-    ];
-    let layout = four_step_horizontal_layout(&specs, &edges, spacing).unwrap();
-    assert_eq!(
-        layout.rect(&id("a")).unwrap().y,
-        layout.rect(&id("b")).unwrap().y
-    );
-    assert!(layout.rect(&id("a")).unwrap().x >= spacing.margin + FOUR_STEP_LABEL_GUTTER);
-    assert!(layout.rect(&id("a")).unwrap().x < layout.rect(&id("b")).unwrap().x);
-    assert!(layout.rect(&id("b")).unwrap().y < layout.rect(&id("c")).unwrap().y);
-    assert!(layout.rect(&id("c")).unwrap().y < layout.rect(&id("d")).unwrap().y);
-    assert!(layout.rect(&id("d")).unwrap().y < layout.rect(&id("e")).unwrap().y);
+    let edges = [(id("source"), id("heavy")), (id("heavy"), id("result"))];
+    let layout = metro_tile_layout_with_specs(&specs, &edges, 1_200.0, 640.0).unwrap();
+    let source = layout.rect(&id("source")).unwrap();
+    let heavy = layout.rect(&id("heavy")).unwrap();
+
+    assert!(layout.canvas_width >= 1_200.0);
+    assert!(layout.canvas_height >= 640.0);
+    assert!(heavy.width > source.width * 1.9);
+    assert!(heavy.height > source.height * 1.9);
 }
 
 /// Every node card renders at one uniform size now, so `from_text` must

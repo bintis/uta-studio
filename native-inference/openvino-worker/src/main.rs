@@ -1,16 +1,17 @@
 mod advanced_notes;
 mod audio;
 mod basic_pitch;
-mod bs_roformer;
 mod fcpe;
 mod firered;
 mod game;
+mod jbm555;
 mod kaldi_fbank;
 mod mel;
 mod melband_roformer_denoise;
 mod melband_roformer_harmony;
 mod melband_roformer_harmony_split;
 mod melband_roformer_inst_v2;
+mod polarformer;
 mod protocol;
 mod rmvpe;
 mod rosvot_host;
@@ -83,13 +84,42 @@ fn run_task(
             status: "ok",
         });
     }
+    if model_id == "jbm555_cectc_80" {
+        if input_artifacts.len() != 2 {
+            return Err(
+                "JBM555 requires exactly two artifacts: original mix and prepared vocal"
+                    .to_string(),
+            );
+        }
+        let mix = audio::decode_mono(&input_artifacts[0], output_dir, 44_100)?;
+        let vocal = audio::decode_mono(&input_artifacts[1], output_dir, 44_100)?;
+        let output = jbm555::infer(&mix, &vocal, output_dir, config, |fraction, message| {
+            let _ = emit(WorkerFrame::Progress {
+                task_id,
+                fraction: 0.02 + fraction * 0.97,
+                message,
+                work_units_completed: None,
+                work_units_total: None,
+            });
+        })?;
+        emit(WorkerFrame::Output {
+            task_id,
+            artifact: "jbm555_note_evidence",
+            path: &output,
+            media_type: "application/vnd.uta.jbm555-note-evidence+json;version=1",
+        })?;
+        return emit(WorkerFrame::Done {
+            task_id,
+            status: "ok",
+        });
+    }
     let audio = if matches!(
         model_id,
-        "bs_roformer_vocals_ep317"
-            | "melband_roformer_denoise_aufr33"
+        "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
             | "melband_roformer_harmony"
             | "melband_roformer_inst_v2"
+            | "bs_polarformer_public_instrumental"
     ) {
         audio::decode_stereo(source, output_dir)?
     } else {
@@ -168,17 +198,6 @@ fn run_task(
             },
         )?,
         "firered_asr2_aed" => firered::infer(&audio, output_dir, config)?,
-        "bs_roformer_vocals_ep317" => {
-            bs_roformer::infer(&audio, output_dir, config, |fraction, message| {
-                let _ = emit(WorkerFrame::Progress {
-                    task_id,
-                    fraction: 0.02 + fraction * 0.97,
-                    message,
-                    work_units_completed: None,
-                    work_units_total: None,
-                });
-            })?
-        }
         "game" => game::infer(
             &audio,
             output_dir,
@@ -221,6 +240,17 @@ fn run_task(
                 });
             })?
         }
+        "bs_polarformer_public_instrumental" => {
+            polarformer::infer(&audio, output_dir, config, |fraction, message| {
+                let _ = emit(WorkerFrame::Progress {
+                    task_id,
+                    fraction: 0.02 + fraction * 0.97,
+                    message,
+                    work_units_completed: None,
+                    work_units_total: None,
+                });
+            })?
+        }
         _ => {
             return Err(format!(
                 "model {model_id} is not implemented by this OpenVINO worker"
@@ -233,20 +263,20 @@ fn run_task(
             "basic_pitch" => "basic_pitch_evidence",
             "firered_asr2_aed" => "transcript_evidence",
             "game" => "note_candidate_evidence",
-            "bs_roformer_vocals_ep317" => "guide_vocals",
             "melband_roformer_denoise_aufr33" => "clean_lead_vocal",
             "melband_roformer_dereverb_anvuew" => "dereverbed_vocal",
             "melband_roformer_inst_v2" => "instrumental",
+            "bs_polarformer_public_instrumental" => "instrumental",
             _ => "pitch_evidence",
         },
         path: &output,
         media_type: if matches!(
             model_id,
-            "bs_roformer_vocals_ep317"
-                | "melband_roformer_denoise_aufr33"
+            "melband_roformer_denoise_aufr33"
                 | "melband_roformer_dereverb_anvuew"
                 | "melband_roformer_harmony"
                 | "melband_roformer_inst_v2"
+                | "bs_polarformer_public_instrumental"
         ) {
             "audio/flac"
         } else {
@@ -262,8 +292,7 @@ fn run_task(
 fn roformer_is_ggml_only(model_id: &str) -> bool {
     matches!(
         model_id,
-        "bs_roformer_vocals_ep317"
-            | "melband_roformer_inst_v2"
+        "melband_roformer_inst_v2"
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
@@ -363,7 +392,6 @@ mod tests {
     #[test]
     fn every_roformer_is_rejected_by_the_openvino_worker() {
         for model_id in [
-            "bs_roformer_vocals_ep317",
             "melband_roformer_inst_v2",
             "melband_roformer_harmony",
             "melband_roformer_denoise_aufr33",

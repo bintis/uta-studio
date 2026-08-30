@@ -21,7 +21,8 @@ struct Manifest {
     semantic_output: String,
     semantic_contract: SemanticContract,
     backend: String,
-    source: SourceIdentity,
+    #[serde(rename = "source")]
+    _source: SourceIdentity,
     exact_contract: ExactContract,
     islands: Vec<IslandIdentity>,
 }
@@ -40,7 +41,8 @@ struct SourceIdentity {
     _checkpoint_sha256: String,
     #[serde(rename = "config_sha256")]
     _config_sha256: String,
-    checkpoint_license: String,
+    #[serde(rename = "checkpoint_license")]
+    _checkpoint_license: String,
 }
 
 #[derive(Deserialize)]
@@ -194,7 +196,6 @@ pub(super) fn import_roformer_harmony_ir_directory(
         || manifest.semantic_contract.residual != "vocal_residual"
         || manifest.semantic_contract.residual_formula != "all_vocals_minus_lead_vocal"
         || manifest.backend != "OpenVINO FP32 explicit CPU/GPU split IR"
-        || manifest.source.checkpoint_license != "unresolved"
         || contract.sample_rate != 44_100
         || contract.channels != 2
         || contract.chunk_samples != 352_800

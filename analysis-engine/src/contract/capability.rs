@@ -66,6 +66,7 @@ pub fn capability_registry() -> Vec<CapabilityDescriptor> {
         ("notes.basic_pitch", false, true),
         ("notes.rosvot", false, true),
         ("notes.stars", false, true),
+        ("notes.jbm555", false, true),
         ("technique.analyze", false, true),
         ("analysis.acoustic_dsp", true, true),
         ("fusion.transcript", true, true),
@@ -93,6 +94,8 @@ fn capability_inputs(id: &str) -> Vec<String> {
         &["local_file"]
     } else if id.starts_with("audio.") {
         &["decoded_audio"]
+    } else if id == "notes.jbm555" {
+        &["decoded_audio", "analysis_ready_lead"]
     } else if matches!(id, "notes.rosvot" | "notes.stars" | "technique.analyze") {
         &["analysis_ready_lead", "timed_transcript"]
     } else if id.starts_with("speech.")
@@ -129,7 +132,7 @@ fn capability_outputs(id: &str) -> Vec<String> {
         "pitch.track" | "pitch.secondary" | "pitch.secondary.rmvpe" | "pitch.secondary.fcpe" => {
             &["pitch_evidence"]
         }
-        "notes.game" | "notes.basic_pitch" | "notes.rosvot" | "notes.stars" => {
+        "notes.game" | "notes.basic_pitch" | "notes.rosvot" | "notes.stars" | "notes.jbm555" => {
             &["note_candidate_evidence"]
         }
         "technique.analyze" => &["technique_evidence"],

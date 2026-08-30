@@ -303,14 +303,14 @@ mod tests {
             serde_json::json!({
                 "contract":"uta.workflow-execution",
                 "version":1,
-                "workflow_schema_version":2,
+                "workflow_schema_version": crate::workflow::WORKFLOW_SCHEMA_VERSION,
                 "workflow_id":"workflow:test",
                 "workflow_revision":7,
                 "quality_mode":"balanced",
                 "definition_digest":"a".repeat(32),
                 "nodes":[
                     {"instance_id":"source","capability_id":"audio.source","execution_policy":"always","priority":100},
-                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","provider_preferences":{"primary":"bs_roformer_vocals_ep317"},"execution_invocations":[{"invocation_id":"split.vocal","provider_id":"bs_roformer_vocals_ep317","capabilities":["audio.extract_vocals"],"output_ports":["vocal"]}],"execution_policy":"always","priority":90},
+                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","provider_preferences":{"primary":"bs_roformer_leap_xe90_vocals"},"execution_invocations":[{"invocation_id":"split.vocal","provider_id":"bs_roformer_leap_xe90_vocals","capabilities":["audio.extract_vocals"],"output_ports":["vocal"]}],"execution_policy":"always","priority":90},
                     {"instance_id":"lead","capability_id":"audio.lead_isolate","provider_preferences":{"primary":"melband_roformer_harmony"},"execution_policy":"always","priority":80},
                     {"instance_id":"denoise-a","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":20},
                     {"instance_id":"denoise-b","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":10},

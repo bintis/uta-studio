@@ -107,39 +107,35 @@ impl RuntimeCliClient {
     pub fn install(
         &self,
         resources: &[RuntimeResourceRefWireV1],
-        accepted_licenses: &[String],
     ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
-        self.mutate("install", resources, accepted_licenses)
+        self.mutate("install", resources)
     }
 
     pub fn repair(
         &self,
         resources: &[RuntimeResourceRefWireV1],
-        accepted_licenses: &[String],
     ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
-        self.mutate("repair", resources, accepted_licenses)
+        self.mutate("repair", resources)
     }
 
     pub fn reinstall(
         &self,
         resources: &[RuntimeResourceRefWireV1],
-        accepted_licenses: &[String],
     ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
-        self.mutate("reinstall", resources, accepted_licenses)
+        self.mutate("reinstall", resources)
     }
 
     pub fn remove(
         &self,
         resources: &[RuntimeResourceRefWireV1],
     ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
-        self.mutate("remove", resources, &[])
+        self.mutate("remove", resources)
     }
 
     fn mutate(
         &self,
         command: &str,
         resources: &[RuntimeResourceRefWireV1],
-        accepted_licenses: &[String],
     ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
         if resources.is_empty() {
             return Err(BackendCliError::Io(
@@ -148,9 +144,6 @@ impl RuntimeCliClient {
         }
         let mut arguments = resource_args(resources);
         arguments.push("--yes".to_string());
-        for license in accepted_licenses {
-            arguments.extend(["--accept-license".to_string(), license.clone()]);
-        }
         self.read(command, &arguments)
     }
 

@@ -172,15 +172,8 @@ impl SupervisedWorker {
             WorkerFrame::Ready {
                 protocol,
                 component,
-                runtime_recipe_digest,
-            } if protocol == PROTOCOL_VERSION
-                && component == expectation.component
-                && expectation
-                    .runtime_recipe_digest
-                    .as_ref()
-                    .is_none_or(|expected| {
-                        runtime_recipe_digest.as_deref() == Some(expected.as_str())
-                    }) => {}
+                ..
+            } if protocol == PROTOCOL_VERSION && component == expectation.component => {}
             WorkerFrame::Ready { .. } => {
                 return Err(EngineError::new(
                     EngineErrorCode::WorkerProtocolMismatch,
@@ -412,8 +405,8 @@ enum WorkerFrame {
     Ready {
         protocol: u32,
         component: String,
-        #[serde(default)]
-        runtime_recipe_digest: Option<String>,
+        #[serde(default, rename = "runtime_recipe_digest")]
+        _runtime_recipe_digest: Option<String>,
     },
     Progress {
         task_id: String,
@@ -801,22 +794,27 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn supervised_worker_rejects_runtime_recipe_mismatch() {
+    fn supervised_worker_accepts_runtime_recipe_metadata_without_hash_verification() {
         let root = temporary_root();
         let input = root.join("input.wav");
+        let output = root.join("evidence.json");
         std::fs::write(&input, b"input").unwrap();
         let executable = worker_script(
             &root,
-            "printf '%s\\n' '{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"other-recipe\"}'\nsleep 1",
+            &format!(
+                "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"other-recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-metadata\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-metadata\",\"status\":\"ok\"}}'\nread quit",
+                output.display(),
+                output.display()
+            ),
         );
-        let error = SupervisedWorker::run(
+        let outputs = SupervisedWorker::run(
             &executable,
             &WorkerExpectation {
                 component: "fixture-worker".to_string(),
                 runtime_recipe_digest: Some("expected-recipe".to_string()),
             },
             &NativeTask {
-                task_id: "task-mismatch".to_string(),
+                task_id: "task-metadata".to_string(),
                 node_id: "pitch.track".to_string(),
                 presentation_node_id: None,
                 model_id: "rmvpe".to_string(),
@@ -828,8 +826,8 @@ mod tests {
             &CancellationToken::default(),
             |_| {},
         )
-        .expect_err("a mismatched native runtime recipe must fail closed");
-        assert_eq!(error.code, EngineErrorCode::WorkerProtocolMismatch);
+        .unwrap();
+        assert_eq!(outputs.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -170,7 +170,7 @@ pub fn step_download_model(
         .ok_or_else(|| "unknown model target".to_string())?;
     let client = super::status::runtime_client()?;
     let result = client
-        .install(std::slice::from_ref(&resource), &[])
+        .install(std::slice::from_ref(&resource))
         .map_err(|error| error.to_string())?;
     if result.changed.is_empty() {
         on_output(format!(

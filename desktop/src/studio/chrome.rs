@@ -470,7 +470,6 @@ pub(crate) fn spawn_workspace(
                 session,
                 theme,
             );
-            spawn_analysis_boundary_progress(workspace, session, theme);
             match session.route {
                 StudioRoute::Library
                     if session.config.library_paths().is_empty()
@@ -535,57 +534,52 @@ pub(crate) fn spawn_workspace(
         });
 }
 
-fn analysis_boundary_progress_open(session: &StudioSessionView<'_>) -> bool {
-    session.route == StudioRoute::AnalysisInspect
+fn active_analysis_progress(session: &StudioSessionView<'_>) -> Option<usize> {
+    session
+        .analysis_tasks
+        .iter()
+        .find(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)))
+        .map(|task| {
+            task.live.as_ref().map_or_else(
+                || match &task.status {
+                    app_core::QueuedStatus::Analyzing(progress) => (*progress).clamp(0, 100),
+                    _ => 0,
+                },
+                |live| live.overall_progress.clamp(0, 100),
+            )
+        })
 }
 
-/// Inspect view has no queue title divider of its own, so it retains the
-/// workspace-boundary progress rail. The main analysis page paints progress on
-/// the title divider instead.
-fn spawn_analysis_boundary_progress(
+fn spawn_top_bar_progress(
     parent: &mut ChildSpawnerCommands,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
-    if !analysis_boundary_progress_open(session) {
+    let Some(progress) = active_analysis_progress(session) else {
         return;
-    }
-    let indeterminate = analysis_overall_progress_is_indeterminate(session);
-    let progress = current_analysis_header(session)
-        .map(|(_, _, progress)| progress.clamp(0, 100))
-        .unwrap_or(0);
+    };
     parent
         .spawn((
             Node {
-                width: percent(100),
-                height: px(6),
-                flex_shrink: 0.0,
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                bottom: px(-1),
+                height: px(2),
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(theme.border.with_alpha(0.55)),
+            BackgroundColor(theme.border.with_alpha(0.45)),
         ))
-        .with_children(|rail| {
-            rail.spawn((
+        .with_children(|track| {
+            track.spawn((
                 Node {
-                    width: percent(if indeterminate {
-                        100.0
-                    } else {
-                        progress as f32
-                    }),
-                    min_width: if progress > 0 || indeterminate {
-                        px(2)
-                    } else {
-                        px(0)
-                    },
+                    width: percent(progress as f32),
+                    min_width: if progress > 0 { px(2) } else { px(0) },
                     height: percent(100),
                     ..default()
                 },
-                BackgroundColor(if indeterminate {
-                    theme.primary.with_alpha(0.38)
-                } else {
-                    theme.primary
-                }),
+                BackgroundColor(theme.primary.with_alpha(0.94)),
             ));
         });
 }
@@ -607,13 +601,7 @@ fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
                     .map(|(title, _, _)| title.clone())
                     .unwrap_or_else(|| "Analysis".to_string()),
                 subtitle: current
-                    .map(|(_, artist, progress)| {
-                        if analysis_overall_progress_is_indeterminate(session) {
-                            format!("{artist} · In progress · overall work units unavailable")
-                        } else {
-                            format!("{artist} · {progress}%")
-                        }
-                    })
+                    .map(|(_, artist, progress)| format!("{artist} · {progress}%"))
                     .unwrap_or_else(|| "No analysis is running".to_string()),
             }
         }
@@ -831,6 +819,7 @@ pub(crate) fn spawn_top_bar(
     parent
         .spawn((
             Node {
+                position_type: PositionType::Relative,
                 width: percent(100),
                 min_height: px(WORKSPACE_TOP_BAR_MIN_HEIGHT),
                 flex_shrink: 0.0,
@@ -839,11 +828,7 @@ pub(crate) fn spawn_top_bar(
                 column_gap: px(0),
                 row_gap: px(6),
                 padding: UiRect::axes(px(12), px(8)),
-                border: if analysis_boundary_progress_open(session) {
-                    UiRect::ZERO
-                } else {
-                    UiRect::bottom(px(1))
-                },
+                border: UiRect::bottom(px(1)),
                 ..default()
             },
             BackgroundColor(theme.background.with_alpha(0.72)),
@@ -1132,6 +1117,7 @@ pub(crate) fn spawn_top_bar(
                     has_active_analysis,
                 );
             });
+            spawn_top_bar_progress(bar, session, theme);
         });
 }
 

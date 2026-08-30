@@ -64,28 +64,20 @@ fn step_four_is_selector_only_and_keeps_saved_unavailable_ai_visible() {
 #[test]
 fn separation_picker_exposes_only_typed_executable_strategies() {
     let options = app_core::separation_strategy_options();
-    assert_eq!(options.len(), 2);
+    assert_eq!(options.len(), 1);
+    let option = &options[0];
     assert_eq!(
-        options
-            .iter()
-            .find(|option| {
-                option.strategy == app_core::SeparationStrategyV1::Ep317VocalResidual
-            })
-            .unwrap()
-            .executions
-            .len(),
-        1
+        option.strategy,
+        app_core::SeparationStrategyV1::IndependentSpecialists
+    );
+    assert_eq!(option.executions.len(), 2);
+    assert_eq!(
+        option.executions[0].provider_id,
+        "bs_roformer_leap_xe90_vocals"
     );
     assert_eq!(
-        options
-            .iter()
-            .find(|option| {
-                option.strategy == app_core::SeparationStrategyV1::IndependentSpecialists
-            })
-            .unwrap()
-            .executions
-            .len(),
-        2
+        option.executions[1].provider_id,
+        "bs_polarformer_public_instrumental"
     );
     let source = include_str!("mod.rs");
     assert!(source.contains("SetWorkflowSeparationStrategy"));
