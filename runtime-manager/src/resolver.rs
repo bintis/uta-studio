@@ -439,8 +439,8 @@ impl RuntimeManager {
         let selected_backend = status
             .selected_backend
             .ok_or_else(|| RuntimeManagerError::no_validated_backend(&resource))?;
-        let external_ggml = selected_backend == NativeBackend::Vulkan
-            && !matches!(model_id, "qwen3_asr_1_7b" | "qwen3_forced_aligner_0_6b");
+        let external_ggml =
+            selected_backend == NativeBackend::Vulkan && uses_legacy_ggml_layout(model_id);
         let (model_root, model_path, generation, model_content_digest, model_recipe_digest) =
             if external_ggml {
                 let path = self
@@ -572,10 +572,7 @@ impl RuntimeManager {
             .and_then(|backend| self.runtime_for_backend(model, backend));
         let external_ggml = selected.as_ref().is_some_and(|capability| {
             capability.backend == NativeBackend::Vulkan
-                && !matches!(
-                    resource.id.as_str(),
-                    "qwen3_asr_1_7b" | "qwen3_forced_aligner_0_6b"
-                )
+                && uses_legacy_ggml_layout(resource.id.as_str())
         });
         let install = if external_ggml {
             self.ggml_model_install_state(&resource.id)
@@ -1008,8 +1005,7 @@ impl RuntimeManager {
             return false;
         };
         match model_id {
-            "bs_roformer_vocals_ep317"
-            | "melband_roformer_inst_v2"
+            "melband_roformer_inst_v2"
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew" => root
@@ -1272,12 +1268,18 @@ fn error_for_unusable(status: &ResourceStatus) -> RuntimeManagerError {
     RuntimeManagerError::resource_missing(&status.resource)
 }
 
+fn uses_legacy_ggml_layout(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "melband_roformer_inst_v2"
+            | "melband_roformer_harmony"
+            | "melband_roformer_denoise_aufr33"
+            | "melband_roformer_dereverb_anvuew"
+    )
+}
+
 fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
     match model_id {
-        "bs_roformer_vocals_ep317" => Some((
-            "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de",
-            320_092_800,
-        )),
         "melband_roformer_denoise_aufr33" => Some((
             "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
             457_008_736,
@@ -1300,8 +1302,7 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
 
 fn legacy_model_path(root: &std::path::Path, model_id: &str) -> Option<PathBuf> {
     let relative = match model_id {
-        "bs_roformer_vocals_ep317"
-        | "melband_roformer_inst_v2"
+        "melband_roformer_inst_v2"
         | "melband_roformer_harmony"
         | "melband_roformer_denoise_aufr33"
         | "melband_roformer_dereverb_anvuew" => PathBuf::from("audio-processing").join(model_id),
@@ -1447,10 +1448,10 @@ mod tests {
         let fixture = Fixture::new();
         let catalog = ResourceCatalog::default_catalog().unwrap();
         let ggml_root = fixture.root.join("ggml-models");
-        let model_dir = ggml_root.join("bs_roformer_vocals_ep317");
+        let model_dir = ggml_root.join("melband_roformer_inst_v2");
         fs::create_dir_all(&model_dir).unwrap();
         let model = fs::File::create(model_dir.join("model-fp16.gguf")).unwrap();
-        model.set_len(320_092_800).unwrap();
+        model.set_len(787_918_656).unwrap();
         let worker = fixture.write_executable("ggml-worker");
         let manager = RuntimeManager::new(
             catalog,
@@ -1459,7 +1460,7 @@ mod tests {
                 .with_ggml_models_root(ggml_root)
                 .with_runtime_override("ggml_vulkan_v1", worker),
         );
-        let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
+        let resource = ResourceRef::model("melband_roformer_inst_v2").unwrap();
         let status = manager.status(&resource, RuntimePolicy::Benchmark).unwrap();
         assert!(status.usable, "{status:?}");
         assert_eq!(status.selected_backend, Some(NativeBackend::Vulkan));
@@ -1468,7 +1469,7 @@ mod tests {
             Some(ResourceRef::runtime("ggml_vulkan_v1").unwrap())
         );
         let resolved = manager
-            .resolve_model("bs_roformer_vocals_ep317", RuntimePolicy::Benchmark)
+            .resolve_model("melband_roformer_inst_v2", RuntimePolicy::Benchmark)
             .unwrap();
         assert_eq!(resolved.backend, NativeBackend::Vulkan);
     }
@@ -1686,7 +1687,7 @@ mod tests {
         let fixture = Fixture::new();
         let model_dir = fixture
             .root
-            .join("audio-processing/bs_roformer_vocals_ep317");
+            .join("audio-processing/melband_roformer_inst_v2");
         fs::create_dir_all(&model_dir).unwrap();
         fs::write(model_dir.join("install-manifest.json"), b"{}").unwrap();
         let worker = fixture.write_executable("roformer-worker");
@@ -1696,7 +1697,7 @@ mod tests {
                 .with_runtime_override("openvino_2026_3", worker),
         )
         .unwrap();
-        let resource = ResourceRef::model("bs_roformer_vocals_ep317").unwrap();
+        let resource = ResourceRef::model("melband_roformer_inst_v2").unwrap();
         let status = manager
             .status_with_backend(
                 &resource,

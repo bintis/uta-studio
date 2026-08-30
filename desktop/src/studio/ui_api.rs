@@ -178,6 +178,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.close_analysis_log_viewer",
     "ui.analysis.request_delete_song_cache",
     "ui.analysis.cancel_analysis_run",
+    "ui.analysis.force_stop_all_analysis",
     "ui.analysis.cancel_delete_song_cache",
     "ui.analysis.confirm_delete_song_cache",
     "ui.analysis.request_delete_authored_chart",

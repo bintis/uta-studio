@@ -84,6 +84,10 @@
             inherit cargoArtifacts;
 
             preCheck = ''
+              # The analysis-engine tests intentionally launch supervised
+              # subprocess trees. Keep enough concurrency for useful build
+              # coverage without exhausting sandbox process slots.
+              export RUST_TEST_THREADS=8
               export PATH="$PWD/target/release:$PATH"
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/release/uta-analyze"

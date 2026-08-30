@@ -662,6 +662,8 @@ mod tests {
             boundary_support: None,
             boundary_calibrated_confidence: None,
             target_pitch_source: "game".to_string(),
+            target_pitch_source_local_score: None,
+            target_pitch_calibrated_confidence: None,
             center_pitch_hz: 261.6,
             rmvpe_center_hz: None,
             rmvpe_confidence: None,
@@ -686,12 +688,18 @@ mod tests {
 
     fn script_executable(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, body).unwrap();
+        let staging = dir.join(format!("{name}.part"));
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(body.as_bytes()).unwrap();
+            file.sync_all().unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        std::fs::rename(staging, &path).unwrap();
         path
     }
 

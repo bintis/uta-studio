@@ -16,7 +16,10 @@ pub(crate) fn spawn_worker() {
                     }
                     None => {
                         state.worker_running = false;
-                        state.active_hash = None;
+                        if let Some(file_hash) = state.active_hash.take() {
+                            clear_force_stop_request(&file_hash);
+                        }
+                        ANALYZER_STATE_CHANGED.notify_all();
                         return;
                     }
                 }
@@ -37,6 +40,8 @@ pub(crate) fn spawn_worker() {
             }
 
             ANALYZER.lock().unwrap().active_hash = None;
+            clear_force_stop_request(&file_hash);
+            ANALYZER_STATE_CHANGED.notify_all();
         }
     });
 }

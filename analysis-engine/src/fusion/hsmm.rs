@@ -106,6 +106,12 @@ pub struct BoundaryAlternative {
     /// though it were a calibrated global probability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_local_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_local_pitch_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibrated_boundary_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibrated_pitch_confidence: Option<f32>,
     #[serde(default)]
     pub hard: bool,
 }
@@ -225,6 +231,13 @@ pub struct SegmentCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary_calibrated_confidence: Option<f32>,
     pub target_pitch_source: String,
+    /// Source-local pitch support retained for audit, never treated as a
+    /// cross-expert probability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pitch_source_local_score: Option<f32>,
+    /// Versioned calibrated confidence for the selected discrete pitch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pitch_calibrated_confidence: Option<f32>,
     pub center_pitch_hz: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rmvpe_center_hz: Option<f32>,
@@ -359,9 +372,15 @@ impl SegmentCandidate {
                     || alternative
                         .fractional_midi
                         .is_some_and(|midi| !midi.is_finite() || !(0.0..128.0).contains(&midi))
-                    || alternative
-                        .source_local_score
-                        .is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score))
+                    || [
+                        alternative.source_local_score,
+                        alternative.source_local_pitch_score,
+                        alternative.calibrated_boundary_confidence,
+                        alternative.calibrated_pitch_confidence,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|score| !score.is_finite() || !(0.0..=1.0).contains(&score))
             })
             || self
                 .boundary_constraints
@@ -376,9 +395,14 @@ impl SegmentCandidate {
             || self
                 .boundary_support
                 .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
-            || self
-                .boundary_calibrated_confidence
-                .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+            || [
+                self.boundary_calibrated_confidence,
+                self.target_pitch_source_local_score,
+                self.target_pitch_calibrated_confidence,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
             || self.techniques.validated().is_none()
         {
             return Err(format!("invalid segment candidate {}", self.id));

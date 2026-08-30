@@ -6158,7 +6158,7 @@ checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "uta-analysis-engine"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "serde",
@@ -6171,7 +6171,7 @@ dependencies = [
 
 [[package]]
 name = "uta-ggml-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6180,7 +6180,7 @@ dependencies = [
 
 [[package]]
 name = "uta-openvino-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "openvino",
  "rustfft",
@@ -6191,7 +6191,7 @@ dependencies = [
 
 [[package]]
 name = "uta-qwen-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "serde",
@@ -6202,7 +6202,7 @@ dependencies = [
 
 [[package]]
 name = "uta-runtime-manager"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "fs2",
@@ -6215,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "uta-studio-audio"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gstreamer",
  "rodio",
@@ -6225,11 +6225,12 @@ dependencies = [
 
 [[package]]
 name = "uta-studio-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "dirs",
  "dotenvy",
+ "libc",
  "lofty",
  "rusqlite",
  "serde",
@@ -6241,11 +6242,12 @@ dependencies = [
  "urlencoding",
  "utz",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "uta-studio-desktop"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bevy",
  "bevy_render",
@@ -6262,7 +6264,7 @@ dependencies = [
 
 [[package]]
 name = "uta-studio-diagnostics"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6273,7 +6275,7 @@ dependencies = [
 
 [[package]]
 name = "uta-studio-export"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde_json",
  "uta-studio-core",
@@ -7270,7 +7272,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "yazi"

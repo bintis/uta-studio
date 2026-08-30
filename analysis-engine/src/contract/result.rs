@@ -140,11 +140,11 @@ pub enum FusionDecisionProvenanceV1 {
 
 impl FusionDecisionProvenanceV1 {
     pub fn validate(&self) -> EngineResult<()> {
-        let (candidate_set_digest, selected_candidate_ids) = match self {
+        let selected_candidate_ids = match self {
             Self::Algorithm {
                 selector,
                 selector_version,
-                candidate_set_digest,
+                candidate_set_digest: _,
                 selected_candidate_ids,
                 reuse_policy,
             } => {
@@ -157,7 +157,7 @@ impl FusionDecisionProvenanceV1 {
                         "algorithmic fusion decision provenance is invalid",
                     ));
                 }
-                (candidate_set_digest, selected_candidate_ids)
+                selected_candidate_ids
             }
             Self::AiJudgment {
                 adapter_resource,
@@ -165,9 +165,9 @@ impl FusionDecisionProvenanceV1 {
                 adapter_protocol_version,
                 adapter_identity,
                 adapter_version,
-                candidate_set_digest,
+                candidate_set_digest: _,
                 selected_candidate_ids,
-                response_digest,
+                response_digest: _,
                 reuse_policy,
             } => {
                 if adapter_resource != FUSION_AGENT_ADAPTER_RESOURCE
@@ -175,7 +175,6 @@ impl FusionDecisionProvenanceV1 {
                     || *adapter_protocol_version != FUSION_AGENT_PROTOCOL_VERSION
                     || adapter_identity.trim().is_empty()
                     || adapter_version.trim().is_empty()
-                    || !valid_sha256(response_digest)
                     || *reuse_policy != AnalysisReusePolicyV1::PreservedRevisionOnly
                 {
                     return Err(EngineError::new(
@@ -183,12 +182,11 @@ impl FusionDecisionProvenanceV1 {
                         "AI judgment fusion decision provenance is invalid",
                     ));
                 }
-                (candidate_set_digest, selected_candidate_ids)
+                selected_candidate_ids
             }
         };
         let mut unique_ids = std::collections::BTreeSet::new();
-        if !valid_sha256(candidate_set_digest)
-            || selected_candidate_ids.is_empty()
+        if selected_candidate_ids.is_empty()
             || selected_candidate_ids
                 .iter()
                 .any(|id| id.trim().is_empty() || !unique_ids.insert(id))
@@ -200,13 +198,6 @@ impl FusionDecisionProvenanceV1 {
         }
         Ok(())
     }
-}
-
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

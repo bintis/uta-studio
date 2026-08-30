@@ -247,7 +247,6 @@ impl LayoutCache {
 }
 
 const LAYOUT_CACHE_LIMIT: usize = 32;
-pub(crate) const FOUR_STEP_LABEL_GUTTER: f32 = 132.0;
 
 /// Caches geometry-aware canvas layout. Runtime state and selection remain out
 /// of the key, but node dimensions and stable order hints participate so a
@@ -292,53 +291,33 @@ pub(crate) fn cached_canvas_routed_layout_with_specs(
     routed
 }
 
-/// Four-row Processing Studio layout: each numbered product step is one
-/// horizontal execution lane and every node in that lane represents one
-/// concrete Engine/model operation.
-pub(crate) fn cached_four_step_horizontal_routed_layout_with_specs(
+const METRO_TILE_GAP: f32 = 7.0;
+const METRO_TILE_MARGIN: f32 = 9.0;
+const METRO_TILE_MIN_WIDTH: f32 = 154.0;
+const METRO_TILE_MIN_HEIGHT: f32 = 92.0;
+
+/// Packs the compiled workflow into a Windows Phone-inspired tile surface.
+///
+/// Input order remains step/topology aware, while a spec wider or taller than
+/// the normal canvas card claims two grid cells on that axis. The resulting
+/// grid consumes the available viewport before it grows, so the analysis page
+/// reads as one dense execution surface instead of a sparse diagram floating
+/// inside a large scrolling canvas.
+pub(crate) fn metro_tile_layout_with_specs(
     nodes: &[(LayoutNodeSpec, u8)],
     edges: &[(AnalysisNodeId, AnalysisNodeId)],
-) -> Option<Arc<RoutedGraph>> {
-    static CACHE: OnceLock<Mutex<LayoutCache>> = OnceLock::new();
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Option<GraphLayout> {
+    if nodes.is_empty() {
+        return None;
+    }
     let spacing = LayoutSpacing::canvas();
     let normalized = nodes
         .iter()
         .map(|(node, step)| (node.clone().normalized(spacing), (*step).clamp(1, 4)))
         .collect::<Vec<_>>();
-    let key = LayoutCacheKey {
-        nodes: normalized
-            .iter()
-            .map(|(node, _)| node.cache_key())
-            .collect(),
-        edges: edges
-            .iter()
-            .map(|(from, to)| (from.to_string(), to.to_string()))
-            .collect(),
-        steps: normalized.iter().map(|(_, step)| *step).collect(),
-    };
-    let cache = CACHE.get_or_init(|| Mutex::new(LayoutCache::default()));
-    if let Some(cached) = cache.lock().unwrap().entries.get(&key).cloned() {
-        return cached;
-    }
-    let routed = four_step_horizontal_layout(&normalized, edges, spacing)
-        .map(|layout| route_layered_edges(&layout, edges, spacing))
-        .map(Arc::new);
-    let mut cache = cache.lock().unwrap();
-    if let Some(cached) = cache.entries.get(&key).cloned() {
-        return cached;
-    }
-    cache.trim_unused_for_insert();
-    cache.insertion_order.push_back(key.clone());
-    cache.entries.insert(key, routed.clone());
-    routed
-}
-
-fn four_step_horizontal_layout(
-    nodes: &[(LayoutNodeSpec, u8)],
-    edges: &[(AnalysisNodeId, AnalysisNodeId)],
-    spacing: LayoutSpacing,
-) -> Option<GraphLayout> {
-    let ids = nodes
+    let ids = normalized
         .iter()
         .map(|(node, _)| node.id.clone())
         .collect::<Vec<_>>();
@@ -348,56 +327,116 @@ fn four_step_horizontal_layout(
         .enumerate()
         .map(|(index, id)| (id.clone(), index))
         .collect::<BTreeMap<_, _>>();
-    let specs = nodes
-        .iter()
-        .map(|(node, step)| (node.id.clone(), (node, *step)))
-        .collect::<BTreeMap<_, _>>();
-    let mut rows: BTreeMap<u8, Vec<&LayoutNodeSpec>> = BTreeMap::new();
-    for (node, step) in nodes {
-        rows.entry(*step).or_default().push(node);
-    }
-    for row in rows.values_mut() {
-        row.sort_by_key(|node| {
-            (
-                topo_index.get(&node.id).copied().unwrap_or(usize::MAX),
-                node.order_hint,
-            )
-        });
-    }
-    let mut rects = BTreeMap::new();
-    let mut y = spacing.margin;
-    let row_start_x = spacing.margin + FOUR_STEP_LABEL_GUTTER;
-    let mut canvas_width = row_start_x + spacing.margin;
-    for step in 1..=4 {
-        let row = rows.get(&step).cloned().unwrap_or_default();
-        let row_height = row
-            .iter()
-            .map(|node| node.height)
-            .fold(spacing.node_height, f32::max);
-        let mut x = row_start_x;
-        for node in row {
-            rects.insert(
-                node.id.clone(),
-                LayoutRect {
-                    x,
-                    y: y + (row_height - node.height) * 0.5,
-                    width: node.width,
-                    height: node.height,
-                },
-            );
-            x += node.width + spacing.column_gap;
+    let mut ordered = normalized.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(node, step)| {
+        (
+            *step,
+            topo_index.get(&node.id).copied().unwrap_or(usize::MAX),
+            node.order_hint,
+        )
+    });
+
+    let width = viewport_width.max(780.0);
+    let height = viewport_height.max(500.0);
+    let columns = (((width - METRO_TILE_MARGIN * 2.0 + METRO_TILE_GAP)
+        / (METRO_TILE_MIN_WIDTH + METRO_TILE_GAP))
+        .floor() as usize)
+        .clamp(4, 6);
+    let mut occupied: Vec<Vec<bool>> = Vec::new();
+    let mut placements = Vec::with_capacity(ordered.len());
+    for (node, _) in ordered {
+        let column_span = if node.width > spacing.node_width * 1.5 {
+            2.min(columns)
+        } else {
+            1
+        };
+        let row_span = if node.height > spacing.node_height * 1.5 {
+            2
+        } else {
+            1
+        };
+        let mut row = 0usize;
+        let (placed_row, placed_column) = loop {
+            while occupied.len() < row + row_span {
+                occupied.push(vec![false; columns]);
+            }
+            let column = (0..=columns - column_span).find(|column| {
+                (row..row + row_span).all(|candidate_row| {
+                    (*column..*column + column_span)
+                        .all(|candidate_column| !occupied[candidate_row][candidate_column])
+                })
+            });
+            if let Some(column) = column {
+                break (row, column);
+            }
+            row += 1;
+        };
+        for cells in occupied.iter_mut().skip(placed_row).take(row_span) {
+            for cell in cells.iter_mut().skip(placed_column).take(column_span) {
+                *cell = true;
+            }
         }
-        canvas_width = canvas_width.max(x - spacing.column_gap + spacing.margin);
-        y += row_height + spacing.row_gap * 1.7;
+        placements.push((
+            node.id.clone(),
+            placed_row,
+            placed_column,
+            row_span,
+            column_span,
+        ));
     }
-    // Every normalized node must have exactly one row assignment.
-    if rects.len() != specs.len() {
-        return None;
+
+    let rows = occupied.len().max(1);
+    let last_row = rows - 1;
+    let last_row_indices = placements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, row, _, row_span, _))| {
+            (*row == last_row && *row_span == 1).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let last_row_has_tall_tile = placements
+        .iter()
+        .any(|(_, row, _, row_span, _)| *row < last_row && *row + *row_span > last_row);
+    if !last_row_has_tall_tile && !last_row_indices.is_empty() {
+        let base_span = columns / last_row_indices.len();
+        let extra = columns % last_row_indices.len();
+        let mut column = 0usize;
+        for (order, index) in last_row_indices.into_iter().enumerate() {
+            let column_span = base_span + usize::from(order < extra);
+            placements[index].2 = column;
+            placements[index].4 = column_span;
+            column += column_span;
+        }
+    }
+    let cell_width =
+        (width - METRO_TILE_MARGIN * 2.0 - METRO_TILE_GAP * columns.saturating_sub(1) as f32)
+            / columns as f32;
+    let fitted_cell_height =
+        (height - METRO_TILE_MARGIN * 2.0 - METRO_TILE_GAP * rows.saturating_sub(1) as f32)
+            / rows as f32;
+    let cell_height = fitted_cell_height.max(METRO_TILE_MIN_HEIGHT);
+    let canvas_height = (METRO_TILE_MARGIN * 2.0
+        + cell_height * rows as f32
+        + METRO_TILE_GAP * rows.saturating_sub(1) as f32)
+        .max(height);
+    let mut rects = BTreeMap::new();
+    for (id, row, column, row_span, column_span) in placements {
+        rects.insert(
+            id,
+            LayoutRect {
+                x: METRO_TILE_MARGIN + column as f32 * (cell_width + METRO_TILE_GAP),
+                y: METRO_TILE_MARGIN + row as f32 * (cell_height + METRO_TILE_GAP),
+                width: cell_width * column_span as f32
+                    + METRO_TILE_GAP * column_span.saturating_sub(1) as f32,
+                height: cell_height * row_span as f32
+                    + METRO_TILE_GAP * row_span.saturating_sub(1) as f32,
+            },
+        );
     }
     Some(GraphLayout {
         rects,
-        canvas_width,
-        canvas_height: y - spacing.row_gap * 1.7 + spacing.margin,
+        canvas_width: width,
+        canvas_height,
     })
 }
 
@@ -892,30 +931,6 @@ pub(crate) fn route_layered_edges(
         layout: shifted,
         paths,
     }
-}
-
-pub(crate) fn expand_routed_graph_to_viewport(
-    routed: &RoutedGraph,
-    edges: &[(AnalysisNodeId, AnalysisNodeId)],
-    width: f32,
-    height: f32,
-) -> RoutedGraph {
-    let width = width.max(routed.layout.canvas_width);
-    let height = height.max(routed.layout.canvas_height);
-    if width <= routed.layout.canvas_width + 1.0 && height <= routed.layout.canvas_height + 1.0 {
-        return routed.clone();
-    }
-    let spacing = LayoutSpacing::canvas();
-    let mut layout = routed.layout.clone();
-    let horizontal_offset = (width - layout.canvas_width).max(0.0) * 0.5;
-    let vertical_offset = (height - layout.canvas_height).max(0.0) * 0.5;
-    for rect in layout.rects.values_mut() {
-        rect.x += horizontal_offset;
-        rect.y += vertical_offset;
-    }
-    layout.canvas_width = width;
-    layout.canvas_height = height;
-    route_layered_edges(&layout, edges, spacing)
 }
 
 fn vertical_hits_other_node(

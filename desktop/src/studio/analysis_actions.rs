@@ -1404,7 +1404,9 @@ pub(crate) fn open_analysis_node_from_pointer(
     } = target;
     match button {
         PointerButton::Primary => {
-            analysis.selected_analysis_node = Some(node_id.to_string());
+            analysis.selected_analysis_node = (analysis.selected_analysis_node.as_deref()
+                != Some(node_id))
+            .then(|| node_id.to_string());
             dialogs.analysis_node_context = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }

@@ -12,6 +12,7 @@ pub fn delete_cache(file_hash: &str) {
 /// analysis-profile rows. The indexed source file is never touched -- a
 /// later library scan re-discovers it as a fresh, unanalyzed song.
 pub fn remove_song_from_library(file_hash: &str) -> Result<(), String> {
+    stop_analysis_before_song_removal(file_hash)?;
     CacheDir::new().delete_song_cache(file_hash);
     library_db::analysis_queue_delete(file_hash).map_err(|error| error.to_string())?;
     library_db::song_analysis_profile_delete(file_hash).map_err(|error| error.to_string())?;

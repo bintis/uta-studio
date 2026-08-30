@@ -105,8 +105,11 @@ pub(crate) fn current_analysis_header(
     }
     active_task
         .map(|task| {
-            let progress = match &task.status {
-                app_core::QueuedStatus::Analyzing(progress) => (*progress).clamp(0, 100),
+            let progress = match (&task.status, task.live.as_ref()) {
+                (app_core::QueuedStatus::Analyzing(_), Some(live)) if live.engine.is_some() => {
+                    live.overall_progress.clamp(0, 100)
+                }
+                (app_core::QueuedStatus::Analyzing(progress), _) => (*progress).clamp(0, 100),
                 _ => 0,
             };
             (task.title.clone(), task.artist.clone(), progress)
@@ -116,78 +119,6 @@ pub(crate) fn current_analysis_header(
             let song = app_core::load_song_by_hash(hash).ok().flatten()?;
             Some((song.title, song.artist, 0))
         })
-}
-
-pub(crate) fn analysis_overall_progress_is_indeterminate(session: &StudioSessionView<'_>) -> bool {
-    session.analysis_tasks.iter().any(|task| {
-        matches!(task.status, app_core::QueuedStatus::Analyzing(_))
-            && task
-                .live
-                .as_ref()
-                .is_some_and(|live| live.engine.is_some() && live.overall_progress < 100)
-    })
-}
-
-fn spawn_four_step_lane_labels(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    render_graph: &crate::studio::analysis_model::RenderGraph,
-    layout: &GraphLayout,
-    zoom: f32,
-) {
-    for (step, label) in [
-        (1, "PRE-PROCESSING"),
-        (2, "LYRICS"),
-        (3, "F0 & SINGING EXPERTS"),
-        (4, "ENGINE FUSION POLICY"),
-    ] {
-        let bounds = render_graph
-            .nodes
-            .iter()
-            .filter(|node| workflow_graph_step(node.capability_id.as_deref()) == step)
-            .filter_map(|node| layout.rect(&node.id))
-            .fold(None, |bounds: Option<(f32, f32)>, rect| {
-                Some(
-                    bounds.map_or((rect.y, rect.y + rect.height), |(top, bottom)| {
-                        (top.min(rect.y), bottom.max(rect.y + rect.height))
-                    }),
-                )
-            });
-        let Some((top, bottom)) = bounds else {
-            continue;
-        };
-        parent
-            .spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(18.0 * zoom),
-                    top: px(((top + bottom) * 0.5 - 20.0) * zoom),
-                    width: px((FOUR_STEP_LABEL_GUTTER - 28.0) * zoom),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: px((3.0 * zoom).max(1.0)),
-                    ..default()
-                },
-                Pickable::IGNORE,
-                ZIndex(1),
-            ))
-            .with_children(|lane| {
-                spawn_text(
-                    lane,
-                    font.clone(),
-                    format!("STEP {step:02}"),
-                    analysis_graph_scaled(8.0, 6.5, zoom),
-                    theme.primary,
-                );
-                spawn_bounded_wrapped_text(
-                    lane,
-                    font.clone(),
-                    label,
-                    analysis_graph_scaled(7.5, 6.0, zoom),
-                    theme.muted_foreground,
-                );
-            });
-    }
 }
 
 pub(crate) fn current_analysis_eyebrow(session: &StudioSessionView<'_>) -> &'static str {
@@ -889,18 +820,6 @@ fn spawn_analysis_session_surface(
                     render_graph
                 };
                 let locale = effective_ui_locale(session.config);
-                let mut port_counts: std::collections::BTreeMap<
-                    app_core::AnalysisNodeId,
-                    (usize, usize),
-                > = std::collections::BTreeMap::new();
-                for edge in &render_graph.edges {
-                    port_counts.entry(edge.from.clone()).or_default().1 += 1;
-                    port_counts.entry(edge.to.clone()).or_default().0 += 1;
-                }
-                for node in &render_graph.nodes {
-                    port_counts.entry(node.id.clone()).or_default().1 +=
-                        node.terminal_outputs.len();
-                }
                 let layout_nodes = render_graph
                     .nodes
                     .iter()
@@ -913,76 +832,51 @@ fn spawn_analysis_session_surface(
                             translate_ui(locale, &node.label).unwrap_or_else(|| node.label.clone());
                         let detail = translate_ui(locale, &node.detail)
                             .unwrap_or_else(|| node.detail.clone());
-                        (
-                            LayoutNodeSpec::from_text(
-                                node.id.clone(),
-                                kind,
-                                &label,
-                                &detail,
-                                order_hint,
-                            ),
-                            workflow_graph_step(node.capability_id.as_deref()),
-                        )
+                        let mut spec = LayoutNodeSpec::from_text(
+                            node.id.clone(),
+                            kind,
+                            &label,
+                            &detail,
+                            order_hint,
+                        );
+                        let (column_span, row_span) =
+                            analysis_node_tile_span(node.capability_id.as_deref());
+                        spec.width *= column_span as f32;
+                        spec.height *= row_span as f32;
+                        (spec, workflow_graph_step(node.capability_id.as_deref()))
                     })
                     .collect::<Vec<_>>();
                 let edge_pairs = render_graph.edge_pairs();
                 let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
-                let base_routed = cached_four_step_horizontal_routed_layout_with_specs(
-                    &layout_nodes,
-                    &edge_pairs,
-                );
-                let base_canvas_width = base_routed
-                    .as_ref()
-                    .map_or(780.0, |routed| routed.layout.canvas_width)
-                    .max(780.0);
-                let base_canvas_height = base_routed
-                    .as_ref()
-                    .map_or(450.0, |routed| routed.layout.canvas_height)
-                    .max(450.0);
-                // The CSS viewport is sized from the real client height below;
-                // use its previous computed height for routing and Fit. The
-                // first frame uses a close reference fallback, then the layout
-                // system records the exact value and rebuilds once.
+                // The first frame uses a close reference fallback. Once Bevy
+                // reports the real viewport, the Metro packer consumes that
+                // exact space and only grows vertically when the tiles need it.
                 let graph_viewport_height = if session.analysis_graph_viewport_height > 16.0 {
                     session.analysis_graph_viewport_height
                 } else {
                     780.0
                 };
-                // Node and edge geometry must not be recomputed from the user's
-                // current zoom. Doing that made the non-limiting axis collapse
-                // as soon as Fit was left, so a zoom gesture visibly rerouted
-                // lines even though the graph itself had not changed. Build one
-                // viewport-shaped reference layout, then apply `zoom` uniformly
-                // to its nodes, bands, and paths below.
-                let layout_reference_zoom = analysis_graph_fit_zoom(
-                    base_canvas_width,
-                    base_canvas_height,
-                    session.analysis_graph_viewport_width,
-                    graph_viewport_height,
-                );
                 let target_canvas_width = if session.analysis_graph_viewport_width > 16.0 {
-                    ((session.analysis_graph_viewport_width - ANALYSIS_GRAPH_FIT_PADDING)
-                        / layout_reference_zoom)
-                        .max(0.0)
+                    (session.analysis_graph_viewport_width - ANALYSIS_GRAPH_FIT_PADDING).max(780.0)
                 } else {
-                    0.0
+                    1180.0
                 };
-                let target_canvas_height = if graph_viewport_height > 16.0 {
-                    graph_viewport_height / layout_reference_zoom
-                } else {
-                    base_canvas_height
-                };
-                let routed = base_routed.map(|routed| {
-                    expand_routed_graph_to_viewport(
-                        &routed,
-                        &edge_pairs,
-                        target_canvas_width,
-                        target_canvas_height,
-                    )
-                });
-                let layout = routed.as_ref().map(|routed| &routed.layout);
-                let canvas_width = layout.map_or(780.0, |l| l.canvas_width).max(780.0);
-                let canvas_height = layout.map_or(450.0, |l| l.canvas_height).max(450.0);
+                let target_canvas_height =
+                    (graph_viewport_height - ANALYSIS_GRAPH_FIT_PADDING).max(500.0);
+                let layout = metro_tile_layout_with_specs(
+                    &layout_nodes,
+                    &edge_pairs,
+                    target_canvas_width,
+                    target_canvas_height,
+                );
+                let canvas_width = layout
+                    .as_ref()
+                    .map_or(780.0, |layout| layout.canvas_width)
+                    .max(780.0);
+                let canvas_height = layout
+                    .as_ref()
+                    .map_or(450.0, |layout| layout.canvas_height)
+                    .max(450.0);
                 let scaled_canvas_width = canvas_width * zoom;
                 let scaled_canvas_height = canvas_height * zoom;
                 // Match the reference composition: center the actual DAG in a
@@ -992,12 +886,8 @@ fn spawn_analysis_session_surface(
                 session_card
                     .spawn((
                         AnalysisGraphViewport {
-                            // Fit must use the canonical graph dimensions. The
-                            // painted canvas may be expanded to fill the current
-                            // viewport, but feeding that expanded size back into
-                            // Fit creates a self-locking minimum-zoom loop.
-                            unscaled_width: base_canvas_width,
-                            unscaled_height: base_canvas_height,
+                            unscaled_width: canvas_width,
+                            unscaled_height: canvas_height,
                         },
                         UiPointerApi(&["ui.pointer.analysis_viewport_pan"]),
                         ScrollPosition(Vec2::new(
@@ -1048,37 +938,19 @@ fn spawn_analysis_session_surface(
                                         ..default()
                                     })
                                     .with_children(|graph| {
-                                        let Some(routed) = routed.as_ref() else {
+                                        let Some(layout) = layout.as_ref() else {
                                             return;
                                         };
-                                        let layout = &routed.layout;
-                                        spawn_four_step_lane_labels(
-                                            graph,
-                                            font.clone(),
-                                            theme,
-                                            &render_graph,
-                                            layout,
-                                            zoom,
-                                        );
-                                        // Connecting lines were removed: with
-                                        // not-requested cards already hidden
-                                        // (Mini View), the remaining cards'
-                                        // lane position already conveys
-                                        // pipeline order without needing
-                                        // explicit binding paths drawn between
-                                        // them. `render_graph.edges` still
-                                        // feeds layout/routing above; only the
-                                        // path visuals are skipped here.
+                                        // Topological order is retained by the
+                                        // tile packer; the dense color surface
+                                        // replaces connector rails and lane
+                                        // chrome with direct operation cards.
                                         for node in &render_graph.nodes {
                                             let Some(rect) = layout.rect(&node.id) else {
                                                 continue;
                                             };
                                             let bounds = zoomed_box(rect, zoom);
                                             let lineage_dimmed = false;
-                                            let (input_ports, output_ports) = port_counts
-                                                .get(&node.id)
-                                                .copied()
-                                                .unwrap_or_default();
                                             match node.kind {
                                                 RenderNodeKind::Compute => {
                                                     let capability_id = node
@@ -1106,13 +978,12 @@ fn spawn_analysis_session_surface(
                                                         // selected in Processing Studio but
                                                         // still shows a bare "Not requested"
                                                         // needs to explain itself.
-                                                        route =
-                                                            not_requested_reason(
-                                                                node.state,
-                                                                capability_id,
-                                                            )
-                                                            .unwrap_or(text)
-                                                            .to_string();
+                                                        route = not_requested_reason(
+                                                            node.state,
+                                                            capability_id,
+                                                        )
+                                                        .unwrap_or(text)
+                                                        .to_string();
                                                         warning =
                                                             node.state == GraphNodeState::Failed;
                                                     } else if matches!(
@@ -1161,9 +1032,11 @@ fn spawn_analysis_session_surface(
                                                             warning,
                                                             dimmed: lineage_dimmed,
                                                             zoom,
-                                                            input_ports,
-                                                            output_ports,
+                                                            input_ports: 0,
+                                                            output_ports: 0,
                                                             category: node.category,
+                                                            selected_run_id: session
+                                                                .selected_analysis_history,
                                                         },
                                                     );
                                                 }

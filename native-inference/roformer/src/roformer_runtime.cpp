@@ -982,10 +982,8 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAddPipelined(cons
     if (result.empty()) return {};
 
     int num_stems = result.size();
-    std::vector<std::vector<float>> final_output_stems(num_stems);
-
+    const size_t output_values = static_cast<size_t>(n_input_samples) * channels;
     for (int s = 0; s < num_stems; ++s) {
-        final_output_stems[s].resize(n_input_samples * channels);
         for (int k = 0; k < n_input_samples; ++k) {
             int padded_idx = (pad_l + k) * channels;
             int final_idx = k * channels;
@@ -996,16 +994,17 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAddPipelined(cons
             if (w0 < 1e-4f) w0 = 1.0f;
             if (w1 < 1e-4f) w1 = 1.0f;
 
-            final_output_stems[s][final_idx + 0] = result[s][padded_idx + 0] / w0;
-            final_output_stems[s][final_idx + 1] = result[s][padded_idx + 1] / w1;
+            result[s][final_idx + 0] = result[s][padded_idx + 0] / w0;
+            result[s][final_idx + 1] = result[s][padded_idx + 1] / w1;
         }
+        result[s].resize(output_values);
     }
     uta_diagnostics::Log("inference", "pipeline.end",
         "total_chunks=" + std::to_string(total_chunks) +
         " batch_size=" + std::to_string(batch_size) +
-        " stems=" + std::to_string(final_output_stems.size()));
+        " stems=" + std::to_string(result.size()));
 
-    return final_output_stems;
+    return result;
 }
 
 std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::vector<float>& input_audio,
@@ -1152,10 +1151,8 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
     if (result.empty()) return {};
 
     int num_stems = result.size();
-    std::vector<std::vector<float>> final_output_stems(num_stems);
-
+    const size_t output_values = static_cast<size_t>(n_input_samples) * channels;
     for (int s = 0; s < num_stems; ++s) {
-        final_output_stems[s].resize(n_input_samples * channels);
         for (int k = 0; k < n_input_samples; ++k) {
             int padded_idx = (pad_l + k) * channels;
             int final_idx = k * channels;
@@ -1166,10 +1163,11 @@ std::vector<std::vector<float>> RoformerRuntime::ProcessOverlapAdd(const std::ve
             if (w0 < 1e-4f) w0 = 1.0f;
             if (w1 < 1e-4f) w1 = 1.0f;
 
-            final_output_stems[s][final_idx + 0] = result[s][padded_idx + 0] / w0;
-            final_output_stems[s][final_idx + 1] = result[s][padded_idx + 1] / w1;
+            result[s][final_idx + 0] = result[s][padded_idx + 0] / w0;
+            result[s][final_idx + 1] = result[s][padded_idx + 1] / w1;
         }
+        result[s].resize(output_values);
     }
 
-    return final_output_stems;
+    return result;
 }

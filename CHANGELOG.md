@@ -2,6 +2,36 @@
 
 This changelog is generated from git history.
 
+## 0.8.0 — 2026-08-31
+
+### Analysis execution, caching, and progress
+
+- Added history-weighted whole-run progress driven by each native model's real lifecycle percentage and measured task difficulty; the top-bar hairline now reflects meaningful completion instead of an indeterminate decoration.
+- Added per-stage analysis caching and a typed `CleanLeadVocal` route so unchanged separation, lead isolation, and cleanup artifacts can be reused without rerunning unrelated work.
+- Fixed exact-preview execution falsely reporting `source_identity_changed` when a valid cached GuideVocals artifact replaced the request's primary processing input while the library TrueSource remained unchanged.
+- Preserved Timed LRC line ranges when a matching plain-lyrics sidecar exists, fixing long sections of real songs such as Asphodelos losing timing guidance during forced alignment; genuinely edited text still invalidates stale ranges.
+- Made timed-lyrics saving side-effect free: saving user input no longer queues compute or mutates analysis history until an explicit analysis action consumes it.
+
+### Models, evidence, and native inference
+
+- Added JBM555 timed-note evidence and the public BS-PolarFormer instrumental route, including Runtime Manager catalog/install support and calibrated boundary/pitch confidence propagation through fusion and canonical chart output.
+- Reworked worker-task planning and exact typed artifact routing for the expanded separation, transcription, alignment, pitch, and note-expert graph.
+- Improved the FP16 GGML RoFormer Intel Vulkan route with serialized single-batch execution, exact overlap-add work-unit progress, lower-memory in-place final normalization, and retained tail diagnostics when the native engine exits unsuccessfully.
+- Split the large Qwen worker test module from production code and retained the bounded long-form ASR/alignment behavior and diagnostics coverage.
+
+### Analysis workspace
+
+- Replaced the sparse analysis DAG presentation with an adaptive Windows Phone-inspired Metro tile layout: task cost controls tile size, categories use distinct color, tiles fill the viewport, and clicking a tile flips to its Inspect, Run, Compare, Documentation, and Logs actions.
+- Kept right-click node actions available, made Metro fit avoid unreadable downscaling, and retained scroll access for deep workflows.
+- Refined model/runtime, workflow, library, and song-detail presentation for the expanded analysis graph and new evidence routes.
+
+### Reliability and verification
+
+- Improved stale-run cleanup, compatibility materialization for published stem revisions, audio-duration edge handling, and source-bound execution diagnostics.
+- Removed remaining model-license acceptance gates and digest/checksum rejection paths; license and digest values remain descriptive provenance while protocol versions, selected candidate membership, file sets, and inference contracts continue to be validated directly.
+- Isolated process-spawning decoder tests so concurrent fake `ffmpeg` fixtures no longer intermittently fail with Linux `ETXTBSY`.
+- Verified the FP16 harmony model on the full 305.8-second Asphodelos vocal input and confirmed the lower-memory normalization produces sample-identical 12-second output.
+
 ## 0.7.0 — 2026-08-29
 
 ### Melody path and score coherence

@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -10,6 +10,7 @@ const FIXED_SAFE_EXECUTION_ARGS: [&str; 4] = [
     "--vulkan-no-async",
     "--serial-pipeline",
 ];
+const MAX_ENGINE_STDERR_BYTES: usize = 64 * 1024;
 
 pub struct PublishedOutput {
     pub artifact: &'static str,
@@ -43,15 +44,7 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
         .get("semantic_output")
         .and_then(serde_json::Value::as_str);
     let expected = match model_id {
-        "bs_roformer_vocals_ep317" => {
-            if matches!(
-                semantic,
-                Some("guide_vocals" | "guide_vocals+instrumental_residual")
-            ) {
-                return Ok(());
-            }
-            "guide_vocals"
-        }
+        "bs_roformer_leap_xe90_vocals" => "guide_vocals",
         "melband_roformer_inst_v2" => "instrumental",
         "melband_roformer_denoise_aufr33" => "dry",
         "melband_roformer_dereverb_anvuew" => "noreverb",
@@ -91,7 +84,7 @@ fn prepend_library_path(
 
 fn output_name(model_id: &str) -> &'static str {
     match model_id {
-        "bs_roformer_vocals_ep317" => "guide-vocals.flac",
+        "bs_roformer_leap_xe90_vocals" => "guide-vocals.flac",
         "melband_roformer_inst_v2" => "instrumental.flac",
         "melband_roformer_denoise_aufr33" => "clean-lead-vocal.flac",
         "melband_roformer_dereverb_anvuew" => "noreverb-vocal.flac",
@@ -102,12 +95,61 @@ fn output_name(model_id: &str) -> &'static str {
 
 fn artifact_name(model_id: &str) -> &'static str {
     match model_id {
-        "bs_roformer_vocals_ep317" => "guide_vocals",
+        "bs_roformer_leap_xe90_vocals" => "guide_vocals",
         "melband_roformer_inst_v2" => "instrumental",
         "melband_roformer_denoise_aufr33" => "clean_lead_vocal",
         "melband_roformer_dereverb_anvuew" => "dereverbed_vocal",
         "melband_roformer_harmony" => "lead_vocal",
         _ => unreachable!("validated model id"),
+    }
+}
+
+fn ggml_vulkan_command(
+    engine: &Path,
+    model: &Path,
+    input: &Path,
+    output: &Path,
+    device: u32,
+) -> Command {
+    let mut command = Command::new(engine);
+    command
+        .arg(model)
+        .arg(input)
+        .arg(output)
+        .args(&FIXED_SAFE_EXECUTION_ARGS[..2])
+        .arg("--vulkan-device")
+        .arg(device.to_string())
+        .args(&FIXED_SAFE_EXECUTION_ARGS[2..])
+        .arg("--machine-progress")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn read_engine_stderr_tail(mut stderr: impl Read) -> Result<Vec<u8>, String> {
+    let mut tail = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = stderr
+            .read(&mut chunk)
+            .map_err(|error| format!("could not read GGML diagnostics: {error}"))?;
+        if count == 0 {
+            return Ok(tail);
+        }
+        if count >= MAX_ENGINE_STDERR_BYTES {
+            tail.clear();
+            tail.extend_from_slice(&chunk[count - MAX_ENGINE_STDERR_BYTES..count]);
+            continue;
+        }
+        let overflow = tail
+            .len()
+            .saturating_add(count)
+            .saturating_sub(MAX_ENGINE_STDERR_BYTES);
+        if overflow > 0 {
+            tail.drain(..overflow);
+        }
+        tail.extend_from_slice(&chunk[..count]);
     }
 }
 
@@ -122,7 +164,7 @@ pub fn run(
     validate_semantics(model_id, config)?;
     progress(0.02, "Validating pinned GGML Vulkan runtime", None);
     let validated_runtime = runtime::validate_runtime()?;
-    progress(0.05, "Validating exact GGUF model identity", None);
+    progress(0.05, "Validating GGUF model structure", None);
     let model = runtime::validate_model(model_id, &model_path(config)?)?;
     let input = audio::decode_stereo_wav(source, output_dir, task_id)?;
     let engine_output = output_dir.join(format!("{task_id}-ggml-engine.wav"));
@@ -131,25 +173,15 @@ pub fn run(
         return Err("GGML engine output target already exists".to_string());
     }
     progress(0.1, "Running GGML model on explicit Vulkan device", None);
-    let mut command = Command::new(&validated_runtime.engine);
-    command
-        .arg(&model)
-        .arg(&input)
-        .arg(&engine_output)
-        .args(&FIXED_SAFE_EXECUTION_ARGS[..2])
-        .arg("--vulkan-device")
-        .arg(vulkan_device(config)?.to_string())
-        .args(&FIXED_SAFE_EXECUTION_ARGS[2..])
-        .arg("--machine-progress")
-        .env(
-            "UTA_STUDIO_GGML_RUNTIME_MANIFEST_SHA256",
-            validated_runtime.manifest_sha256,
-        )
-        .stdin(Stdio::null())
-        // Machine stdout carries bounded, exact overlap-add chunk records.
-        // Human diagnostics remain unparsed and are discarded line by line.
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    // Machine stdout carries bounded, exact overlap-add chunk records. Human
+    // diagnostics remain unparsed and are discarded line by line.
+    let mut command = ggml_vulkan_command(
+        &validated_runtime.engine,
+        &model,
+        &input,
+        &engine_output,
+        vulkan_device(config)?,
+    );
     #[cfg(target_os = "linux")]
     prepend_library_path(
         &mut command,
@@ -165,6 +197,11 @@ pub fn run(
         .stdout
         .take()
         .ok_or_else(|| "GGML RoFormer machine-progress stdout is unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "GGML RoFormer diagnostics stderr is unavailable".to_string())?;
+    let stderr_reader = std::thread::spawn(move || read_engine_stderr_tail(stderr));
     let mut last_units = None;
     for line in BufReader::new(stdout).lines() {
         let line = line.map_err(|error| format!("could not read GGML progress: {error}"))?;
@@ -188,10 +225,19 @@ pub fn run(
     let status = child
         .wait()
         .map_err(|error| format!("could not wait for GGML RoFormer engine: {error}"))?;
+    let diagnostics = stderr_reader
+        .join()
+        .map_err(|_| "GGML RoFormer diagnostics reader panicked".to_string())??;
     if !status.success() || !engine_output.is_file() {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&engine_output);
-        return Err(format!("GGML RoFormer engine failed with {status}"));
+        let diagnostics = String::from_utf8_lossy(&diagnostics);
+        let diagnostics = diagnostics.trim();
+        return Err(if diagnostics.is_empty() {
+            format!("GGML RoFormer engine failed with {status}")
+        } else {
+            format!("GGML RoFormer engine failed with {status}: {diagnostics}")
+        });
     }
     if last_units.is_none_or(|(completed, total)| completed != total) {
         let _ = std::fs::remove_file(&input);
@@ -212,23 +258,6 @@ pub fn run(
             audio::encode_vocal_residual_flac(&input, &engine_output, &residual)?;
             published.push(PublishedOutput {
                 artifact: "vocal_residual",
-                path: residual,
-            });
-        } else if model_id == "bs_roformer_vocals_ep317"
-            && config
-                .get("semantic_output")
-                .and_then(serde_json::Value::as_str)
-                == Some("guide_vocals+instrumental_residual")
-        {
-            let residual = output_dir.join("instrumental.flac");
-            audio::encode_residual_flac(
-                &input,
-                &engine_output,
-                &residual,
-                "EP317 Instrumental residual encode",
-            )?;
-            published.push(PublishedOutput {
-                artifact: "instrumental",
                 path: residual,
             });
         }
@@ -279,13 +308,48 @@ mod tests {
                 "--serial-pipeline"
             ]
         );
+        let command = ggml_vulkan_command(
+            Path::new("engine"),
+            Path::new("model.gguf"),
+            Path::new("input.wav"),
+            Path::new("output.wav"),
+            7,
+        );
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "model.gguf",
+                "input.wav",
+                "output.wav",
+                "--batch-size",
+                "1",
+                "--vulkan-device",
+                "7",
+                "--vulkan-no-async",
+                "--serial-pipeline",
+                "--machine-progress",
+            ]
+        );
+    }
+
+    #[test]
+    fn engine_diagnostics_keep_the_failure_tail() {
+        let mut input = vec![b'x'; MAX_ENGINE_STDERR_BYTES + 32];
+        input.extend_from_slice(b"final write failure");
+        let captured = read_engine_stderr_tail(input.as_slice()).unwrap();
+        assert_eq!(captured.len(), MAX_ENGINE_STDERR_BYTES);
+        assert!(captured.ends_with(b"final write failure"));
     }
 
     #[test]
     fn semantic_routes_are_explicit_and_non_substituting() {
         assert!(
             validate_semantics(
-                "bs_roformer_vocals_ep317",
+                "bs_roformer_leap_xe90_vocals",
                 &serde_json::json!({
                     "backend":"ggml_vulkan",
                     "semantic_output":"guide_vocals"
@@ -295,23 +359,23 @@ mod tests {
         );
         assert!(
             validate_semantics(
-                "bs_roformer_vocals_ep317",
+                "bs_roformer_leap_xe90_vocals",
                 &serde_json::json!({
-                    "backend":"ggml_vulkan",
-                    "semantic_output":"instrumental"
+                    "backend":"openvino_gpu",
+                    "semantic_output":"guide_vocals"
                 })
             )
             .is_err()
         );
         assert!(
             validate_semantics(
-                "bs_roformer_vocals_ep317",
+                "bs_roformer_leap_xe90_vocals",
                 &serde_json::json!({
                     "backend":"ggml_vulkan",
-                    "semantic_output":"guide_vocals+instrumental_residual"
+                    "semantic_output":"instrumental"
                 })
             )
-            .is_ok()
+            .is_err()
         );
         assert!(
             validate_semantics(

@@ -33,6 +33,29 @@ pub(crate) const ANALYSIS_GRAPH_FIT_PADDING: f32 = 20.0;
 /// Wayland decorations reduce it relative to an internal app screenshot.
 pub(crate) const ANALYSIS_GRAPH_VIEWPORT_VH: f32 = 72.0;
 
+/// Relative Metro-grid footprint for one compiled operation. Expensive audio,
+/// ASR and alignment work gets a double-height tile; other model-backed work
+/// gets extra horizontal room, while routing/finalization remains compact.
+pub(crate) fn analysis_node_tile_span(capability_id: Option<&str>) -> (usize, usize) {
+    match capability_id.unwrap_or_default() {
+        "audio.separate_vocal_bgm"
+        | "audio.extract_vocals"
+        | "audio.extract_instrumental"
+        | "audio.lead_isolate"
+        | "analysis.asr"
+        | "analysis.forced_alignment" => (2, 2),
+        "audio.denoise"
+        | "audio.dereverb"
+        | "audio.refine"
+        | "analysis.pitch_f0"
+        | "analysis.note_boundary"
+        | "analysis.technique"
+        | "fusion.singing_evidence"
+        | "fusion.candidate_graph" => (2, 1),
+        _ => (1, 1),
+    }
+}
+
 pub(crate) fn clamp_analysis_graph_zoom(zoom: f32) -> f32 {
     zoom.clamp(ANALYSIS_GRAPH_ZOOM_MIN, ANALYSIS_GRAPH_ZOOM_MAX)
 }
@@ -146,6 +169,7 @@ pub(crate) enum WorkflowNodeVisualState {
     Waiting,
     Running(Option<usize>),
     Complete,
+    Cancelled,
     Disabled,
     Failed,
     Deferred,
@@ -432,11 +456,11 @@ pub(crate) fn analysis_status_copy(task: &app_core::AnalysisTask) -> (String, Op
         app_core::QueuedStatus::Analyzing(_)
             if task.live.as_ref().is_some_and(|live| live.engine.is_some()) =>
         {
-            (
-                "Analyzing · overall work units unavailable".to_string(),
-                None,
-                false,
-            )
+            let progress = task
+                .live
+                .as_ref()
+                .map_or(0, |live| live.overall_progress.clamp(0, 100));
+            (format!("Analyzing · {progress}%"), Some(progress), false)
         }
         app_core::QueuedStatus::Analyzing(progress) => {
             (format!("Analyzing · {progress}%"), Some(*progress), false)
@@ -562,6 +586,7 @@ pub(crate) fn graph_node_visual_state(
     match state {
         GraphNodeState::Running => (WorkflowNodeVisualState::Running(running_progress), None),
         GraphNodeState::Complete => (WorkflowNodeVisualState::Complete, None),
+        GraphNodeState::Cancelled => (WorkflowNodeVisualState::Cancelled, Some("Stopped by user")),
         GraphNodeState::Waiting => (WorkflowNodeVisualState::Waiting, None),
         GraphNodeState::Disabled => (
             WorkflowNodeVisualState::Disabled,
@@ -591,6 +616,7 @@ pub(crate) fn graph_node_panel_status(
 ) -> &'static str {
     match state {
         Some(GraphNodeState::Complete) => "COMPLETE",
+        Some(GraphNodeState::Cancelled) => "CANCELLED",
         Some(GraphNodeState::Running) => "RUNNING",
         Some(GraphNodeState::Failed) => "FAILED",
         Some(GraphNodeState::Disabled) => "DISABLED",
@@ -626,7 +652,7 @@ pub(crate) fn selected_progress_and_status(
         Some(GraphNodeState::Complete) => {
             (100, graph_node_panel_status(render_state, route_status))
         }
-        Some(GraphNodeState::Running | GraphNodeState::Failed) => (
+        Some(GraphNodeState::Running | GraphNodeState::Failed | GraphNodeState::Cancelled) => (
             route_progress,
             graph_node_panel_status(render_state, route_status),
         ),

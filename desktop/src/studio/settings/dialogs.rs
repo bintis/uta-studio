@@ -391,14 +391,14 @@ pub(crate) fn spawn_model_downloads_dialog(
                             dialog,
                             font.clone(),
                             theme,
-                            "OPTIONAL AUDIO MODELS",
-                            "Catalog models are optional local weights. Installing or removing one changes only local model files.",
+                            "OPTIONAL MODEL ARTIFACTS",
+                            "Catalog models are optional local weights for separation and note analysis. Installing or removing one changes only local model files.",
                         );
                         if let Some(error) = snapshot.audio_catalog_error.as_deref() {
                             spawn_wrapped_text(
                                 dialog,
                                 font.clone(),
-                                format!("Audio model catalog unavailable: {error}"),
+                                format!("Model artifact catalog unavailable: {error}"),
                                 9.0,
                                 theme.destructive,
                             );

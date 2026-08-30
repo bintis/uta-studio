@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-core"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["bintis"]
 edition = "2024"
 
@@ -21,6 +21,16 @@ urlencoding = "2"
 tracing = "0.1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 utz = { path = "../vendor/utz" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+] }
 
 [build-dependencies]
 dotenvy = "0.15"

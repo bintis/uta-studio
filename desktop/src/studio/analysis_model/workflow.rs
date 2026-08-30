@@ -438,12 +438,28 @@ pub(crate) fn overlay_workflow_runtime(graph: &mut RenderGraph, task: &app_core:
         };
         match route.node_event.as_deref() {
             Some("node_failed") => node.state = GraphNodeState::Failed,
+            Some("node_cancelled" | "cancelled") => node.state = GraphNodeState::Cancelled,
             Some("node_completed" | "artifact_reused") => {
                 node.state = GraphNodeState::Complete;
             }
             _ if route.finished_at_ms.is_some() => node.state = GraphNodeState::Complete,
             _ => {}
         }
+    }
+
+    if matches!(
+        live.node_event.as_deref(),
+        Some("cancelled" | "node_cancelled")
+    ) {
+        for node in &mut graph.nodes {
+            if matches!(
+                node.state,
+                GraphNodeState::Waiting | GraphNodeState::Running | GraphNodeState::Deferred
+            ) {
+                node.state = GraphNodeState::Cancelled;
+            }
+        }
+        return;
     }
 
     if matches!(task.status, app_core::QueuedStatus::Analyzing(_))
@@ -560,8 +576,12 @@ mod tests {
         let instrumental = graph
             .node(&AnalysisNodeId::new("vocal_bgm_split.instrumental"))
             .unwrap();
-        assert!(vocal.detail.contains("BS-RoFormer Vocals EP317"));
-        assert!(instrumental.detail.contains("MelBand-RoFormer Inst V2"));
+        assert!(vocal.detail.contains("BS-RoFormer Leap XE90 Vocals"));
+        assert!(
+            instrumental
+                .detail
+                .contains("BS-PolarFormer Public Instrumental")
+        );
         assert!(
             graph
                 .node(&AnalysisNodeId::new("vocal_bgm_split"))
@@ -607,8 +627,16 @@ mod tests {
             .map(|node| node.id.clone())
             .collect::<std::collections::BTreeSet<_>>();
         for edge in &graph.edges {
-            assert!(node_ids.contains(&edge.from), "dangling edge from {:?}", edge.from);
-            assert!(node_ids.contains(&edge.to), "dangling edge to {:?}", edge.to);
+            assert!(
+                node_ids.contains(&edge.from),
+                "dangling edge from {:?}",
+                edge.from
+            );
+            assert!(
+                node_ids.contains(&edge.to),
+                "dangling edge to {:?}",
+                edge.to
+            );
         }
     }
 
@@ -783,6 +811,42 @@ mod tests {
             graph.node(&AnalysisNodeId::new(&ids[1])).unwrap().state,
             GraphNodeState::Running
         );
+    }
+
+    #[test]
+    fn cancelled_run_marks_every_unfinished_dag_node_cancelled() {
+        let workflow = wire(&app_core::default_workflow("song"));
+        let mut graph = build_workflow_render_graph(&workflow, None, None, false);
+        let ids = graph
+            .nodes
+            .iter()
+            .take(2)
+            .map(|node| node.id.as_str().to_string())
+            .collect::<Vec<_>>();
+        let mut task = runtime_task(
+            json!([runtime_route(Some(&ids[0]), "node_completed")]),
+            &ids[1],
+        );
+        task.status = app_core::QueuedStatus::Queued;
+        task.live.as_mut().unwrap().node_event = Some("cancelled".to_string());
+
+        overlay_workflow_runtime(&mut graph, &task);
+
+        assert_eq!(
+            graph.node(&AnalysisNodeId::new(&ids[0])).unwrap().state,
+            GraphNodeState::Complete
+        );
+        assert!(
+            graph.nodes.iter().any(|node| {
+                node.id.as_str() != ids[0] && node.state == GraphNodeState::Cancelled
+            })
+        );
+        assert!(graph.nodes.iter().all(|node| {
+            !matches!(
+                node.state,
+                GraphNodeState::Waiting | GraphNodeState::Running | GraphNodeState::Deferred
+            )
+        }));
     }
 
     #[test]

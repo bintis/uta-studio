@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const WORKFLOW_SCHEMA_VERSION: u32 = 2;
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -172,8 +172,8 @@ pub enum ConditionalExecution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeparationStrategyV1 {
-    /// EP317 estimates GuideVocals and the same native invocation publishes the
-    /// deterministic SourceMix - GuideVocals Instrumental residual.
+    /// Legacy serialized value. Loading maps it onto the current independent
+    /// Leap XE90 + public PolarFormer strategy.
     Ep317VocalResidual,
     /// Independent role-specialized native invocations.
     IndependentSpecialists,

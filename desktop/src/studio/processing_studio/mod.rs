@@ -1705,6 +1705,7 @@ pub(crate) fn spawn_processing_studio(
                                         app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
                                         app_core::OptionalWorkflowCardV1::RosvotBoundary,
                                         app_core::OptionalWorkflowCardV1::StarsBoundary,
+                                        app_core::OptionalWorkflowCardV1::Jbm555Boundary,
                                         app_core::OptionalWorkflowCardV1::StarsTechnique,
                                         app_core::OptionalWorkflowCardV1::AcousticDsp,
                                     ] {

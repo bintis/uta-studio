@@ -404,6 +404,8 @@ mod tests {
                 boundary_decision_parameter: Some(0.2),
                 presence_decision_parameter: Some(0.2),
                 target_pitch_source: "game".to_string(),
+                target_pitch_source_local_score: None,
+                target_pitch_calibrated_confidence: None,
                 rmvpe_center_hz: Some(440.0),
                 rmvpe_confidence: Some(0.9),
                 rmvpe_cents_difference: Some(0.0),

@@ -15,11 +15,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。{{APP_VERSION}} 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包，同时提供对应的 SHA-256 校验文件。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。{{APP_VERSION}} 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
 
 #### Windows
 
-1. 下载 `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` 及对应校验文件。
+1. 下载 `uta-studio-{{APP_VERSION}}-x86_64-windows.zip`。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -46,16 +46,6 @@ chmod +x uta-studio-{{APP_VERSION}}-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
-
-#### 校验下载文件
-
-从镜像或共享存储取得文件时，建议在安装前使用对应 `.sha256` 文件校验：
-
-```sh
-sha256sum -c uta-studio-{{APP_VERSION}}-linux-deb.sha256
-```
-
-校验文件必须与下载的包类型一致。
 
 ### 3. 首次启动
 

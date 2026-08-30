@@ -94,16 +94,13 @@ jobs:
 
           cp --dereference "$artifact" "${artifact}.bin"
           chmod 0755 "${artifact}.bin"
-          sha256sum "${artifact}.bin" > "uta-studio-${version}-linux-portable.sha256"
-          ls -lh "${artifact}.bin" "uta-studio-${version}-linux-portable.sha256"
+          ls -lh "${artifact}.bin"
 
       - name: Upload portable Linux package
         uses: actions/upload-artifact@v4
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-portable-package
-          path: |
-            uta-studio-${{ needs.metadata.outputs.version }}-x86_64-linux.bin
-            uta-studio-${{ needs.metadata.outputs.version }}-linux-portable.sha256
+          path: uta-studio-${{ needs.metadata.outputs.version }}-x86_64-linux.bin
           if-no-files-found: error
 
   package-linux-deb:
@@ -293,16 +290,13 @@ jobs:
           dpkg-deb --build --root-owner-group "$root" "$package"
           dpkg-deb --info "$package"
           dpkg-deb --contents "$package" | sed -n '1,80p'
-          sha256sum "$package" > "uta-studio-${version}-linux-deb.sha256"
-          ls -lh "$package" "uta-studio-${version}-linux-deb.sha256"
+          ls -lh "$package"
 
       - name: Upload DEB package
         uses: actions/upload-artifact@v4
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-deb-package
-          path: |
-            uta-studio_${{ needs.metadata.outputs.version }}-1_amd64.deb
-            uta-studio-${{ needs.metadata.outputs.version }}-linux-deb.sha256
+          path: uta-studio_${{ needs.metadata.outputs.version }}-1_amd64.deb
           if-no-files-found: error
 
   package-linux-rpm:
@@ -522,16 +516,13 @@ jobs:
           cp "$rpm_path" "$output"
           rpm -qpi "$output"
           rpm -qpR "$output" | sort
-          sha256sum "$output" > "uta-studio-${version}-linux-rpm.sha256"
-          ls -lh "$output" "uta-studio-${version}-linux-rpm.sha256"
+          ls -lh "$output"
 
       - name: Upload RPM package
         uses: actions/upload-artifact@v4
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-rpm-package
-          path: |
-            uta-studio-${{ needs.metadata.outputs.version }}-1.x86_64.rpm
-            uta-studio-${{ needs.metadata.outputs.version }}-linux-rpm.sha256
+          path: uta-studio-${{ needs.metadata.outputs.version }}-1.x86_64.rpm
           if-no-files-found: error
 
   package-windows:
@@ -579,17 +570,12 @@ jobs:
           Copy-Item desktop/assets/icons/music-placeholder.png "$root/share/uta-studio/desktop/assets/icons/"
           Copy-Item desktop/assets/icons/music-placeholder.svg "$root/share/uta-studio/desktop/assets/icons/"
           Compress-Archive -Path "$root/*" -DestinationPath "uta-studio-$version-x86_64-windows.zip"
-          $hash = (Get-FileHash "uta-studio-$version-x86_64-windows.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  uta-studio-$version-x86_64-windows.zip" |
-            Set-Content -NoNewline "uta-studio-$version-windows.sha256"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-windows-package
-          path: |
-            uta-studio-${{ needs.metadata.outputs.version }}-x86_64-windows.zip
-            uta-studio-${{ needs.metadata.outputs.version }}-windows.sha256
+          path: uta-studio-${{ needs.metadata.outputs.version }}-x86_64-windows.zip
           if-no-files-found: error
 
   publish-release:

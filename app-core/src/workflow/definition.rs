@@ -147,11 +147,16 @@ pub fn load_song_workflow(file_hash: &str) -> Result<StoredWorkflow, String> {
 }
 
 pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String> {
-    match stored.definition.schema_version {
+    let previous_schema_version = stored.definition.schema_version;
+    match previous_schema_version {
         1 => {
             // Schema 1 serialized the ambiguous local role as `back_vocal`.
             // AudioRole's serde alias reads it as the explicit BackingVocal role;
-            // schema 2 then writes `backing_vocal` and keeps HarmonyVocal distinct.
+            // newer schemas write `backing_vocal` and keep HarmonyVocal distinct.
+            stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
+        }
+        2 => {
+            // Schema 3 adds the JBM555 note-boundary expert to saved workflows.
             stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
         }
         version if version == super::WORKFLOW_SCHEMA_VERSION => {}
@@ -167,18 +172,39 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
         .iter_mut()
         .find(|node| node.capability_id.as_str() == "audio.separate_vocal_bgm")
     {
+        if separation.model_id.as_deref() == Some("bs_roformer_vocals_ep317") {
+            separation.model_id = Some("bs_roformer_leap_xe90_vocals".to_string());
+        }
+        if separation.separation_strategy == Some(super::SeparationStrategyV1::Ep317VocalResidual) {
+            separation.separation_strategy =
+                Some(super::SeparationStrategyV1::IndependentSpecialists);
+        }
+        if separation
+            .parameters
+            .get("instrumental_model_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|model| {
+                matches!(
+                    model,
+                    "bs_roformer_vocals_ep317" | "melband_roformer_inst_v2"
+                )
+            })
+        {
+            separation.parameters.insert(
+                "instrumental_model_id".to_string(),
+                serde_json::Value::String("bs_polarformer_public_instrumental".to_string()),
+            );
+        }
         if separation.separation_strategy.is_none() {
             let instrumental = separation
                 .parameters
                 .get("instrumental_model_id")
                 .and_then(serde_json::Value::as_str);
             separation.separation_strategy = match (separation.model_id.as_deref(), instrumental) {
-                (Some("bs_roformer_vocals_ep317"), Some("bs_roformer_vocals_ep317")) => {
-                    Some(super::SeparationStrategyV1::Ep317VocalResidual)
-                }
-                (Some("bs_roformer_vocals_ep317"), Some("melband_roformer_inst_v2") | None) => {
-                    Some(super::SeparationStrategyV1::IndependentSpecialists)
-                }
+                (
+                    Some("bs_roformer_leap_xe90_vocals"),
+                    Some("bs_polarformer_public_instrumental") | None,
+                ) => Some(super::SeparationStrategyV1::IndependentSpecialists),
                 _ => {
                     return Err(
                         "legacy Vocal/BGM providers do not map to an executable typed strategy"
@@ -204,6 +230,32 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
             .parameters
             .entry("fusion_mode".to_string())
             .or_insert_with(|| serde_json::Value::String("algorithm".to_string()));
+    }
+    if previous_schema_version < 3
+        && !workflow_has_optional_card(&stored.definition, OptionalWorkflowCardV1::Jbm555Boundary)
+        && stored
+            .definition
+            .nodes
+            .iter()
+            .any(|node| node.instance_id.as_str() == "evidence_fusion")
+        && let Some(source) = stored
+            .definition
+            .analyzer_bindings
+            .iter()
+            .find(|binding| {
+                stored.definition.nodes.iter().any(|node| {
+                    node.instance_id == binding.analyzer_node
+                        && node.capability_id.as_str() == "analysis.note_boundary"
+                })
+            })
+            .or_else(|| stored.definition.analyzer_bindings.first())
+            .map(|binding| binding.source.clone())
+    {
+        add_optional_workflow_card(
+            &mut stored.definition,
+            source,
+            OptionalWorkflowCardV1::Jbm555Boundary,
+        )?;
     }
     Ok(())
 }
@@ -444,6 +496,7 @@ pub enum OptionalWorkflowCardV1 {
     BasicPitchBoundary,
     RosvotBoundary,
     StarsBoundary,
+    Jbm555Boundary,
     StarsTechnique,
     AcousticDsp,
 }
@@ -458,6 +511,7 @@ impl OptionalWorkflowCardV1 {
             Self::BasicPitchBoundary => "Basic Pitch onset evidence",
             Self::RosvotBoundary => "ROSVOT note challenger",
             Self::StarsBoundary => "STARS note challenger",
+            Self::Jbm555Boundary => "JBM555 CE-CTC 80 note expert",
             Self::StarsTechnique => "STARS technique evidence",
             Self::AcousticDsp => "Acoustic DSP evidence",
         }
@@ -558,6 +612,18 @@ impl OptionalWorkflowCardV1 {
                 },
                 640,
                 "boundary_stars",
+            ),
+            Self::Jbm555Boundary => (
+                "analysis.note_boundary",
+                Some("jbm555_cectc_80"),
+                "boundaries",
+                "evidence_fusion",
+                "boundaries",
+                ExecutionPolicy::Conditional {
+                    condition: ConditionalExecution::MaximumOnly,
+                },
+                642,
+                "boundary_jbm555",
             ),
             Self::StarsTechnique => (
                 "analysis.technique",

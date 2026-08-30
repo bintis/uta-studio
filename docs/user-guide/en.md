@@ -15,11 +15,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release {{APP_VERSION}} provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages, together with SHA-256 checksum files.
+Download the package for your system from the project’s GitHub Releases page. Release {{APP_VERSION}} provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
 
 #### Windows
 
-1. Download `uta-studio-{{APP_VERSION}}-x86_64-windows.zip` and its checksum file.
+1. Download `uta-studio-{{APP_VERSION}}-x86_64-windows.zip`.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -46,16 +46,6 @@ chmod +x uta-studio-{{APP_VERSION}}-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
-
-#### Verify a download
-
-Use the matching `.sha256` file before installing an artifact obtained through a mirror or shared storage:
-
-```sh
-sha256sum -c uta-studio-{{APP_VERSION}}-linux-deb.sha256
-```
-
-Use the checksum file matching the package type you downloaded.
 
 ### 3. First launch
 

@@ -13,7 +13,9 @@ use crate::backend_cli::{
 
 fn studio_audio_operation(model_id: &str) -> Option<&'static str> {
     match model_id {
-        "bs_roformer_vocals_ep317" => Some("separate_vocals"),
+        "bs_roformer_leap_xe90_vocals" => Some("separate_vocals"),
+        "bs_polarformer_public_instrumental" => Some("separate_instrumental"),
+        "jbm555_cectc_80" => Some("transcribe_singing_notes"),
         "melband_roformer_inst_v2" => Some("separate_instrumental"),
         "melband_roformer_harmony" => Some("separate_harmony"),
         "melband_roformer_denoise_aufr33" => Some("denoise"),
@@ -115,9 +117,19 @@ fn audio_model_status_from_details(
         model_id: model_id.to_string(),
         display_name: details.metadata.display_name,
         purpose: details.metadata.purpose,
-        architecture: "roformer".to_string(),
+        architecture: match model_id {
+            "bs_polarformer_public_instrumental" => "polarformer",
+            "jbm555_cectc_80" => "jbm555_cectc",
+            _ => "roformer",
+        }
+        .to_string(),
         operation: operation.to_string(),
-        runner: "native_roformer".to_string(),
+        runner: match model_id {
+            "bs_roformer_leap_xe90_vocals" => "native_ggml",
+            "bs_polarformer_public_instrumental" | "jbm555_cectc_80" => "native_openvino",
+            _ => "native_roformer",
+        }
+        .to_string(),
         supported_backends: details
             .metadata
             .backends
@@ -167,7 +179,7 @@ pub fn install_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
     let resource = RuntimeResourceRefWireV1::model(model_id)?;
     client.show(&resource).map_err(|error| error.to_string())?;
     client
-        .install(&[resource], &[])
+        .install(&[resource])
         .map_err(|error| error.to_string())?;
     let status = get_audio_model_status_with_client(&client, model_id)?;
     crate::invalidate_analysis_runtime_status_cache();
@@ -179,7 +191,7 @@ pub fn reinstall_audio_model(model_id: &str) -> Result<AudioModelStatus, String>
     let resource = RuntimeResourceRefWireV1::model(model_id)?;
     client.show(&resource).map_err(|error| error.to_string())?;
     client
-        .reinstall(&[resource], &[])
+        .reinstall(&[resource])
         .map_err(|error| error.to_string())?;
     let status = get_audio_model_status_with_client(&client, model_id)?;
     crate::invalidate_analysis_runtime_status_cache();

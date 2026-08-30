@@ -70,7 +70,7 @@ cannot justify current Production singing quality.
 | GGUF repository revision | MISSING IN REPO | Catalog uses no revision; runtime lock also omits the GGUF repo commit. Pin `92282af…` only after confirming that is the intended generation. |
 | license | MATCH | Apache-2.0. |
 | source format | MATCH | Catalog says GGUF for installed resource; lock separately records source model. |
-| acquisition | PARTIAL | ManagedDownload fields exist, but audited URL/revision/license notices/atomic receipt details must be confirmed in the install implementation. |
+| acquisition | PARTIAL | ManagedDownload fields exist, but audited URL/revision/atomic receipt details must be confirmed; license notices are informational only in the install implementation. |
 | runtime repository/commit | MATCH | Exact [Q4]. |
 | runtime GGML commit | MATCH to repository evidence | `8c63e709…`. |
 | language API | CONFLICT | Worker can pass `-l`; selected runtime contract says no explicit hints [Q4][Q5]. |

@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult};
 use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 
+use super::timed_notes::{
+    TIMED_NOTE_EVIDENCE_CONTRACT, TIMED_NOTE_EVIDENCE_VERSION, TimedNoteExpertEvidenceV1,
+    TimedNoteHypothesisV1,
+};
+
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FRAMES: usize = 4 * 60 * 60 * 188;
 const ROSVOT_COMMIT: &str = "3c8332bf43adae35f6e4d64971862f2f6139b310";
@@ -229,6 +234,37 @@ impl AdvancedNoteEvidenceV1 {
                 Ok((range, note.midi))
             })
             .collect()
+    }
+
+    pub fn timed_note_evidence(
+        &self,
+        source_start: u64,
+        source_duration: u64,
+    ) -> EngineResult<TimedNoteExpertEvidenceV1> {
+        let notes = self
+            .canonical_notes(source_start, source_duration)?
+            .into_iter()
+            .map(|(range, midi)| TimedNoteHypothesisV1 {
+                source_id: self.model_id.clone(),
+                range,
+                midi,
+                source_local_boundary_score: None,
+                source_local_pitch_score: None,
+                calibrated_boundary_confidence: None,
+                calibrated_pitch_confidence: None,
+            })
+            .collect();
+        let evidence = TimedNoteExpertEvidenceV1 {
+            contract: TIMED_NOTE_EVIDENCE_CONTRACT.to_string(),
+            version: TIMED_NOTE_EVIDENCE_VERSION,
+            expert_id: self.model_id.clone(),
+            model_generation: self.model_generation.clone(),
+            backend: self.backend.clone(),
+            notes,
+            provenance: self.provenance(),
+        };
+        evidence.validate(source_start, source_duration)?;
+        Ok(evidence)
     }
 
     pub fn technique_artifact(

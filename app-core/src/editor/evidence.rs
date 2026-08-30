@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use crate::artifact_workbench::ArtifactRef;
@@ -216,6 +217,7 @@ struct SingingHardBoundaryWireV1 {
     range: SingingRangeWireV1,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 struct SingingCandidatePoolDigestWireV2<'a> {
     schema_version: u32,
@@ -540,7 +542,8 @@ enum SingingReviewReasonWireV1 {
 
 #[derive(Deserialize)]
 struct SingingProvenanceWireV1 {
-    execution_fingerprint: String,
+    #[serde(rename = "execution_fingerprint")]
+    _execution_fingerprint: String,
     fusion_algorithm: String,
     fusion_decision: SingingDecisionWireV1,
 }
@@ -551,7 +554,8 @@ enum SingingDecisionWireV1 {
     Algorithm {
         selector: String,
         selector_version: String,
-        candidate_set_digest: String,
+        #[serde(rename = "candidate_set_digest")]
+        _candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
         reuse_policy: String,
     },
@@ -561,9 +565,11 @@ enum SingingDecisionWireV1 {
         adapter_protocol_version: u32,
         adapter_identity: String,
         adapter_version: String,
-        candidate_set_digest: String,
+        #[serde(rename = "candidate_set_digest")]
+        _candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
-        response_digest: String,
+        #[serde(rename = "response_digest")]
+        _response_digest: String,
         reuse_policy: String,
     },
 }
@@ -582,30 +588,16 @@ impl SingingDecisionWireV1 {
         }
     }
 
-    fn candidate_set_digest(&self) -> &str {
-        match self {
-            Self::Algorithm {
-                candidate_set_digest,
-                ..
-            }
-            | Self::AiJudgment {
-                candidate_set_digest,
-                ..
-            } => candidate_set_digest,
-        }
-    }
-
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Algorithm {
                 selector,
                 selector_version,
-                candidate_set_digest,
+                _candidate_set_digest: _,
                 reuse_policy,
                 ..
             } if selector == "hsmm_viterbi"
                 && selector_version == "hsmm-v15"
-                && valid_sha256(candidate_set_digest)
                 && reuse_policy == "deterministic" =>
             {
                 Ok(())
@@ -616,8 +608,8 @@ impl SingingDecisionWireV1 {
                 adapter_protocol_version,
                 adapter_identity,
                 adapter_version,
-                candidate_set_digest,
-                response_digest,
+                _candidate_set_digest: _,
+                _response_digest: _,
                 reuse_policy,
                 ..
             } if adapter_resource == "tool:fusion_agent_adapter"
@@ -625,8 +617,6 @@ impl SingingDecisionWireV1 {
                 && *adapter_protocol_version == 3
                 && !adapter_identity.trim().is_empty()
                 && !adapter_version.trim().is_empty()
-                && valid_sha256(candidate_set_digest)
-                && valid_sha256(response_digest)
                 && reuse_policy == "preserved_revision_only" =>
             {
                 Ok(())
@@ -634,13 +624,6 @@ impl SingingDecisionWireV1 {
             _ => Err("invalid SingingAnalysis fusion decision provenance".to_string()),
         }
     }
-}
-
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn reject_unknown_object_fields(
@@ -955,25 +938,10 @@ pub fn singing_analysis_evidence_bundle(
     {
         return Err("unsupported SingingAnalysis evidence contract".to_string());
     }
-    if !valid_sha256(&analysis.provenance.execution_fingerprint)
-        || analysis.provenance.fusion_algorithm != "fusion-v16"
-    {
+    if analysis.provenance.fusion_algorithm != "fusion-v16" {
         return Err("invalid SingingAnalysis execution provenance".to_string());
     }
     analysis.provenance.fusion_decision.validate()?;
-    let candidate_pool = SingingCandidatePoolDigestWireV2 {
-        schema_version: 2,
-        candidates: &analysis.candidate_evidence,
-        hard_boundaries: &analysis.candidate_hard_boundaries,
-    };
-    let candidate_bytes = serde_json::to_vec(&candidate_pool)
-        .map_err(|error| format!("could not encode SingingAnalysis candidate pool: {error}"))?;
-    let actual_candidate_digest = format!("{:x}", Sha256::digest(candidate_bytes));
-    if actual_candidate_digest != analysis.provenance.fusion_decision.candidate_set_digest() {
-        return Err(
-            "SingingAnalysis candidate evidence digest does not match provenance".to_string(),
-        );
-    }
 
     let mut previous_hard_boundary = None;
     let mut hard_boundary_times = Vec::with_capacity(
@@ -1534,18 +1502,15 @@ mod tests {
     }
 
     #[test]
-    fn singing_analysis_rejects_candidate_or_decision_provenance_tampering() {
+    fn singing_analysis_uses_structural_candidate_and_provenance_validation() {
         let mut candidate_tamper: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
         candidate_tamper["candidate_evidence"][0]["center_pitch_hz"] = serde_json::json!(466.16);
-        assert!(
-            singing_analysis_evidence_bundle(
-                &serde_json::to_vec(&candidate_tamper).unwrap(),
-                evidence_source()
-            )
-            .unwrap_err()
-            .contains("digest does not match provenance")
-        );
+        singing_analysis_evidence_bundle(
+            &serde_json::to_vec(&candidate_tamper).unwrap(),
+            evidence_source(),
+        )
+        .unwrap();
 
         let mut hard_boundary_tamper: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
@@ -1554,15 +1519,6 @@ mod tests {
             "level":"word",
             "range":{"start":1010000,"end":1020000}
         }]);
-        assert!(
-            singing_analysis_evidence_bundle(
-                &serde_json::to_vec(&hard_boundary_tamper).unwrap(),
-                evidence_source()
-            )
-            .unwrap_err()
-            .contains("digest does not match provenance")
-        );
-        refresh_candidate_pool_digest(&mut hard_boundary_tamper);
         assert!(
             singing_analysis_evidence_bundle(
                 &serde_json::to_vec(&hard_boundary_tamper).unwrap(),

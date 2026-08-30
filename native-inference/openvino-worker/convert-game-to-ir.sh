@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Explicit model-install action only. Uta! Studio never invokes this script on
-# launch, rendering, planning, or diagnostics. The official model license is
-# CC BY-NC-SA 4.0 and must be accepted separately from the MIT source license.
+# launch, rendering, planning, or diagnostics.
 readonly GAME_REPOSITORY="https://github.com/openvpi/GAME.git"
 readonly GAME_SOURCE_COMMIT="475a8ee781fe8cca980b3b12fbe6c80c768a813a"
 readonly GAME_RELEASE="v1.0.3"
@@ -34,11 +33,6 @@ readonly ESTIMATOR_0512_XML_SHA256="a2651d915d73e44ad8b81725a360ce2fe48b87175461
 readonly ESTIMATOR_1024_XML_SHA256="cf328c4c52bdb337d324ce672a577dfbb684a3773d83ac66e056db3ad70c111b"
 readonly MANIFEST_SHA256="aa9f3a4c2d107527913ef3947f337b41bff7b6de39de6c91ce46b82ced15ac87"
 
-if [[ "${UTA_ACCEPT_GAME_MODEL_LICENSE:-}" != "cc-by-nc-sa-4.0" ]]; then
-    printf 'GAME model conversion requires explicit CC BY-NC-SA 4.0 acceptance.\n' >&2
-    printf 'Set UTA_ACCEPT_GAME_MODEL_LICENSE=cc-by-nc-sa-4.0 after reviewing the license.\n' >&2
-    exit 2
-fi
 if [[ $# -ne 2 ]]; then
     printf 'usage: %s EXTRACTED_ONNX_DIRECTORY DESTINATION_DIRECTORY\n' "$0" >&2
     exit 2

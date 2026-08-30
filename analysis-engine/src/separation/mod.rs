@@ -258,8 +258,11 @@ pub fn run_separation(
 fn validate_semantics(task: &SeparationTask<'_>) -> EngineResult<()> {
     let valid = matches!(
         (task.model_id, task.output_role),
-        ("bs_roformer_vocals_ep317", AudioRole::GuideVocals)
-            | ("melband_roformer_inst_v2", AudioRole::Instrumental)
+        ("bs_roformer_leap_xe90_vocals", AudioRole::GuideVocals)
+            | (
+                "bs_polarformer_public_instrumental",
+                AudioRole::Instrumental
+            )
             | ("melband_roformer_harmony", AudioRole::LeadVocal)
             | ("melband_roformer_denoise_aufr33", AudioRole::CleanLeadVocal)
             | (
@@ -464,7 +467,7 @@ mod tests {
     #[test]
     fn model_semantics_are_not_inferred_from_filename() {
         let task = SeparationTask {
-            model_id: "melband_roformer_inst_v2",
+            model_id: "bs_polarformer_public_instrumental",
             model_path: Path::new("missing"),
             executable: Path::new("missing"),
             ffmpeg: Path::new("missing"),
@@ -482,6 +485,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn real_decode_and_encoding_preserve_timeline_for_fake_native_model() {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
         let Some(ffmpeg) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH")
             .map(PathBuf::from)
@@ -495,13 +499,19 @@ mod tests {
         let executable = root.join("roformer");
         write_wav(&input);
         std::fs::write(&model, b"fixture model").unwrap();
-        std::fs::write(&executable, "#!/bin/sh\ncp -- \"$2\" \"$3\"\n").unwrap();
-        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        let staging = root.join("roformer.part");
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(b"#!/bin/sh\ncp -- \"$2\" \"$3\"\n").unwrap();
+            file.sync_all().unwrap();
+        }
+        let mut permissions = std::fs::metadata(&staging).unwrap().permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(&executable, permissions).unwrap();
+        std::fs::set_permissions(&staging, permissions).unwrap();
+        std::fs::rename(staging, &executable).unwrap();
         let output = run_separation(
             &SeparationTask {
-                model_id: "melband_roformer_inst_v2",
+                model_id: "bs_polarformer_public_instrumental",
                 model_path: &model,
                 executable: &executable,
                 ffmpeg: &ffmpeg,

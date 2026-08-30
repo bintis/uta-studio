@@ -422,6 +422,9 @@ pub(crate) fn f0_consolidation_challengers(
             kind: BoundaryEvidenceKind::F0Consolidation,
             fractional_midi: None,
             source_local_score: Some(support.clamp(0.0, 1.0)),
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: false,
         });
     }
@@ -708,6 +711,8 @@ mod tests {
             boundary_support: None,
             boundary_calibrated_confidence: None,
             target_pitch_source: "pitch/a".to_string(),
+            target_pitch_source_local_score: None,
+            target_pitch_calibrated_confidence: None,
             center_pitch_hz: 440.1,
             rmvpe_center_hz: None,
             rmvpe_confidence: None,
@@ -921,6 +926,9 @@ mod tests {
             kind: BoundaryEvidenceKind::Constraint,
             fractional_midi: None,
             source_local_score: Some(1.0),
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: true,
         };
         let constrained = f0_consolidation_challengers(

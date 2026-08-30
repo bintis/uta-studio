@@ -16,6 +16,7 @@ pub(crate) static ANALYZER: LazyLock<Mutex<AnalyzerState>> = LazyLock::new(|| {
         worker_running: false,
     })
 });
+pub(crate) static ANALYZER_STATE_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 pub(crate) static LIVE_ANALYSIS: LazyLock<Mutex<HashMap<String, AnalysisProgressSnapshot>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -426,7 +427,7 @@ pub fn cancel_analysis_run(file_hash: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::analysis_log_line_matches_node;
+    use super::*;
 
     #[test]
     fn split_provider_log_filter_accepts_presentation_node_identity() {
@@ -441,23 +442,139 @@ mod tests {
             Some("separator.instrumental")
         ));
     }
+
+    #[test]
+    fn force_stop_all_removes_pending_rows_but_preserves_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-force-stop-all-test-{}-{}",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        let _db_guard = library_db::reconnect_for_test(&root);
+        {
+            let mut state = ANALYZER.lock().unwrap();
+            assert!(state.active_hash.is_none());
+            state.queue.clear();
+            state.worker_running = false;
+            state.queue.push_back("queued".to_string());
+        }
+        library_db::analysis_queue_upsert_row("queued", "queued", None, None).unwrap();
+        library_db::analysis_queue_upsert_row("staged", "staged", None, None).unwrap();
+        library_db::analysis_queue_upsert_row("failed", "failed", None, Some("diagnostic"))
+            .unwrap();
+
+        assert_eq!(force_stop_all_analysis().unwrap(), 2);
+        assert_eq!(library_db::analysis_queue_status("queued").unwrap(), None);
+        assert_eq!(library_db::analysis_queue_status("staged").unwrap(), None);
+        assert_eq!(
+            library_db::analysis_queue_status("failed")
+                .unwrap()
+                .as_deref(),
+            Some("failed")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 pub fn stop_analysis_run(file_hash: &str) -> Result<(), String> {
-    let state = ANALYZER.lock().unwrap();
-    let active = state.active_hash.as_deref() == Some(file_hash);
-    let queued = state.queue.iter().any(|hash| hash == file_hash);
-    drop(state);
+    let (active, queued) = {
+        let state = ANALYZER.lock().unwrap();
+        (
+            state.active_hash.as_deref() == Some(file_hash),
+            state.queue.iter().any(|hash| hash == file_hash),
+        )
+    };
     if !active {
-        return if queued {
-            cancel_analysis_run(file_hash)
-        } else {
-            Err(format!("{file_hash} is not currently queued or running"))
-        };
+        let persisted = crate::library_db::analysis_queue_status(file_hash)
+            .map_err(|error| error.to_string())?;
+        if queued || persisted.as_deref() == Some("staged") {
+            return cancel_analysis_run(file_hash);
+        }
+        if matches!(persisted.as_deref(), Some("queued" | "analyzing")) {
+            // A persisted active status without a matching scheduler entry is
+            // stale state left by an interrupted process. Nothing is alive to
+            // kill, so removing the durable row is the complete stop action.
+            remove_from_queue(file_hash);
+            return Ok(());
+        }
+        return Err(format!("{file_hash} is not currently queued or running"));
     }
-    super::engine_run::cancel_active_engine(file_hash).unwrap_or_else(|| {
-        Err("active queue entry has no cancellable exact Engine request".to_string())
-    })
+    force_stop_active_engine(file_hash)?;
+    wait_until_analysis_released(file_hash)
+}
+
+fn wait_until_analysis_released(file_hash: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut state = ANALYZER.lock().unwrap();
+    while state.active_hash.as_deref() == Some(file_hash) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "Analysis Engine was terminated but scheduler cleanup timed out for {file_hash}"
+            ));
+        }
+        let (next, wait) = ANALYZER_STATE_CHANGED
+            .wait_timeout(state, remaining)
+            .unwrap();
+        state = next;
+        if wait.timed_out() && state.active_hash.as_deref() == Some(file_hash) {
+            return Err(format!(
+                "Analysis Engine was terminated but scheduler cleanup timed out for {file_hash}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Force-stops the active Engine process tree and removes every not-yet-run
+/// staged/queued analysis. Failed rows remain visible for diagnosis.
+pub fn force_stop_all_analysis() -> Result<usize, String> {
+    let (active, queued) = {
+        let mut state = ANALYZER.lock().unwrap();
+        let active = state.active_hash.clone();
+        let queued = state.queue.drain(..).collect::<Vec<_>>();
+        (active, queued)
+    };
+    let mut stopped = std::collections::HashSet::new();
+    for file_hash in queued {
+        stopped.insert(file_hash.clone());
+        library_db::analysis_queue_delete(&file_hash).map_err(|error| error.to_string())?;
+    }
+    for (file_hash, status) in AnalysisQueue::load().entries {
+        if matches!(
+            status,
+            QueuedStatus::Staged | QueuedStatus::Queued | QueuedStatus::Analyzing(_)
+        ) && active.as_deref() != Some(file_hash.as_str())
+        {
+            stopped.insert(file_hash.clone());
+            library_db::analysis_queue_delete(&file_hash).map_err(|error| error.to_string())?;
+        }
+    }
+    if let Some(file_hash) = active {
+        stopped.insert(file_hash.clone());
+        force_stop_active_engine(&file_hash)?;
+        wait_until_analysis_released(&file_hash)?;
+    }
+    Ok(stopped.len())
+}
+
+pub(crate) fn stop_analysis_before_song_removal(file_hash: &str) -> Result<(), String> {
+    let active_or_queued = {
+        let state = ANALYZER.lock().unwrap();
+        state.active_hash.as_deref() == Some(file_hash)
+            || state.queue.iter().any(|queued| queued == file_hash)
+    };
+    if active_or_queued
+        || matches!(
+            library_db::analysis_queue_status(file_hash)
+                .map_err(|error| error.to_string())?
+                .as_deref(),
+            Some("staged" | "queued" | "analyzing")
+        )
+    {
+        stop_analysis_run(file_hash)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -160,6 +160,7 @@ pub(crate) enum AnalysisCommand {
     CloseAnalysisLogViewer,
     RequestDeleteSongCache(String),
     CancelAnalysisRun(String),
+    ForceStopAllAnalysis,
     CancelDeleteSongCache,
     ConfirmDeleteSongCache,
     RequestDeleteAuthoredChart(String),

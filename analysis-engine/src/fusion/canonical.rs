@@ -115,6 +115,10 @@ pub struct CanonicalNoteEvidence {
     #[serde(default = "legacy_game_source")]
     pub target_pitch_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pitch_source_local_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pitch_calibrated_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rmvpe_center_hz: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rmvpe_confidence: Option<f32>,
@@ -261,12 +265,16 @@ fn validate_canonical_note(note: &CanonicalNote, index: usize) -> Result<(), Str
             .evidence
             .presence_decision_parameter
             .is_some_and(invalid_unit)
-        || note
-            .evidence
-            .boundary_calibrated_confidence
-            .is_some_and(invalid_unit)
+        || [
+            note.evidence.boundary_calibrated_confidence,
+            note.evidence.target_pitch_source_local_score,
+            note.evidence.target_pitch_calibrated_confidence,
+        ]
+        .into_iter()
+        .flatten()
+        .any(invalid_unit)
     {
-        return Err(field_error("boundary decision parameters"));
+        return Err(field_error("boundary/pitch confidence"));
     }
     if note.evidence.boundary_kind == BoundaryEvidenceKind::Game
         && note.evidence.effective_boundary_fractional_midi().is_none()
@@ -299,7 +307,15 @@ fn validate_canonical_note(note: &CanonicalNote, index: usize) -> Result<(), Str
             || alternative
                 .fractional_midi
                 .is_some_and(|midi| !midi.is_finite() || !(0.0..128.0).contains(&midi))
-            || alternative.source_local_score.is_some_and(invalid_unit)
+            || [
+                alternative.source_local_score,
+                alternative.source_local_pitch_score,
+                alternative.calibrated_boundary_confidence,
+                alternative.calibrated_pitch_confidence,
+            ]
+            .into_iter()
+            .flatten()
+            .any(invalid_unit)
         {
             return Err(field_error(&format!(
                 "boundary alternative {alternative_index}"
@@ -652,6 +668,8 @@ pub fn build_canonical_singing_track(
                 presence_decision_parameter: candidate.presence_decision_parameter,
                 boundary_calibrated_confidence: candidate.boundary_calibrated_confidence,
                 target_pitch_source: candidate.target_pitch_source,
+                target_pitch_source_local_score: candidate.target_pitch_source_local_score,
+                target_pitch_calibrated_confidence: candidate.target_pitch_calibrated_confidence,
                 rmvpe_center_hz: candidate.rmvpe_center_hz,
                 rmvpe_confidence: candidate.rmvpe_confidence,
                 rmvpe_cents_difference: candidate.rmvpe_cents_difference,

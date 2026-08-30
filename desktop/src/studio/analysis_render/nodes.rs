@@ -328,6 +328,73 @@ pub(crate) struct WorkflowNodeCardSpec<'a> {
     pub(crate) input_ports: usize,
     pub(crate) output_ports: usize,
     pub(crate) category: GraphNodeCategory,
+    pub(crate) selected_run_id: Option<i64>,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct AnalysisTileFlipState {
+    node_id: Option<String>,
+    started_at: Option<Instant>,
+}
+
+#[derive(Component)]
+pub(crate) struct AnalysisTileBackFace {
+    node_id: String,
+}
+
+pub(crate) fn animate_analysis_tile_flip(
+    state: Res<AnalysisTileFlipState>,
+    mut tiles: Query<(&AnalysisTileBackFace, &mut UiTransform)>,
+) {
+    const FLIP_SECONDS: f32 = 0.18;
+    for (tile, mut transform) in &mut tiles {
+        if state.node_id.as_deref() != Some(tile.node_id.as_str()) {
+            transform.scale = Vec2::ONE;
+            continue;
+        }
+        let elapsed = state
+            .started_at
+            .map_or(FLIP_SECONDS, |started| started.elapsed().as_secs_f32());
+        let progress = (elapsed / FLIP_SECONDS).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        transform.scale = Vec2::new(0.08 + eased * 0.92, 0.94 + eased * 0.06);
+    }
+}
+
+fn spawn_analysis_tile_action(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    action: UiAction,
+) {
+    parent.spawn((
+        Button,
+        action,
+        Node {
+            width: percent(48),
+            min_width: px(0),
+            min_height: px(22),
+            flex_grow: 1.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::axes(px(5), px(3)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(2)),
+            ..default()
+        },
+        BackgroundColor(theme.background.with_alpha(0.30)),
+        BorderColor::all(theme.foreground.with_alpha(0.22)),
+        children![(
+            Text::new(label),
+            ui_text_font(font, 6.8),
+            TextColor(theme.foreground),
+            TextLayout {
+                linebreak: bevy::text::LineBreak::WordOrCharacter,
+                justify: Justify::Center,
+            },
+        )],
+    ));
 }
 
 pub(crate) fn spawn_workflow_graph_node(
@@ -351,6 +418,7 @@ pub(crate) fn spawn_workflow_graph_node(
         output_ports,
         zoom,
         category,
+        selected_run_id,
     } = spec;
     let accent = analysis_graph_category_accent(category, theme);
     let padding = analysis_graph_scaled(8.0, 5.5, zoom);
@@ -371,6 +439,7 @@ pub(crate) fn spawn_workflow_graph_node(
         WorkflowNodeVisualState::Waiting => ("WAITING", Some(0), theme.muted_foreground, "○"),
         WorkflowNodeVisualState::Running(progress) => ("RUNNING", progress, accent, "●"),
         WorkflowNodeVisualState::Complete => ("COMPLETE", Some(100), complete_color, "✓"),
+        WorkflowNodeVisualState::Cancelled => ("CANCELLED", Some(0), theme.destructive, "■"),
         WorkflowNodeVisualState::Disabled => ("DISABLED", Some(0), theme.muted_foreground, "⊘"),
         WorkflowNodeVisualState::Failed => ("FAILED", Some(0), theme.destructive, "✕"),
         WorkflowNodeVisualState::Deferred => ("DEFERRED", Some(0), theme.editor_warning, "…"),
@@ -386,11 +455,29 @@ pub(crate) fn spawn_workflow_graph_node(
     };
     let running = matches!(state, WorkflowNodeVisualState::Running(_));
     let complete = matches!(state, WorkflowNodeVisualState::Complete);
-    let failed = matches!(state, WorkflowNodeVisualState::Failed);
+    let failed = matches!(
+        state,
+        WorkflowNodeVisualState::Failed | WorkflowNodeVisualState::Cancelled
+    );
     let context_node_id = node_id.to_string();
     let context_capability_id = capability_id.to_string();
     let context_file_hash = file_hash.to_string();
     let context_label = label.to_string();
+    let tile_menu = selected.then(|| {
+        build_analysis_node_context_menu(
+            node_id,
+            capability_id,
+            label,
+            file_hash,
+            selected_run_id,
+            Vec2::ZERO,
+        )
+    });
+    let tile_background = if theme.dark {
+        accent.mix(&theme.background, if dimmed { 0.68 } else { 0.34 })
+    } else {
+        accent.mix(&theme.card, if dimmed { 0.82 } else { 0.64 })
+    };
     parent
         .spawn((
             Button,
@@ -414,15 +501,17 @@ pub(crate) fn spawn_workflow_graph_node(
                 row_gap: px(gap),
                 overflow: Overflow::clip(),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(analysis_graph_scaled(8.0, 5.0, zoom))),
+                border_radius: BorderRadius::all(px(analysis_graph_scaled(2.0, 1.0, zoom))),
                 ..default()
             },
-            BackgroundColor(if running {
-                accent.with_alpha(if dimmed { 0.06 } else { 0.15 })
-            } else if selected {
-                theme.card.with_alpha(if dimmed { 0.35 } else { 0.96 })
+            BackgroundColor(if failed {
+                theme
+                    .destructive
+                    .mix(&theme.background, if dimmed { 0.72 } else { 0.30 })
+            } else if running || selected {
+                accent.mix(&theme.background, if dimmed { 0.62 } else { 0.16 })
             } else {
-                theme.card.with_alpha(if dimmed { 0.22 } else { 0.90 })
+                tile_background
             }),
             BorderColor::all(if selected {
                 accent.with_alpha(0.96)
@@ -438,14 +527,14 @@ pub(crate) fn spawn_workflow_graph_node(
                 accent.with_alpha(if dimmed { 0.18 } else { 0.46 })
             }),
             BoxShadow::new(
-                accent.with_alpha(if dimmed {
+                theme.foreground.with_alpha(if dimmed {
                     0.0
                 } else if running {
-                    0.52
+                    0.32
                 } else if selected {
-                    0.20
+                    0.22
                 } else {
-                    0.045
+                    0.035
                 }),
                 px(0),
                 px(0),
@@ -456,7 +545,7 @@ pub(crate) fn spawn_workflow_graph_node(
                 }),
                 px(if running { (2.0 * zoom).max(1.0) } else { 0.0 }),
             ),
-            ZIndex(2),
+            ZIndex(if selected { 5 } else { 2 }),
         ))
         .with_children(|node| {
             spawn_analysis_graph_ports(
@@ -501,6 +590,115 @@ pub(crate) fn spawn_workflow_graph_node(
                     BackgroundColor(accent),
                     Pickable::IGNORE,
                 ));
+            }
+            if let Some(menu) = tile_menu.as_ref() {
+                node.spawn((
+                    AnalysisTileBackFace {
+                        node_id: node_id.to_string(),
+                    },
+                    UiTransform::from_scale(Vec2::new(0.08, 0.94)),
+                    Node {
+                        width: percent(100),
+                        height: percent(100),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(5),
+                        ..default()
+                    },
+                ))
+                .with_children(|back| {
+                    back.spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        column_gap: px(6),
+                        ..default()
+                    })
+                    .with_children(|heading| {
+                        spawn_text(
+                            heading,
+                            font.clone(),
+                            "NODE ACTIONS",
+                            analysis_graph_scaled(6.6, 6.0, zoom),
+                            theme.foreground.with_alpha(0.72),
+                        );
+                        heading.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        });
+                        spawn_text(
+                            heading,
+                            font.clone(),
+                            "↶",
+                            analysis_graph_scaled(9.0, 7.0, zoom),
+                            theme.foreground,
+                        );
+                    });
+                    spawn_bounded_wrapped_text(
+                        back,
+                        font.clone(),
+                        label,
+                        analysis_graph_scaled(9.0, 7.5, zoom),
+                        theme.foreground,
+                    );
+                    back.spawn(Node {
+                        width: percent(100),
+                        min_height: px(0),
+                        flex_grow: 1.0,
+                        flex_wrap: FlexWrap::Wrap,
+                        align_content: AlignContent::FlexStart,
+                        column_gap: px(4),
+                        row_gap: px(4),
+                        ..default()
+                    })
+                    .with_children(|actions| {
+                        spawn_analysis_tile_action(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Inspect view",
+                            UiAction::from(AnalysisCommand::OpenAnalysisInspect(
+                                menu.node_id.clone(),
+                                menu.capability_id.clone(),
+                            )),
+                        );
+                        if let Some(run) = menu.run_action.clone() {
+                            spawn_analysis_tile_action(
+                                actions,
+                                font.clone(),
+                                theme,
+                                run.label,
+                                run.action,
+                            );
+                        }
+                        if let Some(compare) = menu.compare_node_action.clone() {
+                            spawn_analysis_tile_action(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Compare previous",
+                                compare,
+                            );
+                        }
+                        spawn_analysis_tile_action(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Documentation",
+                            UiAction::from(AppCommand::OpenDocumentation(Some(
+                                documentation_anchor_for_node(&menu.node_id).to_string(),
+                            ))),
+                        );
+                        if let Some(logs) = menu.view_logs_action.clone() {
+                            spawn_analysis_tile_action(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "View logs",
+                                logs,
+                            );
+                        }
+                    });
+                });
+                return;
             }
             node.spawn(Node {
                 width: percent(100),
@@ -599,6 +797,7 @@ pub(crate) fn spawn_workflow_graph_node(
             move |mut event: On<Pointer<Press>>,
                   mut analysis: ResMut<AnalysisUiState>,
                   mut dialogs: ResMut<DialogState>,
+                  mut tile_flip: ResMut<AnalysisTileFlipState>,
                   mut invalidated: ResMut<UiInvalidated>,
                   windows: Query<&Window, With<PrimaryWindow>>| {
                 event.propagate(false);
@@ -620,6 +819,16 @@ pub(crate) fn spawn_workflow_graph_node(
                     &mut dialogs,
                     &mut invalidated,
                 );
+                if event.button == PointerButton::Primary {
+                    if analysis.selected_analysis_node.as_deref() == Some(context_node_id.as_str())
+                    {
+                        tile_flip.node_id = Some(context_node_id.clone());
+                        tile_flip.started_at = Some(Instant::now());
+                    } else if tile_flip.node_id.as_deref() == Some(context_node_id.as_str()) {
+                        tile_flip.node_id = None;
+                        tile_flip.started_at = None;
+                    }
+                }
             },
         );
 }

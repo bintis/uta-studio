@@ -375,79 +375,6 @@ pub(crate) fn spawn_library(
             ..default()
         })
         .with_children(|library| {
-            if session.library_view == LibraryView::Queue {
-                library
-                    .spawn((
-                        Node {
-                            position_type: PositionType::Relative,
-                            width: percent(100),
-                            padding: UiRect::new(
-                                px(22),
-                                px(if session.analysis_model_panel_open {
-                                    ANALYSIS_MODEL_PANEL_WIDTH + 22.0
-                                } else {
-                                    22.0
-                                }),
-                                px(10),
-                                px(10),
-                            ),
-                        flex_direction: FlexDirection::Column,
-                        border: UiRect::bottom(px(1)),
-                        ..default()
-                    },
-                    BorderColor::all(theme.border.with_alpha(0.55)),
-                ))
-                .with_children(|header| {
-                    if let Some(reason) = current_analysis_file_hash(session)
-                        .as_deref()
-                        .and_then(analysis_start_unavailable)
-                    {
-                        spawn_text(
-                            header,
-                            font.clone(),
-                            reason,
-                            10.0,
-                            theme.muted_foreground,
-                        );
-                    }
-                    let indeterminate = analysis_overall_progress_is_indeterminate(session);
-                    let progress = current_analysis_header(session)
-                        .map(|(_, _, progress)| progress)
-                        .unwrap_or(0);
-                        header
-                            .spawn((
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: px(0),
-                                    right: px(0),
-                                    bottom: px(-1),
-                                    height: px(2),
-                                    overflow: Overflow::clip(),
-                                    ..default()
-                                },
-                                BackgroundColor(theme.border.with_alpha(0.38)),
-                            ))
-                            .with_children(|track| {
-                                track.spawn((
-                                    Node {
-                                        width: percent(if indeterminate {
-                                            100.0
-                                        } else {
-                                            progress as f32
-                                        }),
-                                        height: percent(100),
-                                        ..default()
-                                    },
-                                    BackgroundColor(theme.primary.with_alpha(if indeterminate {
-                                        0.38
-                                    } else {
-                                        0.92
-                                    })),
-                                ));
-                            });
-                });
-            }
-
             library
                 .spawn((
                     LibrarySongList,
@@ -756,7 +683,7 @@ pub(crate) fn song_status_copy(
         }
         Some((app_core::QueuedStatus::Queued, _)) => ("Queued".to_string(), theme.primary),
         Some((app_core::QueuedStatus::Analyzing(_), Some(live))) if live.engine.is_some() => (
-            "Analyzing · overall work units unavailable".to_string(),
+            format!("Analyzing · {}%", live.overall_progress.clamp(0, 100)),
             theme.primary,
         ),
         Some((app_core::QueuedStatus::Analyzing(progress), _)) => {

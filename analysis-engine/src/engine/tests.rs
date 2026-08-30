@@ -120,6 +120,8 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                 presence_decision_parameter: Some(0.2),
                 boundary_calibrated_confidence: None,
                 target_pitch_source: "game".to_string(),
+                target_pitch_source_local_score: None,
+                target_pitch_calibrated_confidence: None,
                 rmvpe_center_hz: None,
                 rmvpe_confidence: None,
                 rmvpe_cents_difference: None,
@@ -171,6 +173,8 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                 boundary_support: None,
                 boundary_calibrated_confidence: None,
                 target_pitch_source: "game".to_string(),
+                target_pitch_source_local_score: None,
+                target_pitch_calibrated_confidence: None,
                 center_pitch_hz: 440.0,
                 rmvpe_center_hz: None,
                 rmvpe_confidence: None,
@@ -405,10 +409,13 @@ fn cancelled_candidate_publication_writes_no_artifact() {
 #[cfg(unix)]
 fn executable(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    let mut permissions = fs::metadata(path).unwrap().permissions();
+
+    let staging = path.with_extension("part");
+    fs::write(&staging, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let mut permissions = fs::metadata(&staging).unwrap().permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).unwrap();
+    fs::set_permissions(&staging, permissions).unwrap();
+    fs::rename(staging, path).unwrap();
 }
 
 #[cfg(unix)]
@@ -522,7 +529,7 @@ fn fcpe_primary_candidate_workflow() -> serde_json::Value {
     serde_json::json!({
         "contract": "uta.workflow-execution",
         "version": 1,
-        "workflow_schema_version": 2,
+        "workflow_schema_version": crate::workflow::WORKFLOW_SCHEMA_VERSION,
         "workflow_id": "fcpe-primary-candidate",
         "workflow_revision": 1,
         "quality_mode": "fast",
@@ -532,7 +539,7 @@ fn fcpe_primary_candidate_workflow() -> serde_json::Value {
             node(
                 "vocal_split",
                 "audio.separate_vocal_bgm",
-                Some("bs_roformer_vocals_ep317"),
+                Some("bs_roformer_leap_xe90_vocals"),
                 900,
                 "vulkan",
                 serde_json::json!({})

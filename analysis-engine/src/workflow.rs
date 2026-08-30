@@ -16,6 +16,7 @@ use crate::contract::{
 pub const WORKFLOW_EXECUTION_EXTENSION_KEY: &str = "uta.workflow_execution.v1";
 pub const WORKFLOW_EXECUTION_CONTRACT: &str = "uta.workflow-execution";
 pub const WORKFLOW_EXECUTION_VERSION: u32 = 1;
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -209,12 +210,12 @@ impl WorkflowExecutionV1 {
     pub fn validate(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
         if self.contract != WORKFLOW_EXECUTION_CONTRACT
             || self.version != WORKFLOW_EXECUTION_VERSION
-            || self.workflow_schema_version != 2
+            || self.workflow_schema_version != WORKFLOW_SCHEMA_VERSION
         {
             return Err(EngineError::new(
                 EngineErrorCode::UnsupportedContractVersion,
                 format!(
-                    "expected {WORKFLOW_EXECUTION_CONTRACT}/{WORKFLOW_EXECUTION_VERSION} with workflow schema 2"
+                    "expected {WORKFLOW_EXECUTION_CONTRACT}/{WORKFLOW_EXECUTION_VERSION} with workflow schema {WORKFLOW_SCHEMA_VERSION}"
                 ),
             )
             .for_request(&request.request_id));
@@ -683,7 +684,7 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
         node.provider_preferences.primary.as_deref(),
     ) {
         ("audio.source", None) => vec!["audio.decode"],
-        ("audio.separate_vocal_bgm", Some("bs_roformer_vocals_ep317")) => {
+        ("audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals")) => {
             vec!["audio.extract_vocals"]
         }
         ("audio.lead_isolate", Some("melband_roformer_harmony")) => {
@@ -708,6 +709,7 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
         ("analysis.note_boundary", Some("basic_pitch")) => vec!["notes.basic_pitch"],
         ("analysis.note_boundary", Some("rosvot")) => vec!["notes.rosvot"],
         ("analysis.note_boundary", Some("stars")) => vec!["notes.stars"],
+        ("analysis.note_boundary", Some("jbm555_cectc_80")) => vec!["notes.jbm555"],
         ("analysis.technique", Some("stars")) => vec!["technique.analyze"],
         ("analysis.acoustic_dsp", None) => vec!["analysis.acoustic_dsp"],
         ("lyrics.known", None) => vec!["lyrics.reference"],
@@ -722,7 +724,7 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
     if node.capability_id == "audio.separate_vocal_bgm"
         && matches!(
             node.provider_preferences.instrumental.as_deref(),
-            Some("melband_roformer_inst_v2" | "bs_roformer_vocals_ep317")
+            Some("bs_polarformer_public_instrumental")
         )
     {
         capabilities.push("audio.extract_instrumental");
@@ -1193,14 +1195,14 @@ mod tests {
         serde_json::json!({
             "contract": WORKFLOW_EXECUTION_CONTRACT,
             "version": 1,
-            "workflow_schema_version": 2,
+            "workflow_schema_version": WORKFLOW_SCHEMA_VERSION,
             "workflow_id": "song:test:workflow",
             "workflow_revision": 1,
             "quality_mode": "balanced",
             "definition_digest": "a".repeat(32),
             "nodes": [
                 node("source", "audio.source", None, "always", 1000, "native_dsp"),
-                node("split", "audio.separate_vocal_bgm", Some("bs_roformer_vocals_ep317"), "always", 900, "vulkan"),
+                node("split", "audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals"), "always", 900, "vulkan"),
                 node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), "always", 800, "vulkan"),
                 node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 680, "openvino")
             ],
@@ -1309,17 +1311,17 @@ mod tests {
     fn separation_models_map_to_independent_presentation_nodes() {
         let mut value = workflow_value();
         value["nodes"][1]["provider_preferences"]["instrumental"] =
-            serde_json::json!("melband_roformer_inst_v2");
+            serde_json::json!("bs_polarformer_public_instrumental");
         value["nodes"][1]["execution_invocations"] = serde_json::json!([
             {
                 "invocation_id": "split.vocal",
-                "provider_id": "bs_roformer_vocals_ep317",
+                "provider_id": "bs_roformer_leap_xe90_vocals",
                 "capabilities": ["audio.extract_vocals"],
                 "output_ports": ["vocal"]
             },
             {
                 "invocation_id": "split.instrumental",
-                "provider_id": "melband_roformer_inst_v2",
+                "provider_id": "bs_polarformer_public_instrumental",
                 "capabilities": ["audio.extract_instrumental"],
                 "output_ports": ["instrumental"]
             }
@@ -1328,31 +1330,31 @@ mod tests {
         assert_eq!(
             workflow.presentation_node_for_engine_execution(
                 "audio.extract_vocals",
-                Some("bs_roformer_vocals_ep317")
+                Some("bs_roformer_leap_xe90_vocals")
             ),
             Some("split.vocal".to_string())
         );
         assert_eq!(
             workflow.presentation_node_for_engine_execution(
                 "audio.extract_instrumental",
-                Some("melband_roformer_inst_v2")
+                Some("bs_polarformer_public_instrumental")
             ),
             Some("split.instrumental".to_string())
         );
         assert_eq!(
             workflow.model_for_engine_capability("audio.extract_instrumental"),
-            Some("melband_roformer_inst_v2")
+            Some("bs_polarformer_public_instrumental")
         );
     }
 
     #[test]
-    fn ep317_dual_output_strategy_is_one_validated_invocation() {
+    fn removed_single_provider_residual_strategy_is_rejected() {
         let mut value = workflow_value();
         value["nodes"][1]["provider_preferences"]["instrumental"] =
-            serde_json::json!("bs_roformer_vocals_ep317");
+            serde_json::json!("bs_roformer_leap_xe90_vocals");
         value["nodes"][1]["execution_invocations"] = serde_json::json!([{
             "invocation_id": "split",
-            "provider_id": "bs_roformer_vocals_ep317",
+            "provider_id": "bs_roformer_leap_xe90_vocals",
             "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
             "output_ports": ["vocal", "instrumental"]
         }]);
@@ -1364,20 +1366,7 @@ mod tests {
         request
             .extensions
             .insert(WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(), value);
-        let workflow = WorkflowExecutionV1::from_request(&request)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            workflow.model_for_engine_capability("audio.extract_instrumental"),
-            Some("bs_roformer_vocals_ep317")
-        );
-        assert_eq!(
-            workflow.presentation_node_for_engine_execution(
-                "audio.extract_instrumental",
-                Some("bs_roformer_vocals_ep317")
-            ),
-            Some("split".to_string())
-        );
+        assert!(WorkflowExecutionV1::from_request(&request).is_err());
     }
 
     #[test]
@@ -1402,7 +1391,7 @@ mod tests {
         let mut value = workflow_value();
         value["nodes"][1]["execution_invocations"] = serde_json::json!([{
             "invocation_id": "split.vocal",
-            "provider_id": "melband_roformer_inst_v2",
+            "provider_id": "bs_polarformer_public_instrumental",
             "capabilities": ["audio.extract_vocals"],
             "output_ports": ["vocal"]
         }]);
@@ -1423,17 +1412,17 @@ mod tests {
     fn swapped_separation_output_bindings_fail_at_the_engine_boundary() {
         let mut value = workflow_value();
         value["nodes"][1]["provider_preferences"]["instrumental"] =
-            serde_json::json!("melband_roformer_inst_v2");
+            serde_json::json!("bs_polarformer_public_instrumental");
         value["nodes"][1]["execution_invocations"] = serde_json::json!([
             {
                 "invocation_id": "split.vocal",
-                "provider_id": "bs_roformer_vocals_ep317",
+                "provider_id": "bs_roformer_leap_xe90_vocals",
                 "capabilities": ["audio.extract_vocals"],
                 "output_ports": ["instrumental"]
             },
             {
                 "invocation_id": "split.instrumental",
-                "provider_id": "melband_roformer_inst_v2",
+                "provider_id": "bs_polarformer_public_instrumental",
                 "capabilities": ["audio.extract_instrumental"],
                 "output_ports": ["vocal"]
             }

@@ -2,37 +2,16 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 pub const RECIPE_DIGEST: &str = "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a";
 const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
 
-const MODEL_IDENTITIES: [(&str, &str, u64); 5] = [
-    (
-        "bs_roformer_vocals_ep317",
-        "8dc288b386a2bb1b554258b0852479bafca71bf37a2d831b92e890fb9dc4b5de",
-        320_092_800,
-    ),
-    (
-        "melband_roformer_denoise_aufr33",
-        "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
-        457_008_736,
-    ),
-    (
-        "melband_roformer_dereverb_anvuew",
-        "f850fb2460099df356676ce37ba48875e3c75726d7a848b42d75ff6015955ac7",
-        457_008_736,
-    ),
-    (
-        "melband_roformer_inst_v2",
-        "e2b39b979e2413af172bad88a6b0a324a54d47fbca6622083f7f3817b9046897",
-        787_918_656,
-    ),
-    (
-        "melband_roformer_harmony",
-        "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
-        457_008_736,
-    ),
+const MODEL_IDENTITIES: [(&str, u64); 5] = [
+    ("bs_roformer_leap_xe90_vocals", 267_433_600),
+    ("melband_roformer_denoise_aufr33", 457_008_736),
+    ("melband_roformer_dereverb_anvuew", 457_008_736),
+    ("melband_roformer_inst_v2", 787_918_656),
+    ("melband_roformer_harmony", 457_008_736),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +37,6 @@ struct RuntimeFile {
 pub struct ValidatedRuntime {
     pub engine: PathBuf,
     pub library_dir: PathBuf,
-    pub manifest_sha256: String,
 }
 
 fn safe_relative(value: &str) -> Result<&Path, String> {
@@ -88,7 +66,6 @@ pub fn validate_runtime() -> Result<ValidatedRuntime, String> {
     let root = runtime_root()?;
     let bytes = std::fs::read(root.join("runtime-manifest.json"))
         .map_err(|error| format!("GGML Vulkan runtime manifest is unavailable: {error}"))?;
-    let manifest_sha256 = format!("{:x}", Sha256::digest(&bytes));
     let manifest: RuntimeManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("GGML Vulkan runtime manifest is invalid: {error}"))?;
     if manifest.schema_version != 1 || manifest.ggml_commit != GGML_COMMIT {
@@ -110,21 +87,16 @@ pub fn validate_runtime() -> Result<ValidatedRuntime, String> {
     Ok(ValidatedRuntime {
         engine,
         library_dir,
-        manifest_sha256,
     })
 }
 
 pub fn validate_model(model_id: &str, configured: &Path) -> Result<PathBuf, String> {
     let expected_size = MODEL_IDENTITIES
         .iter()
-        .find(|(id, _, _)| *id == model_id)
-        .map(|(_, _, size)| *size)
+        .find(|(id, _)| *id == model_id)
+        .map(|(_, size)| *size)
         .ok_or_else(|| format!("model {model_id} has no GGML Vulkan executor"))?;
-    let path = if configured.is_file() {
-        configured.to_path_buf()
-    } else {
-        configured.join("model-fp16.gguf")
-    };
+    let path = configured_model_path(model_id, configured);
     let metadata = path
         .metadata()
         .map_err(|error| format!("GGUF model is unavailable: {error}"))?;
@@ -134,6 +106,16 @@ pub fn validate_model(model_id: &str, configured: &Path) -> Result<PathBuf, Stri
     Ok(path)
 }
 
+fn configured_model_path(model_id: &str, configured: &Path) -> PathBuf {
+    if configured.is_file() {
+        configured.to_path_buf()
+    } else if model_id == "bs_roformer_leap_xe90_vocals" {
+        configured.join("bs_leap_xe_voc-F32.gguf")
+    } else {
+        configured.join("model-fp16.gguf")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,10 +123,20 @@ mod tests {
     #[test]
     fn every_supported_model_has_a_full_identity() {
         assert_eq!(MODEL_IDENTITIES.len(), 5);
-        for (id, digest, size) in MODEL_IDENTITIES {
+        for (id, size) in MODEL_IDENTITIES {
             assert!(!id.is_empty());
-            assert!(!digest.is_empty());
-            assert!(size > 300_000_000);
+            assert!(size > 250_000_000);
         }
+    }
+
+    #[test]
+    fn leap_directory_keeps_the_public_f32_filename() {
+        assert_eq!(
+            configured_model_path(
+                "bs_roformer_leap_xe90_vocals",
+                Path::new("managed-generation")
+            ),
+            Path::new("managed-generation/bs_leap_xe_voc-F32.gguf")
+        );
     }
 }

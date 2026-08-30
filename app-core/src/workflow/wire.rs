@@ -469,7 +469,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             separation.provider_preferences.instrumental.as_deref(),
-            Some("melband_roformer_inst_v2")
+            Some("bs_polarformer_public_instrumental")
         );
         assert_eq!(separation.execution_invocations.len(), 2);
         assert_eq!(
@@ -478,7 +478,7 @@ mod tests {
         );
         assert_eq!(
             separation.execution_invocations[0].provider_id,
-            "bs_roformer_vocals_ep317"
+            "bs_roformer_leap_xe90_vocals"
         );
         assert_eq!(
             separation.execution_invocations[1].invocation_id,
@@ -486,7 +486,7 @@ mod tests {
         );
         assert_eq!(
             separation.execution_invocations[1].provider_id,
-            "melband_roformer_inst_v2"
+            "bs_polarformer_public_instrumental"
         );
     }
 

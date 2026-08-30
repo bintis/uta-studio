@@ -8,6 +8,21 @@ use crate::artifact::{
 use crate::fingerprint::ACOUSTIC_DSP_VERSION;
 use crate::fusion::{LyricsAuthority, SingingReviewReason, TimeRange};
 
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, body: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let staging = path.with_extension("part");
+    {
+        let mut file = std::fs::File::create(&staging).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+    }
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(staging, path).unwrap();
+}
+
 fn transcript(authority: TranscriptAuthorityV1) -> TranscriptArtifactV1 {
     let caller = authority == TranscriptAuthorityV1::CallerCanonical;
     TranscriptArtifactV1 {
@@ -872,8 +887,6 @@ fn f0_derived_selected_notes_keep_typed_source_identity_and_uncertainty() {
 #[cfg(unix)]
 #[test]
 fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
-    use std::os::unix::fs::PermissionsExt;
-
     let (transcript, lyrics, alignment, words, pitch) = fused_inputs(false);
     let build_fusion = || {
         execute_singing_fusion_stage(
@@ -935,12 +948,10 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
     ));
     std::fs::create_dir_all(&root).unwrap();
     let adapter = root.join("uta-fusion-agent-adapter");
-    std::fs::write(
+    write_executable(
         &adapter,
-        format!("#!/bin/sh\ncat <<'UTA_RESPONSE'\n{response}\nUTA_RESPONSE\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        &format!("#!/bin/sh\ncat <<'UTA_RESPONSE'\n{response}\nUTA_RESPONSE\n"),
+    );
     let cancellation = CancellationToken::default();
     let ai_fusion = build_fusion();
     let ai = execute_candidate_graph_stage(
@@ -970,8 +981,6 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
 #[cfg(unix)]
 #[test]
 fn ai_adapter_failure_is_returned_without_algorithm_fallback() {
-    use std::os::unix::fs::PermissionsExt;
-
     let (transcript, lyrics, alignment, words, pitch) = fused_inputs(false);
     let fusion = execute_singing_fusion_stage(
         &transcript,
@@ -1001,15 +1010,13 @@ fn ai_adapter_failure_is_returned_without_algorithm_fallback() {
     std::fs::create_dir_all(&root).unwrap();
     let marker = root.join("provider-contacted");
     let adapter = root.join("uta-fusion-agent-adapter");
-    std::fs::write(
-            &adapter,
-            format!(
-                "#!/bin/sh\nprintf contacted > '{}'\nprintf '%s\\n' '{{\"contract\":\"uta.fusion_agent_response\",\"version\":3,\"selected\":[]}}'\n",
-                marker.display()
-            ),
-        )
-        .unwrap();
-    std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+    write_executable(
+        &adapter,
+        &format!(
+            "#!/bin/sh\nprintf contacted > '{}'\nprintf '%s\\n' '{{\"contract\":\"uta.fusion_agent_response\",\"version\":3,\"selected\":[]}}'\n",
+            marker.display()
+        ),
+    );
     let cancellation = CancellationToken::default();
     let error = match execute_candidate_graph_stage(
         lyrics,

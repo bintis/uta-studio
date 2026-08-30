@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 
 use sha2::{Digest, Sha256};
 
+use super::worker_tasks::{run_native_task, run_openvino_cleanup, typed_worker_output};
 use super::*;
 
 pub(super) struct DenoiseTask<'a> {
@@ -25,34 +26,6 @@ pub(super) struct LeadIsolationOutput {
     pub(super) stem: SeparationOutput,
     pub(super) lead_profile: crate::audio::SignalProfile,
     pub(super) residual_profile: crate::audio::SignalProfile,
-}
-
-pub(super) struct DualSeparationOutput {
-    pub(super) vocal: SeparationOutput,
-    pub(super) instrumental: SeparationOutput,
-    pub(super) vocal_profile: crate::audio::SignalProfile,
-    pub(super) instrumental_audio: crate::audio::DecodedAudio,
-}
-
-pub(super) fn workflow_uses_ep317_residual(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
-) -> bool {
-    workflow.is_some_and(|workflow| {
-        workflow.nodes.iter().any(|node| {
-            node.execution_invocations.iter().any(|invocation| {
-                invocation.provider_id == "bs_roformer_vocals_ep317"
-                    && invocation
-                        .capabilities
-                        .iter()
-                        .any(|capability| capability == "audio.extract_vocals")
-                    && invocation
-                        .capabilities
-                        .iter()
-                        .any(|capability| capability == "audio.extract_instrumental")
-                    && invocation.output_ports == ["vocal", "instrumental"]
-            })
-        })
-    })
 }
 
 pub(super) fn materialize_requested_semantic_lead_stem(
@@ -606,7 +579,7 @@ pub(super) fn run_openvino_vocals(
     run_openvino_cleanup(
         task,
         &CleanupSpec {
-            model_id: "bs_roformer_vocals_ep317",
+            model_id: "bs_roformer_leap_xe90_vocals",
             role: crate::contract::AudioRole::GuideVocals,
             node_id: "audio.extract_vocals",
             presentation_node_id: None,
@@ -666,7 +639,7 @@ pub(super) fn run_openvino_instrumental(
     run_openvino_cleanup(
         task,
         &CleanupSpec {
-            model_id: "melband_roformer_inst_v2",
+            model_id: "bs_polarformer_public_instrumental",
             role: crate::contract::AudioRole::Instrumental,
             node_id: "audio.extract_instrumental",
             presentation_node_id: None,
@@ -677,126 +650,6 @@ pub(super) fn run_openvino_instrumental(
         },
         cancellation,
     )
-}
-
-pub(super) fn run_ep317_vocal_residual(
-    task: &DenoiseTask<'_>,
-    presentation_node_id: Option<&str>,
-    cancellation: &CancellationToken,
-) -> EngineResult<DualSeparationOutput> {
-    let directory = create_task_dir(task.output_root, "worker/ep317-vocal-residual")?;
-    let outputs = SupervisedWorker::run(
-        task.executable,
-        &WorkerExpectation {
-            component: roformer_component(task.backend).to_string(),
-            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
-        },
-        &NativeTask {
-            task_id: task.task_id.to_string(),
-            node_id: "audio.extract_vocals".to_string(),
-            presentation_node_id: presentation_node_id.map(str::to_string),
-            model_id: "bs_roformer_vocals_ep317".to_string(),
-            input_artifacts: vec![task.input.to_path_buf()],
-            output_dir: directory.clone(),
-            config: serde_json::json!({
-                "model_path": task.model_path,
-                "backend": task.backend,
-                "semantic_output": "guide_vocals+instrumental_residual"
-            }),
-            timeout: Duration::from_secs(4 * 60 * 60),
-        },
-        cancellation,
-        |_| {},
-    )?;
-    if outputs.len() != 2 {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "EP317 residual strategy must publish exactly GuideVocals and Instrumental",
-        ));
-    }
-    let vocal = typed_worker_output(&outputs, "guide_vocals")?.to_path_buf();
-    let instrumental = typed_worker_output(&outputs, "instrumental")?.to_path_buf();
-    if outputs
-        .iter()
-        .any(|output| output.media_type != "audio/flac")
-    {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "EP317 residual strategy outputs must be lossless FLAC",
-        ));
-    }
-    let vocal_audio = decode_audio(task.ffmpeg, "guide_vocals", &vocal)?;
-    let instrumental_audio = decode_audio(task.ffmpeg, "instrumental", &instrumental)?;
-    for facts in [&vocal_audio.facts, &instrumental_audio.facts] {
-        if facts.sample_rate != 44_100
-            || facts.channels != 2
-            || facts.frame_count == 0
-            || facts.duration.abs_diff(task.source_duration) > 2_000
-        {
-            return Err(EngineError::new(
-                EngineErrorCode::TimelineInvalid,
-                "EP317 residual strategy did not preserve the source timeline",
-            ));
-        }
-    }
-    if cancellation.is_cancelled() {
-        return Err(EngineError::new(
-            EngineErrorCode::Cancelled,
-            "EP317 residual publication was cancelled",
-        ));
-    }
-    let stems = task.output_root.join("stems");
-    std::fs::create_dir_all(&stems).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not create EP317 stem directory: {error}"),
-        )
-    })?;
-    let vocal_relative = PathBuf::from("stems/guide_vocals.flac");
-    let instrumental_relative = PathBuf::from("stems/instrumental.flac");
-    let vocal_destination = task.output_root.join(&vocal_relative);
-    let instrumental_destination = task.output_root.join(&instrumental_relative);
-    if vocal_destination.exists() || instrumental_destination.exists() {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "EP317 residual stem target already exists",
-        ));
-    }
-    std::fs::rename(&vocal, &vocal_destination).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not publish EP317 GuideVocals: {error}"),
-        )
-    })?;
-    if let Err(error) = std::fs::rename(&instrumental, &instrumental_destination) {
-        let _ = std::fs::rename(&vocal_destination, &vocal);
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not publish EP317 Instrumental residual: {error}"),
-        ));
-    }
-    std::fs::remove_dir_all(&directory).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            format!("could not clean EP317 worker directory: {error}"),
-        )
-    })?;
-    Ok(DualSeparationOutput {
-        vocal: SeparationOutput {
-            role: crate::contract::AudioRole::GuideVocals,
-            artifact: artifact_ref_for_existing(task.output_root, &vocal_relative, "audio/flac")?,
-        },
-        instrumental: SeparationOutput {
-            role: crate::contract::AudioRole::Instrumental,
-            artifact: artifact_ref_for_existing(
-                task.output_root,
-                &instrumental_relative,
-                "audio/flac",
-            )?,
-        },
-        vocal_profile: vocal_audio.profile,
-        instrumental_audio,
-    })
 }
 
 pub(super) fn run_openvino_harmony(
@@ -1001,7 +854,7 @@ mod tests {
             identity: WorkflowPlanIdentityV1 {
                 contract: "uta.workflow-execution".to_string(),
                 version: 1,
-                workflow_schema_version: 2,
+                workflow_schema_version: crate::workflow::WORKFLOW_SCHEMA_VERSION,
                 workflow_id: "workflow:test".to_string(),
                 workflow_revision: 1,
                 definition_digest: "a".repeat(32),
@@ -1025,27 +878,6 @@ mod tests {
             fusion_policy: None,
             fusion_mode: FusionModeV1::Algorithm,
         }
-    }
-
-    #[test]
-    fn ep317_residual_strategy_binds_one_invocation_to_both_output_roles() {
-        let mut plan = plan();
-        plan.nodes[0].capabilities = vec![
-            "audio.extract_vocals".to_string(),
-            "audio.extract_instrumental".to_string(),
-        ];
-        plan.nodes[0].execution_invocations =
-            vec![crate::workflow::WorkflowExecutionInvocationV1 {
-                invocation_id: "split".to_string(),
-                provider_id: "bs_roformer_vocals_ep317".to_string(),
-                capabilities: vec![
-                    "audio.extract_vocals".to_string(),
-                    "audio.extract_instrumental".to_string(),
-                ],
-                output_ports: vec!["vocal".to_string(), "instrumental".to_string()],
-            }];
-        assert!(workflow_uses_ep317_residual(Some(&plan)));
-        assert_eq!(plan.nodes[0].execution_invocations.len(), 1);
     }
 
     #[test]

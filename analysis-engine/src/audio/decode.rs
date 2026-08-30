@@ -543,20 +543,35 @@ fn ffmpeg_identity(path: &Path) -> String {
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::*;
 
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
 
     #[cfg(unix)]
+    fn fake_process_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[cfg(unix)]
     fn fake_ffmpeg(root: &Path, body: &str) -> PathBuf {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
         let path = root.join("ffmpeg-fixture");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        let staging = root.join("ffmpeg-fixture.part");
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+                .unwrap();
+            file.sync_all().unwrap();
+        }
+        let mut permissions = std::fs::metadata(&staging).unwrap().permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
+        std::fs::set_permissions(&staging, permissions).unwrap();
+        std::fs::rename(staging, &path).unwrap();
         path
     }
 
@@ -607,6 +622,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn computes_canonical_facts_from_streamed_samples() {
+        let _process_guard = fake_process_lock();
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture").unwrap();
@@ -623,6 +639,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn rejects_empty_and_non_finite_decode_output() {
+        let _process_guard = fake_process_lock();
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture").unwrap();
@@ -642,10 +659,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn cancellation_kills_and_reaps_a_stalled_decoder_group() {
+        let _process_guard = fake_process_lock();
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture").unwrap();
-        let ffmpeg = fake_ffmpeg(&root, "sleep 30");
+        let ffmpeg = fake_ffmpeg(&root, "while :; do :; done");
         let cancellation = CancellationToken::default();
         let thread_token = cancellation.clone();
         let canceller = std::thread::spawn(move || {

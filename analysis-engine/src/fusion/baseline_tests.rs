@@ -5,7 +5,10 @@ use crate::artifact::{
     TechniqueIntervalV1,
 };
 use crate::fingerprint::{ACOUSTIC_DSP_VERSION, FUSION_VERSION};
-use crate::fusion::{EvidenceProvenance, ExpertTask};
+use crate::fusion::{
+    CanonicalLyrics, EvidenceProvenance, ExpertTask, HarmonyMetadata, LyricsAuthority,
+    build_canonical_singing_track,
+};
 
 fn acoustic() -> AcousticEvidenceV1 {
     AcousticEvidenceV1 {
@@ -113,6 +116,98 @@ fn fractional_game_midi_is_retained_at_explicit_target_decision() {
     assert_eq!(fused.candidates[0].target_midi, 69);
     assert_eq!(fused.candidates[0].boundary_fractional_midi, Some(69.25));
     assert!(fused.candidates[0].rmvpe_center_hz.is_none());
+}
+
+#[test]
+fn normalized_selected_scores_survive_dedup_and_canonicalization() {
+    let range = TimeRange::new(100_000, 500_000).unwrap();
+    let alternatives = [
+        BoundaryAlternative {
+            source_expert: "timed-note".to_string(),
+            range,
+            kind: BoundaryEvidenceKind::AdvancedNote,
+            fractional_midi: Some(69.0),
+            source_local_score: Some(0.4),
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: Some(0.6),
+            hard: false,
+        },
+        BoundaryAlternative {
+            source_expert: "timed-note".to_string(),
+            range,
+            kind: BoundaryEvidenceKind::AdvancedNote,
+            fractional_midi: Some(69.0),
+            source_local_score: Some(0.8),
+            source_local_pitch_score: Some(0.7),
+            calibrated_boundary_confidence: Some(0.9),
+            calibrated_pitch_confidence: Some(0.5),
+            hard: false,
+        },
+    ];
+    let fused = fuse_singing_evidence_with_challengers(
+        &[],
+        &boundaries(69.0),
+        "rmvpe",
+        &[],
+        None,
+        &[],
+        None,
+        None,
+        true,
+        None,
+        &alternatives,
+        &[],
+    )
+    .unwrap();
+    let selected = fused
+        .candidates
+        .into_iter()
+        .find(|candidate| candidate.boundary_source == "timed-note")
+        .unwrap();
+    assert_eq!(selected.boundary_support, Some(0.8));
+    assert_eq!(selected.target_pitch_source_local_score, Some(0.7));
+    assert_eq!(selected.boundary_calibrated_confidence, Some(0.9));
+    assert_eq!(selected.target_pitch_calibrated_confidence, Some(0.6));
+
+    let track = build_canonical_singing_track(
+        CanonicalLyrics {
+            text: "la".to_string(),
+            language: None,
+            authority: LyricsAuthority::Generated,
+            tokens: Vec::new(),
+            confidence: None,
+            source_experts: vec!["timed-note".to_string()],
+            alternatives: Vec::new(),
+        },
+        Vec::new(),
+        vec![selected],
+        Vec::new(),
+        "rmvpe",
+        HarmonyMetadata::default(),
+        vec![EvidenceProvenance {
+            expert_id: "timed-note".to_string(),
+            task: ExpertTask::NoteBoundary,
+            model_hash: Some("a".repeat(64)),
+            runtime_identity: Some("native-cpu".to_string()),
+            calibration_version: Some("calibration-v1".to_string()),
+            correlation_group: None,
+            depends_on: Vec::new(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        track.notes[0].evidence.boundary_calibrated_confidence,
+        Some(0.9)
+    );
+    assert_eq!(
+        track.notes[0].evidence.target_pitch_source_local_score,
+        Some(0.7)
+    );
+    assert_eq!(
+        track.notes[0].evidence.target_pitch_calibrated_confidence,
+        Some(0.6)
+    );
 }
 
 #[test]
@@ -405,6 +500,9 @@ fn enabled_advanced_note_expert_contributes_real_candidate_states() {
         kind: BoundaryEvidenceKind::AdvancedNote,
         fractional_midi: Some(69.0),
         source_local_score: None,
+        source_local_pitch_score: None,
+        calibrated_boundary_confidence: None,
+        calibrated_pitch_confidence: None,
         hard: false,
     };
     let fused = fuse_singing_evidence_with_challengers(
@@ -685,6 +783,9 @@ fn hard_constraint_near_an_edge_bypasses_soft_cut_denoising() {
         kind: BoundaryEvidenceKind::Constraint,
         fractional_midi: None,
         source_local_score: Some(1.0),
+        source_local_pitch_score: None,
+        calibrated_boundary_confidence: None,
+        calibrated_pitch_confidence: None,
         hard: true,
     };
     let partitions = constraint_partition_challengers(&boundaries(69.0), &[hard]).unwrap();

@@ -356,22 +356,67 @@ fn lyrics_context_for_song(
         .map_err(|error| format!("could not load lyrics context for {file_hash}: {error}"))?
         .ok_or_else(|| format!("song not found: {file_hash}"))?;
     if let Some(lyrics) = crate::lyrics::load_lyrics_file(file_hash) {
+        if let Some(timed_lrc) = lyrics.timed_lrc {
+            let tokens = crate::lrc::parse_lrc(&timed_lrc)?
+                .segments
+                .into_iter()
+                .enumerate()
+                .map(|(index, segment)| StudioLyricToken {
+                    id: format!("lrc-{index}"),
+                    text: segment.text,
+                    reading: None,
+                    phonemes: None,
+                    start: Some((segment.start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+                    end: Some((segment.end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+                })
+                .collect::<Vec<_>>();
+            if !tokens.is_empty() {
+                return Ok(StudioLyricsContext {
+                    mode: StudioLyricsMode::Canonical,
+                    language_hint: song.language,
+                    tokens,
+                });
+            }
+        }
         let tokens = lyrics
             .lines
             .into_iter()
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())
-            .enumerate()
-            .map(|(index, text)| StudioLyricToken {
-                id: format!("known-{index}"),
-                text,
-                reading: None,
-                phonemes: None,
-                start: None,
-                end: None,
-            })
             .collect::<Vec<_>>();
         if !tokens.is_empty() {
+            // Applying or importing Timed LRC creates a transcript with real
+            // per-line ranges. A later plain-lyrics sidecar can contain the
+            // exact same line text (real repro: Asphodelos), and previously
+            // masked that timed transcript merely because the sidecar was
+            // checked first. Reuse the existing ranges only when every line
+            // still matches exactly; a genuine plain-text edit must continue
+            // to override stale LRC text and use blind alignment.
+            if song.transcript_source == Some(crate::song::TranscriptSource::Lrc) {
+                let lrc_segments = crate::lyrics::lrc_transcript_line_segments(
+                    &crate::cache::CacheDir::new(),
+                    file_hash,
+                );
+                if let Some(tokens) = matching_lrc_tokens(&tokens, &lrc_segments) {
+                    return Ok(StudioLyricsContext {
+                        mode: StudioLyricsMode::Canonical,
+                        language_hint: song.language,
+                        tokens,
+                    });
+                }
+            }
+            let tokens = tokens
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| StudioLyricToken {
+                    id: format!("known-{index}"),
+                    text,
+                    reading: None,
+                    phonemes: None,
+                    start: None,
+                    end: None,
+                })
+                .collect();
             return Ok(StudioLyricsContext {
                 mode: StudioLyricsMode::Canonical,
                 language_hint: song.language,
@@ -425,6 +470,34 @@ fn lyrics_context_for_song(
     })
 }
 
+fn matching_lrc_tokens(
+    plain_lines: &[String],
+    lrc_segments: &[(f64, f64, String)],
+) -> Option<Vec<StudioLyricToken>> {
+    if plain_lines.len() != lrc_segments.len()
+        || !plain_lines
+            .iter()
+            .zip(lrc_segments)
+            .all(|(plain, (_, _, timed))| plain == timed)
+    {
+        return None;
+    }
+    Some(
+        lrc_segments
+            .iter()
+            .enumerate()
+            .map(|(index, (start, end, text))| StudioLyricToken {
+                id: format!("lrc-{index}"),
+                text: text.clone(),
+                reading: None,
+                phonemes: None,
+                start: Some((start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+                end: Some((end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+            })
+            .collect(),
+    )
+}
+
 pub fn compile_analyze_request_v1(
     intent: AnalysisRequestIntent,
     effective: &EffectiveAnalysisExperience,
@@ -466,10 +539,13 @@ pub fn compile_analyze_request_v1(
     let mut satisfied_capabilities = Vec::new();
     let mut extensions = BTreeMap::new();
     if source_role == AudioRoleWireV1::OriginalMix
-        && let Ok(stored_workflow) = crate::workflow::load_song_workflow(&intent.source.library_file_hash)
+        && let Ok(stored_workflow) =
+            crate::workflow::load_song_workflow(&intent.source.library_file_hash)
     {
-        let decision =
-            crate::chain_cache::plan_chain_cache(&intent.source.library_file_hash, &stored_workflow.definition);
+        let decision = crate::chain_cache::plan_chain_cache(
+            &intent.source.library_file_hash,
+            &stored_workflow.definition,
+        );
         if let Some(cached_path) = decision.source_path {
             source_path = cached_path;
             source_role = decision.role;
@@ -863,7 +939,7 @@ fn exact_queue_intent(
         return Err("analysis preview uses an unsupported request contract".to_string());
     }
     validate_workflow_plan_identity(&request, &preview.engine_plan)?;
-    let request_source = request
+    request
         .audio_sources
         .iter()
         .find(|source| source.primary)
@@ -871,8 +947,6 @@ fn exact_queue_intent(
     if current_source.library_file_hash != preview.source.library_file_hash
         || current_source.path != preview.source.path
         || current_source.role != preview.source.role
-        || request_source.path != current_source.path
-        || request_source.role != current_source.role
     {
         return Err(
             "source_identity_changed: the previewed TrueSource no longer matches the library"
@@ -913,7 +987,6 @@ pub(crate) fn validate_workflow_plan_identity(
                 || identity.workflow_schema_version != request_workflow.workflow_schema_version
                 || identity.workflow_id != request_workflow.workflow_id
                 || identity.workflow_revision != request_workflow.workflow_revision
-                || identity.definition_digest != request_workflow.definition_digest
             {
                 return Err(
                     "Analysis CLI workflow identity does not match the exact request snapshot"
@@ -1051,6 +1124,31 @@ mod tests {
     use crate::analysis_experience::{
         AnalysisExperienceSettings, AnalysisQualityProfile, resolve_analysis_experience,
     };
+
+    #[test]
+    fn identical_plain_and_lrc_lines_recover_the_existing_time_anchors() {
+        let lines = vec!["一行目".to_string(), "二行目".to_string()];
+        let segments = vec![
+            (40.67, 47.16, "一行目".to_string()),
+            (47.16, 52.76, "二行目".to_string()),
+        ];
+        let tokens = matching_lrc_tokens(&lines, &segments).unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].id, "lrc-0");
+        assert_eq!(tokens[0].start, Some(40_670_000));
+        assert_eq!(tokens[0].end, Some(47_160_000));
+        assert_eq!(tokens[1].text, "二行目");
+    }
+
+    #[test]
+    fn edited_plain_lines_do_not_reuse_stale_lrc_time_anchors() {
+        let lines = vec!["一行目".to_string(), "編集した二行目".to_string()];
+        let segments = vec![
+            (40.67, 47.16, "一行目".to_string()),
+            (47.16, 52.76, "二行目".to_string()),
+        ];
+        assert!(matching_lrc_tokens(&lines, &segments).is_none());
+    }
 
     fn effective(target: AnalysisDefaultTarget) -> EffectiveAnalysisExperience {
         resolve_analysis_experience(
@@ -1292,7 +1390,10 @@ mod tests {
                 requested_outputs: None,
                 compute_backend: None,
                 model_backend_overrides: BTreeMap::from([
-                    ("bs_roformer_vocals_ep317".to_string(), "vulkan".to_string()),
+                    (
+                        "bs_roformer_leap_xe90_vocals".to_string(),
+                        "vulkan".to_string(),
+                    ),
                     ("rmvpe".to_string(), "diagnostic_cpu".to_string()),
                 ]),
                 default_device_class: None,
@@ -1310,7 +1411,7 @@ mod tests {
             request
                 .execution_policy
                 .model_backend_overrides
-                .get("bs_roformer_vocals_ep317"),
+                .get("bs_roformer_leap_xe90_vocals"),
             Some(&NativeBackendWireV1::Vulkan)
         );
         assert_eq!(
@@ -1483,7 +1584,7 @@ mod tests {
         let request_workflow = crate::workflow::WorkflowExecutionWireV1 {
             contract: "uta.workflow-execution".to_string(),
             version: 1,
-            workflow_schema_version: 2,
+            workflow_schema_version: crate::workflow::WORKFLOW_SCHEMA_VERSION,
             workflow_id: "workflow:test".to_string(),
             workflow_revision: 7,
             quality_mode: "balanced".to_string(),
@@ -1581,6 +1682,49 @@ mod tests {
             preview.request_json.as_bytes()
         );
         assert_eq!(intent.request_digest, preview.request_digest);
+        std::fs::remove_file(source.path).unwrap();
+    }
+
+    #[test]
+    fn exact_preview_accepts_a_cached_chain_input_for_an_unchanged_true_source() {
+        let (mut preview, source) = exact_preview_fixture();
+        let cached_path = source_fixture("cached-guide", b"cached guide vocal bytes");
+        let mut request: AnalyzeRequestWireV1 =
+            serde_json::from_str(&preview.request_json).unwrap();
+        request.audio_sources[0].path = cached_path.clone();
+        request.audio_sources[0].role = AudioRoleWireV1::GuideVocals;
+        preview.engine_plan.source_route.input_role = AudioRoleWireV1::GuideVocals;
+        preview.request_json = serde_json::to_string(&request).unwrap();
+        preview.request_digest = digest_json(&preview.request_json);
+
+        let intent = exact_queue_intent(&preview, &source).unwrap();
+        assert_eq!(intent.source_path, source.path);
+        assert_eq!(
+            serde_json::from_str::<AnalyzeRequestWireV1>(&intent.request_json)
+                .unwrap()
+                .audio_sources[0]
+                .path,
+            cached_path
+        );
+
+        std::fs::remove_file(cached_path).unwrap();
+        std::fs::remove_file(source.path).unwrap();
+    }
+
+    #[test]
+    fn exact_preview_still_rejects_a_changed_library_true_source() {
+        let (preview, source) = exact_preview_fixture();
+        let replacement_path = source_fixture("replacement", b"replacement source bytes");
+        let mut replacement = source.clone();
+        replacement.path = replacement_path.clone();
+
+        assert!(
+            exact_queue_intent(&preview, &replacement)
+                .unwrap_err()
+                .contains("source_identity_changed")
+        );
+
+        std::fs::remove_file(replacement_path).unwrap();
         std::fs::remove_file(source.path).unwrap();
     }
 

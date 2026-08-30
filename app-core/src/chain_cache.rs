@@ -41,7 +41,10 @@ pub struct ChainCacheDecision {
     pub fingerprints: ChainFingerprints,
 }
 
-fn find_node<'a>(workflow: &'a WorkflowDefinition, capability: &str) -> Option<&'a WorkflowNodeInstance> {
+fn find_node<'a>(
+    workflow: &'a WorkflowDefinition,
+    capability: &str,
+) -> Option<&'a WorkflowNodeInstance> {
     workflow
         .nodes
         .iter()
@@ -151,10 +154,15 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
         return decision;
     }
     let denoise_ready = !denoise_enabled || denoise_node.is_some_and(|node| node.skip_if_unchanged);
-    let dereverb_ready = !dereverb_enabled || dereverb_node.is_some_and(|node| node.skip_if_unchanged);
+    let dereverb_ready =
+        !dereverb_enabled || dereverb_node.is_some_and(|node| node.skip_if_unchanged);
     let cleanup_recipe = serde_json::to_string(&(
-        denoise_enabled.then(|| denoise_node.map(normalized_parameters)).flatten(),
-        dereverb_enabled.then(|| dereverb_node.map(normalized_parameters)).flatten(),
+        denoise_enabled
+            .then(|| denoise_node.map(normalized_parameters))
+            .flatten(),
+        dereverb_enabled
+            .then(|| dereverb_node.map(normalized_parameters))
+            .flatten(),
     ))
     .unwrap_or_default();
     let cleanup_fingerprint = compute_native_config_hash(
@@ -175,7 +183,9 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
         decision.role = AudioRoleWireV1::CleanLeadVocal;
         decision.source_path = Some(revision.path.clone());
         if denoise_enabled {
-            decision.satisfied_capabilities.push("audio.denoise".to_string());
+            decision
+                .satisfied_capabilities
+                .push("audio.denoise".to_string());
         }
         if dereverb_enabled {
             decision
@@ -197,8 +207,9 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
 pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioRoleWireV1> {
     let mut roles = Vec::new();
     let separation_node = find_node(workflow, "audio.separate_vocal_bgm");
-    if separation_node.is_some_and(|node| node.execution_policy != ExecutionPolicy::Disabled && node.skip_if_unchanged)
-    {
+    if separation_node.is_some_and(|node| {
+        node.execution_policy != ExecutionPolicy::Disabled && node.skip_if_unchanged
+    }) {
         roles.push(AudioRoleWireV1::GuideVocals);
         roles.push(AudioRoleWireV1::Instrumental);
     }
@@ -208,8 +219,10 @@ pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioR
     }
     let denoise_node = find_node(workflow, "audio.denoise");
     let dereverb_node = find_node(workflow, "audio.dereverb");
-    let denoise_wants_caching = enabled(denoise_node) && denoise_node.is_some_and(|node| node.skip_if_unchanged);
-    let dereverb_wants_caching = enabled(dereverb_node) && dereverb_node.is_some_and(|node| node.skip_if_unchanged);
+    let denoise_wants_caching =
+        enabled(denoise_node) && denoise_node.is_some_and(|node| node.skip_if_unchanged);
+    let dereverb_wants_caching =
+        enabled(dereverb_node) && dereverb_node.is_some_and(|node| node.skip_if_unchanged);
     if denoise_wants_caching || dereverb_wants_caching {
         roles.push(AudioRoleWireV1::CleanLeadVocal);
     }
@@ -235,7 +248,13 @@ mod tests {
         root
     }
 
-    fn publish_active(file_hash: &str, kind: ArtifactKind, id: &str, config_hash: &str, content_hash: &str) {
+    fn publish_active(
+        file_hash: &str,
+        kind: ArtifactKind,
+        id: &str,
+        config_hash: &str,
+        content_hash: &str,
+    ) {
         let kind_json = serde_json::to_string(&kind).unwrap();
         let row = AnalysisArtifactRow {
             id: id.to_string(),
@@ -492,8 +511,6 @@ mod tests {
 
         workflow.nodes[3].execution_policy = ExecutionPolicy::Always;
         workflow.nodes[3].skip_if_unchanged = true;
-        assert!(
-            stems_to_request_for_caching(&workflow).contains(&AudioRoleWireV1::CleanLeadVocal)
-        );
+        assert!(stems_to_request_for_caching(&workflow).contains(&AudioRoleWireV1::CleanLeadVocal));
     }
 }

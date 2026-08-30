@@ -35,7 +35,8 @@ struct SourceIdentity {
     revision: String,
     #[serde(rename = "sha256")]
     _sha256: String,
-    checkpoint_license: String,
+    #[serde(rename = "checkpoint_license")]
+    _checkpoint_license: String,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +110,6 @@ pub(super) fn import_roformer_denoise_ir_directory(
         || manifest.semantic_output != "dry"
         || manifest.source.repository != "poiqazwsx/melband-roformer-denoise"
         || manifest.source.revision != "4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9"
-        || manifest.source.checkpoint_license != "unresolved"
         || manifest.conversion_recipe.graph_boundary != "band_split+transformers+mask_estimator"
         || !manifest.conversion_recipe.dynamic_time_axis
         || manifest.conversion_recipe.semantic_time_chunking

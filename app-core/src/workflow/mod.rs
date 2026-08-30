@@ -279,6 +279,34 @@ mod tests {
     }
 
     #[test]
+    fn optional_jbm555_card_can_be_deleted_and_restored_to_maximum_mode() {
+        let mut workflow = default_workflow("song-a");
+        remove_workflow_node(&mut workflow, &WorkflowNodeId::new("boundary_jbm555")).unwrap();
+        let restored = add_optional_workflow_card(
+            &mut workflow,
+            WorkflowPortRef {
+                node: WorkflowNodeId::new("vocal_cleanup_1"),
+                port: "audio".to_string(),
+            },
+            OptionalWorkflowCardV1::Jbm555Boundary,
+        )
+        .unwrap();
+        let node = workflow
+            .nodes
+            .iter()
+            .find(|node| node.instance_id == restored)
+            .unwrap();
+        assert_eq!(node.model_id.as_deref(), Some("jbm555_cectc_80"));
+        assert_eq!(
+            node.execution_policy,
+            ExecutionPolicy::Conditional {
+                condition: ConditionalExecution::MaximumOnly,
+            }
+        );
+        assert!(compile_workflow(&workflow).is_ok());
+    }
+
+    #[test]
     fn selectable_pitch_models_swap_stage_three_participation_without_owner_state() {
         let mut workflow = default_workflow("song-a");
         set_workflow_node_model(&mut workflow, &WorkflowNodeId::new("f0_rmvpe"), "fcpe").unwrap();
@@ -358,11 +386,12 @@ mod tests {
             .find(|node| node.instance_id == "vocal_bgm_split")
             .unwrap()
             .execution_invocations;
-        assert_eq!(invocation.len(), 1);
-        assert_eq!(invocation[0].provider_id, "bs_roformer_vocals_ep317");
+        assert_eq!(invocation.len(), 2);
+        assert_eq!(invocation[0].provider_id, "bs_roformer_leap_xe90_vocals");
+        assert_eq!(invocation[0].capabilities, ["audio.extract_vocals"]);
         assert_eq!(
-            invocation[0].capabilities,
-            ["audio.extract_vocals", "audio.extract_instrumental"]
+            invocation[1].provider_id,
+            "bs_polarformer_public_instrumental"
         );
     }
 
@@ -396,6 +425,47 @@ mod tests {
             Some(SeparationStrategyV1::IndependentSpecialists)
         );
         assert!(!separation.parameters.contains_key("instrumental_model_id"));
+    }
+
+    #[test]
+    fn schema_two_workflow_migrates_ep317_and_adds_jbm555() {
+        let mut stored = StoredWorkflow {
+            definition: default_workflow("legacy-song"),
+            layout: WorkflowLayout::default(),
+            updated_at_ms: 0,
+        };
+        remove_workflow_node(
+            &mut stored.definition,
+            &WorkflowNodeId::new("boundary_jbm555"),
+        )
+        .unwrap();
+        stored.definition.schema_version = 2;
+        stored
+            .definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.instance_id.as_str() == "vocal_bgm_split")
+            .unwrap()
+            .separation_strategy = Some(SeparationStrategyV1::Ep317VocalResidual);
+
+        migrate_stored_workflow(&mut stored).unwrap();
+
+        assert_eq!(stored.definition.schema_version, WORKFLOW_SCHEMA_VERSION);
+        assert!(workflow_has_optional_card(
+            &stored.definition,
+            OptionalWorkflowCardV1::Jbm555Boundary
+        ));
+        assert_eq!(
+            stored
+                .definition
+                .nodes
+                .iter()
+                .find(|node| node.instance_id.as_str() == "vocal_bgm_split")
+                .unwrap()
+                .separation_strategy,
+            Some(SeparationStrategyV1::IndependentSpecialists)
+        );
+        assert!(compile_workflow(&stored.definition).is_ok());
     }
 
     #[test]

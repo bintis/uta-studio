@@ -480,7 +480,10 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::SetWorkflowSkipIfUnchanged(node_id, skip_if_unchanged)) => {
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowSkipIfUnchanged(
+            node_id,
+            skip_if_unchanged,
+        )) => {
             if let Some(workflow) = studio.analysis.workflow.as_mut() {
                 match app_core::set_workflow_skip_if_unchanged(
                     &mut workflow.definition,

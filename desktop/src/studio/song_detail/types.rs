@@ -194,10 +194,15 @@ pub(crate) struct LyricsEditorInput;
 pub(crate) struct LanguageEditorInput;
 
 pub(crate) fn lyrics_text(file_hash: &str, mode: LyricsInputMode) -> String {
-    if mode == LyricsInputMode::Plain
-        && let Some(file) = app_core::load_lyrics_file(file_hash)
-    {
-        return file.lines.join("\n");
+    if let Some(file) = app_core::load_lyrics_file(file_hash) {
+        if mode == LyricsInputMode::TimedLrc
+            && let Some(timed_lrc) = file.timed_lrc
+        {
+            return timed_lrc;
+        }
+        if mode == LyricsInputMode::Plain {
+            return file.lines.join("\n");
+        }
     }
     // A Timed LRC import (`provide_lrc`/`apply_timed_lyrics`) overwrites the
     // transcript but deliberately leaves any existing Authored/Candidate

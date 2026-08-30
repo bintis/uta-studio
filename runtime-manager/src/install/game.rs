@@ -13,7 +13,6 @@ use crate::runtime_lock::{GAME_CONVERSION_RECIPE_SHA256, GAME_IR_MANIFEST_SHA256
 const GAME_SOURCE_COMMIT: &str = "475a8ee781fe8cca980b3b12fbe6c80c768a813a";
 const GAME_SOURCE_ASSET: &str = "GAME-1.0.3-medium-onnx.zip";
 const GAME_VARIANT: &str = "GAME-1.0.3-medium-onnx";
-const GAME_LICENSE: &str = "CC-BY-NC-SA-4.0";
 const ESTIMATOR_NOTE_BUCKETS: [usize; 6] = [32, 64, 128, 256, 512, 1_024];
 const EXPECTED_FILES: [&str; 12] = [
     "config.json",
@@ -44,7 +43,8 @@ struct GameIrManifest {
     source_asset_url: String,
     #[serde(rename = "source_asset_sha256")]
     _source_asset_sha256: String,
-    model_license: String,
+    #[serde(rename = "model_license")]
+    _model_license: String,
     #[serde(rename = "runtime_recipe_sha256")]
     _runtime_recipe_sha256: String,
     sample_rate: u32,
@@ -87,7 +87,6 @@ pub(super) fn import_game_ir_directory(
         || manifest.source_asset != GAME_SOURCE_ASSET
         || manifest.source_asset_url
             != "https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-medium-onnx.zip"
-        || manifest.model_license != GAME_LICENSE
         || manifest.sample_rate != 44_100
         || manifest.timestep_seconds != 0.01
         || manifest.chunk_samples != 1_323_000

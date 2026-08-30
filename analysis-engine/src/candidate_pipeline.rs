@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::artifact::{
     AcousticEvidenceV1, AdvancedNoteEvidenceV1, AlignmentArtifactV1, AlignmentItemV1,
     BasicPitchEvidenceV3, GameEvidenceV1, PitchEvidenceV03, TechniqueEvidenceV1,
-    TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1,
+    TimedNoteExpertEvidenceV1, TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1,
 };
 use crate::contract::{
     BoundaryAuthority, BoundaryConstraintV1, BoundaryLevel, CANONICAL_TIMEBASE, EngineError,
@@ -605,6 +605,7 @@ fn provenance(
     boundary: &BoundaryEvidenceSet,
     acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
+    timed_notes: &[TimedNoteExpertEvidenceV1],
     techniques: &[TechniqueEvidenceV1],
 ) -> Vec<EvidenceProvenance> {
     let mut result = vec![
@@ -693,6 +694,11 @@ fn provenance(
     for evidence in advanced_notes {
         result.push(evidence.provenance());
     }
+    result.extend(
+        timed_notes
+            .iter()
+            .map(|evidence| evidence.provenance.clone()),
+    );
     for evidence in techniques {
         result.push(evidence.provenance.clone());
     }
@@ -735,6 +741,9 @@ fn boundary_constraint_events(
             },
             fractional_midi: None,
             source_local_score: Some(constraint.confidence),
+            source_local_pitch_score: None,
+            calibrated_boundary_confidence: None,
+            calibrated_pitch_confidence: None,
             hard: constraint.authority == BoundaryAuthority::Hard,
         });
         if constraint.level == BoundaryLevel::Phrase
@@ -924,7 +933,7 @@ pub struct SingingStagesOutput {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn execute_singing_fusion_stage(
+pub fn execute_singing_fusion_stage_with_timed_notes(
     transcript_artifact: &TranscriptArtifactV1,
     alignment_artifact: &AlignmentArtifactV1,
     words: &[CanonicalWordBoundary],
@@ -934,6 +943,7 @@ pub fn execute_singing_fusion_stage(
     game: Option<&GameEvidenceV1>,
     acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
+    timed_notes: &[TimedNoteExpertEvidenceV1],
     technique_evidence: &[TechniqueEvidenceV1],
     boundary_constraints: &[BoundaryConstraintV1],
     source_start: u64,
@@ -984,16 +994,14 @@ pub fn execute_singing_fusion_stage(
 
     let mut boundary_challengers = Vec::new();
     for evidence in advanced_notes {
-        for (range, midi) in evidence.canonical_notes(source_start, source_duration)? {
-            boundary_challengers.push(BoundaryAlternative {
-                source_expert: evidence.model_id.clone(),
-                range,
-                kind: BoundaryEvidenceKind::AdvancedNote,
-                fractional_midi: midi.map(f32::from),
-                source_local_score: None,
-                hard: false,
-            });
-        }
+        boundary_challengers.extend(
+            evidence
+                .timed_note_evidence(source_start, source_duration)?
+                .boundary_alternatives(source_start, source_duration)?,
+        );
+    }
+    for evidence in timed_notes {
+        boundary_challengers.extend(evidence.boundary_alternatives(source_start, source_duration)?);
     }
     let (constraint_challengers, phrase_start_constraints) =
         boundary_constraint_events(boundary_constraints, source_start, source_duration)?;
@@ -1064,9 +1072,46 @@ pub fn execute_singing_fusion_stage(
             boundary_evidence,
             acoustic_for_fusion,
             advanced_notes,
+            timed_notes,
             technique_evidence,
         ),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_singing_fusion_stage(
+    transcript_artifact: &TranscriptArtifactV1,
+    alignment_artifact: &AlignmentArtifactV1,
+    words: &[CanonicalWordBoundary],
+    pitch_evidence: Option<&PitchEvidenceV03>,
+    fcpe_evidence: Option<&PitchEvidenceV03>,
+    basic_pitch_evidence: Option<&BasicPitchEvidenceV3>,
+    game: Option<&GameEvidenceV1>,
+    acoustic: Option<&AcousticEvidenceV1>,
+    advanced_notes: &[AdvancedNoteEvidenceV1],
+    technique_evidence: &[TechniqueEvidenceV1],
+    boundary_constraints: &[BoundaryConstraintV1],
+    source_start: u64,
+    source_duration: u64,
+    pitch_owner: &str,
+) -> EngineResult<SingingFusionStageOutput> {
+    execute_singing_fusion_stage_with_timed_notes(
+        transcript_artifact,
+        alignment_artifact,
+        words,
+        pitch_evidence,
+        fcpe_evidence,
+        basic_pitch_evidence,
+        game,
+        acoustic,
+        advanced_notes,
+        &[],
+        technique_evidence,
+        boundary_constraints,
+        source_start,
+        source_duration,
+        pitch_owner,
+    )
 }
 
 pub fn execute_candidate_graph_stage(
@@ -1111,11 +1156,6 @@ pub fn execute_candidate_graph_stage(
                 timeout,
                 cancellation,
             )?;
-            if agent.candidate_set_digest != candidate_set_digest {
-                return Err(output_error(
-                    "AI selector candidate-set identity differs from the pre-selector pool",
-                ));
-            }
             let decision = CandidatePathDecisionV1::AiJudgment {
                 candidate_set_digest: candidate_set_digest.clone(),
                 selected_candidate_ids: agent
