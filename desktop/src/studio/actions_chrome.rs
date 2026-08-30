@@ -149,6 +149,29 @@ pub(crate) fn apply_chrome_action(
         invalidated,
     } = state;
     match &action.0 {
+        UiCommand::Analysis(AnalysisCommand::OpenAnalysisQueue) => {
+            if studio.shell.route == StudioRoute::Editor
+                && studio
+                    .editor
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.dirty)
+            {
+                studio.shell.notice =
+                    Some("Save or leave the editor before opening Processing Queue.".to_string());
+                invalidated.invalidate(UiDirtyRegion::Chrome);
+                return true;
+            }
+            if studio.shell.route == StudioRoute::Editor {
+                let _ = audio.0.stop();
+                studio.editor.editor = None;
+            }
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.shell.route = StudioRoute::Queue;
+            studio.dialogs.activity_open = false;
+            studio.shell.notice = None;
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
         UiCommand::App(AppCommand::ToggleGlobalSearch) => {
             studio.dialogs.search_open = !studio.dialogs.search_open;
             studio.dialogs.activity_open = false;
@@ -286,26 +309,6 @@ pub(crate) fn apply_chrome_action(
                     .workflow_compile_error
                     .clone()
                     .or_else(|| Some("Workflow order changed. Save to keep it.".to_string()));
-            }
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
-        UiCommand::Analysis(AnalysisCommand::DuplicateWorkflowNode(node_id)) => {
-            if let Some(workflow) = studio.analysis.workflow.as_mut() {
-                match app_core::duplicate_audio_transformation(
-                    &mut workflow.definition,
-                    &app_core::WorkflowNodeId::new(node_id),
-                ) {
-                    Ok(duplicate) => {
-                        studio.analysis.selected_workflow_node = Some(duplicate);
-                        refresh_workflow_snapshot(studio.analysis);
-                        studio.shell.notice =
-                            Some("Transformation duplicated in the audio dataflow.".to_string());
-                    }
-                    Err(error) => {
-                        studio.analysis.workflow_compile_error = Some(error.clone());
-                        studio.shell.notice = Some(error);
-                    }
-                }
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
@@ -689,12 +692,6 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.analysis_graph_fit_active = false;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView) => {
-            studio.analysis.analysis_mini_view = !studio.analysis.analysis_mini_view;
-            studio.analysis.analysis_graph_needs_fit = true;
-            studio.analysis.analysis_graph_fit_active = true;
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisModelPanel) => {
             studio.analysis.analysis_model_panel_open = !studio.analysis.analysis_model_panel_open;
             if studio.analysis.analysis_model_panel_open
@@ -788,6 +785,10 @@ pub(crate) fn apply_chrome_action(
                 studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
                 studio.analysis.analysis_graph_needs_fit = true;
                 studio.analysis.analysis_graph_fit_active = true;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.shell.route == StudioRoute::Queue {
+                studio.shell.route = StudioRoute::Library;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route != StudioRoute::Library {

@@ -66,7 +66,7 @@ Documentation steps in English, Simplified Chinese, and Japanese.
 
 1. Select AuthoredChart and turn Lineage on.
 2. Confirm upstream transcript and pitch paths highlight and unrelated nodes fade.
-3. Switch to MINI and confirm only compute producers/consumers stay highlighted.
+3. Confirm the same full-workflow graph remains visible while lineage is active.
 4. Select a missing legacy input and confirm an explicit GAP.
 5. Open Impact on an upstream revision.
 6. Cancel and confirm no mutation.

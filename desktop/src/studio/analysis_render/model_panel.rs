@@ -91,12 +91,6 @@ pub(crate) fn spawn_analysis_header_toolbar(
             false,
         ),
         (
-            UiIcon::MiniView,
-            "Mini",
-            UiAction::from(AnalysisCommand::ToggleAnalysisMiniView),
-            session.analysis_mini_view,
-        ),
-        (
             UiIcon::ModelTune,
             "Model & workflow",
             UiAction::from(AnalysisCommand::ToggleAnalysisModelPanel),

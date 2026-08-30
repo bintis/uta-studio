@@ -420,7 +420,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "queue_exact_preview",
         "mutation",
         false,
-        "Persist and start the exact validated Engine request snapshot confirmed by Plan Preview"
+        "Persist and start the exact validated Engine request snapshot confirmed by Plan Preview, replacing an edited staged item in place"
     ),
     capability!(
         "analysis",
@@ -442,6 +442,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "mutation",
         false,
         "Explicitly start one staged processing-queue request"
+    ),
+    capability!(
+        "analysis",
+        "move_analysis_queue_item",
+        "mutation",
+        true,
+        "Move a staged or waiting analysis earlier or later in the durable processing queue"
+    ),
+    capability!(
+        "analysis",
+        "remove_analysis_queue_item",
+        "mutation",
+        true,
+        "Remove a staged, waiting, or failed item from the processing queue"
     ),
     capability!(
         "analysis",

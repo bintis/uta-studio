@@ -109,6 +109,7 @@ pub(crate) const SIDEBAR_WIDTH: f32 = 265.0;
 pub(crate) enum StudioRoute {
     #[default]
     Library,
+    Queue,
     Folders,
     SongDetail,
     Settings,

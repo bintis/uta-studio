@@ -30,27 +30,30 @@ pub struct SeparationOutput {
     pub artifact: ArtifactRefV1,
 }
 
-/// Materialize an already-semantic lead source as a lossless result artifact
-/// without running another separation model. The input remains read-only.
-pub fn materialize_semantic_lead_stem(
+/// Publishes a caller-supplied semantic Step 1 source into this run's
+/// output. Reused inputs remain read-only and are re-materialized as FLAC so
+/// the result manifest is self-contained just like a freshly executed run.
+pub fn materialize_semantic_stem(
     ffmpeg: &Path,
     input: &Path,
     output_root: &Path,
+    role: AudioRole,
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
     let root = output_root.canonicalize().map_err(|error| {
         failure(format!(
-            "could not authorize semantic lead output root: {error}"
+            "could not authorize semantic stem output root: {error}"
         ))
     })?;
     if !input.is_file() {
-        return Err(failure("semantic lead source is unavailable"));
+        return Err(failure("semantic stem source is unavailable"));
     }
-    let source_facts = decode_audio(ffmpeg, "semantic-lead-source", input)?.facts;
-    let work = root.join("worker/semantic-lead-materialize");
+    let semantic = role.as_str();
+    let source_facts = decode_audio(ffmpeg, "semantic-stem-source", input)?.facts;
+    let work = root.join(format!("worker/semantic-{semantic}-materialize"));
     if work.exists() {
         return Err(failure(
-            "semantic lead materialization directory already exists",
+            "semantic stem materialization directory already exists",
         ));
     }
     std::fs::create_dir_all(&work).map_err(|error| {
@@ -59,7 +62,7 @@ pub fn materialize_semantic_lead_stem(
         ))
     })?;
     let _temporary = TemporaryDirectory(work.clone());
-    let staged = work.join("lead-vocal.flac");
+    let staged = work.join(format!("{semantic}.flac"));
     run_command(
         command(ffmpeg, |command| {
             command
@@ -81,15 +84,15 @@ pub fn materialize_semantic_lead_stem(
         }),
         Duration::from_secs(4 * 60 * 60),
         cancellation,
-        "semantic lead materialization",
+        "semantic stem materialization",
     )?;
-    let output_facts = decode_audio(ffmpeg, "semantic-lead-artifact", &staged)?.facts;
+    let output_facts = decode_audio(ffmpeg, "semantic-stem-artifact", &staged)?.facts;
     if output_facts.frame_count == 0
         || output_facts.duration.abs_diff(source_facts.duration) > 2_000
     {
         return Err(EngineError::new(
             EngineErrorCode::TimelineInvalid,
-            "semantic lead artifact did not preserve the declared source timeline",
+            "semantic stem artifact did not preserve the declared source timeline",
         ));
     }
     if cancellation.is_cancelled() {
@@ -98,7 +101,7 @@ pub fn materialize_semantic_lead_stem(
             "semantic lead materialization was cancelled",
         ));
     }
-    let relative = PathBuf::from("stems/lead_vocal.flac");
+    let relative = PathBuf::from(format!("stems/{semantic}.flac"));
     let destination = root.join(&relative);
     let parent = destination
         .parent()
@@ -106,15 +109,15 @@ pub fn materialize_semantic_lead_stem(
     std::fs::create_dir_all(parent)
         .map_err(|error| failure(format!("could not create stem directory: {error}")))?;
     if destination.exists() {
-        return Err(failure("semantic lead stem target already exists"));
+        return Err(failure("semantic stem target already exists"));
     }
     std::fs::rename(&staged, &destination).map_err(|error| {
         failure(format!(
-            "could not atomically publish semantic lead stem: {error}"
+            "could not atomically publish semantic stem: {error}"
         ))
     })?;
     Ok(SeparationOutput {
-        role: AudioRole::LeadVocal,
+        role,
         artifact: artifact_ref_for_existing(output_root, &relative, "audio/flac")?,
     })
 }
@@ -526,6 +529,50 @@ mod tests {
         assert_eq!(output.artifact.media_type, "audio/flac");
         assert!(root.join(output.artifact.path).is_file());
         assert!(!root.join("worker/separation-instrumental").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_semantic_pair_is_republished_as_lossless_run_artifacts() {
+        let Some(ffmpeg) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        else {
+            return;
+        };
+        let root = temporary_root();
+        let guide = root.join("cached-guide.wav");
+        let instrumental = root.join("cached-instrumental.wav");
+        write_wav(&guide);
+        write_wav(&instrumental);
+
+        let guide_output = materialize_semantic_stem(
+            &ffmpeg,
+            &guide,
+            &root,
+            AudioRole::GuideVocals,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let instrumental_output = materialize_semantic_stem(
+            &ffmpeg,
+            &instrumental,
+            &root,
+            AudioRole::Instrumental,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            guide_output.artifact.path,
+            Path::new("stems/guide_vocals.flac")
+        );
+        assert_eq!(
+            instrumental_output.artifact.path,
+            Path::new("stems/instrumental.flac")
+        );
+        assert!(root.join(guide_output.artifact.path).is_file());
+        assert!(root.join(instrumental_output.artifact.path).is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

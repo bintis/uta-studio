@@ -315,6 +315,15 @@ fn ensure_worker_running(state: &mut AnalyzerState) {
     }
 }
 
+fn sync_pending_queue(state: &mut AnalyzerState) -> Result<(), String> {
+    state.queue = crate::library_db::analysis_queue_resumable_hashes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|hash| state.active_hash.as_deref() != Some(hash.as_str()))
+        .collect();
+    Ok(())
+}
+
 pub(crate) fn is_usdx_song(file_hash: &str) -> bool {
     library_db::load_song_by_hash(file_hash)
         .ok()
@@ -353,8 +362,25 @@ pub(crate) fn enqueue_engine_intent(
     if !persisted {
         return Err("this song already has a queued or running analysis".to_string());
     }
-    state.queue.push_back(intent.file_hash.clone());
+    sync_pending_queue(&mut state)?;
     ensure_worker_running(&mut state);
+    Ok(())
+}
+
+pub(crate) fn replace_staged_engine_intent(
+    intent: &crate::library_db::EngineQueueIntent,
+) -> Result<(), String> {
+    let state = ANALYZER.lock().unwrap();
+    if state.active_hash.as_deref() == Some(&intent.file_hash)
+        || state.queue.iter().any(|hash| hash == &intent.file_hash)
+    {
+        return Err("this analysis has already started and can no longer be edited".to_string());
+    }
+    let replaced = crate::library_db::analysis_queue_replace_staged_engine_intent(intent)
+        .map_err(|error| error.to_string())?;
+    if !replaced {
+        return Err("this processing item is no longer waiting for edits".to_string());
+    }
     Ok(())
 }
 
@@ -365,9 +391,33 @@ pub(crate) fn resume_engine_intent(file_hash: &str) {
     {
         return;
     }
-    state.queue.push_back(file_hash.to_string());
     update_queue_status(file_hash, QueuedStatus::Queued);
+    if sync_pending_queue(&mut state).is_err() {
+        state.queue.push_back(file_hash.to_string());
+    }
     ensure_worker_running(&mut state);
+}
+
+pub fn move_analysis_queue_item(file_hash: &str, earlier: bool) -> Result<bool, String> {
+    let mut state = ANALYZER.lock().unwrap();
+    if state.active_hash.as_deref() == Some(file_hash) {
+        return Err("the running analysis cannot be reordered".to_string());
+    }
+    let moved = crate::library_db::analysis_queue_move(file_hash, earlier)
+        .map_err(|error| error.to_string())?;
+    if moved {
+        sync_pending_queue(&mut state)?;
+    }
+    Ok(moved)
+}
+
+pub fn remove_analysis_queue_item(file_hash: &str) -> Result<(), String> {
+    let mut state = ANALYZER.lock().unwrap();
+    if state.active_hash.as_deref() == Some(file_hash) {
+        return Err("the running analysis must be stopped before it can be removed".to_string());
+    }
+    state.queue.retain(|hash| hash != file_hash);
+    crate::library_db::analysis_queue_delete(file_hash).map_err(|error| error.to_string())
 }
 
 pub fn start_queued_analysis(file_hash: &str) -> Result<(), String> {

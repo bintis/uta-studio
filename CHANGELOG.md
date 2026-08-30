@@ -2,6 +2,25 @@
 
 This changelog is generated from git history.
 
+## 0.8.1 — 2026-08-31
+
+### Processing queue and workflow editing
+
+- Added a dedicated Processing Queue page with durable user ordering, removal, start/stop controls, and an edit path that replaces a staged exact request without moving its queue position.
+- Grouped analyzer cards that serve the same purpose into one compact card with model/provider rows, moved transformation ordering controls into the selected-card detail, removed duplicate-node and MINI-view controls, and shortened the default card summaries.
+- Kept all four workflow steps in one responsive row at 1080p and reduced the expert restore surface to missing providers only, removing the duplicate wall of already-present model buttons.
+
+### Analysis graph presentation
+
+- Unified the DAG palette with the rest of the application and made the full tile surface the progress channel: running completion fills across the card while waiting, complete, deferred, cancelled, and failed states use distinct restrained surfaces and borders.
+- Inset and rounded the top progress rail so it aligns with the workspace instead of colliding with the window boundary.
+
+### Step 1 reuse and completion reliability
+
+- Fixed runs reaching 91% and then failing with a missing instrumental capability after a separation cache hit. Cached Step 1 stems are now carried into the exact Engine request and republished into the current result manifest.
+- Preserved every semantic artifact in a deep Step 1 cache hit, including GuideVocals, LeadVocal, CleanLeadVocal, and Instrumental, so later result validation sees the same complete output set as a fresh separation.
+- Enabled unchanged lossless separation reuse by default for new and migrated workflows while keeping Steps 2–4 fresh. Pinning an older revision preserves it for comparison without silently skipping recomputation.
+
 ## 0.8.0 — 2026-08-31
 
 ### Analysis execution, caching, and progress

@@ -30,6 +30,23 @@ pub(crate) fn apply_content_action(
         invalidated,
     } = state;
     match &action.0 {
+        UiCommand::Analysis(AnalysisCommand::MoveAnalysisQueueItem(file_hash, earlier)) => {
+            studio.shell.notice = match app_core::move_analysis_queue_item(file_hash, *earlier) {
+                Ok(true) => None,
+                Ok(false) => Some("This item is already at the queue boundary.".to_string()),
+                Err(error) => Some(format!("Could not reorder processing: {error}")),
+            };
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::DeleteAnalysisQueueItem(file_hash)) => {
+            studio.shell.notice = Some(match app_core::remove_analysis_queue_item(file_hash) {
+                Ok(()) => "Removed from Processing Queue.".to_string(),
+                Err(error) => format!("Could not remove processing item: {error}"),
+            });
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
         UiCommand::Library(LibraryCommand::OpenSong(file_hash)) => {
             studio.dialogs.song_context = None;
             studio.library.selected_song = Some(file_hash.clone());
@@ -805,10 +822,11 @@ pub(crate) fn apply_content_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::CancelAnalysisRun(file_hash)) => {
-            studio.shell.notice = Some(match app_core::cancel_analysis_run(file_hash) {
-                Ok(()) => "Removed from the analysis queue.".to_string(),
-                Err(error) => format!("Could not cancel: {error}"),
+            studio.shell.notice = Some(match app_core::stop_analysis_run(file_hash) {
+                Ok(()) => "Processing stopped and removed from the queue.".to_string(),
+                Err(error) => format!("Could not stop processing: {error}"),
             });
+            studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Analysis(AnalysisCommand::ForceStopAllAnalysis) => {

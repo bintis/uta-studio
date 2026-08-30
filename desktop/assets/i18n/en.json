@@ -737,7 +737,6 @@
   "message.transcript_previewing": "Previewing transcript at {position}.",
   "message.transcript_waveform_failed": "Could not load transcript waveform: {error}",
   "message.watched_locations": "WATCHED LOCATIONS · {count}",
-  "MINI view": "MINI view",
   "missing": "missing",
   "Missing": "Missing",
   "Missing {}": "Missing {}",

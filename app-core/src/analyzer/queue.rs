@@ -637,6 +637,12 @@ fn queued_engine_snapshot(
 
 pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
     let live = super::control::LIVE_ANALYSIS.lock().unwrap().clone();
+    let queue_order = library_db::analysis_queue_ordered_hashes()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, hash)| (hash, index))
+        .collect::<HashMap<_, _>>();
     let mut tasks = AnalysisQueue::load()
         .entries
         .into_iter()
@@ -666,12 +672,16 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
     tasks.sort_by(|left, right| {
         let rank = |status: &QueuedStatus| match status {
             QueuedStatus::Analyzing(_) => 0,
-            QueuedStatus::Queued => 1,
-            QueuedStatus::Staged => 2,
-            QueuedStatus::Failed(_) => 3,
+            QueuedStatus::Queued | QueuedStatus::Staged => 1,
+            QueuedStatus::Failed(_) => 2,
         };
         rank(&left.status)
             .cmp(&rank(&right.status))
+            .then_with(|| {
+                queue_order
+                    .get(&left.file_hash)
+                    .cmp(&queue_order.get(&right.file_hash))
+            })
             .then_with(|| left.artist.cmp(&right.artist))
             .then_with(|| left.title.cmp(&right.title))
     });

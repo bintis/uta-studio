@@ -3,8 +3,6 @@
 //! Nodes and bindings come from the exact workflow snapshot used by Engine
 //! Preview/Execution; Bevy rendering and layout consume only this model.
 
-use std::collections::BTreeSet;
-
 use app_core::AnalysisNodeId;
 
 mod workflow;
@@ -107,27 +105,4 @@ impl RenderGraph {
     pub(crate) fn edge_pairs(&self) -> Vec<(AnalysisNodeId, AnalysisNodeId)> {
         self.edges.iter().map(RenderEdge::endpoints).collect()
     }
-}
-
-/// MINI keeps only nodes that can participate in the selected request. It
-/// never invents shortcut edges; the visible topology remains a subgraph of
-/// the exact compiled workflow.
-pub(crate) fn filter_render_graph_for_mini_view(mut render: RenderGraph) -> RenderGraph {
-    render.nodes.retain(|node| {
-        !matches!(
-            node.state,
-            GraphNodeState::Disabled
-                | GraphNodeState::ProfileSkipped
-                | GraphNodeState::NotRequested
-        )
-    });
-    let visible = render
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    render
-        .edges
-        .retain(|edge| visible.contains(&edge.from) && visible.contains(&edge.to));
-    render
 }

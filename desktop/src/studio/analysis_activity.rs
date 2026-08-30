@@ -227,7 +227,7 @@ fn stable_analysis_viewport(value: f32) -> f32 {
 }
 
 /// Scales the DAG so the full flow fits the current viewport, then leaves
-/// zoom alone until the user clicks Fit or switches MINI/Full. Needs a
+/// zoom alone until the user clicks Fit. Needs a
 /// laid-out `AnalysisGraphViewport` so it waits a frame after spawn.
 pub(crate) fn fit_analysis_graph_to_viewport(
     shell: Res<ShellState>,
@@ -261,7 +261,7 @@ pub(crate) fn fit_analysis_graph_to_viewport(
     {
         // Geometry metadata is useful to later focus commands, but it does not
         // justify replacing every analysis entity. The next explicit Fit,
-        // MINI/Full switch, or meaningful resize will rebuild once.
+        // meaningful resize will rebuild once.
         if viewport_changed {
             analysis.analysis_graph_viewport_width = viewport.x;
             analysis.analysis_graph_viewport_height = viewport.y;

@@ -155,8 +155,9 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
             // newer schemas write `backing_vocal` and keep HarmonyVocal distinct.
             stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
         }
-        2 => {
-            // Schema 3 adds the JBM555 note-boundary expert to saved workflows.
+        2 | 3 => {
+            // Schema 3 added JBM555. Schema 4 makes unchanged Step 1
+            // separation reuse the default while leaving later stages fresh.
             stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
         }
         version if version == super::WORKFLOW_SCHEMA_VERSION => {}
@@ -172,6 +173,9 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
         .iter_mut()
         .find(|node| node.capability_id.as_str() == "audio.separate_vocal_bgm")
     {
+        if previous_schema_version < 4 {
+            separation.skip_if_unchanged = true;
+        }
         if separation.model_id.as_deref() == Some("bs_roformer_vocals_ep317") {
             separation.model_id = Some("bs_roformer_leap_xe90_vocals".to_string());
         }

@@ -498,6 +498,33 @@ fn matching_lrc_tokens(
     )
 }
 
+fn cached_step_one_audio_sources(
+    decision: &crate::chain_cache::ChainCacheDecision,
+    primary_role: AudioRoleWireV1,
+    primary_path: &Path,
+) -> Vec<AudioSourceWireV1> {
+    decision
+        .cached_sources
+        .iter()
+        .filter(|cached| cached.role != primary_role || cached.path != primary_path)
+        .enumerate()
+        .map(|(index, cached)| AudioSourceWireV1 {
+            id: format!("cached_step1_{index}"),
+            kind: AudioSourceKindWireV1::LocalFile,
+            path: cached.path.clone(),
+            // This remains identity/provenance metadata. Engine input
+            // validation uses the actual file and does not hash-verify it.
+            sha256: cached.identity.clone(),
+            role: cached.role,
+            primary: false,
+            timeline: SourceTimelineWireV1 {
+                timebase: CANONICAL_TIMEBASE,
+                source_start: 0,
+            },
+        })
+        .collect()
+}
+
 pub fn compile_analyze_request_v1(
     intent: AnalysisRequestIntent,
     effective: &EffectiveAnalysisExperience,
@@ -537,6 +564,7 @@ pub fn compile_analyze_request_v1(
     let mut source_path = intent.source.path;
     let mut source_role = intent.source.role;
     let mut satisfied_capabilities = Vec::new();
+    let mut reused_step_one_sources = Vec::new();
     let mut extensions = BTreeMap::new();
     if source_role == AudioRoleWireV1::OriginalMix
         && let Ok(stored_workflow) =
@@ -546,10 +574,12 @@ pub fn compile_analyze_request_v1(
             &intent.source.library_file_hash,
             &stored_workflow.definition,
         );
-        if let Some(cached_path) = decision.source_path {
+        if let Some(cached_path) = decision.source_path.clone() {
             source_path = cached_path;
             source_role = decision.role;
         }
+        reused_step_one_sources =
+            cached_step_one_audio_sources(&decision, source_role, &source_path);
         satisfied_capabilities = decision.satisfied_capabilities;
         if let Ok(fingerprints) = serde_json::to_value(&decision.fingerprints) {
             extensions.insert(
@@ -567,7 +597,7 @@ pub fn compile_analyze_request_v1(
         contract: ANALYZE_REQUEST_CONTRACT.to_string(),
         version: ANALYZE_REQUEST_VERSION,
         request_id: intent.request_id,
-        audio_sources: vec![AudioSourceWireV1 {
+        audio_sources: std::iter::once(AudioSourceWireV1 {
             id: "true_source".to_string(),
             kind: AudioSourceKindWireV1::LocalFile,
             path: source_path,
@@ -578,7 +608,9 @@ pub fn compile_analyze_request_v1(
                 timebase: CANONICAL_TIMEBASE,
                 source_start: 0,
             },
-        }],
+        })
+        .chain(reused_step_one_sources)
+        .collect(),
         lyrics,
         boundary_constraints: Vec::new(),
         musical_context: None,
@@ -902,7 +934,18 @@ fn queued_engine_run(preview: &EngineRunPreview) -> QueuedEngineRun {
 pub fn queue_exact_preview(preview: &EngineRunPreview) -> Result<QueuedEngineRun, String> {
     let current_source = resolve_true_source(&preview.source.library_file_hash)?;
     let intent = exact_queue_intent(preview, &current_source)?;
-    crate::analyzer::enqueue_engine_intent(&intent)?;
+    if crate::library_db::analysis_queue_status(&preview.source.library_file_hash)
+        .map_err(|error| error.to_string())?
+        .as_deref()
+        == Some("staged")
+    {
+        // Queue-page editing keeps the user's position, replaces the frozen
+        // exact request, then starts that edited item.
+        crate::analyzer::replace_staged_engine_intent(&intent)?;
+        crate::analyzer::resume_engine_intent(&intent.file_hash);
+    } else {
+        crate::analyzer::enqueue_engine_intent(&intent)?;
+    }
     Ok(queued_engine_run(preview))
 }
 
@@ -1182,6 +1225,53 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("studio-auto-"));
         assert!(second.starts_with("studio-auto-"));
+    }
+
+    #[test]
+    fn deep_step_one_cache_hit_keeps_every_earlier_semantic_source() {
+        let decision = crate::chain_cache::ChainCacheDecision {
+            role: AudioRoleWireV1::CleanLeadVocal,
+            source_path: Some(PathBuf::from("/cache/clean.flac")),
+            cached_sources: vec![
+                crate::chain_cache::CachedChainSource {
+                    role: AudioRoleWireV1::GuideVocals,
+                    path: PathBuf::from("/cache/guide.flac"),
+                    identity: "guide".to_string(),
+                },
+                crate::chain_cache::CachedChainSource {
+                    role: AudioRoleWireV1::Instrumental,
+                    path: PathBuf::from("/cache/instrumental.flac"),
+                    identity: "instrumental".to_string(),
+                },
+                crate::chain_cache::CachedChainSource {
+                    role: AudioRoleWireV1::LeadVocal,
+                    path: PathBuf::from("/cache/lead.flac"),
+                    identity: "lead".to_string(),
+                },
+                crate::chain_cache::CachedChainSource {
+                    role: AudioRoleWireV1::CleanLeadVocal,
+                    path: PathBuf::from("/cache/clean.flac"),
+                    identity: "clean".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let sources = cached_step_one_audio_sources(
+            &decision,
+            AudioRoleWireV1::CleanLeadVocal,
+            Path::new("/cache/clean.flac"),
+        );
+
+        assert_eq!(
+            sources.iter().map(|source| source.role).collect::<Vec<_>>(),
+            vec![
+                AudioRoleWireV1::GuideVocals,
+                AudioRoleWireV1::Instrumental,
+                AudioRoleWireV1::LeadVocal,
+            ]
+        );
+        assert!(sources.iter().all(|source| !source.primary));
     }
 
     #[test]

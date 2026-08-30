@@ -90,7 +90,6 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_history: Vec<AnalysisRunHistory>,
     pub(crate) selected_analysis_history: Option<i64>,
     pub(crate) selected_analysis_node: Option<String>,
-    pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
     pub(crate) workflow: Option<app_core::StoredWorkflow>,
     /// Frozen local compile used by Processing Studio and the Advanced Graph.
@@ -268,7 +267,6 @@ impl StudioStateBundle {
                 analysis_history: app_core::load_analysis_history(100),
                 selected_analysis_history: None,
                 selected_analysis_node: None,
-                analysis_mini_view: true,
                 analysis_model_panel_open: false,
                 workflow: None,
                 workflow_snapshot: None,
@@ -363,9 +361,6 @@ impl StudioStateBundle {
         if std::env::var("UTA_STUDIO_DEBUG_OPEN_MODEL_PANEL").is_ok() {
             self.analysis.analysis_model_panel_open = true;
         }
-        if std::env::var("UTA_STUDIO_DEBUG_MINI_VIEW").is_ok() {
-            self.analysis.analysis_mini_view = true;
-        }
         if let Ok(node_id) = std::env::var("UTA_STUDIO_DEBUG_OPEN_NODE_CONTEXT")
             && let Some(history) = self.analysis.selected_analysis_history.and_then(|id| {
                 self.analysis
@@ -443,7 +438,6 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) analysis_history: &'a [AnalysisRunHistory],
     pub(crate) selected_analysis_history: Option<i64>,
     pub(crate) selected_analysis_node: &'a Option<String>,
-    pub(crate) analysis_mini_view: bool,
     pub(crate) analysis_model_panel_open: bool,
     pub(crate) workflow: &'a Option<app_core::StoredWorkflow>,
     pub(crate) workflow_snapshot: &'a Option<app_core::WorkflowExecutionSnapshot>,
@@ -520,7 +514,6 @@ impl<'a> StudioSessionView<'a> {
             analysis_history: &analysis.analysis_history,
             selected_analysis_history: analysis.selected_analysis_history,
             selected_analysis_node: &analysis.selected_analysis_node,
-            analysis_mini_view: analysis.analysis_mini_view,
             analysis_model_panel_open: analysis.analysis_model_panel_open,
             workflow: &analysis.workflow,
             workflow_snapshot: &analysis.workflow_snapshot,

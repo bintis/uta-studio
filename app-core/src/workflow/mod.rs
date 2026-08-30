@@ -469,6 +469,36 @@ mod tests {
     }
 
     #[test]
+    fn schema_three_workflow_enables_unchanged_step_one_separation_reuse() {
+        let mut stored = StoredWorkflow {
+            definition: default_workflow("legacy-song"),
+            layout: WorkflowLayout::default(),
+            updated_at_ms: 0,
+        };
+        stored.definition.schema_version = 3;
+        let separation = stored
+            .definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.capability_id.as_str() == "audio.separate_vocal_bgm")
+            .unwrap();
+        separation.skip_if_unchanged = false;
+
+        migrate_stored_workflow(&mut stored).unwrap();
+
+        assert_eq!(stored.definition.schema_version, WORKFLOW_SCHEMA_VERSION);
+        assert!(
+            stored
+                .definition
+                .nodes
+                .iter()
+                .find(|node| node.capability_id.as_str() == "audio.separate_vocal_bgm")
+                .unwrap()
+                .skip_if_unchanged
+        );
+    }
+
+    #[test]
     fn invalid_model_selection_is_rejected_without_mutation() {
         let mut workflow = default_workflow("song-a");
         let before = workflow.clone();

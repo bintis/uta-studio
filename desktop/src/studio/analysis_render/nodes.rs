@@ -6,20 +6,20 @@ pub(crate) fn analysis_graph_category_accent(
     theme: &StudioTheme,
 ) -> Color {
     match (theme.dark, category) {
-        (true, GraphNodeCategory::Source) => Color::srgb(0.38, 0.66, 1.0),
-        (true, GraphNodeCategory::Audio) => Color::srgb(0.25, 0.84, 0.80),
-        (true, GraphNodeCategory::Lyrics) => Color::srgb(0.96, 0.68, 0.18),
-        (true, GraphNodeCategory::Pitch) => Color::srgb(0.78, 0.50, 0.93),
-        (true, GraphNodeCategory::Evidence) => Color::srgb(0.65, 0.58, 0.94),
-        (true, GraphNodeCategory::Fusion) => Color::srgb(0.46, 0.86, 0.40),
-        (true, GraphNodeCategory::Output) => Color::srgb(0.35, 0.78, 0.96),
-        (false, GraphNodeCategory::Source) => Color::srgb(0.16, 0.42, 0.76),
-        (false, GraphNodeCategory::Audio) => Color::srgb(0.05, 0.52, 0.50),
-        (false, GraphNodeCategory::Lyrics) => Color::srgb(0.72, 0.42, 0.02),
-        (false, GraphNodeCategory::Pitch) => Color::srgb(0.55, 0.25, 0.70),
-        (false, GraphNodeCategory::Evidence) => Color::srgb(0.42, 0.34, 0.70),
-        (false, GraphNodeCategory::Fusion) => Color::srgb(0.22, 0.58, 0.18),
-        (false, GraphNodeCategory::Output) => Color::srgb(0.08, 0.48, 0.67),
+        (true, GraphNodeCategory::Source) => Color::srgb(0.45, 0.62, 0.82),
+        (true, GraphNodeCategory::Audio) => Color::srgb(0.38, 0.70, 0.67),
+        (true, GraphNodeCategory::Lyrics) => Color::srgb(0.78, 0.64, 0.40),
+        (true, GraphNodeCategory::Pitch) => Color::srgb(0.67, 0.54, 0.78),
+        (true, GraphNodeCategory::Evidence) => Color::srgb(0.59, 0.57, 0.76),
+        (true, GraphNodeCategory::Fusion) => Color::srgb(0.50, 0.69, 0.49),
+        (true, GraphNodeCategory::Output) => Color::srgb(0.42, 0.67, 0.77),
+        (false, GraphNodeCategory::Source) => Color::srgb(0.22, 0.43, 0.66),
+        (false, GraphNodeCategory::Audio) => Color::srgb(0.12, 0.49, 0.47),
+        (false, GraphNodeCategory::Lyrics) => Color::srgb(0.63, 0.45, 0.16),
+        (false, GraphNodeCategory::Pitch) => Color::srgb(0.48, 0.32, 0.61),
+        (false, GraphNodeCategory::Evidence) => Color::srgb(0.39, 0.37, 0.61),
+        (false, GraphNodeCategory::Fusion) => Color::srgb(0.28, 0.51, 0.27),
+        (false, GraphNodeCategory::Output) => Color::srgb(0.16, 0.47, 0.59),
     }
 }
 
@@ -208,6 +208,15 @@ pub(crate) fn spawn_analysis_graph_legend(
                 "Waiting",
                 "Pending execution",
                 theme.muted_foreground,
+                true,
+            );
+            spawn_analysis_graph_legend_item(
+                legend,
+                font.clone(),
+                theme,
+                "Failed",
+                "Needs attention",
+                theme.destructive,
                 true,
             );
             spawn_text(
@@ -473,10 +482,17 @@ pub(crate) fn spawn_workflow_graph_node(
             Vec2::ZERO,
         )
     });
-    let tile_background = if theme.dark {
-        accent.mix(&theme.background, if dimmed { 0.68 } else { 0.34 })
-    } else {
-        accent.mix(&theme.card, if dimmed { 0.82 } else { 0.64 })
+    let tile_background = match state {
+        WorkflowNodeVisualState::Complete => complete_color.mix(&theme.card, 0.84),
+        WorkflowNodeVisualState::Failed | WorkflowNodeVisualState::Cancelled => {
+            theme.destructive.mix(&theme.card, 0.84)
+        }
+        WorkflowNodeVisualState::Deferred => theme.editor_warning.mix(&theme.card, 0.90),
+        WorkflowNodeVisualState::Running(_) => accent.mix(&theme.card, 0.88),
+        WorkflowNodeVisualState::Waiting => theme.muted.mix(&theme.card, 0.94),
+        WorkflowNodeVisualState::Disabled
+        | WorkflowNodeVisualState::ProfileSkipped
+        | WorkflowNodeVisualState::NotRequested => theme.muted.mix(&theme.card, 0.97),
     };
     parent
         .spawn((
@@ -501,24 +517,20 @@ pub(crate) fn spawn_workflow_graph_node(
                 row_gap: px(gap),
                 overflow: Overflow::clip(),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(analysis_graph_scaled(2.0, 1.0, zoom))),
+                border_radius: BorderRadius::all(px(analysis_graph_scaled(6.0, 4.0, zoom))),
                 ..default()
             },
-            BackgroundColor(if failed {
-                theme
-                    .destructive
-                    .mix(&theme.background, if dimmed { 0.72 } else { 0.30 })
-            } else if running || selected {
-                accent.mix(&theme.background, if dimmed { 0.62 } else { 0.16 })
+            BackgroundColor(if dimmed {
+                tile_background.mix(&theme.background, 0.48)
             } else {
                 tile_background
             }),
             BorderColor::all(if selected {
                 accent.with_alpha(0.96)
             } else if running {
-                accent.with_alpha(if dimmed { 0.22 } else { 0.72 })
+                status_color.with_alpha(if dimmed { 0.22 } else { 0.72 })
             } else if complete {
-                accent.with_alpha(if dimmed { 0.16 } else { 0.70 })
+                complete_color.with_alpha(if dimmed { 0.16 } else { 0.70 })
             } else if failed {
                 theme
                     .destructive
@@ -548,6 +560,21 @@ pub(crate) fn spawn_workflow_graph_node(
             ZIndex(if selected { 5 } else { 2 }),
         ))
         .with_children(|node| {
+            if running && let Some(progress) = progress {
+                node.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0),
+                        top: px(0),
+                        bottom: px(0),
+                        width: percent(progress.clamp(0, 100) as f32),
+                        border_radius: BorderRadius::all(px(analysis_graph_scaled(5.0, 3.0, zoom))),
+                        ..default()
+                    },
+                    BackgroundColor(status_color.with_alpha(if dimmed { 0.05 } else { 0.18 })),
+                    Pickable::IGNORE,
+                ));
+            }
             spawn_analysis_graph_ports(
                 node,
                 theme,
@@ -557,25 +584,6 @@ pub(crate) fn spawn_workflow_graph_node(
                 input_ports,
                 output_ports,
             );
-            node.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(analysis_graph_scaled(7.0, 4.0, zoom)),
-                    right: px(analysis_graph_scaled(7.0, 4.0, zoom)),
-                    top: px(0),
-                    height: px((1.0 * zoom).max(0.7)),
-                    border_radius: BorderRadius::MAX,
-                    ..default()
-                },
-                BackgroundColor(accent.with_alpha(if running {
-                    0.92
-                } else if complete {
-                    0.46
-                } else {
-                    0.24
-                })),
-                Pickable::IGNORE,
-            ));
             if selected {
                 node.spawn((
                     Node {
