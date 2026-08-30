@@ -50,8 +50,8 @@ that the compiled graph is unavailable.
 - priority is node metadata and never creates an edge;
 - Engine states map directly to Ready, Deferred, Disabled, Profile skipped and
   Not requested;
-- MINI is an exact subgraph that removes inactive nodes and dangling edges; it
-  never creates shortcut dependencies;
+- one authoritative full-workflow projection is used for fit, lineage and
+  runtime overlays; no alternate compact graph can hide dependencies;
 - runtime events overlay nodes only by exact `node_id`; display-stage text never
   selects a node;
 - historical event routes overlay the frozen plan without marking the last

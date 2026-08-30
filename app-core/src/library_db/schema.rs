@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 14;
+pub(crate) const SCHEMA_VERSION: i32 = 15;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -65,7 +65,8 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             engine_plan_json TEXT,
             source_path TEXT,
             source_sha256 TEXT,
-            queued_at_ms INTEGER
+            queued_at_ms INTEGER,
+            queue_position INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS analysis_history (
@@ -282,19 +283,35 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
                 engine_plan_json TEXT,
                 source_path TEXT,
                 source_sha256 TEXT,
-                queued_at_ms INTEGER
+                queued_at_ms INTEGER,
+                queue_position INTEGER NOT NULL DEFAULT 0
              );
              INSERT INTO analysis_queue (
                 file_hash, status, analyzing_pct, failed_message, request_id,
                 engine_request_json, request_digest, engine_plan_json,
-                source_path, source_sha256, queued_at_ms
+                source_path, source_sha256, queued_at_ms, queue_position
              )
              SELECT file_hash, status, analyzing_pct, failed_message, request_id,
                     engine_request_json, request_digest, engine_plan_json,
-                    source_path, source_sha256, queued_at_ms
+                    source_path, source_sha256, queued_at_ms, rowid
              FROM analysis_queue_v13;
              DROP TABLE analysis_queue_v13;
              COMMIT;",
+        )?;
+    }
+    // SCHEMA_VERSION 14 -> 15: queue order is user-editable and durable.
+    if !column_exists(conn, "analysis_queue", "queue_position")? {
+        conn.execute_batch(
+            "ALTER TABLE analysis_queue ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0;
+             WITH ordered AS (
+               SELECT file_hash,
+                      ROW_NUMBER() OVER (ORDER BY COALESCE(queued_at_ms, 0), rowid) - 1 AS position
+               FROM analysis_queue
+             )
+             UPDATE analysis_queue
+             SET queue_position = (
+               SELECT position FROM ordered WHERE ordered.file_hash = analysis_queue.file_hash
+             );",
         )?;
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;

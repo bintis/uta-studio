@@ -737,7 +737,6 @@
   "message.transcript_previewing": "{position} から文字起こし音声を試聴しています。",
   "message.transcript_waveform_failed": "文字起こし波形を読み込めませんでした：{error}",
   "message.watched_locations": "監視場所 · {count}",
-  "MINI view": "ミニ表示",
   "missing": "不足",
   "Missing": "未インストール",
   "Missing {}": "不足：{}",

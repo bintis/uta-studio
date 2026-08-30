@@ -1,6 +1,6 @@
 # Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta! Studio 0.8.0
+**Applies to:** Uta! Studio 0.8.1
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,11 +27,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.8.0 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
+Download the package for your system from the project’s GitHub Releases page. Release 0.8.1 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
 
 #### Windows
 
-1. Download `uta-studio-0.8.0-x86_64-windows.zip`.
+1. Download `uta-studio-0.8.1-x86_64-windows.zip`.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,20 +41,20 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.1-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.8.0-x86_64-linux.bin
-./uta-studio-0.8.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.1-x86_64-linux.bin
+./uta-studio-0.8.1-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -172,6 +172,8 @@ Extracts pitch evidence and MIDI note targets for chart authoring. The editor re
 #### Re-analysis rules
 
 Changing an analysis setting does not silently rewrite an existing authored chart. Existing stems or charts change only after the corresponding re-analysis action. This protects manual edits and makes destructive changes explicit.
+
+Step 1 reuses its lossless vocal/instrumental separation when the source, models, and parameters are unchanged. Steps 2–4 are regenerated for each run. Pin an older revision to preserve it for comparison; pinning does not silently skip recomputation.
 
 #### Automatic analysis
 
@@ -389,7 +391,7 @@ Actions that cannot succeed are hidden instead of shown as errors. Graph export 
 
 #### Lineage panel and impact preview
 
-**Lineage** can stay on the main analysis graph. Turn it on from the VIEW row or from an artifact menu. Upstream, downstream, and full scope highlight the matching nodes and edges and fade the rest. MINI view keeps only compute nodes; lineage then highlights those producers and consumers. Missing legacy links appear as explicit gaps. Edge labels show the artifact kind and a short revision id. Selecting a revision opens that revision.
+**Lineage** can stay on the main analysis graph. Turn it on from the VIEW row or from an artifact menu. Upstream, downstream, and full scope highlight the matching nodes and edges and fade the rest. The graph keeps one authoritative full-workflow view, so lineage always refers to the same producers and consumers. Missing legacy links appear as explicit gaps. Edge labels show the artifact kind and a short revision id. Selecting a revision opens that revision.
 
 **Impact** is a read-only preview built from one frozen analysis plan. It includes the current song profile, staged Freeze / Bypass / Disable intents, and Pin. Groups are will run, will reuse, will become stale, will be blocked, will remain preserved, and exports that need regeneration. **Queue this plan** submits that same request. Cancel leaves the library unchanged.
 
@@ -401,7 +403,7 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 - `preflight` — checks that the local source and runtime are usable before work starts.
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
-- `stems.separate` — MINI-view aggregate derived from the real stem child nodes; it is not an executable Extract step.
+- `stems.separate` — presentation aggregate derived from the real stem child nodes; it is not an executable Extract step.
 - `stems.vocals` — runs the selected vocal separation model.
 - `vocals.denoise` / `vocals.dereverb` — optional vocal post-processing in the configured slot order.
 - `stems.instrumental` — runs the independent BGM separation model.
@@ -460,11 +462,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.0 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.1 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
 
 #### Windows
 
-1. 下载 `uta-studio-0.8.0-x86_64-windows.zip`。
+1. 下载 `uta-studio-0.8.1-x86_64-windows.zip`。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -474,20 +476,20 @@ Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.1-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.8.0-x86_64-linux.bin
-./uta-studio-0.8.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.1-x86_64-linux.bin
+./uta-studio-0.8.1-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -605,6 +607,8 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 #### 重新分析规则
 
 更改分析设置不会静默重写已人工制作的谱面。现有分轨或谱面只有在执行对应重新分析操作后才会改变，从而保护手工编辑并明确标示破坏性变化。
+
+当源文件、模型和参数均未变化时，Step 1 会复用无损的人声/伴奏分离产物。Step 2–4 每次运行都会重新生成；可以固定旧修订以保留它用于对比，但固定不会静默跳过重新计算。
 
 #### 自动分析
 
@@ -822,7 +826,7 @@ Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证
 
 #### 来源面板与影响预览
 
-**来源关系**可以显示在主分析图上。从 VIEW 行或产物菜单打开。上游、下游和完整范围会高亮对应节点和边，并淡化其余部分。MINI 视图只保留计算节点，来源高亮仍落在这些生产者和消费者上。缺失的旧版链接显示为明确缺口。边标签显示产物类型和修订短号。选中修订会打开该修订。
+**来源关系**可以显示在主分析图上。从 VIEW 行或产物菜单打开。上游、下游和完整范围会高亮对应节点和边，并淡化其余部分。分析图只保留一个权威的完整工作流视图，因此来源关系始终指向同一组生产者和消费者。缺失的旧版链接显示为明确缺口。边标签显示产物类型和修订短号。选中修订会打开该修订。
 
 **影响**是只读预览，来自一份冻结的分析计划。它包含当前歌曲配置、已暂存的冻结 / 旁路 / 禁用意图，以及固定状态。分组包括将运行、将复用、将变旧、将被阻塞、将保持保留，以及需要重新生成的导出。**排队此计划**提交同一份请求。取消不会改动曲库。
 
@@ -834,7 +838,7 @@ Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证
 
 - `preflight` — 在开始工作前检查本地源文件和运行环境是否可用。
 - `music.analysis` — 调性、节奏和描述符分析，供后续时间和谱面使用。
-- `stems.separate` — MINI 视图中由真实分轨子节点派生的聚合节点，不是可执行的 Extract 步骤。
+- `stems.separate` — 由真实分轨子节点派生的展示聚合节点，不是可执行的 Extract 步骤。
 - `stems.vocals` — 执行所选人声分离模型。
 - `vocals.denoise` / `vocals.dereverb` — 按配置槽位顺序执行的可选人声后处理。
 - `stems.instrumental` — 执行独立的 BGM 分离模型。
@@ -893,11 +897,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.0 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.1 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
 
 #### Windows
 
-1. `uta-studio-0.8.0-x86_64-windows.zip` をダウンロードします。
+1. `uta-studio-0.8.1-x86_64-windows.zip` をダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -907,20 +911,20 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.0-1_amd64.deb
+sudo apt install ./uta-studio_0.8.1-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.8.0-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.1-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.8.0-x86_64-linux.bin
-./uta-studio-0.8.0-x86_64-linux.bin
+chmod +x uta-studio-0.8.1-x86_64-linux.bin
+./uta-studio-0.8.1-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -1038,6 +1042,8 @@ NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認�
 #### 再解析の規則
 
 解析設定を変更しても、制作済み譜面を自動で書き換えません。既存のステムや譜面は、対応する再解析を明示的に実行した後だけ変わります。これにより手動編集を保護し、破壊的変更を明確にします。
+
+ソース、モデル、パラメーターが変わっていない場合、Step 1 はロスレスのボーカル／伴奏分離成果物を再利用します。Step 2～4 は実行ごとに再生成されます。以前のリビジョンを Pin すれば比較用に保持できますが、再計算が暗黙に省略されることはありません。
 
 #### 自動解析
 
@@ -1255,7 +1261,7 @@ Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールには�
 
 #### 由来パネルと影響プレビュー
 
-**Lineage** はメインの解析グラフ上でも使えます。VIEW 行または成果物メニューからオンにします。上流・下流・全体の範囲で該当ノードとエッジを強調し、それ以外を薄くします。MINI ビューは計算ノードだけを残し、由来ハイライトもその生産者・消費者に載ります。欠けた旧リンクは隙間として明示されます。エッジラベルは成果物の種類と短いリビジョン ID を示します。リビジョンを選ぶとそのリビジョンが開きます。
+**Lineage** はメインの解析グラフ上でも使えます。VIEW 行または成果物メニューからオンにします。上流・下流・全体の範囲で該当ノードとエッジを強調し、それ以外を薄くします。解析グラフは信頼できる完全なワークフロー表示を 1 つだけ保つため、由来は常に同じ生産者・消費者を指します。欠けた旧リンクは隙間として明示されます。エッジラベルは成果物の種類と短いリビジョン ID を示します。リビジョンを選ぶとそのリビジョンが開きます。
 
 **Impact** は 1 つの凍結済み解析計画から作る読み取り専用プレビューです。現在の楽曲プロファイル、staged された Freeze / Bypass / Disable、Pin を含みます。グループは実行予定、再利用、陳腐化、ブロック、保全、再生成が必要な書き出しです。**Queue this plan** はその同じリクエストを投入します。キャンセルしてもライブラリは変わりません。
 
@@ -1267,7 +1273,7 @@ Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールには�
 
 - `preflight` — 作業開始前にローカルソースとランタイムが使えるか確認します。
 - `music.analysis` — 後のタイミングと譜面に使うキー、リズム、記述子解析です。
-- `stems.separate` — MINI 表示で実ノードから派生する集約ノードです。実行可能な Extract 処理ではありません。
+- `stems.separate` — 実際の分離子ノードから派生する表示用の集約ノードです。実行可能な Extract 処理ではありません。
 - `stems.vocals` — 選択したボーカル分離モデルを実行します。
 - `vocals.denoise` / `vocals.dereverb` — 設定したスロット順で実行する任意のボーカル後処理です。
 - `stems.instrumental` — 独立した BGM 分離モデルを実行します。

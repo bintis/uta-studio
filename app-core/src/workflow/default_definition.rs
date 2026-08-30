@@ -57,6 +57,10 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         ),
     ];
     nodes[1].separation_strategy = Some(super::SeparationStrategyV1::IndependentSpecialists);
+    // Separation is the expensive, stable Step 1 boundary. New workflows
+    // reuse its lossless vocal/instrumental pair whenever source, models and
+    // parameters still match; later analysis stages remain fresh by default.
+    nodes[1].skip_if_unchanged = true;
     debug_assert_eq!(DEFAULT_VOCAL_MODEL_ID, "bs_roformer_leap_xe90_vocals");
     debug_assert_eq!(DEFAULT_BGM_MODEL_ID, "bs_polarformer_public_instrumental");
     let mut edges = vec![edge("source", "mix", "vocal_bgm_split", "audio")];

@@ -55,9 +55,10 @@ pub use analysis_node_attempts::{
 };
 pub use analysis_queue::{
     EngineQueueIntent, analysis_queue_clear, analysis_queue_delete, analysis_queue_engine_intent,
-    analysis_queue_load_rows, analysis_queue_resumable_hashes, analysis_queue_save_rows,
-    analysis_queue_set_engine_intent, analysis_queue_stage_engine_intent, analysis_queue_status,
-    analysis_queue_upsert_row,
+    analysis_queue_load_rows, analysis_queue_move, analysis_queue_ordered_hashes,
+    analysis_queue_replace_staged_engine_intent, analysis_queue_resumable_hashes,
+    analysis_queue_save_rows, analysis_queue_set_engine_intent, analysis_queue_stage_engine_intent,
+    analysis_queue_status, analysis_queue_upsert_row,
 };
 pub use playlists::{PlaylistDefinition, replace_all_playlists};
 pub use queries::{

@@ -73,9 +73,10 @@ pub use analyzer::{
     SongAuthoringState, analysis_log_lines, analysis_log_path_for, cancel_analysis_run,
     clear_analysis_history, compare_analysis_runs, compare_node_attempt_with_previous_run,
     delete_cache, enqueue_all, enqueue_one, force_stop_all_analysis, load_analysis_history,
-    load_analysis_node_attempts, load_analysis_tasks, realign, reanalyze_force_transcribe,
-    reanalyze_full, reanalyze_pitch, reanalyze_transcript, remove_song_from_library,
-    resolve_song_authoring_state, start_queued_analysis, stop_analysis_run,
+    load_analysis_node_attempts, load_analysis_tasks, move_analysis_queue_item, realign,
+    reanalyze_force_transcribe, reanalyze_full, reanalyze_pitch, reanalyze_transcript,
+    remove_analysis_queue_item, remove_song_from_library, resolve_song_authoring_state,
+    start_queued_analysis, stop_analysis_run,
 };
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};

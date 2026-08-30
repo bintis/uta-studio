@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-core"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["bintis"]
 edition = "2024"
 

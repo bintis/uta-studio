@@ -707,6 +707,7 @@ fn port_label(port: &app_core::WorkflowPortSpec) -> String {
 
 struct NodeCardContext<'a> {
     selected: bool,
+    embedded: bool,
     definition: &'a app_core::WorkflowDefinition,
     analyzer_binding: Option<&'a app_core::AnalyzerBinding>,
     audio_sources: &'a [(app_core::WorkflowNodeId, String, String)],
@@ -722,7 +723,13 @@ fn node_card(
 ) {
     let (status, status_color) = node_execution_badge(&node.execution_policy);
     let model_options = app_core::workflow_model_options(&node.capability_id);
-    let card_title = if model_options.len() > 1 {
+    let card_title = if context.embedded {
+        node.model_id
+            .as_deref()
+            .map(app_core::workflow_model_label)
+            .unwrap_or(capability.label.as_str())
+            .to_string()
+    } else if model_options.len() > 1 {
         node.model_id.as_deref().map_or_else(
             || capability.label.clone(),
             |model| {
@@ -749,8 +756,8 @@ fn node_card(
     let mut card_entity = parent.spawn((
         Node {
             width: percent(100),
-            min_height: px(112),
-            padding: UiRect::all(px(12)),
+            min_height: px(if context.embedded { 64 } else { 88 }),
+            padding: UiRect::all(px(if context.embedded { 8 } else { 12 })),
             flex_direction: FlexDirection::Column,
             row_gap: px(6),
             border: UiRect::all(px(if context.selected { 2 } else { 1 })),
@@ -759,11 +766,15 @@ fn node_card(
         },
         BackgroundColor(if context.selected {
             theme.primary.with_alpha(0.12)
+        } else if context.embedded {
+            theme.background.with_alpha(0.24)
         } else {
             theme.card.with_alpha(STUDIO_CARD_BACKGROUND_ALPHA)
         }),
         BorderColor::all(if context.selected {
             theme.primary.with_alpha(0.72)
+        } else if context.embedded {
+            theme.border.with_alpha(0.32)
         } else {
             theme.border.with_alpha(STUDIO_CARD_BORDER_ALPHA)
         }),
@@ -799,7 +810,7 @@ fn node_card(
                 },
                 BackgroundColor(Color::NONE),
             ));
-            if capability.preserves_audio_role {
+            if capability.preserves_audio_role && context.selected {
                 header.insert(WorkflowReorderHandle {
                     node_id: node.instance_id.clone(),
                 });
@@ -820,7 +831,7 @@ fn node_card(
                         ..default()
                     })
                     .with_children(|status_group| {
-                        if capability.preserves_audio_role {
+                        if capability.preserves_audio_role && context.selected {
                             spawn_text(
                                 status_group,
                                 font.clone(),
@@ -843,39 +854,42 @@ fn node_card(
                     .separation_strategy
                     .unwrap_or(app_core::SeparationStrategyV1::IndependentSpecialists);
                 let descriptor = app_core::separation_strategy_descriptor(strategy);
-                let providers = descriptor
-                    .executions
-                    .iter()
-                    .map(|execution| {
-                        format!(
-                            "{} ({}) → {}",
-                            app_core::workflow_model_label(execution.provider_id),
-                            execution.provider_id,
-                            execution
-                                .output_roles
-                                .iter()
-                                .map(|role| role.output_port())
-                                .collect::<Vec<_>>()
-                                .join(" + ")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
                 spawn_wrapped_text(
                     card,
                     font.clone(),
-                    format!("Selected strategy · {}\n{providers}", descriptor.label),
+                    format!(
+                        "{} · {} providers",
+                        descriptor.label,
+                        descriptor.executions.len()
+                    ),
                     9.0,
                     theme.muted_foreground,
                 );
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    descriptor.description,
-                    7.5,
-                    theme.muted_foreground,
-                );
                 if context.selected {
+                    let providers = descriptor
+                        .executions
+                        .iter()
+                        .map(|execution| {
+                            format!(
+                                "{} → {}",
+                                app_core::workflow_model_label(execution.provider_id),
+                                execution
+                                    .output_roles
+                                    .iter()
+                                    .map(|role| role.output_port())
+                                    .collect::<Vec<_>>()
+                                    .join(" + ")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    spawn_wrapped_text(
+                        card,
+                        font.clone(),
+                        providers,
+                        8.0,
+                        theme.muted_foreground,
+                    );
                     spawn_text(card, font.clone(), "SEPARATION STRATEGY", 8.0, theme.primary);
                     card.spawn(Node {
                         width: percent(100),
@@ -918,7 +932,7 @@ fn node_card(
                         theme.muted_foreground,
                     );
                 }
-            } else {
+            } else if context.selected {
                 spawn_wrapped_text(
                     card,
                     font.clone(),
@@ -986,37 +1000,39 @@ fn node_card(
                 .map(port_label)
                 .collect::<Vec<_>>()
                 .join(" + ");
-            spawn_wrapped_text(
-                card,
-                font.clone(),
-                format!(
-                    "{} → {} · execution condition: {} · priority {}",
-                    if inputs.is_empty() { "source" } else { &inputs },
-                    outputs,
-                    policy_label(&node.execution_policy),
-                    node.priority,
-                ),
-                8.0,
-                theme.muted_foreground,
-            );
-            if !capability.hard_dependencies.is_empty() {
+            if context.selected {
                 spawn_wrapped_text(
                     card,
                     font.clone(),
                     format!(
-                        "Hard dependencies · {}",
-                        capability
-                            .hard_dependencies
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "{} → {} · {} · priority {}",
+                        if inputs.is_empty() { "source" } else { &inputs },
+                        outputs,
+                        policy_label(&node.execution_policy),
+                        node.priority,
                     ),
                     8.0,
                     theme.muted_foreground,
                 );
+                if !capability.hard_dependencies.is_empty() {
+                    spawn_wrapped_text(
+                        card,
+                        font.clone(),
+                        format!(
+                            "Needs {}",
+                            capability
+                                .hard_dependencies
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        8.0,
+                        theme.muted_foreground,
+                    );
+                }
             }
-            if capability.preserves_audio_role {
+            if capability.preserves_audio_role && context.selected {
                 let earlier = workflow_reorder_availability(
                     context.definition,
                     &node.instance_id,
@@ -1062,15 +1078,6 @@ fn node_card(
                     } else {
                         disabled_action_button(actions, font.clone(), theme, "Later");
                     }
-                    action_button(
-                        actions,
-                        font.clone(),
-                        theme,
-                        "Duplicate",
-                        UiAction::from(AnalysisCommand::DuplicateWorkflowNode(
-                            node.instance_id.to_string(),
-                        )),
-                    );
                 });
                 if earlier.is_err() && later.is_err() {
                     spawn_wrapped_text(
@@ -1104,7 +1111,8 @@ fn node_card(
                 }
             }
 
-            if capability.class == app_core::CapabilityClass::Analyzer
+            if context.selected
+                && capability.class == app_core::CapabilityClass::Analyzer
                 && let Some(binding) = context.analyzer_binding
             {
                 spawn_wrapped_text(
@@ -1534,12 +1542,12 @@ pub(crate) fn spawn_processing_studio(
                     session.processing_studio_scroll_offset,
                 )),
                 Node {
+                    width: percent(100),
                     min_width: px(0),
                     min_height: px(0),
                     flex_grow: 1.0,
-                    column_gap: px(12),
-                    row_gap: px(12),
-                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: px(8),
+                    flex_wrap: FlexWrap::NoWrap,
                     align_items: AlignItems::FlexStart,
                     overflow: Overflow::scroll_y(),
                     ..default()
@@ -1559,20 +1567,21 @@ pub(crate) fn spawn_processing_studio(
                     "instrumental",
                 );
                 for (stage, heading, description) in [
-                    (1u8, "01 · PRE-PROCESSING", "Required vocal/BGM separation plus optional cleanup chains. Add processors to either branch; Earlier/Later rewrites the real audio topology."),
-                    (2u8, "02 · LYRICS", "Qwen transcription and forced alignment form the required lyrics path. Optional transcript challengers can be deleted and added back without changing caller lyric authority."),
-                    (3u8, "03 · F0 & SINGING EXPERTS", "Every card names its capability and configured provider. Optional expert cards can be added or deleted; at least one valid continuous-F0 path must remain."),
-                    (4u8, "04 · FINAL FUSION", "Choose Algorithm or AI judgment for final candidate-path selection. Evidence participation is configured in Stage 3."),
+                    (1u8, "01 · PRE-PROCESSING", "Separate the source and optionally clean either audio branch."),
+                    (2u8, "02 · LYRICS", "Transcribe, combine lyric evidence, then align it to the song."),
+                    (3u8, "03 · PITCH & NOTE EXPERTS", "Multiple providers for the same purpose are grouped together."),
+                    (4u8, "04 · FINAL FUSION", "Combine evidence into the candidate singing track."),
                 ] {
                     workspace
                         .spawn((
                             Node {
-                                min_width: px(300),
-                                flex_basis: px(430),
+                                min_width: px(0),
+                                flex_basis: px(0),
                                 flex_grow: 1.0,
+                                flex_shrink: 1.0,
                                 flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(px(12)),
-                                row_gap: px(9),
+                                padding: UiRect::all(px(10)),
+                                row_gap: px(8),
                                 border: UiRect::all(px(1)),
                                 border_radius: BorderRadius::all(px(10)),
                                 ..default()
@@ -1683,49 +1692,62 @@ pub(crate) fn spawn_processing_studio(
                                     );
                                 });
                             } else if stage == 3 {
-                                spawn_text(
-                                    lane,
-                                    font.clone(),
-                                    "ADD / RESTORE EXPERT CARD",
-                                    8.0,
-                                    theme.primary,
-                                );
-                                lane.spawn(Node {
-                                    width: percent(100),
-                                    column_gap: px(6),
-                                    row_gap: px(6),
-                                    flex_wrap: FlexWrap::Wrap,
-                                    ..default()
-                                })
-                                .with_children(|adds| {
-                                    for card in [
-                                        app_core::OptionalWorkflowCardV1::RmvpePitch,
-                                        app_core::OptionalWorkflowCardV1::FcpePitch,
-                                        app_core::OptionalWorkflowCardV1::GameBoundary,
-                                        app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
-                                        app_core::OptionalWorkflowCardV1::RosvotBoundary,
-                                        app_core::OptionalWorkflowCardV1::StarsBoundary,
-                                        app_core::OptionalWorkflowCardV1::Jbm555Boundary,
-                                        app_core::OptionalWorkflowCardV1::StarsTechnique,
-                                        app_core::OptionalWorkflowCardV1::AcousticDsp,
-                                    ] {
-                                        optional_card_add_button(
-                                            adds,
-                                            font.clone(),
-                                            theme,
+                                let expert_cards = [
+                                    app_core::OptionalWorkflowCardV1::RmvpePitch,
+                                    app_core::OptionalWorkflowCardV1::FcpePitch,
+                                    app_core::OptionalWorkflowCardV1::GameBoundary,
+                                    app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
+                                    app_core::OptionalWorkflowCardV1::RosvotBoundary,
+                                    app_core::OptionalWorkflowCardV1::StarsBoundary,
+                                    app_core::OptionalWorkflowCardV1::Jbm555Boundary,
+                                    app_core::OptionalWorkflowCardV1::StarsTechnique,
+                                    app_core::OptionalWorkflowCardV1::AcousticDsp,
+                                ];
+                                let missing_experts = expert_cards
+                                    .into_iter()
+                                    .filter(|card| {
+                                        !app_core::workflow_has_optional_card(
                                             &stored.definition,
-                                            &vocal_tail,
-                                            card,
-                                        );
-                                    }
-                                });
-                                spawn_wrapped_text(
-                                    lane,
-                                    font.clone(),
-                                    "A restored GAME card starts Disabled while F0-derived fallback owns note lengths; enabling it is the explicit atomic switch back to GAME regions.",
-                                    7.5,
-                                    theme.muted_foreground,
-                                );
+                                            *card,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                if missing_experts.is_empty() {
+                                    spawn_wrapped_text(
+                                        lane,
+                                        font.clone(),
+                                        format!("{} experts configured", expert_cards.len()),
+                                        8.0,
+                                        theme.muted_foreground,
+                                    );
+                                } else {
+                                    spawn_text(
+                                        lane,
+                                        font.clone(),
+                                        "RESTORE MISSING EXPERTS",
+                                        8.0,
+                                        theme.primary,
+                                    );
+                                    lane.spawn(Node {
+                                        width: percent(100),
+                                        column_gap: px(6),
+                                        row_gap: px(6),
+                                        flex_wrap: FlexWrap::Wrap,
+                                        ..default()
+                                    })
+                                    .with_children(|adds| {
+                                        for card in missing_experts {
+                                            optional_card_add_button(
+                                                adds,
+                                                font.clone(),
+                                                theme,
+                                                &stored.definition,
+                                                &vocal_tail,
+                                                card,
+                                            );
+                                        }
+                                    });
+                                }
                             } else if stage == 4 {
                                 stage_fusion::spawn_fusion_stage_card(
                                     lane,
@@ -1740,13 +1762,95 @@ pub(crate) fn spawn_processing_studio(
                                 return;
                             }
 
-                            for node in ordered_nodes.iter().copied().filter(|node| {
-                                stage_renders_internal_node_cards(stage)
-                                    && capabilities.get(&node.capability_id).is_some_and(
-                                        |capability| workflow_stage(capability) == stage,
-                                    )
-                            }) {
-                                if let Some(capability) = capabilities.get(&node.capability_id) {
+                            let stage_nodes = ordered_nodes
+                                .iter()
+                                .copied()
+                                .filter(|node| {
+                                    stage_renders_internal_node_cards(stage)
+                                        && capabilities.get(&node.capability_id).is_some_and(
+                                            |capability| workflow_stage(capability) == stage,
+                                        )
+                                })
+                                .collect::<Vec<_>>();
+                            let mut rendered = BTreeSet::new();
+                            for node in &stage_nodes {
+                                if !rendered.insert(node.instance_id.clone()) {
+                                    continue;
+                                }
+                                let Some(capability) = capabilities.get(&node.capability_id) else {
+                                    continue;
+                                };
+                                let group = if capability.class
+                                    == app_core::CapabilityClass::Analyzer
+                                {
+                                    stage_nodes
+                                        .iter()
+                                        .copied()
+                                        .filter(|candidate| {
+                                            candidate.capability_id == node.capability_id
+                                        })
+                                        .collect::<Vec<_>>()
+                                } else {
+                                    vec![*node]
+                                };
+                                if group.len() > 1 {
+                                    for member in &group {
+                                        rendered.insert(member.instance_id.clone());
+                                    }
+                                    lane.spawn((
+                                        Node {
+                                            width: percent(100),
+                                            flex_direction: FlexDirection::Column,
+                                            padding: UiRect::all(px(10)),
+                                            row_gap: px(7),
+                                            border: UiRect::all(px(1)),
+                                            border_radius: studio_card_radius(),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme.card.with_alpha(0.24)),
+                                        BorderColor::all(theme.border.with_alpha(0.48)),
+                                    ))
+                                    .with_children(|group_card| {
+                                        spawn_text(
+                                            group_card,
+                                            font.clone(),
+                                            &capability.label,
+                                            11.0,
+                                            theme.foreground,
+                                        );
+                                        spawn_wrapped_text(
+                                            group_card,
+                                            font.clone(),
+                                            format!(
+                                                "{} providers · choose one to edit its model and execution condition",
+                                                group.len()
+                                            ),
+                                            8.0,
+                                            theme.muted_foreground,
+                                        );
+                                        for member in group {
+                                            node_card(
+                                                group_card,
+                                                font.clone(),
+                                                theme,
+                                                member,
+                                                capability,
+                                                NodeCardContext {
+                                                    selected: session
+                                                        .selected_workflow_node
+                                                        .as_ref()
+                                                        == Some(&member.instance_id),
+                                                    embedded: true,
+                                                    definition: &stored.definition,
+                                                    analyzer_binding: analyzer_bindings
+                                                        .get(&member.instance_id)
+                                                        .copied(),
+                                                    audio_sources: &audio_sources,
+                                                },
+                                            );
+                                        }
+                                    });
+                                } else {
                                     node_card(
                                         lane,
                                         font.clone(),
@@ -1756,6 +1860,7 @@ pub(crate) fn spawn_processing_studio(
                                         NodeCardContext {
                                             selected: session.selected_workflow_node.as_ref()
                                                 == Some(&node.instance_id),
+                                            embedded: false,
                                             definition: &stored.definition,
                                             analyzer_binding: analyzer_bindings
                                                 .get(&node.instance_id)

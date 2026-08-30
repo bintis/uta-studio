@@ -314,8 +314,32 @@ impl AnalysisEngine {
             })?;
         let mut analysis_input = primary.path.clone();
         let mut analysis_role = primary.role.as_str();
-        let mut guide_vocal_profile = None;
-        let mut instrumental_audio = None;
+        let mut guide_vocal_profile = request
+            .audio_sources
+            .iter()
+            .find(|source| {
+                matches!(
+                    source.role,
+                    crate::contract::AudioRole::GuideVocals | crate::contract::AudioRole::VocalStem
+                )
+            })
+            .and_then(|source| {
+                decoded_sources
+                    .iter()
+                    .find(|decoded| decoded.facts.source_id == source.id)
+            })
+            .map(|decoded| decoded.profile.clone());
+        let supplied_instrumental = request
+            .audio_sources
+            .iter()
+            .find(|source| source.role == crate::contract::AudioRole::Instrumental);
+        let mut instrumental_audio = supplied_instrumental
+            .and_then(|source| {
+                decoded_sources
+                    .iter()
+                    .find(|decoded| decoded.facts.source_id == source.id)
+            })
+            .cloned();
         let mut isolation_profiles = None;
         let mut workflow_audio = BTreeMap::new();
         record_workflow_audio(
@@ -326,6 +350,29 @@ impl AnalysisEngine {
             &analysis_input,
             analysis_role,
         );
+        // A Step 1 cache hit changes execution input, but requested reused
+        // stems remain first-class outputs of this run. Materialize them
+        // before executing downstream stages so final capability validation
+        // observes exactly the same semantic results as a fresh separation.
+        for source in &request.audio_sources {
+            if source.role == crate::contract::AudioRole::OriginalMix
+                || !request.requested_artifacts.stems.contains(&source.role)
+                || artifacts.stems.iter().any(|stem| stem.role == source.role)
+            {
+                continue;
+            }
+            let output = crate::separation::materialize_semantic_stem(
+                &ffmpeg,
+                &source.path,
+                &output_root,
+                source.role,
+                cancellation,
+            )?;
+            artifacts.stems.push(StemArtifactRefV1 {
+                role: output.role,
+                artifact: output.artifact,
+            });
+        }
         if has_capability(&plan, "audio.extract_vocals") {
             let model = resolved_model(&resolved, "bs_roformer_leap_xe90_vocals")?;
             let output = run_openvino_vocals(
@@ -365,14 +412,6 @@ impl AnalysisEngine {
                 });
             }
         }
-        materialize_requested_semantic_lead_stem(
-            request,
-            primary,
-            &ffmpeg,
-            &output_root,
-            &mut artifacts,
-            cancellation,
-        )?;
         if has_capability(&plan, "audio.lead_isolate") {
             let model = resolved_model(&resolved, "melband_roformer_harmony")?;
             let output = run_openvino_harmony(

@@ -111,6 +111,9 @@ pub(crate) enum SettingsCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AnalysisCommand {
+    OpenAnalysisQueue,
+    MoveAnalysisQueueItem(String, bool),
+    DeleteAnalysisQueueItem(String),
     StartAnalysis(String),
     StartQueuedAnalysis(String),
     MergeSelectedCandidatePhrase(app_core::ArtifactRef, app_core::ArtifactRef),
@@ -124,7 +127,6 @@ pub(crate) enum AnalysisCommand {
     OpenEmptyProcessingStudio,
     SelectWorkflowNode(String),
     MoveWorkflowNode(String, bool),
-    DuplicateWorkflowNode(String),
     RemoveWorkflowNode(String),
     SetWorkflowNodeModel(String, String),
     SetWorkflowSeparationStrategy(String, app_core::SeparationStrategyV1),
@@ -141,7 +143,6 @@ pub(crate) enum AnalysisCommand {
     OpenAnalysisInspect(String, String),
     #[allow(dead_code)] // Ctrl+wheel is the visible gesture; automation still uses this command
     AdjustAnalysisGraphZoom(i32),
-    ToggleAnalysisMiniView,
     ToggleAnalysisModelPanel,
     CloseAnalysisModelPanel,
     FitAnalysisGraph(i32),
@@ -265,6 +266,7 @@ impl UiCommand {
             // from submitting that mixed-generation tree to Wayland.
             Self::Analysis(
                 AnalysisCommand::OpenAnalysisInspect(_, _)
+                | AnalysisCommand::OpenAnalysisQueue
                 | AnalysisCommand::OpenSongAnalysis(_)
                 | AnalysisCommand::OpenProcessingStudio(_)
                 | AnalysisCommand::OpenEmptyProcessingStudio
@@ -382,7 +384,11 @@ mod tests {
             UiDirtyRegion::Settings
         );
         assert_eq!(
-            UiCommand::Analysis(AnalysisCommand::ToggleAnalysisMiniView).dirty_region(),
+            UiCommand::Analysis(AnalysisCommand::MoveAnalysisQueueItem(
+                "song".to_string(),
+                true,
+            ))
+            .dirty_region(),
             UiDirtyRegion::Analysis
         );
         assert_eq!(

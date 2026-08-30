@@ -737,7 +737,6 @@
   "message.transcript_previewing": "正在从 {position} 预听转录音频。",
   "message.transcript_waveform_failed": "无法加载转录波形：{error}",
   "message.watched_locations": "监视位置 · {count}",
-  "MINI view": "迷你视图",
   "missing": "缺失",
   "Missing": "缺失",
   "Missing {}": "缺少 {}",

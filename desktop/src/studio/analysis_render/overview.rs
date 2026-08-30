@@ -814,11 +814,6 @@ fn spawn_analysis_session_surface(
                 // workflow selected above. Layout receives arbitrary workflow ids
                 // and uses only topology plus compiled metadata.
                 let render_graph = authoritative_render_graph.clone();
-                let render_graph = if session.analysis_mini_view {
-                    filter_render_graph_for_mini_view(render_graph)
-                } else {
-                    render_graph
-                };
                 let locale = effective_ui_locale(session.config);
                 let layout_nodes = render_graph
                     .nodes
@@ -969,15 +964,8 @@ fn spawn_analysis_session_surface(
                                                             node.state == GraphNodeState::Complete,
                                                         );
                                                     if let Some(text) = override_text {
-                                                        // Mini View already drops every
-                                                        // `NotRequested` card before this loop
-                                                        // (`filter_render_graph_for_mini_view`),
-                                                        // so a capability-specific reason here
-                                                        // is only ever seen in Advanced View --
-                                                        // exactly where a card that looked
-                                                        // selected in Processing Studio but
-                                                        // still shows a bare "Not requested"
-                                                        // needs to explain itself.
+                                                        // Explain why a configured card was not
+                                                        // selected by this exact execution plan.
                                                         route = not_requested_reason(
                                                             node.state,
                                                             capability_id,

@@ -161,6 +161,8 @@ Extracts pitch evidence and MIDI note targets for chart authoring. The editor re
 
 Changing an analysis setting does not silently rewrite an existing authored chart. Existing stems or charts change only after the corresponding re-analysis action. This protects manual edits and makes destructive changes explicit.
 
+Step 1 reuses its lossless vocal/instrumental separation when the source, models, and parameters are unchanged. Steps 2–4 are regenerated for each run. Pin an older revision to preserve it for comparison; pinning does not silently skip recomputation.
+
 #### Automatic analysis
 
 When **Auto-analyze** is enabled, newly scanned, unanalyzed songs are queued automatically. Leave it off when model setup is incomplete or when you want to review files before using compute resources.
@@ -377,7 +379,7 @@ Actions that cannot succeed are hidden instead of shown as errors. Graph export 
 
 #### Lineage panel and impact preview
 
-**Lineage** can stay on the main analysis graph. Turn it on from the VIEW row or from an artifact menu. Upstream, downstream, and full scope highlight the matching nodes and edges and fade the rest. MINI view keeps only compute nodes; lineage then highlights those producers and consumers. Missing legacy links appear as explicit gaps. Edge labels show the artifact kind and a short revision id. Selecting a revision opens that revision.
+**Lineage** can stay on the main analysis graph. Turn it on from the VIEW row or from an artifact menu. Upstream, downstream, and full scope highlight the matching nodes and edges and fade the rest. The graph keeps one authoritative full-workflow view, so lineage always refers to the same producers and consumers. Missing legacy links appear as explicit gaps. Edge labels show the artifact kind and a short revision id. Selecting a revision opens that revision.
 
 **Impact** is a read-only preview built from one frozen analysis plan. It includes the current song profile, staged Freeze / Bypass / Disable intents, and Pin. Groups are will run, will reuse, will become stale, will be blocked, will remain preserved, and exports that need regeneration. **Queue this plan** submits that same request. Cancel leaves the library unchanged.
 
@@ -389,7 +391,7 @@ Preprocessed audio stays ephemeral on ordinary runs. From the relevant node or a
 
 - `preflight` — checks that the local source and runtime are usable before work starts.
 - `music.analysis` — key, rhythm, and descriptor analysis used later for timing and charting.
-- `stems.separate` — MINI-view aggregate derived from the real stem child nodes; it is not an executable Extract step.
+- `stems.separate` — presentation aggregate derived from the real stem child nodes; it is not an executable Extract step.
 - `stems.vocals` — runs the selected vocal separation model.
 - `vocals.denoise` / `vocals.dereverb` — optional vocal post-processing in the configured slot order.
 - `stems.instrumental` — runs the independent BGM separation model.

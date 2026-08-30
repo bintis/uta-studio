@@ -73,7 +73,6 @@ pub(crate) enum UiIcon {
     Repeat = 43,
     Volume = 44,
     Fit = 46,
-    MiniView = 47,
     ModelTune = 49,
 }
 

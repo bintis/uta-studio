@@ -28,38 +28,6 @@ pub(super) struct LeadIsolationOutput {
     pub(super) residual_profile: crate::audio::SignalProfile,
 }
 
-pub(super) fn materialize_requested_semantic_lead_stem(
-    request: &AnalyzeRequestV1,
-    primary: &crate::contract::AudioSourceV1,
-    ffmpeg: &Path,
-    output_root: &Path,
-    artifacts: &mut AnalysisArtifactsV1,
-    cancellation: &CancellationToken,
-) -> EngineResult<()> {
-    if !request
-        .requested_artifacts
-        .stems
-        .contains(&crate::contract::AudioRole::LeadVocal)
-        || !matches!(
-            primary.role,
-            crate::contract::AudioRole::LeadVocal | crate::contract::AudioRole::CleanLeadVocal
-        )
-    {
-        return Ok(());
-    }
-    let output = crate::separation::materialize_semantic_lead_stem(
-        ffmpeg,
-        &primary.path,
-        output_root,
-        cancellation,
-    )?;
-    artifacts.stems.push(StemArtifactRefV1 {
-        role: output.role,
-        artifact: output.artifact,
-    });
-    Ok(())
-}
-
 pub(super) struct CleanupSpec<'a> {
     pub(super) model_id: &'a str,
     pub(super) role: crate::contract::AudioRole,

@@ -32,8 +32,13 @@ fn upsert_queue_in_tx(
     failed_message: Option<&str>,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO analysis_queue (file_hash, status, analyzing_pct, failed_message)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO analysis_queue (
+             file_hash, status, analyzing_pct, failed_message, queue_position
+         )
+         VALUES (
+             ?1, ?2, ?3, ?4,
+             COALESCE((SELECT MAX(queue_position) + 1 FROM analysis_queue), 0)
+         )
          ON CONFLICT(file_hash) DO UPDATE SET
            status = excluded.status,
            analyzing_pct = excluded.analyzing_pct,
@@ -66,8 +71,11 @@ fn analysis_queue_set_engine_intent_with_status(
             "INSERT INTO analysis_queue (
                 file_hash, status, analyzing_pct, failed_message, request_id,
                 engine_request_json, request_digest, engine_plan_json,
-                source_path, source_sha256, queued_at_ms
-             ) VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                source_path, source_sha256, queued_at_ms, queue_position
+             ) VALUES (
+                ?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                COALESCE((SELECT MAX(queue_position) + 1 FROM analysis_queue), 0)
+             )
              ON CONFLICT(file_hash) DO UPDATE SET
                 status = excluded.status, analyzing_pct = NULL, failed_message = NULL,
                 request_id = excluded.request_id,
@@ -76,7 +84,8 @@ fn analysis_queue_set_engine_intent_with_status(
                 engine_plan_json = excluded.engine_plan_json,
                 source_path = excluded.source_path,
                 source_sha256 = excluded.source_sha256,
-                queued_at_ms = excluded.queued_at_ms
+                queued_at_ms = excluded.queued_at_ms,
+                queue_position = excluded.queue_position
              WHERE analysis_queue.status = 'failed'",
             params![
                 intent.file_hash,
@@ -102,6 +111,40 @@ pub fn analysis_queue_stage_engine_intent(intent: &EngineQueueIntent) -> rusqlit
     analysis_queue_set_engine_intent_with_status(intent, "staged")
 }
 
+/// Replaces the exact request behind a manually staged queue item while
+/// retaining its user-selected queue position. A queued/running item cannot
+/// be rewritten underneath the scheduler.
+pub fn analysis_queue_replace_staged_engine_intent(
+    intent: &EngineQueueIntent,
+) -> rusqlite::Result<bool> {
+    with_conn_mut(|connection| {
+        let changed = connection.execute(
+            "UPDATE analysis_queue SET
+                request_id = ?2,
+                engine_request_json = ?3,
+                request_digest = ?4,
+                engine_plan_json = ?5,
+                source_path = ?6,
+                source_sha256 = ?7,
+                queued_at_ms = ?8,
+                analyzing_pct = NULL,
+                failed_message = NULL
+             WHERE file_hash = ?1 AND status = 'staged'",
+            params![
+                intent.file_hash,
+                intent.request_id,
+                intent.request_json,
+                intent.request_digest,
+                intent.plan_json,
+                intent.source_path.to_string_lossy(),
+                intent.source_sha256,
+                intent.queued_at_ms,
+            ],
+        )?;
+        Ok(changed == 1)
+    })
+}
+
 pub fn analysis_queue_status(file_hash: &str) -> rusqlite::Result<Option<String>> {
     with_conn(|connection| {
         connection
@@ -120,7 +163,10 @@ fn queue_status_resumes(status: &str) -> bool {
 
 pub fn analysis_queue_resumable_hashes() -> rusqlite::Result<Vec<String>> {
     with_conn(|connection| {
-        let mut statement = connection.prepare("SELECT file_hash, status FROM analysis_queue")?;
+        let mut statement = connection.prepare(
+            "SELECT file_hash, status FROM analysis_queue
+             ORDER BY queue_position, COALESCE(queued_at_ms, 0), rowid",
+        )?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -129,6 +175,59 @@ pub fn analysis_queue_resumable_hashes() -> rusqlite::Result<Vec<String>> {
             .into_iter()
             .filter_map(|(file_hash, status)| queue_status_resumes(&status).then_some(file_hash))
             .collect())
+    })
+}
+
+pub fn analysis_queue_ordered_hashes() -> rusqlite::Result<Vec<String>> {
+    with_conn(|connection| {
+        let mut statement = connection.prepare(
+            "SELECT file_hash FROM analysis_queue
+             ORDER BY queue_position, COALESCE(queued_at_ms, 0), rowid",
+        )?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect()
+    })
+}
+
+pub fn analysis_queue_move(file_hash: &str, earlier: bool) -> rusqlite::Result<bool> {
+    with_conn_mut(|connection| {
+        let transaction = connection.transaction()?;
+        let rows = {
+            let mut statement = transaction.prepare(
+                "SELECT file_hash, queue_position FROM analysis_queue
+                 WHERE status IN ('staged', 'queued')
+                 ORDER BY queue_position, COALESCE(queued_at_ms, 0), rowid",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let Some(index) = rows.iter().position(|(hash, _)| hash == file_hash) else {
+            return Ok(false);
+        };
+        let target = if earlier {
+            index.checked_sub(1)
+        } else if index + 1 < rows.len() {
+            Some(index + 1)
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        transaction.execute(
+            "UPDATE analysis_queue SET queue_position = ?1 WHERE file_hash = ?2",
+            params![rows[target].1, rows[index].0],
+        )?;
+        transaction.execute(
+            "UPDATE analysis_queue SET queue_position = ?1 WHERE file_hash = ?2",
+            params![rows[index].1, rows[target].0],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     })
 }
 
@@ -180,7 +279,8 @@ pub fn analysis_queue_clear() -> rusqlite::Result<()> {
 pub fn analysis_queue_load_rows() -> rusqlite::Result<Vec<AnalysisQueueRow>> {
     with_conn(|c| {
         let mut stmt = c.prepare(
-            "SELECT file_hash, status, analyzing_pct, failed_message FROM analysis_queue",
+            "SELECT file_hash, status, analyzing_pct, failed_message FROM analysis_queue
+             ORDER BY queue_position, COALESCE(queued_at_ms, 0), rowid",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -208,12 +308,68 @@ pub fn analysis_queue_save_rows(rows: &[AnalysisQueueRow]) -> rusqlite::Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::queue_status_resumes;
+    use super::*;
+
+    fn temp_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-queue-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn intent(file_hash: &str, queued_at_ms: i64) -> EngineQueueIntent {
+        EngineQueueIntent {
+            file_hash: file_hash.to_string(),
+            request_id: format!("request-{file_hash}"),
+            request_json: format!("{{\"file\":\"{file_hash}\"}}"),
+            request_digest: format!("identity-{file_hash}"),
+            plan_json: "{}".to_string(),
+            source_path: PathBuf::from(format!("/{file_hash}.flac")),
+            source_sha256: format!("source-{file_hash}"),
+            queued_at_ms,
+        }
+    }
 
     #[test]
     fn staged_requests_never_resume_until_the_user_starts_them() {
         assert!(!queue_status_resumes("staged"));
         assert!(queue_status_resumes("queued"));
         assert!(queue_status_resumes("analyzing"));
+    }
+
+    #[test]
+    fn user_order_and_staged_request_replacement_are_durable() {
+        let root = temp_root("order");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        analysis_queue_stage_engine_intent(&intent("one", 1)).unwrap();
+        analysis_queue_stage_engine_intent(&intent("two", 2)).unwrap();
+        analysis_queue_stage_engine_intent(&intent("three", 3)).unwrap();
+
+        assert!(analysis_queue_move("three", true).unwrap());
+        assert_eq!(
+            analysis_queue_ordered_hashes().unwrap(),
+            ["one", "three", "two"]
+        );
+
+        let mut edited = intent("three", 99);
+        edited.request_id = "request-three-edited".to_string();
+        assert!(analysis_queue_replace_staged_engine_intent(&edited).unwrap());
+        assert_eq!(
+            analysis_queue_ordered_hashes().unwrap(),
+            ["one", "three", "two"]
+        );
+        assert_eq!(
+            analysis_queue_engine_intent("three")
+                .unwrap()
+                .unwrap()
+                .request_id,
+            "request-three-edited"
+        );
     }
 }

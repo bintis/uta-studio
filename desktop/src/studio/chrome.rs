@@ -90,19 +90,17 @@ pub(crate) fn spawn_sidebar(
             let selected_song = session.selected_song.as_deref();
             let analysis_count = active_analysis_task_count(session.analysis_tasks);
             spawn_section_label(sidebar, font.clone(), theme, "ANALYSIS");
-            if analysis_count > 0 {
-                spawn_sidebar_filter_item(
-                    sidebar,
-                    font.clone(),
-                    icons.clone(),
-                    theme,
-                    Some(UiIcon::Queue),
-                    "Processing Queue",
-                    analysis_count,
-                    UiAction::from(AppCommand::ToggleActivity),
-                    session.activity_open,
-                );
-            }
+            spawn_sidebar_filter_item(
+                sidebar,
+                font.clone(),
+                icons.clone(),
+                theme,
+                Some(UiIcon::Queue),
+                "Processing Queue",
+                analysis_count,
+                UiAction::from(AnalysisCommand::OpenAnalysisQueue),
+                session.route == StudioRoute::Queue,
+            );
             spawn_sidebar_nav_item(
                 sidebar,
                 font.clone(),
@@ -495,6 +493,9 @@ pub(crate) fn spawn_workspace(
                     session,
                     theme,
                 ),
+                StudioRoute::Queue => {
+                    spawn_analysis_queue_page(workspace, font.clone(), session, theme)
+                }
                 StudioRoute::Folders => {
                     spawn_folders(workspace, font.clone(), icons.clone(), session, theme)
                 }
@@ -562,11 +563,12 @@ fn spawn_top_bar_progress(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(0),
-                right: px(0),
-                bottom: px(-1),
-                height: px(2),
+                left: px(12),
+                right: px(12),
+                bottom: px(3),
+                height: px(3),
                 overflow: Overflow::clip(),
+                border_radius: BorderRadius::MAX,
                 ..default()
             },
             BackgroundColor(theme.border.with_alpha(0.45)),
@@ -577,6 +579,7 @@ fn spawn_top_bar_progress(
                     width: percent(progress as f32),
                     min_width: if progress > 0 { px(2) } else { px(0) },
                     height: percent(100),
+                    border_radius: BorderRadius::MAX,
                     ..default()
                 },
                 BackgroundColor(theme.primary.with_alpha(0.94)),
@@ -592,6 +595,15 @@ struct WorkspaceTitle {
 
 fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
     match session.route {
+        StudioRoute::Queue => WorkspaceTitle {
+            eyebrow: "ANALYSIS".to_string(),
+            title: "Processing Queue".to_string(),
+            subtitle: format!(
+                "{} item{} · reorder waiting work, edit its workflow, start it, or remove it",
+                session.analysis_tasks.len(),
+                if session.analysis_tasks.len() == 1 { "" } else { "s" }
+            ),
+        },
         StudioRoute::Library if session.library_view == LibraryView::Queue => {
             let current = current_analysis_header(session);
             WorkspaceTitle {
@@ -705,6 +717,7 @@ fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
 
 fn workspace_toolbar_open(session: &StudioSessionView<'_>) -> bool {
     match session.route {
+        StudioRoute::Queue => false,
         StudioRoute::Library if session.library_view == LibraryView::Queue => {
             current_analysis_file_hash(session).is_some()
         }
@@ -725,6 +738,7 @@ fn spawn_workspace_toolbar(
     theme: &StudioTheme,
 ) {
     match session.route {
+        StudioRoute::Queue => {}
         StudioRoute::Library if session.library_view == LibraryView::Queue => {
             if let Some(file_hash) = current_analysis_file_hash(session) {
                 spawn_analysis_header_toolbar(parent, font, icons, theme, session, &file_hash);
