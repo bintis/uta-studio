@@ -176,14 +176,19 @@ impl LayoutRect {
 
 /// Routed orthogonal polylines for every laid-out edge, plus a canvas that
 /// has been grown (and nodes shifted) so around-the-graph rails stay inside
-/// the drawable area.
+/// the drawable area. The DAG view no longer draws these polylines (binding
+/// lines were removed for clarity), but the growth they drive is still part
+/// of `layout` above, so routing them is still required; only the retrieval
+/// accessor below is currently unused outside its own test.
 #[derive(Debug, Clone)]
 pub(crate) struct RoutedGraph {
     pub(crate) layout: GraphLayout,
+    #[allow(dead_code)]
     paths: BTreeMap<(AnalysisNodeId, AnalysisNodeId), Vec<LayoutPoint>>,
 }
 
 impl RoutedGraph {
+    #[allow(dead_code)]
     pub(crate) fn path(
         &self,
         from: &AnalysisNodeId,

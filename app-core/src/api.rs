@@ -346,6 +346,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Delete generated data for one song"
     ),
     capability!(
+        "library",
+        "remove_song_from_library",
+        "destructive",
+        false,
+        "Remove a song's library entry, queue state, and generated data; leaves source media untouched"
+    ),
+    capability!(
         "analysis",
         "reanalyze_transcript",
         "mutation",

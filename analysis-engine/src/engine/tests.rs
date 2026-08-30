@@ -1431,6 +1431,8 @@ fn firered_challenger_runs_full_input_for_typed_reference_disagreement() {
         text: "sing know".to_string(),
         reading: None,
         phonemes: None,
+        start: None,
+        end: None,
     }];
     let result = engine.analyze(&request, &output).unwrap();
     assert_eq!(result.status, AnalysisStatus::Ok);
@@ -1615,6 +1617,8 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
         text: "sing".to_string(),
         reading: None,
         phonemes: None,
+        start: None,
+        end: None,
     }];
     request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
     request.extensions.insert(
@@ -1644,15 +1648,16 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
     }));
 
     let result = engine.analyze(&request, &output).unwrap();
-    assert_eq!(result.status, AnalysisStatus::OkDegraded);
+    assert_eq!(result.status, AnalysisStatus::Ok);
+    assert!(result.degraded_reasons.is_empty());
     assert_eq!(
         result
             .diagnostics
             .audio_quality
             .as_ref()
-            .and_then(|quality| quality.vocal_topology.as_ref())
-            .map(|topology| topology.mode),
-        Some(crate::contract::VocalTopologyModeV1::Unknown)
+            .and_then(|quality| quality.vocal_topology.as_ref()),
+        None,
+        "an already-clean lead source does not execute the workflow's isolation node, so topology is not an applicable gate"
     );
     let pitch_ref = result.artifacts.pitch_evidence.as_ref().unwrap();
     let pitch: PitchEvidenceV03 =
@@ -1664,7 +1669,7 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
     assert!(singing.candidate_evidence.iter().any(|candidate| {
         candidate.target_pitch_source == "fcpe" && candidate.rmvpe_center_hz.is_none()
     }));
-    assert!(singing.review_regions.iter().any(|region| {
+    assert!(!singing.review_regions.iter().any(|region| {
         region
             .reasons
             .contains(&SingingReviewReason::VocalTopologyUnknown)

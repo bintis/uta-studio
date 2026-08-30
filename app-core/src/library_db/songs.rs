@@ -156,6 +156,13 @@ pub fn delete_songs_not_in_paths(paths: &[String]) -> rusqlite::Result<()> {
     })
 }
 
+pub fn delete_song_by_hash(file_hash: &str) -> rusqlite::Result<()> {
+    with_conn_mut(|c| {
+        c.execute("DELETE FROM songs WHERE file_hash = ?1", params![file_hash])?;
+        Ok(())
+    })
+}
+
 pub fn load_song_by_hash(file_hash: &str) -> rusqlite::Result<Option<Song>> {
     load_song_where("file_hash", file_hash)
 }

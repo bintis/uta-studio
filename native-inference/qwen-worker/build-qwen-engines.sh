@@ -42,6 +42,7 @@ mkdir -p "${build}/asr-obj" "${build}/align-obj" "${build}/bin"
 align_overlay="${build}/predict-woo-source"
 cp -a "${align_source}" "${align_overlay}"
 patch -d "${align_overlay}" -p1 --forward < "${SCRIPT_DIR}/patches/predict-woo-require-gpu.patch"
+patch -d "${align_overlay}" -p1 --forward < "${SCRIPT_DIR}/patches/predict-woo-fix-alignment-json-buffer-truncation.patch"
 
 compile_parallel() {
     local standard="$1" object_dir="$2"; shift 2
@@ -50,7 +51,8 @@ compile_parallel() {
     local running=0
     while IFS= read -r source; do
         [[ -n "${source}" ]] || continue
-        local relative="${source#/}" object="${object_dir}/${relative//\//__}.o"
+        local relative="${source#/}"
+        local object="${object_dir}/${relative//\//__}.o"
         if [[ "${source}" == *.c ]]; then
             gcc -std=c11 "${common[@]}" -w -c "${source}" -o "${object}" &
         else

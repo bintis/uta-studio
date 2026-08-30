@@ -300,6 +300,7 @@ impl AnalysisResultManifestV1 {
                 super::AudioRole::Instrumental
                     | super::AudioRole::GuideVocals
                     | super::AudioRole::LeadVocal
+                    | super::AudioRole::CleanLeadVocal
                     | super::AudioRole::BackingVocal
                     | super::AudioRole::HarmonyVocal
             ) || !stem_roles.insert(stem.role)
@@ -569,5 +570,44 @@ mod tests {
             escaped.validate().unwrap_err().code,
             EngineErrorCode::OutputValidationFailed
         );
+    }
+
+    #[test]
+    fn clean_lead_vocal_is_an_accepted_result_stem_role() {
+        // The Step 1 "skip if unchanged" cache is the first real caller that
+        // requests a CleanLeadVocal stem (the combined denoise+dereverb
+        // cleanup output); this manifest-side check has its own copy of the
+        // exportable-role whitelist, separate from the request-side one, and
+        // silently rejecting a real engine result here previously surfaced
+        // as "output_validation_failed" after a full analysis run completed.
+        let manifest = AnalysisResultManifestV1 {
+            contract: ANALYSIS_RESULT_CONTRACT.to_string(),
+            version: ANALYSIS_RESULT_VERSION,
+            request_id: "clean-lead-vocal-stem".to_string(),
+            status: AnalysisStatus::Ok,
+            artifacts: AnalysisArtifactsV1 {
+                stems: vec![StemArtifactRefV1 {
+                    role: crate::contract::AudioRole::CleanLeadVocal,
+                    artifact: ArtifactRefV1 {
+                        path: PathBuf::from("stems/clean_lead_vocal.flac"),
+                        media_type: "audio/flac".to_string(),
+                        sha256: "a".repeat(64),
+                        bytes: 1,
+                    },
+                }],
+                ..AnalysisArtifactsV1::default()
+            },
+            diagnostics: AnalysisDiagnosticsV1::default(),
+            provenance: AnalysisProvenanceV1 {
+                calibration_version: "1".to_string(),
+                fusion_version: "1".to_string(),
+                quantization_version: "1".to_string(),
+                postprocess_version: "1".to_string(),
+                ..AnalysisProvenanceV1::default()
+            },
+            fingerprint: "c".repeat(64),
+            degraded_reasons: Vec::new(),
+        };
+        manifest.validate().unwrap();
     }
 }

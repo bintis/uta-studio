@@ -185,6 +185,13 @@ fn execute_exact_intent(
     std::fs::create_dir_all(&runs_root)
         .map_err(|error| format!("could not create Engine runs root: {error}"))?;
     let output_root = runs_root.join(&intent.request_id);
+    if output_root.exists() {
+        // A retry reuses the persisted request_id, so a prior attempt that
+        // crashed (rather than reaching a terminal outcome) can leave this
+        // directory behind. Clear it instead of failing the retry outright.
+        std::fs::remove_dir_all(&output_root)
+            .map_err(|error| format!("could not clear stale Engine output root: {error}"))?;
+    }
     std::fs::create_dir(&output_root)
         .map_err(|error| format!("could not create unique Engine output root: {error}"))?;
     let request_value =
@@ -602,6 +609,7 @@ fn validate_and_publish_engine_result(
             AudioRoleWireV1::Instrumental
                 | AudioRoleWireV1::GuideVocals
                 | AudioRoleWireV1::LeadVocal
+                | AudioRoleWireV1::CleanLeadVocal
                 | AudioRoleWireV1::BackingVocal
                 | AudioRoleWireV1::HarmonyVocal
         ) {
@@ -633,10 +641,16 @@ fn validate_and_publish_engine_result(
     let output_root = output_root
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    let chain_fingerprints: crate::chain_cache::ChainFingerprints = request
+        .extensions
+        .get(crate::chain_cache::CHAIN_FINGERPRINTS_EXTENSION_KEY)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
     let store = ArtifactStore::new(&cache.path)?;
     let mut revisions = Vec::new();
     let mut activations = Vec::new();
     let mut complete_chart_revisions = Vec::new();
+    let mut published_revisions = Vec::new();
     let created_at_ms = unix_time_ms();
     for (semantic, artifact, kind, producer) in artifacts {
         let expected_media = declared
@@ -650,6 +664,21 @@ fn validate_and_publish_engine_result(
         let path = validate_artifact(&output_root, artifact)?;
         validate_semantic_artifact(&semantic, &path)?;
         let (immutable_path, content_hash, byte_size) = store.capture(file_hash, kind, &path)?;
+        // The Step 1 chain cache (`chain_cache::plan_chain_cache`) matches a
+        // future run's freshly computed fingerprint against exactly this
+        // value, so these specific kinds record their own per-unit
+        // fingerprint instead of the whole-manifest one every other kind
+        // uses -- a downstream-only change must not invalidate an unrelated
+        // upstream stage's cache eligibility.
+        let chain_config_hash = match kind {
+            ArtifactKind::VocalStem => chain_fingerprints.separation.clone(),
+            ArtifactKind::InstrumentalStem => chain_fingerprints.instrumental.clone(),
+            ArtifactKind::AnalysisVocalStem => chain_fingerprints.isolate.clone(),
+            ArtifactKind::DereverbedVocalStem => chain_fingerprints.cleanup.clone(),
+            _ => None,
+        };
+        let config_hash =
+            chain_config_hash.unwrap_or_else(|| format!("engine:{}", manifest.fingerprint));
         let revision = ArtifactRevision {
             id: format!("{file_hash}:{semantic}:{content_hash}"),
             file_hash: file_hash.to_string(),
@@ -658,7 +687,7 @@ fn validate_and_publish_engine_result(
             content_hash,
             producer_node: AnalysisNodeId::new(producer),
             input_revisions: Vec::new(),
-            config_hash: format!("engine:{}", manifest.fingerprint),
+            config_hash,
             algorithm_version: format!("analysis-engine-result/{}", manifest.version),
             created_at_ms,
             byte_size,
@@ -675,6 +704,7 @@ fn validate_and_publish_engine_result(
             complete_chart_revisions.push(revision.clone());
         }
         revisions.push(revision_to_row(&revision));
+        published_revisions.push(revision);
     }
     let analyzed_file_hashes = (!complete_chart_revisions.is_empty())
         .then(|| file_hash.to_string())
@@ -686,11 +716,21 @@ fn validate_and_publish_engine_result(
         &analyzed_file_hashes,
     )
     .map_err(|error| error.to_string())?;
-    for revision in &complete_chart_revisions {
+    // Every published revision gets a compatibility-path materialization
+    // attempt, not just the CandidateChart: `refresh_authoring_state` (and
+    // other legacy readiness checks) key off flat `{hash}_instrumental.*` /
+    // `{hash}_vocals.*` files, not the content-addressed artifact store, so
+    // skipping stem kinds here left songs stuck showing "Analysis
+    // incomplete" (and the editor unopenable) despite a fully completed,
+    // published run -- confirmed against a real song whose InstrumentalStem
+    // revision was published but never reached its compatibility path.
+    // `compatibility_paths` already no-ops for kinds with no legacy
+    // location, so this is safe to call unconditionally.
+    for revision in &published_revisions {
         if let Err(error) = materialize_artifact_revision_compatibility(&cache.path, revision) {
             warn!(
-                "[analyzer] Published chart {} but could not refresh compatibility output: {error}",
-                revision.id
+                "[analyzer] Published {:?} {} but could not refresh compatibility output: {error}",
+                revision.kind, revision.id
             );
         }
     }
@@ -865,18 +905,34 @@ fn validate_audio_quality_result(
                 return Err("Engine audio quality metric is invalid".to_string());
             }
         }
-        if outcome.regions.iter().any(|region| {
-            region.start < source_start
-                || region.end > source_end
+        // Every other gate's regions describe activity within the app-owned
+        // requested window (`source_start..source_end`), so they're held to
+        // it exactly. `vocal_topology` is the one gate whose region can
+        // legitimately span the Engine's own measured full duration -- its
+        // `vocal_topology_unknown` fallback region is built from
+        // `report.duration`, not the app's request -- so it is bound only by
+        // `report_end`, already checked below with zero tolerance.
+        let is_vocal_topology = planned == "vocal_topology";
+        if let Some(region) = outcome.regions.iter().find(|region| {
+            (!is_vocal_topology && (region.start < source_start || region.end > source_end))
                 || region.end > report_end
                 || region.start >= region.end
                 || region.reason.trim().is_empty()
-        }) || outcome
+        }) {
+            return Err(format!(
+                "Engine audio quality region is invalid: gate={planned} region=[{}, {}) reason={:?} (source_start={source_start} source_end={source_end} report_end={report_end})",
+                region.start, region.end, region.reason
+            ));
+        }
+        if let Some(pair) = outcome
             .regions
             .windows(2)
-            .any(|pair| pair[0].end > pair[1].start)
+            .find(|pair| pair[0].end > pair[1].start)
         {
-            return Err("Engine audio quality region is invalid".to_string());
+            return Err(format!(
+                "Engine audio quality region is invalid: gate={planned} overlapping regions [{}, {}) and [{}, {})",
+                pair[0].start, pair[0].end, pair[1].start, pair[1].end
+            ));
         }
     }
     if degrading_uncertainty && manifest.status != AnalysisStatusWireV1::OkDegraded {
@@ -1058,6 +1114,11 @@ fn result_artifacts(
                 "harmony_vocal",
                 ArtifactKind::RawVocalStem,
                 "lead-partition",
+            ),
+            AudioRoleWireV1::CleanLeadVocal => (
+                "clean_lead_vocal",
+                ArtifactKind::DereverbedVocalStem,
+                "cleanup",
             ),
             _ => continue,
         };
@@ -1387,6 +1448,75 @@ mod tests {
     }
 
     #[test]
+    fn vocal_topology_region_may_span_the_engines_measured_duration_past_the_apps_expected_window()
+    {
+        // Regression (real repro): the Engine's own decoded duration can
+        // exceed the app's independently-computed `expected_source_duration`
+        // by a sub-millisecond decode-vs-metadata rounding amount --
+        // report.duration=305813333 vs expected_source_duration=305813000 for
+        // a real song. The `vocal_topology_unknown` fallback region
+        // legitimately spans that full measured duration, so it must not be
+        // rejected just for extending past the app-owned `source_end`; only
+        // extending past the Engine's own `report_end` is actually invalid.
+        // Every other gate keeps the strict `source_end` bound (see the
+        // `outside_app_owned_source` case above).
+        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.request","version":1,"request_id":"topology",
+            "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
+            "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+            "analysis":{"profile":"fast","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":false},
+            "requested_artifacts":{"pitch_evidence":true},"execution_policy":{},"extensions":{}
+        }))
+        .unwrap();
+        let gates = vec!["timeline_valid", "vocal_topology"];
+        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"topology",
+            "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+            "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
+            "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+            "resolved_resources":[],"execution_nodes":[],"quality_gates":gates,
+            "fallback_policy":[],"artifact_declarations":[]
+        }))
+        .unwrap();
+        let manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.result","version":1,"request_id":"topology","status":"ok_degraded",
+            "artifacts":{},
+            "diagnostics":{"audio_quality":{
+                "contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates-v1","profile":"fast","evaluated_audio_role":"lead_vocal",
+                "duration":1_000_333,
+                "planned_gates":gates,
+                "outcomes":[
+                    {"gate":"timeline_valid","requirement":"required","status":"passed","summary":"measured","metrics":[],"regions":[]},
+                    {"gate":"vocal_topology","requirement":"degrading","status":"unknown","summary":"vocal topology is unknown","metrics":[],"regions":[
+                        {"start":0,"end":1_000_333,"reason":"vocal_topology_unknown"}
+                    ]}
+                ],
+                "vocal_topology":{
+                    "contract":"uta.analysis-engine.vocal-topology-estimate","version":1,"timebase":1000000,
+                    "source_start":0,"duration":1_000_333,"mode":"unknown","confidence":null,
+                    "overlap_regions":[],"support_regions":[],
+                    "evidence_sources":["caller_or_unpartitioned_vocal_input"]
+                }
+            }},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"},
+            "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":["vocal_topology_ambiguous"]
+        }))
+        .unwrap();
+
+        validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).unwrap();
+
+        // The same overshoot on a non-topology gate stays invalid.
+        let mut mismatched = manifest.clone();
+        let report = mismatched.diagnostics.audio_quality.as_mut().unwrap();
+        report.outcomes[0].regions.push(QualityRegionWireV1 {
+            start: 0,
+            end: 1_000_333,
+            reason: "timeline_valid_past_app_window".to_string(),
+        });
+        assert!(validate_audio_quality_result(&request, &plan, &mismatched, 1_000_000).is_err());
+    }
+
+    #[test]
     fn clean_evaluated_role_requires_a_bound_workflow_cleanup_route() {
         let mut plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"role-route",
@@ -1622,6 +1752,100 @@ mod tests {
                 revision.active && revision.producer_node.as_str() == "stars-technique"
             }));
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn published_instrumental_stem_reaches_its_legacy_compatibility_path() {
+        // Real repro: `Song::refresh_authoring_state` and the editor-open
+        // gate read the flat `{hash}_instrumental.*` compatibility file, not
+        // the content-addressed artifact store. A published stem that never
+        // reaches that path leaves a fully-completed song stuck showing
+        // "Analysis incomplete" with an editor that won't open.
+        let root = temp_root("stem-compat");
+        let _db_guard = crate::library_db::reconnect_for_test(&root.join("db"));
+        let cache = CacheDir {
+            path: root.join("cache"),
+        };
+        std::fs::create_dir_all(&cache.path).unwrap();
+        let gates = vec!["timeline_valid"];
+        let request_id = "stem-compat";
+        let file_hash = "file-stem-compat";
+        let output = cache.path.join(request_id);
+        std::fs::create_dir_all(&output).unwrap();
+        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.request","version":1,
+            "request_id":request_id,
+            "audio_sources":[{
+                "id":"main","kind":"local_file","path":"song.flac",
+                "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "role":"lead_vocal","primary":true,
+                "timeline":{"timebase":1000000,"source_start":0}
+            }],
+            "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
+            "analysis":{"profile":"maximum","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":false},
+            "requested_artifacts":{"pitch_evidence":true},
+            "execution_policy":{},"extensions":{}
+        }))
+        .unwrap();
+        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            "schema":"uta.analysis-engine.plan","schema_version":1,
+            "request_id":request_id,
+            "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
+            "requested_outputs":["pitch_evidence"],
+            "required_capabilities":[],"optional_capabilities":[],
+            "requirements":{"schema":"uta.runtime.requirements","schema_version":1,"resources":[]},
+            "resolved_resources":[],"execution_nodes":[],"quality_gates":gates,
+            "fallback_policy":[],
+            "artifact_declarations":[{
+                "semantic_type":"stem:instrumental","required":true,
+                "media_type":"audio/flac"
+            }]
+        }))
+        .unwrap();
+        let instrumental_bytes = b"fake-flac-bytes".to_vec();
+        std::fs::write(output.join("instrumental.flac"), &instrumental_bytes).unwrap();
+        let manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+            "contract":"uta.analysis-engine.result","version":1,
+            "request_id":request_id,"status":"ok",
+            "artifacts":{"stems":[{
+                "role":"instrumental",
+                "artifact":{
+                    "path":"instrumental.flac",
+                    "media_type":"audio/flac",
+                    "sha256":"b".repeat(64),
+                    "bytes":instrumental_bytes.len() as u64
+                }
+            }]},
+            "diagnostics":{"audio_quality":{
+                "contract":"uta.analysis-engine.audio-quality-report","version":1,
+                "algorithm":"audio-quality-gates-v1","profile":"maximum",
+                "evaluated_audio_role":"lead_vocal","duration":1000000,
+                "planned_gates":gates,
+                "outcomes":[{
+                    "gate":"timeline_valid","requirement":"required",
+                    "status":"passed","summary":"measured","metrics":[],"regions":[]
+                }]
+            }},
+            "provenance":{
+                "resources":[],"calibration_version":"c","fusion_version":"f",
+                "hsmm_version":"h","quantization_version":"q",
+                "audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"
+            },
+            "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "degraded_reasons":[]
+        }))
+        .unwrap();
+
+        validate_and_publish_engine_result(
+            file_hash, &cache, &output, 1_000_000, &request, &plan, &manifest,
+        )
+        .unwrap();
+
+        assert!(
+            cache.instrumental_path(file_hash).is_file(),
+            "instrumental stem should reach its legacy compatibility path"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

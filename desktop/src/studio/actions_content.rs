@@ -50,6 +50,12 @@ pub(crate) fn apply_content_action(
                     }
                 },
             );
+            // The Queue/DAG view only shows the task matching
+            // `library.selected_song` -- without this, staging a song from
+            // its library row context menu (which never otherwise touches
+            // selection) left whatever song was previously selected in
+            // view, so the newly staged song's graph never appeared.
+            studio.library.selected_song = Some(file_hash.clone());
             studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
             studio.library.refresh();
             invalidated.invalidate(UiDirtyRegion::Chrome);
@@ -61,6 +67,7 @@ pub(crate) fn apply_content_action(
                     Err(error) => format!("Could not start analysis: {error}"),
                 },
             );
+            studio.library.selected_song = Some(file_hash.clone());
             studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
             studio.library.refresh();
             invalidated.invalidate(UiDirtyRegion::Chrome);
@@ -200,7 +207,6 @@ pub(crate) fn apply_content_action(
             studio.dialogs.lyrics_editor = Some(NativeLyricsEditor {
                 file_hash: file_hash.clone(),
                 mode,
-                separate_stems: true,
                 initial_text: lyrics_text(file_hash, mode),
                 candidates: Vec::new(),
                 candidate_index: 0,
@@ -225,15 +231,6 @@ pub(crate) fn apply_content_action(
                 } else {
                     LyricsInputMode::Plain
                 };
-                invalidated.invalidate(action.0.dirty_region());
-            }
-        }
-        UiCommand::Editor(EditorCommand::ToggleLyricsSeparateStems) => {
-            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
-                }
-                editor.separate_stems = !editor.separate_stems;
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
@@ -456,7 +453,7 @@ pub(crate) fn apply_content_action(
                     if song.as_ref().is_some_and(|song| song.is_analyzed) {
                         app_core::apply_timed_lyrics(&editor.file_hash, &value)
                     } else {
-                        app_core::provide_lrc(&editor.file_hash, &value, editor.separate_stems)
+                        app_core::provide_lrc(&editor.file_hash, &value)
                     }
                 } else {
                     app_core::save_lyrics(
@@ -841,6 +838,27 @@ pub(crate) fn apply_content_action(
                             .to_string()
                     }
                     Err(error) => format!("Could not delete the chart: {error}"),
+                });
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Analysis(AnalysisCommand::RequestRemoveSong(file_hash)) => {
+            studio.dialogs.pending_song_removal = Some(file_hash.clone());
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::CancelRemoveSong) => {
+            studio.dialogs.pending_song_removal = None;
+            invalidated.invalidate(action.0.dirty_region());
+        }
+        UiCommand::Analysis(AnalysisCommand::ConfirmRemoveSong) => {
+            if let Some(file_hash) = studio.dialogs.pending_song_removal.take() {
+                studio.shell.notice = Some(match app_core::remove_song_from_library(&file_hash) {
+                    Ok(()) => {
+                        studio.library.refresh();
+                        "Removed from your library. The source audio file was not changed."
+                            .to_string()
+                    }
+                    Err(error) => format!("Could not remove this song: {error}"),
                 });
                 invalidated.invalidate(action.0.dirty_region());
             }

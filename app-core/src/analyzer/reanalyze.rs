@@ -8,6 +8,95 @@ pub fn delete_cache(file_hash: &str) {
     update_song_analyzed(file_hash, false, None, None, None, None, None);
 }
 
+/// Removes a song's library entry along with its generated cache, queue, and
+/// analysis-profile rows. The indexed source file is never touched -- a
+/// later library scan re-discovers it as a fresh, unanalyzed song.
+pub fn remove_song_from_library(file_hash: &str) -> Result<(), String> {
+    CacheDir::new().delete_song_cache(file_hash);
+    library_db::analysis_queue_delete(file_hash).map_err(|error| error.to_string())?;
+    library_db::song_analysis_profile_delete(file_hash).map_err(|error| error.to_string())?;
+    library_db::delete_song_by_hash(file_hash).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::song::{Song, SongOrigin};
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "uta-studio-remove-song-test-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp db root");
+        path
+    }
+
+    #[test]
+    fn removing_a_failed_song_clears_its_rows_but_keeps_the_source_file() {
+        let root = temp_root("basic");
+        let _guard = library_db::reconnect_for_test(&root);
+
+        let file_hash = "failed-song";
+        let source_path = root.join("failed-song.flac");
+        std::fs::write(&source_path, b"not real audio").unwrap();
+
+        let song = Song {
+            path: source_path.clone(),
+            file_hash: file_hash.to_string(),
+            title: "Failed".to_string(),
+            artist: "Test".to_string(),
+            album: "Test".to_string(),
+            duration_secs: 1.0,
+            album_art_path: None,
+            is_analyzed: false,
+            language: None,
+            transcript_source: None,
+            key: None,
+            override_key: None,
+            bpm: None,
+            tempo: 1.0,
+            key_offset: 0,
+            is_video: false,
+            usdx: None,
+            origin: SongOrigin::LocalFile,
+            no_stems: false,
+            authoring_ready: false,
+            authoring_missing: Vec::new(),
+            editor_ready: false,
+            editor_blocked_reason: None,
+            override_bpm: None,
+            composer: None,
+            country: None,
+            background_video_path: None,
+        };
+        library_db::replace_all_songs_sorted(&[song]).unwrap();
+        library_db::analysis_queue_upsert_row(file_hash, "failed", None, Some("boom")).unwrap();
+        library_db::song_analysis_profile_set(file_hash, "{}", 1).unwrap();
+
+        remove_song_from_library(file_hash).expect("remove succeeds");
+
+        assert!(library_db::load_song_by_hash(file_hash).unwrap().is_none());
+        assert!(
+            library_db::analysis_queue_status(file_hash)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            library_db::song_analysis_profile_get(file_hash)
+                .unwrap()
+                .is_none()
+        );
+        assert!(source_path.is_file(), "source media must not be deleted");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
 pub fn reanalyze_transcript(file_hash: &str, language: Option<String>) -> Result<(), String> {
     ensure_reanalysis_supported(file_hash)?;
     save_language_override(file_hash, language)?;

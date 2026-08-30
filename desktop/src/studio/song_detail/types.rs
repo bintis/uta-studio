@@ -94,7 +94,6 @@ pub(crate) fn adjust_transcript_boundary_value(
 pub(crate) struct NativeLyricsEditor {
     pub(crate) file_hash: String,
     pub(crate) mode: LyricsInputMode,
-    pub(crate) separate_stems: bool,
     pub(crate) initial_text: String,
     pub(crate) candidates: Vec<app_core::LrclibCandidate>,
     pub(crate) candidate_index: usize,
@@ -200,32 +199,53 @@ pub(crate) fn lyrics_text(file_hash: &str, mode: LyricsInputMode) -> String {
     {
         return file.lines.join("\n");
     }
-    let Ok(chart) = app_core::load_chart(file_hash) else {
-        return String::new();
-    };
-    let document = app_core::EditorDocument::new(chart.vocal_chart);
-    (0..document.phrase_count())
-        .filter_map(|phrase| {
-            let text = document.phrase_text(phrase);
-            let text = text.trim();
-            if text.is_empty() {
-                return None;
-            }
-            if mode == LyricsInputMode::TimedLrc {
-                let start = document
-                    .lyric(app_core::LyricAddress {
-                        segment: phrase,
-                        word: 0,
-                    })
-                    .map(|(_, start, _)| start)
-                    .unwrap_or(0.0);
-                Some(format!("[{}]{text}", format_lrc_timestamp(start)))
-            } else {
-                Some(text.to_string())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    // A Timed LRC import (`provide_lrc`/`apply_timed_lyrics`) overwrites the
+    // transcript but deliberately leaves any existing Authored/Candidate
+    // Chart alone (the immutable artifact contract §6/Phase 5 protects chart
+    // edits from being silently discarded). For an already-analyzed song
+    // that chart predates the new lyrics -- it was built from whatever the
+    // old transcript was -- so its phrase count and order can disagree with
+    // what was just saved. The saved LRC transcript is the authoritative
+    // source for this mode; read it before ever consulting a chart that may
+    // be stale.
+    if mode == LyricsInputMode::TimedLrc {
+        let lines = app_core::lrc_transcript_line_segments(&app_core::CacheDir::new(), file_hash)
+            .into_iter()
+            .map(|(start, _end, text)| format!("[{}]{text}", format_lrc_timestamp(start)))
+            .collect::<Vec<_>>();
+        if !lines.is_empty() {
+            return lines.join("\n");
+        }
+    }
+    if let Ok(chart) = app_core::load_chart(file_hash) {
+        let document = app_core::EditorDocument::new(chart.vocal_chart);
+        let text = (0..document.phrase_count())
+            .filter_map(|phrase| {
+                let text = document.phrase_text(phrase);
+                let text = text.trim();
+                if text.is_empty() {
+                    return None;
+                }
+                if mode == LyricsInputMode::TimedLrc {
+                    let start = document
+                        .lyric(app_core::LyricAddress {
+                            segment: phrase,
+                            word: 0,
+                        })
+                        .map(|(_, start, _)| start)
+                        .unwrap_or(0.0);
+                    Some(format!("[{}]{text}", format_lrc_timestamp(start)))
+                } else {
+                    Some(text.to_string())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
 }
 
 pub(crate) fn format_lrc_timestamp(seconds: f64) -> String {

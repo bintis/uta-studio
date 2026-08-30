@@ -151,6 +151,112 @@ pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {
     serde_json::from_slice::<LyricsFile>(&bytes).ok()
 }
 
+/// Ordered line texts from a song's LRC-derived transcript (the shape
+/// `build_lrc_transcript` writes), for feeding forced alignment as
+/// caller-canonical lyrics -- the same route already used for plain known
+/// lyrics -- instead of discarding the timed-LRC text entirely. Returns an
+/// empty vec when there is no LRC-sourced transcript on disk.
+pub fn lrc_transcript_line_texts(cache: &CacheDir, file_hash: &str) -> Vec<String> {
+    lrc_transcript_line_segments(cache, file_hash)
+        .into_iter()
+        .map(|(_start, _end, text)| text)
+        .collect()
+}
+
+/// Ordered (start-seconds, end-seconds, text) triples from a song's
+/// LRC-derived transcript (the shape `build_lrc_transcript` writes). Used to
+/// feed forced alignment as caller-canonical lyrics with real per-line time
+/// anchors (`lrc_transcript_line_texts` drops the timing for the plain-text
+/// case), and to reconstruct the Timed LRC editor view when no authored
+/// chart exists yet for `load_chart` to read from instead.
+pub fn lrc_transcript_line_segments(cache: &CacheDir, file_hash: &str) -> Vec<(f64, f64, String)> {
+    let path = cache.transcript_path(file_hash);
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return Vec::new();
+    };
+    if value.get("source").and_then(serde_json::Value::as_str) != Some("lrc") {
+        return Vec::new();
+    }
+    value
+        .get("segments")
+        .and_then(serde_json::Value::as_array)
+        .map(|segments| {
+            segments
+                .iter()
+                .filter_map(|segment| {
+                    let text = segment.get("text")?.as_str()?.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let start = segment
+                        .get("start")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0);
+                    let end = segment
+                        .get("end")
+                        .and_then(serde_json::Value::as_f64)
+                        .filter(|end| *end > start)
+                        .unwrap_or(start);
+                    Some((start, end, text.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where a song's caller-canonical lyric text (see [`canonical_lyrics_status`])
+/// came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalLyricsSource {
+    /// Plain text pasted or typed directly, with no per-line timing.
+    Plain,
+    /// Line timestamps from a Timed LRC import.
+    TimedLrc,
+}
+
+#[derive(Debug, Clone)]
+pub struct CanonicalLyricsStatus {
+    pub source: CanonicalLyricsSource,
+    pub line_count: usize,
+}
+
+/// Whether this song currently has caller-canonical lyric text -- plain known
+/// lyrics or a Timed LRC import -- that forced alignment can use directly,
+/// skipping ASR. Mirrors the detection `analysis_engine_adapter`'s
+/// `lyrics_context_for_song` makes when it actually builds an Engine request;
+/// this is the read-only half, for surfacing that state in the UI before a
+/// run is ever queued.
+pub fn canonical_lyrics_status(file_hash: &str) -> Option<CanonicalLyricsStatus> {
+    if let Some(lyrics) = load_lyrics_file(file_hash) {
+        let line_count = lyrics
+            .lines
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .count();
+        if line_count > 0 {
+            return Some(CanonicalLyricsStatus {
+                source: CanonicalLyricsSource::Plain,
+                line_count,
+            });
+        }
+    }
+    let song = library_db::load_song_by_hash(file_hash).ok().flatten()?;
+    if song.transcript_source == Some(TranscriptSource::Lrc) {
+        let line_count = lrc_transcript_line_texts(&CacheDir::new(), file_hash).len();
+        if line_count > 0 {
+            return Some(CanonicalLyricsStatus {
+                source: CanonicalLyricsSource::TimedLrc,
+                line_count,
+            });
+        }
+    }
+    None
+}
+
 /// Drops the transcript so it regenerates from the new lyrics source.
 /// Preserves the Authored Chart -- editing the lyrics source must not
 /// discard chart edits (the immutable artifact contract §6/Phase 5). Shared
@@ -231,18 +337,13 @@ fn write_transcript_json(
 }
 
 /// Provide LRC / Enhanced LRC for a not-yet-analyzed song, building the
-/// transcript directly and skipping transcription. When `separate_stems` is
-/// true, a stems-only analysis pass is queued (guide vocals + instrumental);
-/// otherwise the chart is authored over its original mix.
-pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Result<(), String> {
+/// transcript directly from its line timestamps and skipping transcription
+/// entirely -- the chart is authored over the original mix, with no
+/// stem-separation pass queued (Engine v1 has no path to combine timed-LRC
+/// authoring with a queued stem-separation job).
+pub fn provide_lrc(file_hash: &str, lrc_text: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
         return Err("Cannot provide lyrics for USDX songs".to_string());
-    }
-    if separate_stems {
-        return Err(
-            "Engine v1 cannot combine timed-LRC authoring with a stem-only request. Author on the original mix or run a separately previewed supported analysis target."
-                .to_string(),
-        );
     }
 
     let parsed = lrc::parse_lrc(lrc_text)?;
@@ -264,6 +365,16 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str, separate_stems: bool) -> Res
     // launch the retired compatibility analyzer or pretend timed LRC is an
     // Engine v1 alignment artifact.
     prepare_lrc_no_stems(file_hash).map_err(|e| e.to_string())?;
+
+    // This transition (never-analyzed -> authoring-ready via Timed LRC) is
+    // the one place `analysis_history` has never had an entry for this song,
+    // which is what left "Last successful run" reading "None yet" forever.
+    // Recorded here, once, at the moment that gap is actually created --
+    // NOT in `apply_timed_lyrics`, which runs on every later re-save and
+    // would otherwise refresh "Last successful run" to "just now" on every
+    // lyric-text edit, which looks exactly like a fresh full analysis
+    // completing even though nothing was recomputed.
+    record_timed_lyrics_import(&cache, file_hash, &song.title, &song.artist)?;
 
     Ok(())
 }
@@ -312,8 +423,6 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     updated.key_offset = 0;
     updated.no_stems = no_stems;
     library_db::update_song_fields(file_hash, &updated).map_err(|e| e.to_string())?;
-
-    record_timed_lyrics_import(&cache, file_hash, &updated.title, &updated.artist)?;
 
     Ok(())
 }
@@ -602,6 +711,73 @@ mod chart_protection_tests {
         .unwrap();
         assert_eq!(transcript, timed);
         assert_eq!(transcript, value);
+        cache.clear_all();
+    }
+
+    #[test]
+    fn lrc_transcript_line_texts_reads_back_segments_in_order() {
+        let cache = temp_cache();
+        let hash = "songLrcLineTexts";
+        let value = serde_json::json!({
+            "source": "lrc",
+            "segments": [
+                {"text": "first line", "start": 0.0, "end": 2.0, "words": []},
+                {"text": "second line", "start": 2.0, "end": 4.0, "words": []},
+            ],
+        });
+        super::write_transcript_json(&cache, hash, &value).unwrap();
+
+        let lines = super::lrc_transcript_line_texts(&cache, hash);
+
+        assert_eq!(lines, ["first line", "second line"]);
+        cache.clear_all();
+    }
+
+    #[test]
+    fn lrc_transcript_line_texts_is_empty_for_a_non_lrc_transcript() {
+        let cache = temp_cache();
+        let hash = "songGeneratedTranscript";
+        let value = serde_json::json!({
+            "source": "generated",
+            "segments": [{"text": "asr line", "start": 0.0, "end": 1.0, "words": []}],
+        });
+        super::write_transcript_json(&cache, hash, &value).unwrap();
+
+        assert!(super::lrc_transcript_line_texts(&cache, hash).is_empty());
+        cache.clear_all();
+    }
+
+    #[test]
+    fn lrc_transcript_line_texts_is_empty_when_no_transcript_exists() {
+        let cache = temp_cache();
+        assert!(super::lrc_transcript_line_texts(&cache, "songMissingTranscript").is_empty());
+    }
+
+    #[test]
+    fn lrc_transcript_line_segments_reads_back_start_times_with_their_text() {
+        // Reopening the Timed LRC editor for a song with no authored chart
+        // yet has to reconstruct `[mm:ss.xx]text` lines from exactly this
+        // data (see `song_detail::types::lyrics_text`), not just line text.
+        let cache = temp_cache();
+        let hash = "songLrcLineSegments";
+        let value = serde_json::json!({
+            "source": "lrc",
+            "segments": [
+                {"text": "first line", "start": 0.0, "end": 2.0, "words": []},
+                {"text": "second line", "start": 2.5, "end": 4.0, "words": []},
+            ],
+        });
+        super::write_transcript_json(&cache, hash, &value).unwrap();
+
+        let segments = super::lrc_transcript_line_segments(&cache, hash);
+
+        assert_eq!(
+            segments,
+            [
+                (0.0, 2.0, "first line".to_string()),
+                (2.5, 4.0, "second line".to_string())
+            ]
+        );
         cache.clear_all();
     }
 }

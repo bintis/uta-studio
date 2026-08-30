@@ -12,9 +12,8 @@ use super::{
     DocumentationState, EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback,
     LibrarySelectKind, LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob,
     NativeLanguageEditor, NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
-    NativeSongSettings, PendingLeave, PlanPreviewDraft, SelectedGraphEdge, SettingsSelectKind,
-    SettingsTab, SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu,
-    load_songs,
+    NativeSongSettings, PendingLeave, PlanPreviewDraft, SettingsSelectKind, SettingsTab,
+    SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu, load_songs,
 };
 
 #[derive(Resource)]
@@ -79,7 +78,6 @@ impl LibraryState {
 
 #[derive(Resource)]
 pub(crate) struct AnalysisUiState {
-    pub(crate) selected_graph_edge: Option<SelectedGraphEdge>,
     pub(crate) analysis_graph_scroll_offset: f32,
     pub(crate) analysis_graph_vertical_scroll_offset: f32,
     pub(crate) analysis_graph_zoom: f32,
@@ -120,6 +118,7 @@ pub(crate) struct DialogState {
     pub(crate) pending_cache_delete: Option<String>,
     pub(crate) pending_chart_delete: Option<String>,
     pub(crate) pending_chart_replace: Option<String>,
+    pub(crate) pending_song_removal: Option<String>,
     pub(crate) language_editor: Option<NativeLanguageEditor>,
     pub(crate) plan_preview_draft: Option<PlanPreviewDraft>,
     pub(crate) analysis_log_viewer: Option<AnalysisLogViewerState>,
@@ -257,7 +256,6 @@ impl StudioStateBundle {
                 library_scroll_offset: 0.0,
             },
             analysis: AnalysisUiState {
-                selected_graph_edge: None,
                 analysis_graph_scroll_offset: 0.0,
                 analysis_graph_vertical_scroll_offset: 0.0,
                 analysis_graph_zoom: ANALYSIS_GRAPH_ZOOM_DEFAULT,
@@ -270,7 +268,7 @@ impl StudioStateBundle {
                 analysis_history: app_core::load_analysis_history(100),
                 selected_analysis_history: None,
                 selected_analysis_node: None,
-                analysis_mini_view: false,
+                analysis_mini_view: true,
                 analysis_model_panel_open: false,
                 workflow: None,
                 workflow_snapshot: None,
@@ -289,6 +287,7 @@ impl StudioStateBundle {
                 pending_cache_delete: None,
                 pending_chart_delete: None,
                 pending_chart_replace: None,
+                pending_song_removal: None,
                 language_editor: None,
                 plan_preview_draft: None,
                 analysis_log_viewer: None,
@@ -413,7 +412,6 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) folder_browser: &'a FolderBrowser,
     pub(crate) song_context: &'a Option<SongContextMenu>,
     pub(crate) analysis_node_context: &'a Option<AnalysisNodeContextMenu>,
-    pub(crate) selected_graph_edge: &'a Option<SelectedGraphEdge>,
     pub(crate) pending_setup: Option<SetupRequest>,
     pub(crate) model_downloads_open: bool,
     pub(crate) diagnostic_report: &'a Option<uta_studio_diagnostics::DiagnosticReport>,
@@ -421,6 +419,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) pending_cache_delete: &'a Option<String>,
     pub(crate) pending_chart_delete: &'a Option<String>,
     pub(crate) pending_chart_replace: &'a Option<String>,
+    pub(crate) pending_song_removal: &'a Option<String>,
     pub(crate) language_editor: &'a Option<NativeLanguageEditor>,
     pub(crate) plan_preview_draft: &'a Option<PlanPreviewDraft>,
     pub(crate) analysis_log_viewer: &'a Option<AnalysisLogViewerState>,
@@ -490,7 +489,6 @@ impl<'a> StudioSessionView<'a> {
             folder_browser: &library.folder_browser,
             song_context: &dialogs.song_context,
             analysis_node_context: &dialogs.analysis_node_context,
-            selected_graph_edge: &analysis.selected_graph_edge,
             pending_setup: dialogs.pending_setup,
             model_downloads_open: dialogs.model_downloads_open,
             diagnostic_report: &dialogs.diagnostic_report,
@@ -498,6 +496,7 @@ impl<'a> StudioSessionView<'a> {
             pending_cache_delete: &dialogs.pending_cache_delete,
             pending_chart_delete: &dialogs.pending_chart_delete,
             pending_chart_replace: &dialogs.pending_chart_replace,
+            pending_song_removal: &dialogs.pending_song_removal,
             language_editor: &dialogs.language_editor,
             plan_preview_draft: &dialogs.plan_preview_draft,
             analysis_log_viewer: &dialogs.analysis_log_viewer,

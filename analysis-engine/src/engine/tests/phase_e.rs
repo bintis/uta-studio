@@ -121,6 +121,8 @@ fn firered_worker_failure_degrades_and_preserves_qwen_baseline() {
         text: "sing know".to_string(),
         reading: None,
         phonemes: None,
+        start: None,
+        end: None,
     }];
 
     let result = engine.analyze(&request, &output).unwrap();

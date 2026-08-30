@@ -192,6 +192,93 @@ pub(crate) fn spawn_chart_delete_confirmation(
         });
 }
 
+pub(crate) fn spawn_song_removal_confirmation(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    file_hash: &str,
+) {
+    let title = app_core::load_song_by_hash(file_hash)
+        .ok()
+        .flatten()
+        .map(|song| song.title)
+        .unwrap_or_else(|| "this song".to_string());
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(0),
+                top: px(0),
+                bottom: px(0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.78)),
+            ZIndex(90),
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        width: px(460),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(px(24)),
+                        row_gap: px(11),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(8)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.card),
+                    BorderColor::all(theme.border),
+                ))
+                .with_children(|dialog| {
+                    spawn_text(
+                        dialog,
+                        font.clone(),
+                        "Remove this song from your library?",
+                        17.0,
+                        theme.foreground,
+                    );
+                    spawn_wrapped_text(
+                        dialog,
+                        font.clone(),
+                        format!(
+                            "This removes “{title}” and any generated stems, previews, or chart data from Uta! Studio's library. The source audio file is not touched and can be rescanned later."
+                        ),
+                        10.0,
+                        theme.muted_foreground,
+                    );
+                    dialog
+                        .spawn(Node {
+                            width: percent(100),
+                            justify_content: JustifyContent::FlexEnd,
+                            column_gap: px(8),
+                            ..default()
+                        })
+                        .with_children(|actions| {
+                            spawn_text_button(
+                                actions,
+                                font.clone(),
+                                theme,
+                                "Cancel",
+                                10.0,
+                                UiAction::from(AnalysisCommand::CancelRemoveSong),
+                            );
+                            spawn_text_button(
+                                actions,
+                                font,
+                                theme,
+                                "Remove from library",
+                                10.0,
+                                UiAction::from(AnalysisCommand::ConfirmRemoveSong),
+                            );
+                        });
+                });
+        });
+}
+
 /// Phase 5 §5.4 "Compare / Merge / Replace" confirmation modal. Fetches a
 /// fresh `candidate_chart_status` at render time (same pattern as
 /// `spawn_cache_delete_confirmation` re-fetching the song title) rather than

@@ -412,6 +412,7 @@ pub fn insert_audio_transformation_after_output(
         parameters: std::collections::BTreeMap::new(),
         execution_policy: super::ExecutionPolicy::Always,
         priority: 800,
+        skip_if_unchanged: false,
     });
     definition.edges.push(super::WorkflowEdge {
         from: super::WorkflowPortRef {
@@ -643,6 +644,7 @@ pub fn add_optional_workflow_card(
         parameters: std::collections::BTreeMap::new(),
         execution_policy: policy,
         priority,
+        skip_if_unchanged: false,
     });
     definition.analyzer_bindings.push(super::AnalyzerBinding {
         analyzer_node: instance_id.clone(),
@@ -943,6 +945,24 @@ pub fn set_workflow_priority(
         .find(|node| &node.instance_id == node_id)
         .ok_or_else(|| "workflow node not found".to_string())?;
     node.priority = priority.clamp(-100, 100);
+    Ok(())
+}
+
+/// Toggles a Step 1 audio-chain node's "skip if unchanged" cache opt-in.
+/// Purely a UI-facing preference -- it has no DAG/topology implications, so
+/// unlike `set_workflow_execution_policy` it never needs to recompile or
+/// roll back the workflow.
+pub fn set_workflow_skip_if_unchanged(
+    definition: &mut WorkflowDefinition,
+    node_id: &super::WorkflowNodeId,
+    skip_if_unchanged: bool,
+) -> Result<(), String> {
+    let node = definition
+        .nodes
+        .iter_mut()
+        .find(|node| &node.instance_id == node_id)
+        .ok_or_else(|| "workflow node not found".to_string())?;
+    node.skip_if_unchanged = skip_if_unchanged;
     Ok(())
 }
 

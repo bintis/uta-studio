@@ -24,6 +24,7 @@ fn node(
         parameters: BTreeMap::new(),
         execution_policy,
         priority,
+        skip_if_unchanged: false,
     }
 }
 

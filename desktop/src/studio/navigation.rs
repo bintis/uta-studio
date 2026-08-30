@@ -105,6 +105,9 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.pending_chart_replace.is_some() {
         return Some(UiAction::from(AnalysisCommand::CancelReplaceAuthoredChart));
     }
+    if session.pending_song_removal.is_some() {
+        return Some(UiAction::from(AnalysisCommand::CancelRemoveSong));
+    }
     if session.pending_analysis_history_clear {
         return Some(UiAction::from(AnalysisCommand::CancelClearAnalysisHistory));
     }

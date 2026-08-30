@@ -59,6 +59,7 @@ mod tests {
             parameters: Default::default(),
             execution_policy: ExecutionPolicy::Always,
             priority: 0,
+            skip_if_unchanged: false,
         });
         let report = validate_workflow(&workflow);
         assert!(

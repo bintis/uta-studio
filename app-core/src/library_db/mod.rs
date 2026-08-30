@@ -70,9 +70,9 @@ pub use song_analysis_profiles::{
 };
 pub use song_workflows::{song_workflow_get, song_workflow_set};
 pub use songs::{
-    append_songs_for_scan, delete_songs_not_in_paths, load_all_songs, load_song_by_hash,
-    load_song_by_path, load_song_path_strings, read_library_meta, replace_all_songs_sorted,
-    update_library_meta, update_song_fields,
+    append_songs_for_scan, delete_song_by_hash, delete_songs_not_in_paths, load_all_songs,
+    load_song_by_hash, load_song_by_path, load_song_path_strings, read_library_meta,
+    replace_all_songs_sorted, update_library_meta, update_song_fields,
 };
 
 /// Incremented at the start of each `start_scan` so in-flight scan threads stop writing

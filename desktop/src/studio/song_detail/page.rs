@@ -785,7 +785,7 @@ pub(crate) fn spawn_lyrics_editor(
                         if editor.mode == LyricsInputMode::StructuredTimedTranscript {
                             "Edit the lossless segment/word structure. Start/end values must be ordered and every word must remain inside its segment. Unknown extension fields are preserved."
                         } else if editor.mode == LyricsInputMode::TimedLrc {
-                            "Paste line-level or enhanced LRC. Existing analyzed songs keep their stems; new songs can author over the original mix or explicitly queue separation."
+                            "Paste line-level or enhanced LRC. Its line timestamps are treated as authoritative. Already-analyzed songs keep their existing stems; new songs are authored directly over the original mix."
                         } else {
                             "Enter one lyric phrase per line. Saving stores the lyrics without starting analysis or modifying the source song."
                         },
@@ -815,20 +815,6 @@ pub(crate) fn spawn_lyrics_editor(
                                 10.0,
                                 UiAction::from(EditorCommand::ToggleLyricsInputMode),
                             );
-                            if editor.mode == LyricsInputMode::TimedLrc {
-                                spawn_text_button(
-                                    options,
-                                    font.clone(),
-                                    theme,
-                                    if editor.separate_stems {
-                                        "Separate stems: on"
-                                    } else {
-                                        "Author on original mix"
-                                    },
-                                    10.0,
-                                    UiAction::from(EditorCommand::ToggleLyricsSeparateStems),
-                                );
-                            }
                             spawn_text_button(
                                 options,
                                 font.clone(),

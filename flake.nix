@@ -131,6 +131,8 @@
                 $out/share/uta-studio/native-inference/qwen-worker/install-local-qwen-assets.sh
               install -Dm644 native-inference/qwen-worker/patches/predict-woo-require-gpu.patch \
                 $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-require-gpu.patch
+              install -Dm644 native-inference/qwen-worker/patches/predict-woo-fix-alignment-json-buffer-truncation.patch \
+                $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-fix-alignment-json-buffer-truncation.patch
               install -Dm644 icon.png $out/share/uta-studio/icon.png
               install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
                 $out/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf

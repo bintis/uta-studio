@@ -720,11 +720,22 @@ mod tests {
     #[cfg(unix)]
     fn worker_script(root: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
+
+        // Publish the executable only after its writable handle is closed.
+        // Rapid write-in-place followed by spawn can intermittently surface
+        // ETXTBSY in the Nix sandbox even though `fs::write` has returned.
         let path = root.join("worker");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        let staging = root.join("worker.part");
+        {
+            let mut file = std::fs::File::create(&staging).unwrap();
+            file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+                .unwrap();
+            file.sync_all().unwrap();
+        }
+        let mut permissions = std::fs::metadata(&staging).unwrap().permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
+        std::fs::set_permissions(&staging, permissions).unwrap();
+        std::fs::rename(staging, &path).unwrap();
         path
     }
 

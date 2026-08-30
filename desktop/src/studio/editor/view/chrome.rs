@@ -72,7 +72,7 @@ pub(crate) fn spawn_editor(
                                 if loading {
                                     "Preparing chart editor…"
                                 } else {
-                                    "Chart needs attention"
+                                    "Chart editor unavailable"
                                 },
                                 18.0,
                                 theme.foreground,
