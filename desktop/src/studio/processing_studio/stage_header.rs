@@ -74,6 +74,40 @@ pub(super) fn spawn_stage_header(
     stats: Option<StageCardStats>,
 ) {
     let accent = stage_accent(stage, theme);
+
+    lane.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(9),
+            right: px(9),
+            top: px(0),
+            height: px(2),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(accent.with_alpha(0.46)),
+        ZIndex(2),
+        Pickable::IGNORE,
+    ));
+    if stage < 4 {
+        lane.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(-13),
+                top: px(34),
+                width: px(18),
+                height: px(26),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            ZIndex(4),
+            Pickable::IGNORE,
+        ))
+        .with_children(|connector| {
+            spawn_text(connector, font.clone(), "›", 16.0, accent.with_alpha(0.72));
+        });
+    }
     lane.spawn((
         Node {
             width: percent(100),
