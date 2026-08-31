@@ -401,16 +401,22 @@ pub(super) fn spawn_workflow_sidebar(
     audio_sources: &[(app_core::WorkflowNodeId, String, String)],
 ) {
     parent
-        .spawn(Node {
-            width: px(WORKFLOW_SIDEBAR_WIDTH),
-            min_width: px(252),
-            min_height: vh(54.0),
-            flex_shrink: 0.0,
-            align_self: AlignSelf::Stretch,
-            flex_direction: FlexDirection::Column,
-            row_gap: px(8),
-            ..default()
-        })
+        .spawn((
+            Node {
+                width: px(WORKFLOW_SIDEBAR_WIDTH),
+                min_width: px(252),
+                min_height: vh(60.0),
+                height: percent(100),
+                flex_shrink: 0.0,
+                align_self: AlignSelf::Stretch,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::left(px(2)),
+                row_gap: px(8),
+                border: UiRect::left(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.28)),
+        ))
         .with_children(|sidebar| {
             let selected = session.selected_workflow_node.as_ref().and_then(|selected_id| {
                 stored

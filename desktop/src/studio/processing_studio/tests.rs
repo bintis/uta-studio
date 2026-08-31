@@ -1,5 +1,5 @@
 use super::node_card::{
-    execution_policy_choices, node_execution_badge, provider_metadata,
+    capability_summary, execution_policy_choices, node_execution_badge, provider_metadata,
     uses_binary_preprocessing_switch, workflow_policy_availability,
 };
 use super::stage_fusion::{
@@ -30,6 +30,54 @@ fn processing_cards_report_typed_condition_not_resource_readiness() {
 }
 
 #[test]
+fn capability_summaries_describe_product_roles_without_runtime_claims() {
+    for (capability, expected) in [
+        (
+            "audio.separate_vocal_bgm",
+            "Produces independent vocal and instrumental audio branches.",
+        ),
+        (
+            "analysis.asr",
+            "Transcribes the singing route into lyric evidence.",
+        ),
+        (
+            "analysis.forced_alignment",
+            "Aligns canonical lyrics to the song timeline.",
+        ),
+        (
+            "analysis.pitch_f0",
+            "Estimates the continuous singing-pitch contour.",
+        ),
+        (
+            "analysis.note_boundary",
+            "Proposes note onsets, offsets and boundaries.",
+        ),
+        (
+            "fusion.candidate_graph",
+            "Constructs the candidate singing-path graph.",
+        ),
+        (
+            "finalize.canonical_singing_track",
+            "Produces the canonical singing track.",
+        ),
+    ] {
+        let summary = capability_summary(capability);
+        assert_eq!(summary, expected);
+        let lower = summary.to_ascii_lowercase();
+        for forbidden in ["installed", "runtime ready", "backend available"] {
+            assert!(
+                !lower.contains(forbidden),
+                "capability summary claims runtime readiness: {summary}"
+            );
+        }
+    }
+    assert_eq!(
+        capability_summary("unknown.capability"),
+        "Configures this capability in the product workflow."
+    );
+}
+
+#[test]
 fn preprocessing_lane_exposes_one_master_bypass_for_all_optional_processors() {
     let source = include_str!("mod.rs");
     assert!(source.contains("SetWorkflowPreprocessingEnabled"));
@@ -38,18 +86,23 @@ fn preprocessing_lane_exposes_one_master_bypass_for_all_optional_processors() {
 }
 
 #[test]
-fn stage_footers_name_real_handoffs_without_inventing_readiness_metrics() {
-    let source = include_str!("mod.rs");
+fn contextual_sidebar_names_real_outputs_without_inventing_readiness_metrics() {
+    let source = include_str!("workspace_sidebar.rs");
     for required in [
-        "Vocal + Instrumental audio",
-        "Canonical lyrics + word timing",
-        "Pitch, boundary, technique + acoustic evidence",
-        "Candidate singing track",
-        "confirmed in Plan Preview",
+        "PLANNED OUTPUTS",
+        "Terminal products from the current local compile snapshot.",
+        "Canonical singing track",
+        "Candidate singing chart",
+        "Pitch evidence",
+        "Note-boundary evidence",
+        "Lyric alignment evidence",
+        "Lead-vocal audio",
+        "Instrumental audio",
+        "Exact provider, backend and resource readiness is not inferred on this page.",
     ] {
         assert!(
             source.contains(required),
-            "missing truthful stage handoff: {required}"
+            "missing truthful workflow sidebar copy: {required}"
         );
     }
     for forbidden in ["readiness percentage", "success rate", "CPU usage"] {
@@ -391,7 +444,6 @@ fn expert_fusion_stage_hides_internal_execution_cards() {
     );
 }
 
-
 #[test]
 fn selected_module_edits_in_the_contextual_inspector_not_inside_a_stage_lane() {
     let workspace = include_str!("mod.rs");
@@ -399,7 +451,8 @@ fn selected_module_edits_in_the_contextual_inspector_not_inside_a_stage_lane() {
 
     assert!(workspace.contains("workspace_sidebar::spawn_workflow_sidebar"));
     assert!(workspace.contains("expanded: false"));
-    assert!(inspector.contains("let Some(selected_id) = session.selected_workflow_node.as_ref() else"));
+    assert!(inspector.contains("selected_workflow_node.as_ref().and_then"));
+    assert!(inspector.contains("if let Some((node, capability)) = selected"));
     assert!(inspector.contains("allow_drag_reorder: false"));
     assert!(inspector.contains("MODULE SETTINGS"));
 }
