@@ -212,6 +212,8 @@ pub(super) fn spawn_fusion_stage_card(
     lane.spawn((
         Node {
             width: percent(100),
+            min_height: px(0),
+            flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(px(10)),
             row_gap: px(8),
@@ -382,6 +384,14 @@ pub(super) fn spawn_fusion_stage_card(
                 );
             });
         }
+
+        // Keep evidence/output facts anchored near the bottom of a tall Stage 4
+        // lane without changing any Engine-owned fusion behavior.
+        card.spawn(Node {
+            min_height: px(8),
+            flex_grow: 1.0,
+            ..default()
+        });
 
         card.spawn(Node {
             width: percent(100),

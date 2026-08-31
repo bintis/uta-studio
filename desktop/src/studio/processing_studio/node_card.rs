@@ -137,6 +137,32 @@ pub(super) fn is_step1_cacheable(capability_id: &str) -> bool {
     )
 }
 
+/// Concise product-purpose copy for collapsed capability cards. These labels
+/// describe the authored workflow role only; they never imply runtime or model
+/// readiness, which remains exclusive to exact Plan Preview.
+pub(super) fn capability_summary(capability_id: &str) -> &'static str {
+    match capability_id {
+        "audio.source" => "The original song mix used as the workflow source.",
+        "audio.separate_vocal_bgm" => "Produces independent vocal and instrumental audio branches.",
+        "audio.lead_isolate" => "Extracts a cleaner lead-vocal route from the vocal branch.",
+        "audio.denoise" => "Reduces background noise on this audio branch.",
+        "audio.dereverb" => "Reduces room and reverb residue on this audio branch.",
+        "audio.refine" => "Refines the current stem while preserving its audio role.",
+        "lyrics.known" => "Uses user-confirmed lyrics as canonical text evidence.",
+        "analysis.asr" => "Transcribes the singing route into lyric evidence.",
+        "fusion.transcript" => "Combines supplied and transcribed lyric evidence.",
+        "analysis.forced_alignment" => "Aligns canonical lyrics to the song timeline.",
+        "analysis.pitch_f0" => "Estimates the continuous singing-pitch contour.",
+        "analysis.note_boundary" => "Proposes note onsets, offsets and boundaries.",
+        "analysis.technique" => "Detects singing-technique evidence and labels.",
+        "analysis.acoustic_dsp" => "Adds acoustic features and DSP-derived evidence.",
+        "fusion.singing_evidence" => "Combines configured singing-analysis evidence.",
+        "fusion.candidate_graph" => "Constructs the candidate singing-path graph.",
+        "finalize.canonical_singing_track" => "Produces the canonical singing track.",
+        _ => "Configures this capability in the product workflow.",
+    }
+}
+
 pub(super) fn policy_choice_button(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -506,8 +532,39 @@ pub(super) fn spawn_node_card(
                             });
                     });
             });
+            if !context.embedded {
+                spawn_wrapped_text(
+                    card,
+                    font.clone(),
+                    capability_summary(capability.id.as_str()),
+                    if context.compact { 6.8 } else { 7.3 },
+                    theme.muted_foreground,
+                );
+            }
             if let Some(label) = secondary_label {
-                spawn_wrapped_text(card, font.clone(), label, 8.5, theme.muted_foreground);
+                card.spawn(Node {
+                    width: percent(100),
+                    min_width: px(0),
+                    align_items: AlignItems::Center,
+                    column_gap: px(6),
+                    ..default()
+                })
+                .with_children(|provider| {
+                    spawn_text(
+                        provider,
+                        font.clone(),
+                        "MODEL",
+                        6.1,
+                        theme.muted_foreground.with_alpha(0.78),
+                    );
+                    spawn_wrapped_text(
+                        provider,
+                        font.clone(),
+                        label,
+                        7.7,
+                        theme.primary.with_alpha(0.9),
+                    );
+                });
             }
             if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
                 let strategy = node

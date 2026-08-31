@@ -575,6 +575,78 @@ mod tests {
     }
 
     #[test]
+    fn processing_studio_sidebar_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "WORKFLOW SUMMARY",
+            "Select a module card to edit its provider, routing and execution condition.",
+            "ACTIVE MODULES",
+            "QUALITY MODE",
+            "FINAL DECISION",
+            "LOCAL TOPOLOGY",
+            "Local compilation checks product topology only; runtime truth remains in exact Plan Preview.",
+            "Compile error",
+            "Local workflow topology is valid",
+            "Exact provider, backend and resource readiness is not inferred on this page.",
+            "FIX TOPOLOGY BEFORE PREVIEW",
+            "EXACT PLAN PREVIEW REQUIRED",
+            "PLANNED OUTPUTS",
+            "Terminal products from the current local compile snapshot.",
+            "No terminal output is available from the current local compile.",
+            "MODULE SETTINGS",
+            "The stage board remains stable while this module is edited here. Select the same card again to close.",
+            "Canonical singing track",
+            "Candidate singing chart",
+            "Note-boundary evidence",
+            "Lyric alignment evidence",
+            "Lead-vocal audio",
+            "Instrumental audio",
+            "Audio · {role}",
+            "MODEL",
+            "The original song mix used as the workflow source.",
+            "Produces independent vocal and instrumental audio branches.",
+            "Extracts a cleaner lead-vocal route from the vocal branch.",
+            "Reduces background noise on this audio branch.",
+            "Reduces room and reverb residue on this audio branch.",
+            "Refines the current stem while preserving its audio role.",
+            "Uses user-confirmed lyrics as canonical text evidence.",
+            "Transcribes the singing route into lyric evidence.",
+            "Combines supplied and transcribed lyric evidence.",
+            "Aligns canonical lyrics to the song timeline.",
+            "Estimates the continuous singing-pitch contour.",
+            "Proposes note onsets, offsets and boundaries.",
+            "Detects singing-technique evidence and labels.",
+            "Adds acoustic features and DSP-derived evidence.",
+            "Combines configured singing-analysis evidence.",
+            "Constructs the candidate singing-path graph.",
+            "Produces the canonical singing track.",
+            "Configures this capability in the product workflow.",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+        assert_eq!(
+            translate_ui(UiLocale::SimplifiedChinese, "Audio · lead_vocal").as_deref(),
+            Some("音频 · lead_vocal")
+        );
+        assert_eq!(
+            translate_ui(
+                UiLocale::SimplifiedChinese,
+                "4 cards · 2 enabled · 1 conditional · 1 disabled"
+            )
+            .as_deref(),
+            Some("4 张卡片 · 已启用 2 · 有条件 1 · 已禁用 1")
+        );
+    }
+
+    #[test]
     fn preprocessing_ui_has_required_non_english_catalog_coverage() {
         let english = parse_catalog(ENGLISH_JSON);
         let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);

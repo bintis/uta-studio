@@ -32,6 +32,16 @@ impl StageCardStats {
     }
 }
 
+pub(super) fn stage_accent(stage: u8, theme: &StudioTheme) -> Color {
+    match stage {
+        1 => Color::srgb(0.34, 0.76, 0.86),
+        2 => theme.primary,
+        3 => theme.editor_warning,
+        4 => Color::srgb(0.42, 0.78, 0.56),
+        _ => theme.primary,
+    }
+}
+
 fn spawn_stat_chip(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -63,6 +73,7 @@ pub(super) fn spawn_stage_header(
     description: &str,
     stats: Option<StageCardStats>,
 ) {
+    let accent = stage_accent(stage, theme);
     lane.spawn((
         Node {
             width: percent(100),
@@ -87,8 +98,8 @@ pub(super) fn spawn_stage_header(
                 title_row
                     .spawn((
                         Node {
-                            width: px(28),
-                            height: px(28),
+                            width: px(30),
+                            height: px(30),
                             flex_shrink: 0.0,
                             align_items: AlignItems::Center,
                             justify_content: JustifyContent::Center,
@@ -96,17 +107,11 @@ pub(super) fn spawn_stage_header(
                             border_radius: BorderRadius::MAX,
                             ..default()
                         },
-                        BackgroundColor(theme.primary.with_alpha(0.12)),
-                        BorderColor::all(theme.primary.with_alpha(0.28)),
+                        BackgroundColor(accent.with_alpha(0.12)),
+                        BorderColor::all(accent.with_alpha(0.32)),
                     ))
                     .with_children(|badge| {
-                        spawn_text(
-                            badge,
-                            font.clone(),
-                            format!("{stage:02}"),
-                            9.0,
-                            theme.primary,
-                        );
+                        spawn_text(badge, font.clone(), format!("{stage:02}"), 9.5, accent);
                     });
                 title_row
                     .spawn(Node {
@@ -117,12 +122,12 @@ pub(super) fn spawn_stage_header(
                         ..default()
                     })
                     .with_children(|copy| {
-                        spawn_wrapped_text(copy, font.clone(), title, 11.5, theme.foreground);
+                        spawn_wrapped_text(copy, font.clone(), title, 12.0, theme.foreground);
                         spawn_wrapped_text(
                             copy,
                             font.clone(),
                             description,
-                            7.8,
+                            8.0,
                             theme.muted_foreground,
                         );
                     });
@@ -149,7 +154,7 @@ pub(super) fn spawn_stage_header(
                             chips,
                             font.clone(),
                             format!("{} enabled", stats.enabled),
-                            theme.primary,
+                            accent,
                         );
                     }
                     if stats.conditional > 0 {
@@ -197,64 +202,6 @@ pub(super) fn spawn_lane_section_label(
                 },
                 BackgroundColor(theme.border.with_alpha(0.32)),
             ));
-        });
-}
-
-/// Pins a truthful stage hand-off summary to the bottom of a full-height lane.
-/// The flexible spacer absorbs unused height; the footer describes persisted
-/// workflow semantics only and never implies runtime/model readiness.
-pub(super) fn spawn_stage_footer(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    label: &str,
-    value: &str,
-    detail: &str,
-) {
-    parent.spawn(Node {
-        min_height: px(16),
-        flex_grow: 1.0,
-        ..default()
-    });
-    parent
-        .spawn((
-            Node {
-                width: percent(100),
-                min_width: px(0),
-                flex_shrink: 0.0,
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::new(px(2), px(2), px(9), px(3)),
-                row_gap: px(3),
-                border: UiRect::top(px(1)),
-                ..default()
-            },
-            BackgroundColor(theme.background.with_alpha(0.08)),
-            BorderColor::all(theme.border.with_alpha(0.36)),
-        ))
-        .with_children(|footer| {
-            footer
-                .spawn(Node {
-                    width: percent(100),
-                    min_width: px(0),
-                    align_items: AlignItems::Center,
-                    column_gap: px(7),
-                    ..default()
-                })
-                .with_children(|heading| {
-                    heading.spawn((
-                        Node {
-                            width: px(16),
-                            height: px(2),
-                            flex_shrink: 0.0,
-                            border_radius: BorderRadius::MAX,
-                            ..default()
-                        },
-                        BackgroundColor(theme.primary.with_alpha(0.72)),
-                    ));
-                    spawn_text(heading, font.clone(), label, 6.5, theme.muted_foreground);
-                });
-            spawn_wrapped_text(footer, font.clone(), value, 8.4, theme.foreground);
-            spawn_wrapped_text(footer, font, detail, 6.8, theme.muted_foreground);
         });
 }
 

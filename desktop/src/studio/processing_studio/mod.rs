@@ -632,12 +632,15 @@ pub(crate) fn spawn_processing_studio(
                 workspace
                     .spawn(Node {
                         min_width: px(0),
+                        min_height: vh(60.0),
+                        height: percent(100),
                         flex_basis: px(0),
                         flex_grow: 1.0,
                         flex_shrink: 1.0,
+                        align_self: AlignSelf::Stretch,
                         flex_direction: FlexDirection::Row,
                         column_gap: px(8),
-                        align_items: AlignItems::FlexStart,
+                        align_items: AlignItems::Stretch,
                         ..default()
                     })
                     .with_children(|stages| {
@@ -672,9 +675,11 @@ pub(crate) fn spawn_processing_studio(
                         .spawn((
                             Node {
                                 min_width: px(0),
+                                min_height: percent(100),
                                 flex_basis: px(0),
                                 flex_grow: lane_weight,
                                 flex_shrink: 1.0,
+                                align_self: AlignSelf::Stretch,
                                 flex_direction: FlexDirection::Column,
                                 padding: UiRect::all(px(9)),
                                 row_gap: px(8),
@@ -858,6 +863,16 @@ pub(crate) fn spawn_processing_studio(
                                                             9.5,
                                                             theme.foreground,
                                                         );
+
+                                                        spawn_wrapped_text(
+                                                            copy,
+                                                            font.clone(),
+                                                            node_card::capability_summary(
+                                                                capability.id.as_str(),
+                                                            ),
+                                                            6.5,
+                                                            theme.muted_foreground,
+                                                        );
                                                         spawn_wrapped_text(
                                                             copy,
                                                             font.clone(),
@@ -934,6 +949,15 @@ pub(crate) fn spawn_processing_studio(
                                     );
                                 }
                             }
+
+                            // Keep stage-level add/restore controls at the bottom of a
+                            // full-height lane. This presentation-only spacer collapses
+                            // naturally when the cards need more room.
+                            lane.spawn(Node {
+                                min_height: px(8),
+                                flex_grow: 1.0,
+                                ..default()
+                            });
 
                             if stage == 1 {
                                 stage_header::spawn_lane_section_label(
