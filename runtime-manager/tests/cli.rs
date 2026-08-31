@@ -25,8 +25,8 @@ fn run(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-fn run_without_adapter_discovery(args: &[&str]) -> std::process::Output {
-    Command::new(binary())
+fn run_without_adapter_discovery(runtime: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(runtime)
         .args(args)
         .env_remove("UTA_STUDIO_FUSION_AGENT_ADAPTER_PATH")
         .env_remove("UTA_STUDIO_FUSION_AGENT_CLI_PATH")
@@ -71,6 +71,17 @@ fn fusion_adapter_cli_lifecycle_is_persistent_and_resolvable() {
         "uta-fusion-agent-adapter"
     });
     std::fs::create_dir_all(&root).unwrap();
+    // Run an isolated copy so provider adapters built beside Cargo's test
+    // binary do not become an unrelated packaged fallback for this explicit
+    // configure/clear lifecycle fixture.
+    let runtime_directory = root.join("runtime-bin");
+    std::fs::create_dir(&runtime_directory).unwrap();
+    let runtime = runtime_directory.join(if cfg!(windows) {
+        "uta-runtime.exe"
+    } else {
+        "uta-runtime"
+    });
+    std::fs::copy(binary(), &runtime).unwrap();
     let execution_marker = root.join("adapter-was-executed");
     std::fs::write(
         &adapter,
@@ -93,7 +104,7 @@ fn fusion_adapter_cli_lifecycle_is_persistent_and_resolvable() {
             "version": 1,
             "adapter_id": "fusion_agent_adapter",
             "adapter_version": "1.2.3-test",
-            "fusion_protocol_version": 3
+            "fusion_protocol_version": 4
         }))
         .unwrap(),
     )
@@ -101,17 +112,20 @@ fn fusion_adapter_cli_lifecycle_is_persistent_and_resolvable() {
     let store_arg = store.to_string_lossy().into_owned();
     let adapter_arg = adapter.to_string_lossy().into_owned();
 
-    let configure = run_without_adapter_discovery(&[
-        "configure-tool",
-        "tool:fusion_agent_adapter",
-        "--path",
-        &adapter_arg,
-        "--yes",
-        "--output",
-        "json",
-        "--store",
-        &store_arg,
-    ]);
+    let configure = run_without_adapter_discovery(
+        &runtime,
+        &[
+            "configure-tool",
+            "tool:fusion_agent_adapter",
+            "--path",
+            &adapter_arg,
+            "--yes",
+            "--output",
+            "json",
+            "--store",
+            &store_arg,
+        ],
+    );
     assert!(
         configure.status.success(),
         "{}",
@@ -121,43 +135,52 @@ fn fusion_adapter_cli_lifecycle_is_persistent_and_resolvable() {
     assert_eq!(configured["data"]["usable"], true);
     assert_eq!(configured["data"]["tool_version"], "1.2.3-test");
 
-    let resolve = run_without_adapter_discovery(&[
-        "resolve",
-        "tool:fusion_agent_adapter",
-        "--output",
-        "json",
-        "--store",
-        &store_arg,
-    ]);
+    let resolve = run_without_adapter_discovery(
+        &runtime,
+        &[
+            "resolve",
+            "tool:fusion_agent_adapter",
+            "--output",
+            "json",
+            "--store",
+            &store_arg,
+        ],
+    );
     assert!(resolve.status.success());
     let resolved = json_stdout(&resolve);
     assert_eq!(resolved["data"]["identity"], "fusion_agent_adapter");
     assert_eq!(resolved["data"]["version"], "1.2.3-test");
-    assert_eq!(resolved["data"]["protocol_version"], 3);
+    assert_eq!(resolved["data"]["protocol_version"], 4);
     assert_eq!(
         resolved["data"]["executable"],
         adapter.canonicalize().unwrap().to_string_lossy().as_ref()
     );
 
-    let clear = run_without_adapter_discovery(&[
-        "clear-tool",
-        "tool:fusion_agent_adapter",
-        "--yes",
-        "--output",
-        "json",
-        "--store",
-        &store_arg,
-    ]);
+    let clear = run_without_adapter_discovery(
+        &runtime,
+        &[
+            "clear-tool",
+            "tool:fusion_agent_adapter",
+            "--yes",
+            "--output",
+            "json",
+            "--store",
+            &store_arg,
+        ],
+    );
     assert!(clear.status.success());
     assert_eq!(json_stdout(&clear)["data"]["usable"], false);
-    let unavailable = run_without_adapter_discovery(&[
-        "resolve",
-        "tool:fusion_agent_adapter",
-        "--output",
-        "json",
-        "--store",
-        &store_arg,
-    ]);
+    let unavailable = run_without_adapter_discovery(
+        &runtime,
+        &[
+            "resolve",
+            "tool:fusion_agent_adapter",
+            "--output",
+            "json",
+            "--store",
+            &store_arg,
+        ],
+    );
     assert_eq!(unavailable.status.code(), Some(10));
     assert_eq!(json_stdout(&unavailable)["code"], "resource_missing");
     assert!(

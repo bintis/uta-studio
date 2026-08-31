@@ -614,7 +614,7 @@ impl SingingDecisionWireV1 {
                 ..
             } if adapter_resource == "tool:fusion_agent_adapter"
                 && adapter_protocol == "uta.fusion_agent_request/uta.fusion_agent_response"
-                && *adapter_protocol_version == 3
+                && *adapter_protocol_version == 4
                 && !adapter_identity.trim().is_empty()
                 && !adapter_version.trim().is_empty()
                 && reuse_policy == "preserved_revision_only" =>
@@ -938,7 +938,7 @@ pub fn singing_analysis_evidence_bundle(
     {
         return Err("unsupported SingingAnalysis evidence contract".to_string());
     }
-    if analysis.provenance.fusion_algorithm != "fusion-v16" {
+    if analysis.provenance.fusion_algorithm != "fusion-v17" {
         return Err("invalid SingingAnalysis execution provenance".to_string());
     }
     analysis.provenance.fusion_decision.validate()?;
@@ -1328,12 +1328,12 @@ mod tests {
             }],
             "provenance":{
                 "execution_fingerprint":"f".repeat(64),
-                "fusion_algorithm":"fusion-v16",
+                "fusion_algorithm":"fusion-v17",
                 "fusion_decision":{
                     "decision_mode":"ai_judgment",
                     "adapter_resource":"tool:fusion_agent_adapter",
                     "adapter_protocol":"uta.fusion_agent_request/uta.fusion_agent_response",
-                    "adapter_protocol_version":3,
+                    "adapter_protocol_version":4,
                     "adapter_identity":"fusion_agent_adapter",
                     "adapter_version":"1.0.0-test",
                     "candidate_set_digest":candidate_set_digest,

@@ -32,6 +32,31 @@ pub struct LrcSegment {
 #[derive(Debug, Clone)]
 pub struct ParsedLrc {
     pub segments: Vec<LrcSegment>,
+    final_end_inferred: bool,
+}
+
+impl ParsedLrc {
+    /// Analysis knows the source duration, so an open-ended final LRC line can
+    /// retain sung material past the renderer's four-second display fallback.
+    /// An explicit trailing empty timestamp is not inferred and is preserved.
+    pub fn extend_inferred_final_end(&mut self, source_end: f64) {
+        if !self.final_end_inferred || !source_end.is_finite() {
+            return;
+        }
+        let Some(segment) = self.segments.last_mut() else {
+            return;
+        };
+        if source_end <= segment.end {
+            return;
+        }
+        let previous_end = segment.end;
+        segment.end = source_end;
+        if let Some(word) = segment.words.last_mut()
+            && (word.end - previous_end).abs() <= f64::EPSILON
+        {
+            word.end = source_end;
+        }
+    }
 }
 
 /// Intermediate per-timestamp entry before segment ends are resolved.
@@ -221,14 +246,15 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
     boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut segments = Vec::with_capacity(entries.len());
+    let mut final_end_inferred = false;
 
     for entry in &entries {
         let seg_start = entry.start;
-        let seg_end = boundaries
-            .iter()
-            .copied()
-            .find(|&b| b > seg_start + 1e-6)
-            .unwrap_or(seg_start + LAST_SEGMENT_SECS);
+        let known_end = boundaries.iter().copied().find(|&b| b > seg_start + 1e-6);
+        let seg_end = known_end.unwrap_or_else(|| {
+            final_end_inferred = true;
+            seg_start + LAST_SEGMENT_SECS
+        });
 
         let words = match &entry.word_tokens {
             Some(tokens) => {
@@ -262,5 +288,26 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
         });
     }
 
-    Ok(ParsedLrc { segments })
+    Ok(ParsedLrc {
+        segments,
+        final_end_inferred,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_duration_extends_only_an_inferred_final_line_end() {
+        let mut inferred = parse_lrc("[00:10.00]last line").unwrap();
+        inferred.extend_inferred_final_end(22.0);
+        assert_eq!(inferred.segments[0].end, 22.0);
+        assert_eq!(inferred.segments[0].words[0].end, 22.0);
+
+        let mut explicit = parse_lrc("[00:10.00]last line\n[00:14.50]").unwrap();
+        explicit.extend_inferred_final_end(22.0);
+        assert_eq!(explicit.segments[0].end, 14.5);
+        assert_eq!(explicit.segments[0].words[0].end, 14.5);
+    }
 }

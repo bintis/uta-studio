@@ -249,6 +249,37 @@ pub struct RuntimeResolvedToolWireV1 {
     pub origin: ResourceOriginWireV1,
 }
 
+/// Runtime Manager's provider integration projection intentionally contains
+/// no executable path or credential/authentication claim. A provider is
+/// selectable only when its PATH CLI and sibling manifest-verified native
+/// adapter are both present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFusionProviderStatusWireV1 {
+    pub provider: String,
+    pub display_name: String,
+    pub executable_name: String,
+    pub available: bool,
+    pub adapter_available: bool,
+    pub usable: bool,
+    pub selected: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub adapter_identity: Option<String>,
+    #[serde(default)]
+    pub adapter_version: Option<String>,
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFusionProviderReportWireV1 {
+    pub adapter_resource: String,
+    pub selected_provider: Option<String>,
+    pub providers: Vec<RuntimeFusionProviderStatusWireV1>,
+    pub network_disclosure: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeMutationResultWireV1 {
     #[serde(default)]

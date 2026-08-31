@@ -11,7 +11,7 @@ pub const EXPORT_REQUEST_CONTRACT: &str = "uta.analysis-engine.export";
 pub const EXPORT_REQUEST_VERSION: u32 = 1;
 pub const FUSION_AGENT_ADAPTER_RESOURCE: &str = "tool:fusion_agent_adapter";
 pub const FUSION_AGENT_PROTOCOL: &str = "uta.fusion_agent_request/uta.fusion_agent_response";
-pub const FUSION_AGENT_PROTOCOL_VERSION: u32 = 3;
+pub const FUSION_AGENT_PROTOCOL_VERSION: u32 = 4;
 pub const HSMM_VITERBI_SELECTOR: &str = "hsmm_viterbi";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

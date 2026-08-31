@@ -691,7 +691,7 @@ AI judgment    explicit external AI-assisted selection
 
 AI judgment is permitted in normal Production analysis only as an explicit user choice. It does not promote the AI provider into a `ProductionPinned` model. Models & runtime owns readiness/configuration for `tool:fusion_agent_adapter`; Analysis settings/Processing Studio must not store or transmit a raw executable path in the analysis request.
 
-When AI judgment is selected, show that fusion candidate metadata may be sent to the configured external provider. Plan Preview shows the selected mode and adapter resource/readiness but remains read-only and must not contact the provider. Any adapter/provider/protocol/timeout/validation failure blocks the run; there is no silent fallback to Algorithm. See `UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md`.
+When AI judgment is selected, show that compact fusion candidate metadata and canonical lyrics may be sent to the configured external provider. Plan Preview shows the selected mode and adapter resource/readiness but remains read-only and must not contact the provider. Any adapter/provider/protocol/timeout/validation failure blocks the run; there is no silent fallback to Algorithm. See `UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md`.
 
 ---
 

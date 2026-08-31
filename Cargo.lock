@@ -6170,6 +6170,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "uta-fusion-agent-adapter"
+version = "0.8.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "uta-ggml-worker"
 version = "0.8.1"
 dependencies = [
@@ -6210,6 +6218,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+ "uta-fusion-agent-adapter",
  "windows-sys 0.61.2",
 ]
 

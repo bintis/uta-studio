@@ -382,6 +382,45 @@ pub(super) fn record_workflow_audio(
     }
 }
 
+/// Reconnect a typed cached primary source to the workflow output it already
+/// embodies. These upstream nodes are intentionally `NotRequested`; their
+/// downstream bindings still need the reused semantic audio artifact.
+pub(super) fn record_reused_workflow_audio(
+    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    role: crate::contract::AudioRole,
+    artifacts: &mut BTreeMap<(String, String), (PathBuf, String)>,
+    path: &Path,
+) {
+    let Some(workflow) = workflow else {
+        return;
+    };
+    let satisfied_outputs: &[(&str, &str)] = match role {
+        crate::contract::AudioRole::VocalStem | crate::contract::AudioRole::GuideVocals => {
+            &[("audio.extract_vocals", "vocal")]
+        }
+        crate::contract::AudioRole::LeadVocal => &[("audio.lead_isolate", "lead")],
+        crate::contract::AudioRole::CleanLeadVocal => &[
+            ("audio.lead_isolate", "lead"),
+            ("audio.extract_vocals", "vocal"),
+        ],
+        crate::contract::AudioRole::OriginalMix
+        | crate::contract::AudioRole::Instrumental
+        | crate::contract::AudioRole::BackingVocal
+        | crate::contract::AudioRole::HarmonyVocal => &[],
+    };
+    for (capability, output_port) in satisfied_outputs {
+        for node in workflow.nodes.iter().filter(|node| {
+            node.execution_state == WorkflowNodeExecutionStateV1::NotRequested
+                && node.capabilities.iter().any(|item| item == capability)
+        }) {
+            artifacts.insert(
+                (node.analysis_node.clone(), (*output_port).to_string()),
+                (path.to_path_buf(), role.as_str().to_string()),
+            );
+        }
+    }
+}
+
 pub(super) fn workflow_bound_audio(
     workflow: Option<&CompiledWorkflowExecutionPlanV1>,
     capability: &str,
@@ -911,5 +950,91 @@ mod tests {
 
         assert_eq!(path, selected);
         assert_eq!(role, "clean_lead_vocal");
+    }
+
+    #[test]
+    fn cached_lead_primary_satisfies_not_requested_isolation_binding() {
+        let mut lead = node(
+            "lead-isolate",
+            "lead_isolate",
+            "audio.lead_isolate",
+            Some(("vocal-split", "vocal")),
+        );
+        lead.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        let dereverb = node(
+            "dereverb",
+            "vocal_dereverb_1",
+            "audio.dereverb",
+            Some(("lead_isolate", "lead")),
+        );
+        let plan = CompiledWorkflowExecutionPlanV1 {
+            nodes: vec![lead, dereverb],
+            ..plan()
+        };
+        let cached_lead = std::env::temp_dir().join("cached-lead-vocal.flac");
+        let mut artifacts = BTreeMap::new();
+
+        record_reused_workflow_audio(
+            Some(&plan),
+            crate::contract::AudioRole::LeadVocal,
+            &mut artifacts,
+            &cached_lead,
+        );
+        let (path, role) = workflow_transform_input(
+            Some(&plan),
+            Some("vocal_dereverb_1"),
+            &artifacts,
+            Path::new("unused-fallback.flac"),
+            "unused",
+        )
+        .unwrap();
+
+        assert_eq!(path, cached_lead);
+        assert_eq!(role, "lead_vocal");
+    }
+
+    #[test]
+    fn cached_clean_lead_does_not_claim_cleanup_nodes_on_other_audio_lanes() {
+        let mut lead = node(
+            "lead-isolate",
+            "lead_isolate",
+            "audio.lead_isolate",
+            Some(("vocal-split", "vocal")),
+        );
+        lead.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        let mut vocal_cleanup = node(
+            "vocal-cleanup",
+            "vocal_cleanup",
+            "audio.denoise",
+            Some(("lead_isolate", "lead")),
+        );
+        vocal_cleanup.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        let mut bgm_cleanup = node(
+            "bgm-cleanup",
+            "bgm_cleanup",
+            "audio.denoise",
+            Some(("vocal-split", "instrumental")),
+        );
+        bgm_cleanup.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        let plan = CompiledWorkflowExecutionPlanV1 {
+            nodes: vec![lead, vocal_cleanup, bgm_cleanup],
+            ..plan()
+        };
+        let cached_clean_lead = std::env::temp_dir().join("cached-clean-lead-vocal.flac");
+        let mut artifacts = BTreeMap::new();
+
+        record_reused_workflow_audio(
+            Some(&plan),
+            crate::contract::AudioRole::CleanLeadVocal,
+            &mut artifacts,
+            &cached_clean_lead,
+        );
+
+        assert_eq!(
+            artifacts.get(&("lead_isolate".to_string(), "lead".to_string())),
+            Some(&(cached_clean_lead, "clean_lead_vocal".to_string()))
+        );
+        assert!(!artifacts.keys().any(|(node, _)| node == "vocal_cleanup"));
+        assert!(!artifacts.keys().any(|(node, _)| node == "bgm_cleanup"));
     }
 }

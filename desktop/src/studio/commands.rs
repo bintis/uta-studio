@@ -88,6 +88,7 @@ pub(crate) enum SettingsCommand {
     CloseModelDownloads,
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
+    ToggleModelRuntimeSelect(String),
     SetModelBackend(String, Option<String>),
     SetModelDevice(String, Option<String>),
     SetAnalysisQuality(app_core::AnalysisQualityProfile),
@@ -105,6 +106,8 @@ pub(crate) enum SettingsCommand {
     RequestClearCache(CacheClearScope),
     CancelClearCache,
     ConfirmClearCache,
+    SelectFusionProvider(String),
+    ClearFusionProvider,
     ChooseFusionAgentAdapter,
     ClearFusionAgentAdapter,
 }
@@ -134,6 +137,7 @@ pub(crate) enum AnalysisCommand {
     AddOptionalWorkflowCard(String, String, app_core::OptionalWorkflowCardV1),
     SetWorkflowParameter(String, String, serde_json::Value),
     SetWorkflowPolicy(String, app_core::ExecutionPolicy),
+    SetWorkflowPreprocessingEnabled(bool),
     SetWorkflowSkipIfUnchanged(String, bool),
     AdjustWorkflowPriority(String, i32),
     RebindWorkflowAnalyzer(String, String, String),
@@ -141,11 +145,10 @@ pub(crate) enum AnalysisCommand {
     PreviewWorkflow,
     RunWorkflow,
     OpenAnalysisInspect(String, String),
-    #[allow(dead_code)] // Ctrl+wheel is the visible gesture; automation still uses this command
     AdjustAnalysisGraphZoom(i32),
-    ToggleAnalysisModelPanel,
+    FitAnalysisGraph,
+    ToggleAnalysisGraphFollow,
     CloseAnalysisModelPanel,
-    FitAnalysisGraph(i32),
     DismissAnalysisNodeContext,
     RequestClearAnalysisHistory,
     CancelClearAnalysisHistory,
@@ -187,7 +190,6 @@ pub(crate) enum EditorCommand {
     UseLrclibPlain,
     UseLrclibTimed,
     SaveLyricsEditor,
-    SaveLyricsEditorAndRunDownstream,
     AdjustTranscriptBoundary(TranscriptBoundaryTarget, TranscriptBoundaryEdge, i32),
     PreviewTranscriptAt(String, i64),
     OpenLanguageEditor(String),
@@ -319,7 +321,6 @@ impl UiCommand {
                 | EditorCommand::UseLrclibPlain
                 | EditorCommand::UseLrclibTimed
                 | EditorCommand::SaveLyricsEditor
-                | EditorCommand::SaveLyricsEditorAndRunDownstream
                 | EditorCommand::AdjustTranscriptBoundary(_, _, _)
                 | EditorCommand::PreviewTranscriptAt(_, _)
                 | EditorCommand::OpenLanguageEditor(_)

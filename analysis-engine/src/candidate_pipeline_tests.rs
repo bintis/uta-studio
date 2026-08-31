@@ -257,6 +257,155 @@ fn caller_authority_is_distinct_from_unknown_model_confidence() {
 }
 
 #[test]
+fn caller_timed_lyric_ranges_survive_transcript_fusion() {
+    let (_, mut canonical) =
+        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None).unwrap();
+    let lyrics = crate::contract::LyricsV1 {
+        mode: crate::contract::LyricsMode::Canonical,
+        language: Some("en".to_string()),
+        tokens: vec![
+            crate::contract::LyricTokenV1 {
+                id: "caller-1".to_string(),
+                text: "sing".to_string(),
+                reading: None,
+                phonemes: None,
+                start: Some(100_000),
+                end: Some(500_000),
+            },
+            crate::contract::LyricTokenV1 {
+                id: "caller-2".to_string(),
+                text: "now".to_string(),
+                reading: None,
+                phonemes: None,
+                start: Some(500_000),
+                end: Some(900_000),
+            },
+        ],
+    };
+
+    attach_caller_lyric_ranges(&mut canonical, &lyrics);
+
+    assert_eq!(
+        canonical.tokens[0].range,
+        Some(TimeRange::new(100_000, 500_000).unwrap())
+    );
+    assert_eq!(
+        canonical.tokens[1].range,
+        Some(TimeRange::new(500_000, 900_000).unwrap())
+    );
+}
+
+#[test]
+fn timed_lyric_line_owns_notes_outside_a_collapsed_alignment_span() {
+    let transcript = CanonicalLyrics {
+        text: "霞む景色の中に滲んで".to_string(),
+        language: Some("ja".to_string()),
+        authority: LyricsAuthority::CallerCanonical,
+        tokens: vec![TranscriptTokenEvidence {
+            id: Some("line-14".to_string()),
+            text: "霞む景色の中に滲んで".to_string(),
+            range: Some(TimeRange::new(157_860_000, 163_810_000).unwrap()),
+            confidence: None,
+        }],
+        confidence: None,
+        source_experts: vec!["caller.canonical_lyrics".to_string()],
+        alternatives: Vec::new(),
+    };
+    let words = vec![CanonicalWordBoundary {
+        word_id: "word-122".to_string(),
+        text: "霞む景色の中に滲んで".to_string(),
+        range: TimeRange::new(159_600_000, 159_760_000).unwrap(),
+        confidence: None,
+        disagreement: None,
+        source_experts: vec!["qwen3_forced_aligner_0_6b".to_string()],
+    }];
+
+    assert_eq!(
+        timed_lyric_word_owner(
+            TimeRange::new(158_200_000, 158_500_000).unwrap(),
+            &transcript,
+            &words,
+        ),
+        Some("word-122")
+    );
+    assert_eq!(
+        timed_lyric_word_owner(
+            TimeRange::new(161_000_000, 161_250_000).unwrap(),
+            &transcript,
+            &words,
+        ),
+        Some("word-122")
+    );
+    assert_eq!(
+        timed_lyric_word_owner(
+            TimeRange::new(164_000_000, 164_250_000).unwrap(),
+            &transcript,
+            &words,
+        ),
+        None
+    );
+}
+
+#[test]
+fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
+    let (transcript, mut lyrics) =
+        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None).unwrap();
+    attach_caller_lyric_ranges(
+        &mut lyrics,
+        &crate::contract::LyricsV1 {
+            mode: crate::contract::LyricsMode::Canonical,
+            language: Some("en".to_string()),
+            tokens: vec![
+                crate::contract::LyricTokenV1 {
+                    id: "caller-1".to_string(),
+                    text: "sing".to_string(),
+                    reading: None,
+                    phonemes: None,
+                    start: Some(0),
+                    end: Some(500_000),
+                },
+                crate::contract::LyricTokenV1 {
+                    id: "caller-2".to_string(),
+                    text: "now".to_string(),
+                    reading: None,
+                    phonemes: None,
+                    start: Some(500_000),
+                    end: Some(1_000_000),
+                },
+            ],
+        },
+    );
+    let (alignment, words) = fuse_alignment_stage(&lyrics, &[alignment()], 0, 1_000_000).unwrap();
+    let mut fusion = execute_singing_fusion_stage(
+        &transcript,
+        &alignment,
+        &words,
+        Some(&pitch(false)),
+        None,
+        None,
+        Some(&game()),
+        Some(&acoustic()),
+        &[],
+        &[],
+        &[],
+        0,
+        1_000_000,
+        "rmvpe",
+    )
+    .unwrap();
+    for candidate in &mut fusion.fusion.candidates {
+        candidate.word_id = None;
+    }
+
+    let output =
+        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionModeV1::Algorithm)
+            .unwrap();
+
+    assert!(!output.track.notes.is_empty());
+    assert!(output.track.notes.iter().all(|note| note.word_id.is_some()));
+}
+
+#[test]
 fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
     let (artifact, canonical) = fuse_transcript_stage(
         &[transcript(TranscriptAuthorityV1::Generated)],
@@ -1013,7 +1162,7 @@ fn ai_adapter_failure_is_returned_without_algorithm_fallback() {
     write_executable(
         &adapter,
         &format!(
-            "#!/bin/sh\nprintf contacted > '{}'\nprintf '%s\\n' '{{\"contract\":\"uta.fusion_agent_response\",\"version\":3,\"selected\":[]}}'\n",
+            "#!/bin/sh\nprintf contacted > '{}'\nprintf '%s\\n' '{{\"contract\":\"uta.fusion_agent_response\",\"version\":4,\"selected\":[]}}'\n",
             marker.display()
         ),
     );

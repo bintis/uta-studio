@@ -76,6 +76,24 @@ fn open_song_analysis(studio: &mut StudioStateMut<'_>, file_hash: &str) {
         .or_else(|| Some("Showing the current compiled workflow.".to_string()));
 }
 
+fn open_analysis_history(studio: &mut StudioStateMut<'_>, run_id: i64) {
+    studio.analysis.analysis_history = app_core::load_analysis_history(500);
+    let Some(file_hash) = studio
+        .analysis
+        .analysis_history
+        .iter()
+        .find(|run| run.id == run_id)
+        .map(|run| run.file_hash.clone())
+    else {
+        studio.dialogs.activity_open = false;
+        studio.shell.notice = Some("That saved analysis run is no longer available.".to_string());
+        return;
+    };
+    open_song_analysis(studio, &file_hash);
+    studio.analysis.selected_analysis_history = Some(run_id);
+    studio.shell.notice = Some("Showing the selected saved analysis run.".to_string());
+}
+
 fn open_song_model_selection(studio: &mut StudioStateMut<'_>, file_hash: &str) {
     studio.library.selected_song = Some(file_hash.to_string());
     studio.analysis.analysis_history = app_core::load_analysis_history(500);
@@ -94,6 +112,7 @@ fn open_song_model_selection(studio: &mut StudioStateMut<'_>, file_hash: &str) {
     studio.library.library_facet = None;
     studio.shell.route = StudioRoute::Library;
     studio.dialogs.open_settings_select = None;
+    studio.dialogs.open_model_runtime_select = None;
     studio.dialogs.activity_open = false;
     studio.shell.notice = None;
 }
@@ -183,6 +202,7 @@ pub(crate) fn apply_chrome_action(
             studio.dialogs.search_open = false;
             studio.dialogs.about_open = false;
             studio.analysis.analysis_tasks = app_core::load_analysis_tasks();
+            studio.analysis.analysis_history = app_core::load_analysis_history(500);
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::App(AppCommand::CloseActivity) => {
@@ -190,13 +210,35 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Analysis(AnalysisCommand::SelectAnalysisHistory(id)) => {
-            studio.analysis.selected_analysis_history = *id;
-            studio.analysis.selected_analysis_node = None;
-            studio.analysis.analysis_graph_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_needs_fit = true;
-            studio.analysis.analysis_graph_fit_active = true;
-            studio.dialogs.activity_open = false;
+            if let Some(run_id) = id {
+                if let Some(pending) = pending_editor_leave(
+                    studio.shell.route,
+                    studio
+                        .editor
+                        .editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.dirty),
+                    PendingLeave::OpenAnalysisHistory(*run_id),
+                ) {
+                    studio.dialogs.pending_leave = Some(pending);
+                    invalidated.invalidate(UiDirtyRegion::Dialog);
+                    return true;
+                }
+                if studio.shell.route == StudioRoute::Editor {
+                    let _ = audio.0.stop();
+                    studio.editor.editor = None;
+                }
+                open_analysis_history(&mut studio, *run_id);
+                invalidated.invalidate(UiDirtyRegion::Chrome);
+            } else {
+                studio.analysis.selected_analysis_history = None;
+                studio.analysis.selected_analysis_node = None;
+                studio.analysis.analysis_graph_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
+                studio.analysis.analysis_graph_needs_fit = true;
+                studio.analysis.analysis_graph_fit_active = true;
+                studio.dialogs.activity_open = false;
+            }
             invalidated.invalidate(UiDirtyRegion::Analysis);
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
@@ -483,6 +525,30 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
+        UiCommand::Analysis(AnalysisCommand::SetWorkflowPreprocessingEnabled(enabled)) => {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
+                match app_core::set_workflow_preprocessing_enabled(
+                    &mut workflow.definition,
+                    *enabled,
+                ) {
+                    Ok(()) => {
+                        refresh_workflow_snapshot(studio.analysis);
+                        studio.shell.notice = Some(if *enabled {
+                            "Optional preprocessing is on: Lead isolation, dereverb, and denoise will run. Save to keep it."
+                                .to_string()
+                        } else {
+                            "Optional preprocessing is off: Lead isolation, dereverb, and denoise will be bypassed. Save to keep it."
+                                .to_string()
+                        });
+                    }
+                    Err(error) => {
+                        studio.analysis.workflow_compile_error = Some(error.clone());
+                        studio.shell.notice = Some(error);
+                    }
+                }
+            }
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
         UiCommand::Analysis(AnalysisCommand::SetWorkflowSkipIfUnchanged(
             node_id,
             skip_if_unchanged,
@@ -692,30 +758,32 @@ pub(crate) fn apply_chrome_action(
             studio.analysis.analysis_graph_fit_active = false;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisModelPanel) => {
-            studio.analysis.analysis_model_panel_open = !studio.analysis.analysis_model_panel_open;
-            if studio.analysis.analysis_model_panel_open
-                && studio.jobs.model_settings_job.current.is_none()
-            {
-                studio.jobs.request_model_settings_refresh = true;
-            }
-            studio.dialogs.open_settings_select = None;
+        UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph) => {
+            // Reuses the exact existing `fit_analysis_graph_to_viewport`
+            // system instead of a second Fit implementation: setting these
+            // two flags is what that system already treats as "recompute
+            // Fit zoom for the current viewport on the next frame".
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Analysis(AnalysisCommand::ToggleAnalysisGraphFollow) => {
+            studio.analysis.analysis_graph_follow_enabled =
+                !studio.analysis.analysis_graph_follow_enabled;
+            if studio.analysis.analysis_graph_follow_enabled {
+                // Force `follow_live_analysis_node` to treat the current
+                // live node as "changed" so it recenters immediately
+                // instead of waiting for the next node transition.
+                studio.analysis.analysis_graph_follow_node = None;
+            }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::CloseAnalysisModelPanel) => {
             studio.analysis.analysis_model_panel_open = false;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
-        UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph(_)) => {
-            studio.analysis.analysis_graph_needs_fit = true;
-            studio.analysis.analysis_graph_fit_active = true;
-            studio.analysis.analysis_graph_scroll_offset = 0.0;
-            studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::DismissAnalysisNodeContext) => {
@@ -758,6 +826,7 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::App(AppCommand::Back) => {
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             studio.dialogs.open_editor_select = None;
             if studio.shell.route == StudioRoute::Editor {
                 if studio
@@ -809,6 +878,7 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::App(AppCommand::Home) => {
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             studio.dialogs.open_editor_select = None;
             if studio.shell.route == StudioRoute::Editor {
                 if studio
@@ -888,6 +958,12 @@ pub(crate) fn apply_chrome_action(
                 Some(PendingLeave::OpenSongAnalysis(file_hash)) => {
                     studio.editor.editor = None;
                     open_song_analysis(&mut studio, &file_hash);
+                    invalidated.invalidate(UiDirtyRegion::Chrome);
+                    invalidated.invalidate(UiDirtyRegion::Analysis);
+                }
+                Some(PendingLeave::OpenAnalysisHistory(run_id)) => {
+                    studio.editor.editor = None;
+                    open_analysis_history(&mut studio, run_id);
                     invalidated.invalidate(UiDirtyRegion::Chrome);
                     invalidated.invalidate(UiDirtyRegion::Analysis);
                 }

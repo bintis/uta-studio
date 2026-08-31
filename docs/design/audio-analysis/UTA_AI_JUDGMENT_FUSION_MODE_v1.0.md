@@ -59,8 +59,8 @@ A raw general-purpose coding-agent executable is not automatically compatible me
 Required process properties:
 
 - direct executable launch; no shell command string;
-- one bounded version-2 JSON request on stdin containing the exact candidates and normalized caller-hard boundary set;
-- one bounded version-2 JSON response on stdout;
+- one bounded version-4 JSON request on stdin containing a compact index-addressed candidate decision projection, canonical lyrics, the complete-pool digest, and the normalized caller-hard boundary set;
+- one bounded version-4 JSON response on stdout containing selected candidate indices;
 - human/provider diagnostics on stderr only;
 - timeout and cancellation terminate the adapter process tree;
 - malformed, oversized, polluted, or non-zero-exit responses fail closed.
@@ -79,7 +79,7 @@ The Engine constructs the same real `SegmentCandidate` pool used by the algorith
 - timestamps;
 - model/provider provenance.
 
-Every returned candidate must match an input candidate exactly. Algorithm and AI judgment receive the same complete Candidate Pool, including the normalized pool-level caller-hard boundary set. The Engine then applies the same selector-independent membership, ordering, exact voiced-component coverage, hard-boundary, timeline, and canonical-output validation required for the algorithmic path.
+Every returned candidate index must identify an input candidate exactly. The Engine retains the same complete Candidate Pool used by Algorithm, including the normalized pool-level caller-hard boundary set, and maps selected indices back to immutable full candidates. It then applies the same selector-independent membership, ordering, exact voiced-component coverage, hard-boundary, timeline, and canonical-output validation required for the algorithmic path.
 
 If the correct answer is absent from the candidate pool, the AI is not permitted to fabricate a repair. The run must fail or surface review/degraded evidence according to the surrounding Engine contract. A future generative-repair feature would require a separate versioned design and artifact/provenance contract.
 
@@ -87,9 +87,11 @@ If the correct answer is absent from the candidate pool, the AI is not permitted
 
 AI judgment may use a networked provider. This is an explicit property of the mode and must be disclosed in UI/help text.
 
-The Uta -> adapter payload is intentionally bounded to fusion decision data. The version-2 contract includes candidate/evidence metadata and the normalized caller-hard boundary set needed to choose among candidates, but must not include source audio bytes, arbitrary project files, the library database, model files, or unrelated user content.
+The Uta -> adapter payload is intentionally bounded to fusion decision data. The version-4 contract includes a compact candidate projection, canonical lyrics, the complete-pool digest, and the normalized caller-hard boundary set needed to choose among candidates, but must not include source audio bytes, arbitrary project files, the library database, model files, or unrelated user content.
 
-The adapter/provider may receive the candidate metadata over the network according to the user's configured third-party provider. Provider credentials remain owned by the user's adapter/provider environment; Uta! Studio must not place provider secrets in command-line arguments or persist them in analysis artifacts.
+The adapter writes only `candidates.json`, `lyrics.json`, and `hard_boundaries.json` into a fresh temporary working directory. The provider prompt names those relative paths instead of embedding their contents, and the directory is removed on every adapter exit path. The full typed Candidate Pool remains inside Analysis Engine and is never copied into the provider prompt or temporary provider workspace.
+
+The adapter/provider may receive the compact candidate metadata and canonical lyrics over the network according to the user's configured third-party provider. Provider credentials remain owned by the user's adapter/provider environment; Uta! Studio must not place provider secrets in command-line arguments or persist them in analysis artifacts.
 
 The configured third-party adapter executes with the user's OS permissions. Uta! Studio constrains what it sends over the protocol, but cannot claim that an arbitrary external executable is sandboxed.
 
@@ -161,7 +163,7 @@ Decision mode
 [Algorithm] [AI judgment]
 ```
 
-Algorithm remains the default. AI judgment is enabled only when Runtime Manager reports the adapter tool usable. Selecting AI judgment shows a concise disclosure that candidate metadata may be sent to the configured external AI provider.
+Algorithm remains the default. AI judgment is enabled only when Runtime Manager reports the adapter tool usable. Selecting AI judgment shows a concise disclosure that compact candidate metadata and canonical lyrics may be sent to the configured external AI provider.
 
 ### Plan Preview
 
@@ -203,7 +205,7 @@ Follow-up `tasks/final-features/followups/21E_AI_JUDGMENT_FUSION_CLOSURE.md` is 
 - Studio and `AnalyzeRequest` carry typed `fusion_mode` and stable resource intent, never a raw adapter executable path;
 - Engine launches only the Runtime Manager-resolved adapter and supervises bounded request/response I/O, timeout, cancellation and process-tree cleanup;
 - Algorithm and AI judgment use the same complete Candidate Pool and selector-independent exact-coverage/hard-boundary/canonical validation, with no fallback between modes;
-- Fusion Agent protocol version 3 carries the exact normalized caller-hard boundary set and the expanded typed candidate semantics under one bounded full-pool digest;
+- Fusion Agent protocol version 4 carries a compact index-addressed candidate projection, canonical lyrics, and the exact normalized caller-hard boundary set under one bounded full-pool digest; the adapter presents them as three scoped temporary JSON files rather than embedding them in the provider prompt;
 - AI result and SingingAnalysis artifacts retain mode-specific adapter, full-pool, selected-ID and response provenance plus preserved-revision-only reuse semantics;
 - Settings, Processing Studio, Plan Preview, actionable errors, network/privacy disclosure and the generated user guide are synchronized across EN / zh-CN / ja.
 

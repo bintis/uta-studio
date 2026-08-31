@@ -397,6 +397,13 @@ pub(crate) fn spawn_library(
                             FlexWrap::NoWrap
                         },
                         align_content: AlignContent::FlexStart,
+                        align_items: if session.library_view != LibraryView::Queue
+                            && session.config.song_list_view.as_deref() == Some("grid")
+                        {
+                            AlignItems::FlexStart
+                        } else {
+                            AlignItems::Stretch
+                        },
                         padding: if session.library_view != LibraryView::Queue
                             && session.config.song_list_view.as_deref() == Some("grid")
                         {
@@ -467,7 +474,7 @@ pub(crate) fn spawn_library(
                                 if session.analysis_history.is_empty() {
                                     "The analysis queue is empty. Choose an unanalyzed song to start."
                                 } else {
-                                    "No analysis is running. Select a previous session above."
+                                    "No analysis is running. Open Activity to review previous runs."
                                 }
                             } else if session.scanning {
                                 "Scanning your library…"
@@ -477,7 +484,10 @@ pub(crate) fn spawn_library(
                             13.0,
                             theme.muted_foreground,
                         );
-                    } else if session.songs.processed.len() < session.songs.count {
+                    } else if has_more_filtered_songs(
+                        session.songs.processed.len(),
+                        session.songs.processed_count,
+                    ) {
                         spawn_action_button(
                             list,
                             font.clone(),
@@ -485,7 +495,7 @@ pub(crate) fn spawn_library(
                             format!(
                                 "Load more · {} of {}",
                                 session.songs.processed.len(),
-                                session.songs.count
+                                session.songs.processed_count
                             ),
                             UiAction::from(LibraryCommand::LoadMoreSongs),
                         );
@@ -510,6 +520,21 @@ pub(crate) fn spawn_library(
                 spawn_song_context_menu(library, font.clone(), theme, context);
             }
         });
+}
+
+fn has_more_filtered_songs(loaded: usize, filtered_total: usize) -> bool {
+    loaded < filtered_total
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::has_more_filtered_songs;
+
+    #[test]
+    fn load_more_uses_the_filtered_total() {
+        assert!(has_more_filtered_songs(1, 5));
+        assert!(!has_more_filtered_songs(1, 1));
+    }
 }
 
 pub(crate) fn spawn_song_context_menu(

@@ -147,6 +147,14 @@ pub(crate) fn migrate_engine_candidate_chart(
         .get("notes")
         .and_then(Value::as_array)
         .ok_or_else(|| UtaStudioError::Other("Engine candidate notes are missing".into()))?;
+    let word_order = words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            required_string(word, "word_id", "Engine candidate word")
+                .map(|word_id| (word_id, index))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
 
     let mut notes_by_word = std::collections::BTreeMap::<String, Vec<&Value>>::new();
     for note in canonical_notes {
@@ -161,12 +169,41 @@ pub(crate) fn migrate_engine_candidate_chart(
                 .push(note);
         }
     }
+    let mut occupied = canonical_notes
+        .iter()
+        .filter(|note| {
+            note.get("word_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| word_order.contains_key(id))
+        })
+        .map(|note| required_range(note, "Engine candidate note"))
+        .collect::<Result<Vec<_>, _>>()?;
+    occupied.sort_unstable();
+    let note_owner_order = canonical_notes
+        .iter()
+        .filter_map(|note| {
+            let note_id = note.get("id")?.as_str()?;
+            let word_id = note.get("word_id")?.as_str()?;
+            word_order
+                .get(word_id)
+                .copied()
+                .map(|order| (note_id.to_string(), order))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut deferred_lyrics = std::collections::BTreeMap::<String, Vec<(usize, LyricToken)>>::new();
     let mut notes = Vec::new();
-    for word in words {
+    for (word_index, word) in words.iter().enumerate() {
         let word_id = required_string(word, "word_id", "Engine candidate word")?;
         let text = required_string(word, "text", "Engine candidate word")?;
         let range = required_range(word, "Engine candidate word")?;
         let lyric_id = format!("lyric-{word_id}");
+        let join_before = lyric_join_between(
+            word_index
+                .checked_sub(1)
+                .and_then(|previous| words[previous].get("text"))
+                .and_then(Value::as_str),
+            &text,
+        );
         let mut word_notes = notes_by_word.remove(&word_id).unwrap_or_default();
         word_notes.sort_by_key(|note| {
             note.get("range")
@@ -175,10 +212,49 @@ pub(crate) fn migrate_engine_candidate_chart(
                 .unwrap_or(u64::MAX)
         });
         if word_notes.is_empty() {
+            let Some((start, end)) = largest_unoccupied_range(range, &occupied) else {
+                let target_id = canonical_notes
+                    .iter()
+                    .filter(|note| {
+                        note.get("word_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| word_order.contains_key(id))
+                    })
+                    .filter_map(|note| {
+                        let note_range = required_range(note, "Engine candidate note").ok()?;
+                        let overlap = range
+                            .1
+                            .min(note_range.1)
+                            .saturating_sub(range.0.max(note_range.0));
+                        (overlap > 0).then(|| {
+                            required_string(note, "id", "Engine candidate note")
+                                .ok()
+                                .map(|id| (overlap, id))
+                        })?
+                    })
+                    .max_by_key(|(overlap, _)| *overlap)
+                    .map(|(_, id)| id)
+                    .ok_or_else(|| {
+                        UtaStudioError::Other(format!(
+                            "Engine candidate word {word_id} has no lyric interval"
+                        ))
+                    })?;
+                deferred_lyrics.entry(target_id).or_default().push((
+                    word_index,
+                    LyricToken::Text(LyricTextToken {
+                        id: lyric_id,
+                        text,
+                        join_before,
+                        reading: None,
+                        phonemes: None,
+                    }),
+                ));
+                continue;
+            };
             notes.push(VocalNote {
                 id: format!("note-{word_id}"),
-                start: range.0,
-                duration: range.1 - range.0,
+                start,
+                duration: end - start,
                 pitch: None,
                 vocal_mode: VocalMode::Spoken,
                 bonus: NoteBonus::Normal,
@@ -189,7 +265,7 @@ pub(crate) fn migrate_engine_candidate_chart(
                 lyrics: vec![LyricToken::Text(LyricTextToken {
                     id: lyric_id,
                     text: text.clone(),
-                    join_before: lyric_join_for(&notes, &text),
+                    join_before,
                     reading: None,
                     phonemes: None,
                 })],
@@ -215,7 +291,7 @@ pub(crate) fn migrate_engine_candidate_chart(
                 vec![LyricToken::Text(LyricTextToken {
                     id: lyric_id.clone(),
                     text: text.clone(),
-                    join_before: lyric_join_for(&notes, &text),
+                    join_before,
                     reading: None,
                     phonemes: None,
                 })]
@@ -238,6 +314,27 @@ pub(crate) fn migrate_engine_candidate_chart(
                 lyrics,
             });
         }
+    }
+    for note in &mut notes {
+        let Some(mut attached) = deferred_lyrics.remove(&note.id) else {
+            continue;
+        };
+        let owner_order = note_owner_order
+            .get(&note.id)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let mut lyrics = std::mem::take(&mut note.lyrics)
+            .into_iter()
+            .map(|token| (owner_order, token))
+            .collect::<Vec<_>>();
+        lyrics.append(&mut attached);
+        lyrics.sort_by_key(|(order, _)| *order);
+        note.lyrics = lyrics.into_iter().map(|(_, token)| token).collect();
+    }
+    if !deferred_lyrics.is_empty() {
+        return Err(UtaStudioError::Other(
+            "Engine candidate lyric ownership did not resolve".to_string(),
+        ));
     }
     notes.sort_by_key(|note| note.start);
     if notes.is_empty() {
@@ -267,6 +364,50 @@ pub(crate) fn migrate_engine_candidate_chart(
     Ok(chart)
 }
 
+/// Finds the largest part of a canonical word range that is not already
+/// occupied by a selected pitched note. A selected note may legitimately
+/// cross a forced-alignment word edge; the spoken placeholder for the next
+/// word must use the remaining gap instead of overlapping that note.
+fn largest_unoccupied_range(range: (u64, u64), occupied: &[(u64, u64)]) -> Option<(u64, u64)> {
+    let mut cursor = range.0;
+    let mut largest = None;
+    for &(occupied_start, occupied_end) in occupied {
+        if occupied_end <= cursor || occupied_start >= range.1 {
+            continue;
+        }
+        let clipped_start = occupied_start.max(range.0);
+        if clipped_start > cursor {
+            let gap = (cursor, clipped_start);
+            if largest.is_none_or(|largest: (u64, u64)| gap.1 - gap.0 > largest.1 - largest.0) {
+                largest = Some(gap);
+            }
+        }
+        cursor = cursor.max(occupied_end.min(range.1));
+        if cursor >= range.1 {
+            break;
+        }
+    }
+    if cursor < range.1 {
+        let gap = (cursor, range.1);
+        if largest.is_none_or(|largest: (u64, u64)| gap.1 - gap.0 > largest.1 - largest.0) {
+            largest = Some(gap);
+        }
+    }
+    largest
+}
+
+fn lyric_join_between(previous: Option<&str>, current: &str) -> LyricJoin {
+    let ascii_word = |text: &str| {
+        text.chars()
+            .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation())
+    };
+    if previous.is_some_and(ascii_word) && ascii_word(current) {
+        LyricJoin::Space
+    } else {
+        LyricJoin::None
+    }
+}
+
 fn required_string(value: &Value, field: &str, label: &str) -> Result<String, UtaStudioError> {
     value
         .get(field)
@@ -289,28 +430,6 @@ fn required_range(value: &Value, label: &str) -> Result<(u64, u64), UtaStudioErr
         _ => Err(UtaStudioError::Other(format!(
             "{label} has an invalid range"
         ))),
-    }
-}
-
-fn lyric_join_for(existing: &[VocalNote], text: &str) -> LyricJoin {
-    let previous_is_ascii_word = existing
-        .iter()
-        .rev()
-        .flat_map(|note| note.lyrics.iter().rev())
-        .find_map(|token| match token {
-            LyricToken::Text(token) => Some(token.text.chars().all(|character| {
-                character.is_ascii_alphanumeric() || character.is_ascii_punctuation()
-            })),
-            LyricToken::Continuation { .. } => None,
-        })
-        == Some(true);
-    let current_is_ascii_word = text
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation());
-    if previous_is_ascii_word && current_is_ascii_word {
-        LyricJoin::Space
-    } else {
-        LyricJoin::None
     }
 }
 
@@ -719,6 +838,68 @@ mod tests {
             panic!("the unpitched word must own text")
         };
         assert_eq!(world.join_before, utz::LyricJoin::Space);
+    }
+
+    #[test]
+    fn engine_candidate_places_unpitched_words_after_cross_word_notes() {
+        let candidate = serde_json::json!({
+            "contract": "uta.analysis-engine.candidate-vocal-chart",
+            "version": 1,
+            "timebase": 1_000_000,
+            "transcript": {"language": "zh"},
+            "words": [
+                {"word_id": "word-1", "text": "卜", "range": {"start": 0, "end": 1_000_000}},
+                {"word_id": "word-2", "text": "卦", "range": {"start": 1_000_000, "end": 2_000_000}}
+            ],
+            "notes": [{
+                "id": "crossing-note",
+                "range": {"start": 500_000, "end": 1_500_000},
+                "midi_note": 60,
+                "center_offset_cents": 0.0,
+                "word_id": "word-1"
+            }]
+        });
+
+        let chart = migrate_engine_candidate_chart(&candidate).unwrap();
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].id, "crossing-note");
+        assert_eq!(notes[0].start + notes[0].duration, notes[1].start);
+        assert_eq!(notes[1].start, 1_500_000);
+        assert_eq!(notes[1].duration, 500_000);
+    }
+
+    #[test]
+    fn engine_candidate_attaches_fully_covered_words_without_overlapping_notes() {
+        let candidate = serde_json::json!({
+            "contract": "uta.analysis-engine.candidate-vocal-chart",
+            "version": 1,
+            "timebase": 1_000_000,
+            "transcript": {"language": "en"},
+            "words": [
+                {"word_id": "word-1", "text": "sing", "range": {"start": 0, "end": 1_000_000}},
+                {"word_id": "word-2", "text": "now", "range": {"start": 1_000_000, "end": 2_000_000}}
+            ],
+            "notes": [{
+                "id": "covering-note",
+                "range": {"start": 0, "end": 2_000_000},
+                "midi_note": 60,
+                "center_offset_cents": 0.0,
+                "word_id": "word-1"
+            }]
+        });
+
+        let chart = migrate_engine_candidate_chart(&candidate).unwrap();
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].lyrics.len(), 2);
+        let LyricToken::Text(second) = &notes[0].lyrics[1] else {
+            panic!("the covered word remains a text lyric");
+        };
+        assert_eq!(second.text, "now");
+        assert_eq!(second.join_before, utz::LyricJoin::Space);
     }
 
     #[test]

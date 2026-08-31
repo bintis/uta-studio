@@ -1,11 +1,13 @@
+use super::node_card::{
+    execution_policy_choices, node_execution_badge, provider_metadata,
+    uses_binary_preprocessing_switch, workflow_policy_availability,
+};
 use super::stage_fusion::{
     FusionAdapterReadinessUi, ai_mode_label, classify_fusion_adapter_readiness,
 };
 use super::{
-    execution_policy_choices, node_execution_badge, port_label, processing_studio_scroll_max,
-    provider_metadata, reorderable_workflow_branch, reorderable_workflow_nodes,
-    stage_renders_internal_node_cards, uses_binary_preprocessing_switch,
-    workflow_policy_availability,
+    port_label, processing_studio_scroll_max, reorderable_workflow_branch,
+    reorderable_workflow_nodes, stage_renders_internal_node_cards,
 };
 
 #[test]
@@ -25,6 +27,14 @@ fn processing_cards_report_typed_condition_not_resource_readiness() {
     assert_eq!(always, "ENABLED");
     assert_eq!(conditional, "CONDITIONAL");
     assert_eq!(disabled, "DISABLED");
+}
+
+#[test]
+fn preprocessing_lane_exposes_one_master_bypass_for_all_optional_processors() {
+    let source = include_str!("mod.rs");
+    assert!(source.contains("SetWorkflowPreprocessingEnabled"));
+    assert!(source.contains("Turn Lead isolation, dereverb + denoise off"));
+    assert!(source.contains("Turn Lead isolation, dereverb + denoise on"));
 }
 
 #[test]
@@ -79,11 +89,16 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
         option.executions[1].provider_id,
         "bs_polarformer_public_instrumental"
     );
-    let source = include_str!("mod.rs");
-    assert!(source.contains("SetWorkflowSeparationStrategy"));
-    assert!(source.contains("04 · FINAL FUSION"));
-    assert!(!source.contains("04 · ENGINE FUSION POLICY"));
-    assert!(!source.contains("Choose typed ownership among evidence enabled in stage 03"));
+    let mod_source = include_str!("mod.rs");
+    let node_card_source = include_str!("node_card.rs");
+    assert!(node_card_source.contains("SetWorkflowSeparationStrategy"));
+    assert!(mod_source.contains("04 · FINAL FUSION"));
+    assert!(!mod_source.contains("04 · ENGINE FUSION POLICY"));
+    assert!(!node_card_source.contains("04 · ENGINE FUSION POLICY"));
+    assert!(!mod_source.contains("Choose typed ownership among evidence enabled in stage 03"));
+    assert!(
+        !node_card_source.contains("Choose typed ownership among evidence enabled in stage 03")
+    );
 }
 
 #[test]

@@ -1,0 +1,30 @@
+[package]
+name = "uta-fusion-agent-adapter"
+version = "0.8.1"
+authors = ["bintis"]
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Native Uta! Studio Fusion Agent Adapters for local provider CLIs"
+
+[lib]
+name = "uta_fusion_agent_adapter"
+
+[[bin]]
+name = "uta-fusion-agent-adapter"
+path = "src/bin/uta-fusion-agent-adapter.rs"
+
+[[bin]]
+name = "uta-fusion-agent-pi"
+path = "src/bin/uta-fusion-agent-pi.rs"
+
+[[bin]]
+name = "uta-fusion-agent-codex"
+path = "src/bin/uta-fusion-agent-codex.rs"
+
+[[bin]]
+name = "uta-fusion-agent-claude"
+path = "src/bin/uta-fusion-agent-claude.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

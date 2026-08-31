@@ -1,5 +1,44 @@
 use crate::studio::*;
 
+pub(crate) fn handle_activity_panel_scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    dialogs: Res<DialogState>,
+    mut panels: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        With<ActivityPanelScroll>,
+    >,
+) {
+    if !dialogs.activity_open {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        return;
+    };
+    let Ok((computed, transform, mut position)) = panels.single_mut() else {
+        return;
+    };
+    if !ui_node_contains_pointer(computed, transform, pointer) {
+        return;
+    }
+    let delta = wheel
+        .read()
+        .map(|event| {
+            let scale = match event.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => 24.0,
+                bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+            };
+            -event.y * scale
+        })
+        .sum::<f32>();
+    let size = computed.size() * computed.inverse_scale_factor();
+    let content = computed.content_size() * computed.inverse_scale_factor();
+    position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+}
+
 pub(crate) fn active_analysis_task_count(tasks: &[app_core::AnalysisTask]) -> usize {
     tasks
         .iter()
@@ -174,7 +213,7 @@ pub(crate) fn follow_live_analysis_node(
         }
         return;
     }
-    if analysis.analysis_graph_needs_fit {
+    if analysis.analysis_graph_needs_fit || !analysis.analysis_graph_follow_enabled {
         return;
     }
     let active_task = analysis.analysis_tasks.iter().find(|task| {

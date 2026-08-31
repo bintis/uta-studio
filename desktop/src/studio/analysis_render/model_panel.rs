@@ -58,56 +58,37 @@ pub(crate) fn spawn_analysis_header_toolbar(
     session: &StudioSessionView<'_>,
     file_hash: &str,
 ) {
-    if session.analysis_tasks.iter().any(|task| {
-        matches!(
-            task.status,
-            app_core::QueuedStatus::Staged
-                | app_core::QueuedStatus::Queued
-                | app_core::QueuedStatus::Analyzing(_)
-        )
-    }) {
+    // §2: label reflects the real scope of `ForceStopAllAnalysis` -- it
+    // stops every active analysis, not only the one for this song -- using
+    // the same active-task count the sidebar/Activity badge already
+    // computes, so the number always matches what actually gets stopped.
+    let active_count = active_analysis_task_count(session.analysis_tasks);
+    if active_count > 0 {
         spawn_toolbar_button(
             parent,
             font.clone(),
             icons.clone(),
             theme,
             UiIcon::Close,
-            "Stop analysis",
+            if active_count > 1 {
+                format!("Stop all analyses ({active_count})")
+            } else {
+                "Stop analysis".to_string()
+            },
             UiAction::from(AnalysisCommand::ForceStopAllAnalysis),
             true,
         );
     }
-    for (icon, label, action, selected) in [
-        (
-            UiIcon::Settings,
-            "Processing Studio",
-            UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.to_string())),
-            false,
-        ),
-        (
-            UiIcon::Fit,
-            "Fit graph",
-            UiAction::from(AnalysisCommand::FitAnalysisGraph(0)),
-            false,
-        ),
-        (
-            UiIcon::ModelTune,
-            "Model & workflow",
-            UiAction::from(AnalysisCommand::ToggleAnalysisModelPanel),
-            session.analysis_model_panel_open,
-        ),
-    ] {
-        spawn_toolbar_button(
-            parent,
-            font.clone(),
-            icons.clone(),
-            theme,
-            icon,
-            label,
-            action,
-            selected,
-        );
-    }
+    spawn_toolbar_button(
+        parent,
+        font,
+        icons,
+        theme,
+        UiIcon::Settings,
+        "Edit workflow",
+        UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.to_string())),
+        false,
+    );
 }
 
 fn snapshot_node_status(

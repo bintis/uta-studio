@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::studio::*;
 
+mod node_card;
 mod stage_fusion;
+mod stage_header;
+mod status_strip;
 
 #[derive(Component)]
 pub(crate) struct ProcessingStudioScroll;
@@ -225,25 +228,6 @@ fn stage_renders_internal_node_cards(stage: u8) -> bool {
     stage != 4
 }
 
-fn uses_binary_preprocessing_switch(capability: &app_core::NodeCapability) -> bool {
-    matches!(
-        capability.id.as_str(),
-        "audio.lead_isolate" | "audio.denoise" | "audio.dereverb"
-    )
-}
-
-/// Step 1 audio-chain capabilities whose output the "skip if unchanged"
-/// cache can reuse across runs (app-core resolves this when compiling the
-/// Engine request). `audio.separate_vocal_bgm` is included even though it
-/// can never be disabled -- unlike the other three, its own toggle only
-/// controls cache reuse, not whether the step runs at all.
-fn is_step1_cacheable(capability_id: &str) -> bool {
-    matches!(
-        capability_id,
-        "audio.separate_vocal_bgm" | "audio.lead_isolate" | "audio.denoise" | "audio.dereverb"
-    )
-}
-
 fn workflow_stage(capability: &app_core::NodeCapability) -> u8 {
     let id = capability.id.as_str();
     if capability.class == app_core::CapabilityClass::Source {
@@ -261,23 +245,6 @@ fn workflow_stage(capability: &app_core::NodeCapability) -> u8 {
     } else {
         4
     }
-}
-
-fn workflow_node_can_be_removed(
-    definition: &app_core::WorkflowDefinition,
-    node_id: &app_core::WorkflowNodeId,
-) -> bool {
-    let mut candidate = definition.clone();
-    app_core::remove_workflow_node(&mut candidate, node_id).is_ok()
-}
-
-fn workflow_model_can_be_selected(
-    definition: &app_core::WorkflowDefinition,
-    node_id: &app_core::WorkflowNodeId,
-    model_id: &str,
-) -> bool {
-    let mut candidate = definition.clone();
-    app_core::set_workflow_node_model(&mut candidate, node_id, model_id).is_ok()
 }
 
 pub(crate) fn processing_studio_scroll_max(viewport_height: f32, content_height: f32) -> f32 {
@@ -462,31 +429,6 @@ fn action_button(
         });
 }
 
-fn optional_card_add_button(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    definition: &app_core::WorkflowDefinition,
-    source: &(app_core::WorkflowNodeId, String),
-    card: app_core::OptionalWorkflowCardV1,
-) {
-    if app_core::workflow_has_optional_card(definition, card) {
-        disabled_action_button(parent, font, theme, format!("✓ {} · present", card.label()));
-    } else {
-        action_button(
-            parent,
-            font,
-            theme,
-            format!("+ {}", card.label()),
-            UiAction::from(AnalysisCommand::AddOptionalWorkflowCard(
-                source.0.to_string(),
-                source.1.clone(),
-                card,
-            )),
-        );
-    }
-}
-
 fn disabled_action_button(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -516,179 +458,6 @@ fn disabled_action_button(
         });
 }
 
-fn policy_choice_button(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    label: &'static str,
-    action: UiAction,
-    selected: bool,
-    available: bool,
-) {
-    let background = if selected {
-        theme.primary.with_alpha(0.14)
-    } else if available {
-        theme.card.with_alpha(0.42)
-    } else {
-        theme.background.with_alpha(0.28)
-    };
-    let border = if selected {
-        theme.primary.with_alpha(0.68)
-    } else if available {
-        theme.border.with_alpha(0.58)
-    } else {
-        theme.border.with_alpha(0.32)
-    };
-    let mut choice = parent.spawn((
-        Node {
-            min_width: px(0),
-            max_width: percent(100),
-            min_height: px(46),
-            flex_basis: px(160),
-            flex_grow: 1.0,
-            flex_shrink: 1.0,
-            padding: UiRect::axes(px(10), px(6)),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
-            flex_direction: FlexDirection::Column,
-            overflow: Overflow::clip(),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            row_gap: px(1),
-            ..default()
-        },
-        BackgroundColor(background),
-        BorderColor::all(border),
-    ));
-    if available && !selected {
-        choice.insert((Button, action));
-    } else {
-        choice.insert(Pickable::IGNORE);
-    }
-    choice.with_children(|button| {
-        button.spawn((
-            Text::new(if selected {
-                format!("✓  {label}")
-            } else {
-                label.to_string()
-            }),
-            ui_text_font(font.clone(), 8.5),
-            TextColor(if selected {
-                theme.primary
-            } else if available {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            }),
-            TextLayout {
-                linebreak: bevy::text::LineBreak::WordOrCharacter,
-                justify: Justify::Center,
-            },
-            Node {
-                width: percent(100),
-                min_width: px(0),
-                min_height: px(14),
-                flex_shrink: 0.0,
-                ..default()
-            },
-        ));
-        if !available && !selected {
-            spawn_text(
-                button,
-                font,
-                "UNAVAILABLE",
-                6.5,
-                theme.muted_foreground.with_alpha(0.72),
-            );
-        }
-    });
-}
-
-fn workflow_policy_availability(
-    definition: &app_core::WorkflowDefinition,
-    node_id: &app_core::WorkflowNodeId,
-    policy: app_core::ExecutionPolicy,
-) -> Result<(), String> {
-    let mut candidate = definition.clone();
-    app_core::set_workflow_execution_policy(&mut candidate, node_id, policy)
-}
-
-fn workflow_reorder_availability(
-    definition: &app_core::WorkflowDefinition,
-    node_id: &app_core::WorkflowNodeId,
-    earlier: bool,
-) -> Result<(), String> {
-    let mut candidate = definition.clone();
-    app_core::reorder_audio_transformation(&mut candidate, node_id, earlier)
-}
-
-/// Processing Studio owns execution conditions, not Runtime Manager truth.
-/// Resource/backend usability is intentionally deferred to exact Plan Preview
-/// instead of being inferred from model IDs or desktop-side registries.
-fn node_execution_badge(policy: &app_core::ExecutionPolicy) -> (&'static str, Color) {
-    match policy {
-        app_core::ExecutionPolicy::Always => ("ENABLED", Color::srgb(0.48, 0.68, 0.95)),
-        app_core::ExecutionPolicy::Conditional { .. } => {
-            ("CONDITIONAL", Color::srgb(0.82, 0.67, 0.34))
-        }
-        app_core::ExecutionPolicy::Disabled => ("DISABLED", Color::srgb(0.58, 0.60, 0.64)),
-    }
-}
-
-fn provider_metadata(model_id: Option<&str>) -> String {
-    match model_id {
-        Some(model_id) => format!(
-            "Configured provider: {} ({model_id}). Actual resource/backend is resolved in Plan Preview.",
-            app_core::workflow_model_label(model_id)
-        ),
-        None => {
-            "Studio capability logic. Runtime-backed dependencies are resolved in Plan Preview."
-                .to_string()
-        }
-    }
-}
-
-fn policy_label(policy: &app_core::ExecutionPolicy) -> &'static str {
-    match policy {
-        app_core::ExecutionPolicy::Always => "Always",
-        app_core::ExecutionPolicy::Conditional {
-            condition: app_core::ConditionalExecution::OnDisagreement,
-        } => "On disagreement",
-        app_core::ExecutionPolicy::Conditional {
-            condition: app_core::ConditionalExecution::DisagreementWindows,
-        } => "Disagreement windows",
-        app_core::ExecutionPolicy::Conditional {
-            condition: app_core::ConditionalExecution::MaximumOnly,
-        } => "Maximum only",
-        app_core::ExecutionPolicy::Disabled => "Disabled",
-    }
-}
-
-fn execution_policy_choices() -> [(&'static str, app_core::ExecutionPolicy); 5] {
-    [
-        ("Always", app_core::ExecutionPolicy::Always),
-        (
-            "On disagreement",
-            app_core::ExecutionPolicy::Conditional {
-                condition: app_core::ConditionalExecution::OnDisagreement,
-            },
-        ),
-        (
-            "Disagreement windows",
-            app_core::ExecutionPolicy::Conditional {
-                condition: app_core::ConditionalExecution::DisagreementWindows,
-            },
-        ),
-        (
-            "Maximum only",
-            app_core::ExecutionPolicy::Conditional {
-                condition: app_core::ConditionalExecution::MaximumOnly,
-            },
-        ),
-        ("Disabled", app_core::ExecutionPolicy::Disabled),
-    ]
-}
-
 fn port_label(port: &app_core::WorkflowPortSpec) -> String {
     let role = match &port.port_type {
         app_core::WorkflowPortType::Audio(app_core::AudioRole::LeadVocal) => Some("LeadVocal"),
@@ -703,673 +472,6 @@ fn port_label(port: &app_core::WorkflowPortSpec) -> String {
         _ => None,
     };
     role.map_or_else(|| port.id.clone(), |role| format!("{} · {role}", port.id))
-}
-
-struct NodeCardContext<'a> {
-    selected: bool,
-    embedded: bool,
-    definition: &'a app_core::WorkflowDefinition,
-    analyzer_binding: Option<&'a app_core::AnalyzerBinding>,
-    audio_sources: &'a [(app_core::WorkflowNodeId, String, String)],
-}
-
-fn node_card(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    node: &app_core::WorkflowNodeInstance,
-    capability: &app_core::NodeCapability,
-    context: NodeCardContext<'_>,
-) {
-    let (status, status_color) = node_execution_badge(&node.execution_policy);
-    let model_options = app_core::workflow_model_options(&node.capability_id);
-    let card_title = if context.embedded {
-        node.model_id
-            .as_deref()
-            .map(app_core::workflow_model_label)
-            .unwrap_or(capability.label.as_str())
-            .to_string()
-    } else if model_options.len() > 1 {
-        node.model_id.as_deref().map_or_else(
-            || capability.label.clone(),
-            |model| {
-                format!(
-                    "{} · {}",
-                    capability.label,
-                    app_core::workflow_model_label(model)
-                )
-            },
-        )
-    } else {
-        capability.label.clone()
-    };
-    let disable_availability = workflow_policy_availability(
-        context.definition,
-        &node.instance_id,
-        app_core::ExecutionPolicy::Disabled,
-    );
-    let enable_availability = workflow_policy_availability(
-        context.definition,
-        &node.instance_id,
-        app_core::ExecutionPolicy::Always,
-    );
-    let mut card_entity = parent.spawn((
-        Node {
-            width: percent(100),
-            min_height: px(if context.embedded { 64 } else { 88 }),
-            padding: UiRect::all(px(if context.embedded { 8 } else { 12 })),
-            flex_direction: FlexDirection::Column,
-            row_gap: px(6),
-            border: UiRect::all(px(if context.selected { 2 } else { 1 })),
-            border_radius: studio_card_radius(),
-            ..default()
-        },
-        BackgroundColor(if context.selected {
-            theme.primary.with_alpha(0.12)
-        } else if context.embedded {
-            theme.background.with_alpha(0.24)
-        } else {
-            theme.card.with_alpha(STUDIO_CARD_BACKGROUND_ALPHA)
-        }),
-        BorderColor::all(if context.selected {
-            theme.primary.with_alpha(0.72)
-        } else if context.embedded {
-            theme.border.with_alpha(0.32)
-        } else {
-            theme.border.with_alpha(STUDIO_CARD_BORDER_ALPHA)
-        }),
-    ));
-    if capability.preserves_audio_role {
-        card_entity.insert((
-            Button,
-            UiPointerApi(&["ui.analysis.move_workflow_node"]),
-            WorkflowReorderTarget {
-                node_id: node.instance_id.clone(),
-            },
-            WorkflowReorderHandle {
-                node_id: node.instance_id.clone(),
-            },
-        ));
-    }
-    card_entity.with_children(|card| {
-            let mut header = card.spawn((
-                Button,
-                UiAction::from(AnalysisCommand::SelectWorkflowNode(
-                    node.instance_id.to_string(),
-                )),
-                Node {
-                    width: percent(100),
-                    min_height: px(28),
-                    min_width: px(0),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::SpaceBetween,
-                    column_gap: px(8),
-                    padding: UiRect::horizontal(px(2)),
-                    border_radius: BorderRadius::all(px(5)),
-                    ..default()
-                },
-                BackgroundColor(Color::NONE),
-            ));
-            if capability.preserves_audio_role && context.selected {
-                header.insert(WorkflowReorderHandle {
-                    node_id: node.instance_id.clone(),
-                });
-            }
-            header.with_children(|header| {
-                spawn_wrapped_text(
-                    header,
-                    font.clone(),
-                    &card_title,
-                    11.0,
-                    theme.foreground,
-                );
-                header
-                    .spawn(Node {
-                        flex_shrink: 0.0,
-                        align_items: AlignItems::Center,
-                        column_gap: px(8),
-                        ..default()
-                    })
-                    .with_children(|status_group| {
-                        if capability.preserves_audio_role && context.selected {
-                            spawn_text(
-                                status_group,
-                                font.clone(),
-                                "⋮⋮ DRAG",
-                                8.0,
-                                theme.primary,
-                            );
-                        }
-                        spawn_text(
-                            status_group,
-                            font.clone(),
-                            status,
-                            8.0,
-                            status_color,
-                        );
-                    });
-            });
-            if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
-                let strategy = node
-                    .separation_strategy
-                    .unwrap_or(app_core::SeparationStrategyV1::IndependentSpecialists);
-                let descriptor = app_core::separation_strategy_descriptor(strategy);
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    format!(
-                        "{} · {} providers",
-                        descriptor.label,
-                        descriptor.executions.len()
-                    ),
-                    9.0,
-                    theme.muted_foreground,
-                );
-                if context.selected {
-                    let providers = descriptor
-                        .executions
-                        .iter()
-                        .map(|execution| {
-                            format!(
-                                "{} → {}",
-                                app_core::workflow_model_label(execution.provider_id),
-                                execution
-                                    .output_roles
-                                    .iter()
-                                    .map(|role| role.output_port())
-                                    .collect::<Vec<_>>()
-                                    .join(" + ")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        providers,
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                    spawn_text(card, font.clone(), "SEPARATION STRATEGY", 8.0, theme.primary);
-                    card.spawn(Node {
-                        width: percent(100),
-                        column_gap: px(6),
-                        row_gap: px(6),
-                        flex_wrap: FlexWrap::Wrap,
-                        ..default()
-                    })
-                    .with_children(|choices| {
-                        for option in app_core::separation_strategy_options() {
-                            let current = option.strategy == strategy;
-                            let label = if current {
-                                format!("✓ {}", option.label)
-                            } else {
-                                option.label.to_string()
-                            };
-                            if current {
-                                disabled_action_button(choices, font.clone(), theme, label);
-                            } else {
-                                action_button(
-                                    choices,
-                                    font.clone(),
-                                    theme,
-                                    label,
-                                    UiAction::from(
-                                        AnalysisCommand::SetWorkflowSeparationStrategy(
-                                            node.instance_id.to_string(),
-                                            option.strategy,
-                                        ),
-                                    ),
-                                );
-                            }
-                        }
-                    });
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.",
-                        7.5,
-                        theme.muted_foreground,
-                    );
-                }
-            } else if context.selected {
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    provider_metadata(node.model_id.as_deref()),
-                    9.0,
-                    theme.muted_foreground,
-                );
-            }
-            if context.selected && model_options.len() > 1 {
-                spawn_text(card, font.clone(), "MODEL", 8.0, theme.primary);
-                card.spawn(Node {
-                    width: percent(100),
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    ..default()
-                })
-                .with_children(|choices| {
-                    for option in model_options {
-                        let current = node.model_id.as_deref() == Some(option.model_id);
-                        let label = if current {
-                            format!("✓ {}", option.label)
-                        } else {
-                            option.label.to_string()
-                        };
-                        if !current
-                            && workflow_model_can_be_selected(
-                                context.definition,
-                                &node.instance_id,
-                                option.model_id,
-                            )
-                        {
-                            action_button(
-                                choices,
-                                font.clone(),
-                                theme,
-                                label,
-                                UiAction::from(AnalysisCommand::SetWorkflowNodeModel(
-                                    node.instance_id.to_string(),
-                                    option.model_id.to_string(),
-                                )),
-                            );
-                        } else {
-                            disabled_action_button(choices, font.clone(), theme, label);
-                        }
-                    }
-                });
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    "Choosing a provider already used by a sibling card swaps the providers while preserving each card's execution condition.",
-                    7.5,
-                    theme.muted_foreground,
-                );
-            }
-            let inputs = capability
-                .inputs
-                .iter()
-                .map(port_label)
-                .collect::<Vec<_>>()
-                .join(" + ");
-            let outputs = capability
-                .outputs
-                .iter()
-                .map(port_label)
-                .collect::<Vec<_>>()
-                .join(" + ");
-            if context.selected {
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    format!(
-                        "{} → {} · {} · priority {}",
-                        if inputs.is_empty() { "source" } else { &inputs },
-                        outputs,
-                        policy_label(&node.execution_policy),
-                        node.priority,
-                    ),
-                    8.0,
-                    theme.muted_foreground,
-                );
-                if !capability.hard_dependencies.is_empty() {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        format!(
-                            "Needs {}",
-                            capability
-                                .hard_dependencies
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-            }
-            if capability.preserves_audio_role && context.selected {
-                let earlier = workflow_reorder_availability(
-                    context.definition,
-                    &node.instance_id,
-                    true,
-                );
-                let later = workflow_reorder_availability(
-                    context.definition,
-                    &node.instance_id,
-                    false,
-                );
-                card.spawn(Node {
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    ..default()
-                })
-                .with_children(|actions| {
-                    if earlier.is_ok() {
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Earlier",
-                            UiAction::from(AnalysisCommand::MoveWorkflowNode(
-                                node.instance_id.to_string(),
-                                true,
-                            )),
-                        );
-                    } else {
-                        disabled_action_button(actions, font.clone(), theme, "Earlier");
-                    }
-                    if later.is_ok() {
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Later",
-                            UiAction::from(AnalysisCommand::MoveWorkflowNode(
-                                node.instance_id.to_string(),
-                                false,
-                            )),
-                        );
-                    } else {
-                        disabled_action_button(actions, font.clone(), theme, "Later");
-                    }
-                });
-                if earlier.is_err() && later.is_err() {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "Drag/reorder becomes available when another compatible role-preserving transformation is adjacent.",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-            }
-
-            if context.selected {
-                if workflow_node_can_be_removed(context.definition, &node.instance_id) {
-                    action_button(
-                        card,
-                        font.clone(),
-                        theme,
-                        "Delete",
-                        UiAction::from(AnalysisCommand::RemoveWorkflowNode(
-                            node.instance_id.to_string(),
-                        )),
-                    );
-                } else {
-                    disabled_action_button(
-                        card,
-                        font.clone(),
-                        theme,
-                        "Delete · required by the current topology",
-                    );
-                }
-            }
-
-            if context.selected
-                && capability.class == app_core::CapabilityClass::Analyzer
-                && let Some(binding) = context.analyzer_binding
-            {
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    format!(
-                        "Input artifact: {} · {}",
-                        binding.source.node, binding.source.port
-                    ),
-                    8.0,
-                    theme.primary,
-                );
-            }
-
-            if context.selected {
-                let preprocessing = uses_binary_preprocessing_switch(capability);
-                spawn_text(
-                    card,
-                    font.clone(),
-                    if preprocessing {
-                        "PREPROCESSING SWITCH"
-                    } else {
-                        "WHEN THIS STEP RUNS"
-                    },
-                    8.0,
-                    theme.primary,
-                );
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    if preprocessing {
-                        "Turn this preprocessing step On or Off. Off is a transparent bypass; the exact analyzer input route is shown in Plan Preview."
-                    } else {
-                        "Choose when this step runs. The checked option is active. Dimmed options would make the current workflow invalid."
-                    },
-                    8.0,
-                    theme.muted_foreground,
-                );
-                if !preprocessing {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "Always runs every time. On disagreement runs the full step when results conflict; Disagreement windows runs only conflicting sections. Maximum only runs in Maximum quality; Disabled skips the step.",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-                card.spawn(Node {
-                    width: percent(100),
-                    min_width: px(0),
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    ..default()
-                })
-                .with_children(|actions| {
-                    let currently_disabled =
-                        node.execution_policy == app_core::ExecutionPolicy::Disabled;
-                    let game_card = node.model_id.as_deref() == Some("game");
-                    if currently_disabled {
-                        if enable_availability.is_ok() {
-                            action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                if game_card {
-                                    "Enable + use GAME regions"
-                                } else if preprocessing {
-                                    "Turn On"
-                                } else {
-                                    "Enable"
-                                },
-                                UiAction::from(AnalysisCommand::SetWorkflowPolicy(
-                                    node.instance_id.to_string(),
-                                    app_core::ExecutionPolicy::Always,
-                                )),
-                            );
-                        } else {
-                            disabled_action_button(
-                                actions,
-                                font.clone(),
-                                theme,
-                                "Enable · blocked",
-                            );
-                        }
-                    } else if disable_availability.is_ok() {
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            if game_card {
-                                "Disable + use F0 fallback"
-                            } else if preprocessing {
-                                "Turn Off"
-                            } else {
-                                "Disable"
-                            },
-                            UiAction::from(AnalysisCommand::SetWorkflowPolicy(
-                                node.instance_id.to_string(),
-                                app_core::ExecutionPolicy::Disabled,
-                            )),
-                        );
-                    } else {
-                        disabled_action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Disable · required by downstream",
-                        );
-                    }
-                    if capability.class == app_core::CapabilityClass::Analyzer {
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Priority −",
-                            UiAction::from(AnalysisCommand::AdjustWorkflowPriority(
-                                node.instance_id.to_string(),
-                                -10,
-                            )),
-                        );
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Priority +",
-                            UiAction::from(AnalysisCommand::AdjustWorkflowPriority(
-                                node.instance_id.to_string(),
-                                10,
-                            )),
-                        );
-                    }
-                    if is_step1_cacheable(capability.id.as_str()) {
-                        policy_choice_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Skip if unchanged",
-                            UiAction::from(AnalysisCommand::SetWorkflowSkipIfUnchanged(
-                                node.instance_id.to_string(),
-                                !node.skip_if_unchanged,
-                            )),
-                            node.skip_if_unchanged,
-                            true,
-                        );
-                    }
-                });
-                if capability.class == app_core::CapabilityClass::Analyzer {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "Priority changes scheduling preference only; it is not a hard dependency.",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-                if is_step1_cacheable(capability.id.as_str()) {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "Skip if unchanged: on re-run, reuse this step's last successful result instead of recomputing it, as long as its inputs and settings are unchanged.",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-                if !preprocessing {
-                    let mut unavailable_errors = BTreeSet::new();
-                    card.spawn(Node {
-                    width: percent(100),
-                    min_width: px(0),
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    ..default()
-                })
-                .with_children(|policies| {
-                    for (label, policy) in execution_policy_choices() {
-                        let selected = node.execution_policy == policy;
-                        let availability = workflow_policy_availability(
-                            context.definition,
-                            &node.instance_id,
-                            policy.clone(),
-                        );
-                        let available = availability.is_ok();
-                        if !selected
-                            && let Err(error) = availability
-                        {
-                            unavailable_errors.insert(error);
-                        }
-                        policy_choice_button(
-                            policies,
-                            font.clone(),
-                            theme,
-                            label,
-                            UiAction::from(AnalysisCommand::SetWorkflowPolicy(
-                                node.instance_id.to_string(),
-                                policy,
-                            )),
-                            selected,
-                            available,
-                        );
-                    }
-                });
-                if !unavailable_errors.is_empty() {
-                    let downstream_requires_always = unavailable_errors.iter().any(|error| {
-                        error.contains("depends only on conditional or disabled nodes")
-                    });
-                    let explanation = if downstream_requires_always {
-                        "Why these options are unavailable: a downstream step requires at least one evidence producer that always runs. This step is currently that guaranteed producer; making it conditional or disabled would leave the required input unavailable. Set another compatible producer to Always first."
-                            .to_string()
-                    } else {
-                        format!(
-                            "Unavailable in the current topology · {}",
-                            unavailable_errors.into_iter().collect::<Vec<_>>().join(" · ")
-                        )
-                    };
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        explanation,
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
-                }
-            }
-
-            if capability.class == app_core::CapabilityClass::Analyzer && context.selected {
-                card.spawn(Node {
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    flex_wrap: FlexWrap::Wrap,
-                    ..default()
-                })
-                .with_children(|sources| {
-                    for (source_node, source_port, label) in context.audio_sources {
-                        if context.analyzer_binding.is_some_and(|binding| {
-                            binding.source.node == *source_node
-                                && binding.source.port == *source_port
-                        }) {
-                            continue;
-                        }
-                        action_button(
-                            sources,
-                            font.clone(),
-                            theme,
-                            format!("Use {label}"),
-                            UiAction::from(AnalysisCommand::RebindWorkflowAnalyzer(
-                                node.instance_id.to_string(),
-                                source_node.to_string(),
-                                source_port.clone(),
-                            )),
-                        );
-                    }
-                });
-            }
-        });
 }
 
 pub(crate) fn spawn_processing_studio(
@@ -1483,57 +585,12 @@ pub(crate) fn spawn_processing_studio(
             min_height: px(0),
             flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
-            padding: UiRect::all(px(18)),
-            row_gap: px(14),
+            padding: UiRect::all(px(12)),
+            row_gap: px(8),
             ..default()
         })
         .with_children(|page| {
-            if let Some(error) = session.workflow_compile_error.as_ref() {
-                spawn_wrapped_text(page, font.clone(), error, 9.0, theme.destructive);
-            } else {
-                spawn_wrapped_text(
-                    page,
-                    font.clone(),
-                    format!(
-                        "Workflow revision {} · {:?} · local compile valid; execution still requires exact Engine preview",
-                        stored.definition.revision, stored.definition.quality_mode
-                    ),
-                    9.0,
-                    theme.primary,
-                );
-            }
-            page.spawn(Node {
-                width: percent(100),
-                min_height: px(18),
-                flex_shrink: 0.0,
-                align_items: AlignItems::Center,
-                column_gap: px(10),
-                ..default()
-            })
-            .with_children(|status| {
-                status
-                    .spawn(Node {
-                        min_width: px(0),
-                        flex_grow: 1.0,
-                        ..default()
-                    })
-                    .with_children(|notice| {
-                        spawn_wrapped_text(
-                            notice,
-                            font.clone(),
-                            session.notice.as_deref().unwrap_or(""),
-                            9.0,
-                            theme.foreground,
-                        );
-                    });
-                spawn_compact_action_button(
-                    status,
-                    font.clone(),
-                    theme,
-                    "Re-run",
-                    UiAction::from(AnalysisCommand::RunWorkflow),
-                );
-            });
+            status_strip::spawn_workflow_status_strip(page, font.clone(), theme, session, stored);
 
             page.spawn((
                 ProcessingStudioScroll,
@@ -1580,8 +637,8 @@ pub(crate) fn spawn_processing_studio(
                                 flex_grow: 1.0,
                                 flex_shrink: 1.0,
                                 flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(px(10)),
-                                row_gap: px(8),
+                                padding: UiRect::all(px(8)),
+                                row_gap: px(6),
                                 border: UiRect::all(px(1)),
                                 border_radius: BorderRadius::all(px(10)),
                                 ..default()
@@ -1590,16 +647,55 @@ pub(crate) fn spawn_processing_studio(
                             BorderColor::all(theme.border.with_alpha(0.44)),
                         ))
                         .with_children(|lane| {
-                            spawn_text(lane, font.clone(), heading, 8.0, theme.primary);
-                            spawn_wrapped_text(
+                            let stage_nodes = ordered_nodes
+                                .iter()
+                                .copied()
+                                .filter(|node| {
+                                    stage_renders_internal_node_cards(stage)
+                                        && capabilities.get(&node.capability_id).is_some_and(
+                                            |capability| workflow_stage(capability) == stage,
+                                        )
+                                })
+                                .collect::<Vec<_>>();
+                            let stats = (stage != 4)
+                                .then(|| stage_header::StageCardStats::from_nodes(&stage_nodes));
+                            stage_header::spawn_stage_header(
                                 lane,
                                 font.clone(),
+                                theme,
+                                heading,
                                 description,
-                                8.5,
-                                theme.muted_foreground,
+                                stats,
                             );
 
                             if stage == 1 {
+                                let optional_preprocessing_is_enabled = stage_nodes.iter().any(
+                                    |node| {
+                                        capabilities.get(&node.capability_id).is_some_and(
+                                            |capability| {
+                                                node_card::uses_binary_preprocessing_switch(
+                                                    capability,
+                                                ) && node.execution_policy
+                                                    != app_core::ExecutionPolicy::Disabled
+                                            },
+                                        )
+                                    },
+                                );
+                                stage_header::spawn_quiet_add_button(
+                                    lane,
+                                    font.clone(),
+                                    theme,
+                                    if optional_preprocessing_is_enabled {
+                                        "Turn Lead isolation, dereverb + denoise off"
+                                    } else {
+                                        "Turn Lead isolation, dereverb + denoise on"
+                                    },
+                                    UiAction::from(
+                                        AnalysisCommand::SetWorkflowPreprocessingEnabled(
+                                            !optional_preprocessing_is_enabled,
+                                        ),
+                                    ),
+                                );
                                 lane.spawn(Node {
                                     width: percent(100),
                                     column_gap: px(6),
@@ -1614,7 +710,7 @@ pub(crate) fn spawn_processing_studio(
                                         ("+ BGM denoise", &bgm_tail, "audio.denoise", Some("melband_roformer_denoise_aufr33")),
                                         ("+ BGM dereverb", &bgm_tail, "audio.dereverb", Some("melband_roformer_dereverb_anvuew")),
                                     ] {
-                                        action_button(
+                                        stage_header::spawn_quiet_add_button(
                                             adds,
                                             font.clone(),
                                             theme,
@@ -1682,7 +778,7 @@ pub(crate) fn spawn_processing_studio(
                                     ..default()
                                 })
                                 .with_children(|adds| {
-                                    optional_card_add_button(
+                                    stage_header::optional_card_add_button(
                                         adds,
                                         font.clone(),
                                         theme,
@@ -1737,7 +833,7 @@ pub(crate) fn spawn_processing_studio(
                                     })
                                     .with_children(|adds| {
                                         for card in missing_experts {
-                                            optional_card_add_button(
+                                            stage_header::optional_card_add_button(
                                                 adds,
                                                 font.clone(),
                                                 theme,
@@ -1762,16 +858,6 @@ pub(crate) fn spawn_processing_studio(
                                 return;
                             }
 
-                            let stage_nodes = ordered_nodes
-                                .iter()
-                                .copied()
-                                .filter(|node| {
-                                    stage_renders_internal_node_cards(stage)
-                                        && capabilities.get(&node.capability_id).is_some_and(
-                                            |capability| workflow_stage(capability) == stage,
-                                        )
-                                })
-                                .collect::<Vec<_>>();
                             let mut rendered = BTreeSet::new();
                             for node in &stage_nodes {
                                 if !rendered.insert(node.instance_id.clone()) {
@@ -1794,6 +880,11 @@ pub(crate) fn spawn_processing_studio(
                                     vec![*node]
                                 };
                                 if group.len() > 1 {
+                                    let provider_count = group.len();
+                                    let selected_member = group.iter().copied().find(|member| {
+                                        session.selected_workflow_node.as_ref()
+                                            == Some(&member.instance_id)
+                                    });
                                     for member in &group {
                                         rendered.insert(member.instance_id.clone());
                                     }
@@ -1801,8 +892,8 @@ pub(crate) fn spawn_processing_studio(
                                         Node {
                                             width: percent(100),
                                             flex_direction: FlexDirection::Column,
-                                            padding: UiRect::all(px(10)),
-                                            row_gap: px(7),
+                                            padding: UiRect::all(px(7)),
+                                            row_gap: px(5),
                                             border: UiRect::all(px(1)),
                                             border_radius: studio_card_radius(),
                                             ..default()
@@ -1811,36 +902,79 @@ pub(crate) fn spawn_processing_studio(
                                         BorderColor::all(theme.border.with_alpha(0.48)),
                                     ))
                                     .with_children(|group_card| {
-                                        spawn_text(
-                                            group_card,
-                                            font.clone(),
-                                            &capability.label,
-                                            11.0,
-                                            theme.foreground,
-                                        );
-                                        spawn_wrapped_text(
-                                            group_card,
-                                            font.clone(),
-                                            format!(
-                                                "{} providers · choose one to edit its model and execution condition",
-                                                group.len()
-                                            ),
-                                            8.0,
-                                            theme.muted_foreground,
-                                        );
-                                        for member in group {
-                                            node_card(
+                                        group_card
+                                            .spawn(Node {
+                                                width: percent(100),
+                                                min_height: px(18),
+                                                align_items: AlignItems::Center,
+                                                justify_content: JustifyContent::SpaceBetween,
+                                                column_gap: px(6),
+                                                ..default()
+                                            })
+                                            .with_children(|group_header| {
+                                                spawn_text(
+                                                    group_header,
+                                                    font.clone(),
+                                                    &capability.label,
+                                                    10.0,
+                                                    theme.foreground,
+                                                );
+                                                spawn_text(
+                                                    group_header,
+                                                    font.clone(),
+                                                    format!("{provider_count} MODELS"),
+                                                    7.0,
+                                                    theme.muted_foreground,
+                                                );
+                                            });
+                                        group_card
+                                            .spawn(Node {
+                                                width: percent(100),
+                                                min_width: px(0),
+                                                flex_direction: FlexDirection::Row,
+                                                flex_wrap: FlexWrap::Wrap,
+                                                align_items: AlignItems::FlexStart,
+                                                column_gap: px(4),
+                                                row_gap: px(4),
+                                                ..default()
+                                            })
+                                            .with_children(|providers| {
+                                                for member in group.iter().copied() {
+                                                    node_card::spawn_node_card(
+                                                        providers,
+                                                        font.clone(),
+                                                        theme,
+                                                        member,
+                                                        capability,
+                                                        node_card::NodeCardContext {
+                                                            selected: session
+                                                                .selected_workflow_node
+                                                                .as_ref()
+                                                                == Some(&member.instance_id),
+                                                            expanded: false,
+                                                            embedded: true,
+                                                            compact: true,
+                                                            definition: &stored.definition,
+                                                            analyzer_binding: analyzer_bindings
+                                                                .get(&member.instance_id)
+                                                                .copied(),
+                                                            audio_sources: &audio_sources,
+                                                        },
+                                                    );
+                                                }
+                                            });
+                                        if let Some(member) = selected_member {
+                                            node_card::spawn_node_card(
                                                 group_card,
                                                 font.clone(),
                                                 theme,
                                                 member,
                                                 capability,
-                                                NodeCardContext {
-                                                    selected: session
-                                                        .selected_workflow_node
-                                                        .as_ref()
-                                                        == Some(&member.instance_id),
+                                                node_card::NodeCardContext {
+                                                    selected: true,
+                                                    expanded: true,
                                                     embedded: true,
+                                                    compact: false,
                                                     definition: &stored.definition,
                                                     analyzer_binding: analyzer_bindings
                                                         .get(&member.instance_id)
@@ -1851,16 +985,19 @@ pub(crate) fn spawn_processing_studio(
                                         }
                                     });
                                 } else {
-                                    node_card(
+                                    let selected = session.selected_workflow_node.as_ref()
+                                        == Some(&node.instance_id);
+                                    node_card::spawn_node_card(
                                         lane,
                                         font.clone(),
                                         theme,
                                         node,
                                         capability,
-                                        NodeCardContext {
-                                            selected: session.selected_workflow_node.as_ref()
-                                                == Some(&node.instance_id),
+                                        node_card::NodeCardContext {
+                                            selected,
+                                            expanded: selected,
                                             embedded: false,
+                                            compact: stage == 3,
                                             definition: &stored.definition,
                                             analyzer_binding: analyzer_bindings
                                                 .get(&node.instance_id)

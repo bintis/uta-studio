@@ -6,8 +6,8 @@ use crate::contract::{EngineError, EngineErrorCode, EngineResult, FusionDecision
 pub const ACOUSTIC_DSP_VERSION: &str = "acoustic-dsp-v2";
 pub const AUDIO_QUALITY_VERSION: &str = crate::contract::AUDIO_QUALITY_ALGORITHM_VERSION;
 pub const CALIBRATION_VERSION: &str = "calibration-v1";
-pub const FINALIZE_VOCAL_CHART_VERSION: &str = "finalize-vocal-chart-v3";
-pub const FUSION_VERSION: &str = "fusion-v16";
+pub const FINALIZE_VOCAL_CHART_VERSION: &str = "finalize-vocal-chart-v4";
+pub const FUSION_VERSION: &str = "fusion-v17";
 pub const HSMM_VERSION: &str = "hsmm-v15";
 pub const QUANTIZATION_VERSION: &str = "rhythm-grid-dp-v1";
 pub const POSTPROCESS_VERSION: &str = "postprocess-v1";

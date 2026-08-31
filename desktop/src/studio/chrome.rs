@@ -563,12 +563,11 @@ fn spawn_top_bar_progress(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(12),
-                right: px(12),
-                bottom: px(3),
+                left: px(0),
+                right: px(0),
+                bottom: px(0),
                 height: px(3),
                 overflow: Overflow::clip(),
-                border_radius: BorderRadius::MAX,
                 ..default()
             },
             BackgroundColor(theme.border.with_alpha(0.45)),
@@ -579,7 +578,6 @@ fn spawn_top_bar_progress(
                     width: percent(progress as f32),
                     min_width: if progress > 0 { px(2) } else { px(0) },
                     height: percent(100),
-                    border_radius: BorderRadius::MAX,
                     ..default()
                 },
                 BackgroundColor(theme.primary.with_alpha(0.94)),
@@ -795,7 +793,7 @@ fn spawn_workspace_toolbar(
                 "Save workflow",
                 UiAction::from(AnalysisCommand::SaveWorkflow),
             );
-            spawn_compact_action_button(
+            spawn_compact_primary_action_button(
                 parent,
                 font,
                 theme,

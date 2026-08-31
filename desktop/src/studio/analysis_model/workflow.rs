@@ -115,6 +115,139 @@ fn policy_label(policy: &str) -> &'static str {
     }
 }
 
+fn groups_parallel_experts(capability_id: Option<&str>) -> bool {
+    matches!(
+        capability_id,
+        Some(
+            "analysis.asr" | "analysis.pitch_f0" | "analysis.note_boundary" | "analysis.technique"
+        )
+    )
+}
+
+fn aggregate_member_state(members: &[RenderNodeMember]) -> GraphNodeState {
+    let active = members
+        .iter()
+        .filter(|member| {
+            !matches!(
+                member.state,
+                GraphNodeState::Disabled
+                    | GraphNodeState::ProfileSkipped
+                    | GraphNodeState::NotRequested
+            )
+        })
+        .collect::<Vec<_>>();
+    if active
+        .iter()
+        .any(|member| member.state == GraphNodeState::Failed)
+    {
+        GraphNodeState::Failed
+    } else if active
+        .iter()
+        .any(|member| member.state == GraphNodeState::Running)
+    {
+        GraphNodeState::Running
+    } else if !active.is_empty()
+        && active
+            .iter()
+            .all(|member| member.state == GraphNodeState::Complete)
+    {
+        GraphNodeState::Complete
+    } else if active
+        .iter()
+        .any(|member| member.state == GraphNodeState::Waiting)
+    {
+        GraphNodeState::Waiting
+    } else if active
+        .iter()
+        .any(|member| member.state == GraphNodeState::Deferred)
+    {
+        GraphNodeState::Deferred
+    } else if active
+        .iter()
+        .any(|member| member.state == GraphNodeState::Cancelled)
+    {
+        GraphNodeState::Cancelled
+    } else if members
+        .iter()
+        .any(|member| member.state == GraphNodeState::ProfileSkipped)
+    {
+        GraphNodeState::ProfileSkipped
+    } else {
+        GraphNodeState::NotRequested
+    }
+}
+
+fn group_parallel_expert_nodes(nodes: Vec<RenderNode>, edges: Vec<RenderEdge>) -> RenderGraph {
+    let mut grouped = Vec::<RenderNode>::new();
+    let mut purpose_indices = BTreeMap::<String, usize>::new();
+    let mut remapped_ids = BTreeMap::<String, AnalysisNodeId>::new();
+
+    for node in nodes {
+        let group_key = node
+            .capability_id
+            .as_deref()
+            .filter(|capability| groups_parallel_experts(Some(capability)))
+            .map(str::to_string);
+        if let Some(index) = group_key
+            .as_ref()
+            .and_then(|key| purpose_indices.get(key))
+            .copied()
+        {
+            let target = &mut grouped[index];
+            for member in node.members {
+                remapped_ids.insert(member.id.as_str().to_string(), target.id.clone());
+                for model in &member.model_ids {
+                    if !target.model_ids.contains(model) {
+                        target.model_ids.push(model.clone());
+                    }
+                }
+                target.members.push(member);
+            }
+            for output in node.terminal_outputs {
+                if !target.terminal_outputs.contains(&output) {
+                    target.terminal_outputs.push(output);
+                }
+            }
+            target.state = aggregate_member_state(&target.members);
+            continue;
+        }
+
+        let index = grouped.len();
+        if let Some(key) = group_key {
+            purpose_indices.insert(key, index);
+        }
+        for member in &node.members {
+            remapped_ids.insert(member.id.as_str().to_string(), node.id.clone());
+        }
+        grouped.push(node);
+    }
+
+    for node in &mut grouped {
+        if node.members.len() > 1 {
+            node.detail = format!("{} models · {}", node.model_ids.len(), node.detail);
+            node.state = aggregate_member_state(&node.members);
+        }
+    }
+    let edges = edges
+        .into_iter()
+        .filter_map(|mut edge| {
+            edge.from = remapped_ids
+                .get(edge.from.as_str())
+                .cloned()
+                .unwrap_or(edge.from);
+            edge.to = remapped_ids
+                .get(edge.to.as_str())
+                .cloned()
+                .unwrap_or(edge.to);
+            (edge.from != edge.to).then_some(edge)
+        })
+        .collect();
+    RenderGraph {
+        nodes: grouped,
+        edges,
+    }
+}
+
 /// Builds a graph from the compiled Workflow wire snapshot. `exact_plan` is
 /// present for queued/live/history Engine runs and supplies request/profile
 /// selection states. For an editable current workflow, the persisted policy
@@ -215,26 +348,36 @@ pub(crate) fn build_workflow_render_graph(
                         ),
                     ]
                     .into_iter()
-                    .map(|(port, concrete_capability, provider, label)| RenderNode {
-                        id: AnalysisNodeId::new(format!("{}.{}", node.instance_id, port)),
-                        kind: RenderNodeKind::Compute,
-                        label: label.to_string(),
-                        detail: format!(
-                            "{} · {} · priority {}",
-                            app_core::workflow_model_label(provider.unwrap_or("engine-resolved")),
-                            policy_label(&node.execution_policy),
-                            node.priority
-                        ),
-                        state: if exact_engine_capabilities
+                    .map(|(port, concrete_capability, provider, label)| {
+                        let id = AnalysisNodeId::new(format!("{}.{}", node.instance_id, port));
+                        let model_ids = vec![provider.unwrap_or("engine-resolved").to_string()];
+                        let concrete_state = if exact_engine_capabilities
                             .is_some_and(|planned| !planned.contains(concrete_capability))
                         {
                             GraphNodeState::NotRequested
                         } else {
                             state
-                        },
-                        category: GraphNodeCategory::Audio,
-                        capability_id: Some(concrete_capability.to_string()),
-                        terminal_outputs: terminal_outputs(Some(port)),
+                        };
+                        RenderNode {
+                            id: id.clone(),
+                            kind: RenderNodeKind::Compute,
+                            label: label.to_string(),
+                            model_ids: model_ids.clone(),
+                            detail: format!(
+                                "{} · priority {}",
+                                policy_label(&node.execution_policy),
+                                node.priority
+                            ),
+                            state: concrete_state,
+                            category: GraphNodeCategory::Audio,
+                            capability_id: Some(concrete_capability.to_string()),
+                            terminal_outputs: terminal_outputs(Some(port)),
+                            members: vec![RenderNodeMember {
+                                id,
+                                model_ids,
+                                state: concrete_state,
+                            }],
+                        }
                     })
                     .collect();
                 }
@@ -265,9 +408,9 @@ pub(crate) fn build_workflow_render_graph(
                             id: AnalysisNodeId::new(&invocation.invocation_id),
                             kind: RenderNodeKind::Compute,
                             label: label.to_string(),
+                            model_ids: vec![invocation.provider_id.clone()],
                             detail: format!(
-                                "{} · {} · priority {}",
-                                app_core::workflow_model_label(&invocation.provider_id),
+                                "{} · priority {}",
                                 policy_label(&node.execution_policy),
                                 node.priority
                             ),
@@ -279,6 +422,11 @@ pub(crate) fn build_workflow_render_graph(
                                 .iter()
                                 .flat_map(|port| terminal_outputs(Some(port)))
                                 .collect(),
+                            members: vec![RenderNodeMember {
+                                id: AnalysisNodeId::new(&invocation.invocation_id),
+                                model_ids: vec![invocation.provider_id.clone()],
+                                state: concrete_state,
+                            }],
                         }
                     })
                     .collect();
@@ -288,15 +436,17 @@ pub(crate) fn build_workflow_render_graph(
                 .primary
                 .as_deref()
                 .unwrap_or("native DSP");
+            let id = AnalysisNodeId::new(&node.instance_id);
+            let model_ids = vec![model.to_string()];
             vec![RenderNode {
-                id: AnalysisNodeId::new(&node.instance_id),
+                id: id.clone(),
                 kind: RenderNodeKind::Compute,
                 label: capability
                     .map(|capability| capability.label.clone())
                     .unwrap_or_else(|| node.instance_id.clone()),
+                model_ids: model_ids.clone(),
                 detail: format!(
-                    "{} · {} · priority {}",
-                    app_core::workflow_model_label(model),
+                    "{} · priority {}",
                     policy_label(&node.execution_policy),
                     node.priority
                 ),
@@ -304,6 +454,11 @@ pub(crate) fn build_workflow_render_graph(
                 category: workflow_graph_category(Some(&node.capability_id)),
                 capability_id: Some(node.capability_id.clone()),
                 terminal_outputs: terminal_outputs(None),
+                members: vec![RenderNodeMember {
+                    id,
+                    model_ids,
+                    state,
+                }],
             }]
         })
         .collect::<Vec<_>>();
@@ -417,7 +572,7 @@ pub(crate) fn build_workflow_render_graph(
         .into_iter()
         .filter(|edge| !disabled.contains(&edge.from) && !disabled.contains(&edge.to))
         .collect();
-    RenderGraph { nodes, edges }
+    group_parallel_expert_nodes(nodes, edges)
 }
 
 pub(crate) fn overlay_workflow_runtime(graph: &mut RenderGraph, task: &app_core::AnalysisTask) {
@@ -429,22 +584,30 @@ pub(crate) fn overlay_workflow_runtime(graph: &mut RenderGraph, task: &app_core:
         let Some(node_id) = route.node_id.as_deref() else {
             continue;
         };
-        let Some(node) = graph
-            .nodes
+        let Some(node) = graph.nodes.iter_mut().find(|node| {
+            node.members
+                .iter()
+                .any(|member| member.id.as_str() == node_id)
+        }) else {
+            continue;
+        };
+        let Some(member) = node
+            .members
             .iter_mut()
-            .find(|node| node.id.as_str() == node_id)
+            .find(|member| member.id.as_str() == node_id)
         else {
             continue;
         };
         match route.node_event.as_deref() {
-            Some("node_failed") => node.state = GraphNodeState::Failed,
-            Some("node_cancelled" | "cancelled") => node.state = GraphNodeState::Cancelled,
+            Some("node_failed") => member.state = GraphNodeState::Failed,
+            Some("node_cancelled" | "cancelled") => member.state = GraphNodeState::Cancelled,
             Some("node_completed" | "artifact_reused") => {
-                node.state = GraphNodeState::Complete;
+                member.state = GraphNodeState::Complete;
             }
-            _ if route.finished_at_ms.is_some() => node.state = GraphNodeState::Complete,
+            _ if route.finished_at_ms.is_some() => member.state = GraphNodeState::Complete,
             _ => {}
         }
+        node.state = aggregate_member_state(&node.members);
     }
 
     if matches!(
@@ -452,24 +615,35 @@ pub(crate) fn overlay_workflow_runtime(graph: &mut RenderGraph, task: &app_core:
         Some("cancelled" | "node_cancelled")
     ) {
         for node in &mut graph.nodes {
-            if matches!(
-                node.state,
-                GraphNodeState::Waiting | GraphNodeState::Running | GraphNodeState::Deferred
-            ) {
-                node.state = GraphNodeState::Cancelled;
+            for member in &mut node.members {
+                if matches!(
+                    member.state,
+                    GraphNodeState::Waiting | GraphNodeState::Running | GraphNodeState::Deferred
+                ) {
+                    member.state = GraphNodeState::Cancelled;
+                }
             }
+            node.state = aggregate_member_state(&node.members);
         }
         return;
     }
 
     if matches!(task.status, app_core::QueuedStatus::Analyzing(_))
         && let Some(node_id) = live.node_id.as_deref()
-        && let Some(node) = graph
-            .nodes
-            .iter_mut()
-            .find(|node| node.id.as_str() == node_id)
+        && let Some(node) = graph.nodes.iter_mut().find(|node| {
+            node.members
+                .iter()
+                .any(|member| member.id.as_str() == node_id)
+        })
     {
-        node.state = GraphNodeState::Running;
+        if let Some(member) = node
+            .members
+            .iter_mut()
+            .find(|member| member.id.as_str() == node_id)
+        {
+            member.state = GraphNodeState::Running;
+        }
+        node.state = aggregate_member_state(&node.members);
     }
 }
 
@@ -576,17 +750,71 @@ mod tests {
         let instrumental = graph
             .node(&AnalysisNodeId::new("vocal_bgm_split.instrumental"))
             .unwrap();
-        assert!(vocal.detail.contains("BS-RoFormer Leap XE90 Vocals"));
-        assert!(
-            instrumental
-                .detail
-                .contains("BS-PolarFormer Public Instrumental")
+        assert_eq!(vocal.model_ids, ["bs_roformer_leap_xe90_vocals"]);
+        assert_eq!(
+            instrumental.model_ids,
+            ["bs_polarformer_public_instrumental"]
         );
         assert!(
             graph
                 .node(&AnalysisNodeId::new("vocal_bgm_split"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parallel_experts_with_the_same_purpose_share_one_model_card() {
+        let workflow = wire(&app_core::default_workflow("song"));
+        let graph = build_workflow_render_graph(&workflow, None, None, false);
+
+        let boundary = graph
+            .nodes
+            .iter()
+            .find(|node| node.capability_id.as_deref() == Some("analysis.note_boundary"))
+            .expect("the boundary experts own one grouped purpose card");
+        assert_eq!(
+            boundary.capability_id.as_deref(),
+            Some("analysis.note_boundary")
+        );
+        assert_eq!(boundary.members.len(), 5);
+        let models = boundary
+            .model_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            models,
+            std::collections::BTreeSet::from([
+                "game",
+                "basic_pitch",
+                "rosvot",
+                "stars",
+                "jbm555_cectc_80"
+            ])
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| { node.capability_id.as_deref() == Some("analysis.note_boundary") })
+                .count(),
+            1
+        );
+
+        let pitch = graph
+            .nodes
+            .iter()
+            .find(|node| node.capability_id.as_deref() == Some("analysis.pitch_f0"))
+            .expect("continuous-pitch experts share one purpose card");
+        assert_eq!(
+            pitch
+                .model_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["rmvpe", "fcpe"])
+        );
+        assert_eq!(pitch.members.len(), 2);
     }
 
     #[test]
@@ -863,8 +1091,18 @@ mod tests {
         assert!(graph.edges.iter().all(|edge| {
             edge.from.as_str() != "boundary_stars" && edge.to.as_str() != "boundary_stars"
         }));
+        let pitch = graph
+            .nodes
+            .iter()
+            .find(|node| node.capability_id.as_deref() == Some("analysis.pitch_f0"))
+            .unwrap();
         assert_eq!(
-            graph.node(&AnalysisNodeId::new("f0_fcpe")).unwrap().state,
+            pitch
+                .members
+                .iter()
+                .find(|member| member.id.as_str() == "f0_fcpe")
+                .unwrap()
+                .state,
             GraphNodeState::Deferred
         );
         app_core::set_workflow_execution_policy(
@@ -876,10 +1114,17 @@ mod tests {
         )
         .unwrap();
         let restored = build_workflow_render_graph(&wire(&definition), None, None, false);
-        let stars = restored
-            .node(&AnalysisNodeId::new("boundary_stars"))
-            .expect("re-enabling restores the persisted card");
-        assert!(stars.detail.contains("STARS"));
+        let boundary = restored
+            .nodes
+            .iter()
+            .find(|node| node.capability_id.as_deref() == Some("analysis.note_boundary"))
+            .expect("re-enabling restores the model inside its purpose card");
+        let stars = boundary
+            .members
+            .iter()
+            .find(|member| member.id.as_str() == "boundary_stars")
+            .unwrap();
+        assert_eq!(stars.model_ids, ["stars"]);
         assert_eq!(stars.state, GraphNodeState::ProfileSkipped);
         let terminal = graph
             .nodes

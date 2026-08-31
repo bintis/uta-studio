@@ -72,8 +72,6 @@ pub(crate) enum UiIcon {
     Shuffle = 42,
     Repeat = 43,
     Volume = 44,
-    Fit = 46,
-    ModelTune = 49,
 }
 
 impl UiIcon {
@@ -315,6 +313,47 @@ pub(crate) fn spawn_compact_action_button(
             Text::new(label),
             ui_text_font(font, 9.0),
             TextColor(theme.foreground),
+            TextLayout {
+                linebreak: bevy::text::LineBreak::WordOrCharacter,
+                justify: Justify::Center,
+            },
+        )],
+    ));
+}
+
+/// A `spawn_compact_action_button` variant reserved for the single primary
+/// action on a page (for example Processing Studio's "Preview run…"). Uses
+/// only a restrained tint/border of `theme.primary`; callers must not apply
+/// this to more than one control at a time or the page loses its single
+/// clear primary action.
+pub(crate) fn spawn_compact_primary_action_button(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    action: UiAction,
+) {
+    parent.spawn((
+        Button,
+        action,
+        Node {
+            min_width: px(0),
+            max_width: percent(100),
+            min_height: px(STUDIO_CONTROL_HEIGHT),
+            flex_shrink: 1.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::axes(px(11), px(7)),
+            border: UiRect::all(px(1)),
+            border_radius: studio_card_radius(),
+            ..default()
+        },
+        BackgroundColor(theme.primary.with_alpha(0.16)),
+        BorderColor::all(theme.primary.with_alpha(0.62)),
+        children![(
+            Text::new(label),
+            ui_text_font(font, 9.0),
+            TextColor(theme.primary),
             TextLayout {
                 linebreak: bevy::text::LineBreak::WordOrCharacter,
                 justify: Justify::Center,

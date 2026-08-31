@@ -1004,6 +1004,36 @@ pub fn set_workflow_execution_policy(
     Ok(())
 }
 
+/// Applies the Stage 1 master switch to every optional audio-preprocessing
+/// operation, including matching processors on both the vocal and BGM lanes.
+/// Source separation remains enabled because it owns required vocal/BGM
+/// outputs; downstream processors retain their individual switches and can be
+/// re-enabled separately after this batch change.
+pub fn set_workflow_preprocessing_enabled(
+    definition: &mut WorkflowDefinition,
+    enabled: bool,
+) -> Result<(), String> {
+    let original = definition.clone();
+    let policy = if enabled {
+        super::ExecutionPolicy::Always
+    } else {
+        super::ExecutionPolicy::Disabled
+    };
+    for node in &mut definition.nodes {
+        if matches!(
+            node.capability_id.as_str(),
+            "audio.lead_isolate" | "audio.denoise" | "audio.dereverb"
+        ) {
+            node.execution_policy = policy.clone();
+        }
+    }
+    if let Err(error) = compile_workflow(definition) {
+        *definition = original;
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 pub fn set_workflow_priority(
     definition: &mut WorkflowDefinition,
     node_id: &super::WorkflowNodeId,

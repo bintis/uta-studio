@@ -6,6 +6,7 @@ members = [
   "desktop",
   "native-audio",
   "runtime-manager",
+  "fusion-agent-adapter",
   "native-inference/ggml-worker",
   "native-inference/openvino-worker",
   "native-inference/qwen-worker",

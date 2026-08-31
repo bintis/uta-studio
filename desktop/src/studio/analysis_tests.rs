@@ -9,8 +9,8 @@ use crate::studio::*;
 mod graph_view_polish_tests {
     use super::{
         ANALYSIS_GRAPH_ZOOM_DEFAULT, analysis_graph_center_target, analysis_graph_fit_zoom,
-        analysis_graph_focus_target, analysis_node_tile_span, clamp_analysis_graph_zoom,
-        format_epoch_ms, zoomed_box,
+        analysis_graph_focus_target, analysis_node_tile_span, analysis_node_width_scale,
+        clamp_analysis_graph_zoom, format_epoch_ms, zoomed_box,
     };
     use crate::studio::LayoutRect;
 
@@ -40,6 +40,24 @@ mod graph_view_polish_tests {
         assert_eq!(analysis_node_tile_span(Some("analysis.asr")), (2, 2));
         assert_eq!(analysis_node_tile_span(Some("analysis.pitch_f0")), (2, 1));
         assert_eq!(analysis_node_tile_span(Some("audio.source")), (1, 1));
+    }
+
+    /// §5: production card geometry is uniform -- never a two-row card,
+    /// and never a wider one either, since the layered layout centers
+    /// same-rank siblings inside a shared column width and any width
+    /// difference between them reads as a misaligned column. Neither
+    /// content nor execution state nor selection are inputs here.
+    #[test]
+    fn production_node_width_scale_is_always_uniform() {
+        assert_eq!(analysis_node_width_scale("ASR", &["qwen".to_string()]), 1.0);
+        assert_eq!(
+            analysis_node_width_scale("Pitch", &["rmvpe".to_string(), "fcpe".to_string()]),
+            1.0
+        );
+        assert_eq!(
+            analysis_node_width_scale("Note & boundary evidence fusion", &["game".to_string()]),
+            1.0
+        );
     }
 
     #[test]
@@ -273,6 +291,63 @@ mod node_duration_copy_tests {
     fn a_corrupt_finished_before_started_reads_as_not_yet_available() {
         let r = route(Some(1_700_000_004_500), Some(1_700_000_000_000));
         assert_eq!(node_duration_copy(Some(&r)), "Not yet available");
+    }
+}
+
+#[cfg(test)]
+mod selected_worker_task_text_tests {
+    //! §8: the full worker task id is shown only in the detailed Inspect
+    //! view, never on the default compact card
+    //! (see `nodes::measured_work_unit_progress`'s own test for that half).
+    use super::selected_worker_task_text;
+
+    fn route(worker_task_id: Option<&str>) -> app_core::AnalysisStageRoute {
+        app_core::AnalysisStageRoute {
+            stage: "pitch".to_string(),
+            node_id: Some("pitch.extract".to_string()),
+            engine_node_id: Some("pitch".to_string()),
+            capability_id: Some("pitch.track".to_string()),
+            node_event: None,
+            operation: String::new(),
+            implementation: String::new(),
+            model: String::new(),
+            stage_progress: 100,
+            requested_device: String::new(),
+            actual_device: String::new(),
+            fallback_from: None,
+            fallback_reason: None,
+            backend_fallback_from: None,
+            backend_fallback_reason: None,
+            binding_kind: None,
+            committed_outputs: Vec::new(),
+            input_revision_ids: Vec::new(),
+            started_at_ms: None,
+            finished_at_ms: None,
+            event_at_ms: None,
+            work_units_completed: None,
+            work_units_total: None,
+            worker_task_id: worker_task_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn no_selected_route_reads_as_not_available() {
+        assert_eq!(selected_worker_task_text(None), "Not available");
+    }
+
+    #[test]
+    fn a_route_without_a_worker_task_id_reads_as_not_available() {
+        let r = route(None);
+        assert_eq!(selected_worker_task_text(Some(&r)), "Not available");
+    }
+
+    #[test]
+    fn a_real_worker_task_id_is_shown_in_full() {
+        let r = route(Some("studio-9f1c2a7e4b3d5061"));
+        assert_eq!(
+            selected_worker_task_text(Some(&r)),
+            "studio-9f1c2a7e4b3d5061"
+        );
     }
 }
 

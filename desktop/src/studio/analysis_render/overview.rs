@@ -278,145 +278,6 @@ fn spawn_analysis_empty_canvas(
         });
 }
 
-fn spawn_analysis_history_below_graph(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    session: &StudioSessionView<'_>,
-    theme: &StudioTheme,
-    live_available: bool,
-) {
-    let history_items = session
-        .analysis_history
-        .iter()
-        .filter(|history| {
-            session
-                .selected_song
-                .as_ref()
-                .is_none_or(|hash| hash == &history.file_hash)
-        })
-        .take(8)
-        .collect::<Vec<_>>();
-    parent
-        .spawn((
-            Node {
-                width: percent(100),
-                flex_direction: FlexDirection::Column,
-                margin: UiRect::top(px(22)),
-                padding: UiRect::axes(px(12), px(10)),
-                row_gap: px(8),
-                border: UiRect::all(px(1)),
-                border_radius: studio_card_radius(),
-                ..default()
-            },
-            studio_card_background(theme),
-            studio_card_border(theme),
-        ))
-        .with_children(|history| {
-            history
-                .spawn(Node {
-                    width: percent(100),
-                    align_items: AlignItems::Center,
-                    column_gap: px(8),
-                    flex_wrap: FlexWrap::Wrap,
-                    row_gap: px(5),
-                    ..default()
-                })
-                .with_children(|heading| {
-                    spawn_text(heading, font.clone(), "RECENT RUNS", 8.0, theme.primary);
-                    heading.spawn(Node {
-                        flex_grow: 1.0,
-                        ..default()
-                    });
-                    if live_available && selected_history_for_song(session).is_some() {
-                        spawn_text_button(
-                            heading,
-                            font.clone(),
-                            theme,
-                            "Back to live",
-                            8.0,
-                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(None)),
-                        );
-                    }
-                    if session.pending_analysis_history_clear {
-                        spawn_text(
-                            heading,
-                            font.clone(),
-                            "Delete all saved runs?",
-                            8.0,
-                            theme.destructive,
-                        );
-                        spawn_text_button(
-                            heading,
-                            font.clone(),
-                            theme,
-                            "Cancel",
-                            8.0,
-                            UiAction::from(AnalysisCommand::CancelClearAnalysisHistory),
-                        );
-                        spawn_text_button(
-                            heading,
-                            font.clone(),
-                            theme,
-                            "Delete runs",
-                            8.0,
-                            UiAction::from(AnalysisCommand::ConfirmClearAnalysisHistory),
-                        );
-                    } else if !history_items.is_empty() {
-                        spawn_text_button(
-                            heading,
-                            font.clone(),
-                            theme,
-                            "Clear runs…",
-                            8.0,
-                            UiAction::from(AnalysisCommand::RequestClearAnalysisHistory),
-                        );
-                    }
-                });
-            if history_items.is_empty() {
-                spawn_text(
-                    history,
-                    font,
-                    "No previous analysis runs for this song.",
-                    9.0,
-                    theme.muted_foreground,
-                );
-                return;
-            }
-            history
-                .spawn(Node {
-                    width: percent(100),
-                    flex_wrap: FlexWrap::Wrap,
-                    column_gap: px(6),
-                    row_gap: px(6),
-                    ..default()
-                })
-                .with_children(|items| {
-                    for item in &history_items {
-                        let selected = session.selected_analysis_history == Some(item.id);
-                        let progress = if item.status == "completed" {
-                            100
-                        } else {
-                            item.snapshot.overall_progress.clamp(0, 100)
-                        };
-                        spawn_text_button(
-                            items,
-                            font.clone(),
-                            theme,
-                            format!(
-                                "{}{} · {} · {}%",
-                                if selected { "• " } else { "" },
-                                item.title,
-                                item.status.to_ascii_uppercase(),
-                                progress
-                            ),
-                            8.0,
-                            UiAction::from(AnalysisCommand::SelectAnalysisHistory(Some(item.id))),
-                        );
-                    }
-                });
-        });
-}
-
 pub(crate) fn spawn_analysis_session_overview(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -588,9 +449,7 @@ fn spawn_analysis_session_surface(
         100
     } else if let Some(route) = selected_route {
         if task.live.as_ref().is_some_and(|live| live.engine.is_some()) {
-            measured_work_unit_progress(route)
-                .map(|(percent, _)| percent)
-                .unwrap_or(0)
+            worker_reported_progress(route).unwrap_or(0)
         } else {
             route.stage_progress.clamp(0, 100)
         }
@@ -715,10 +574,8 @@ fn spawn_analysis_session_surface(
         route_selected_progress,
         route_selected_status,
     );
-    let selected_progress_is_measured = selected_status == "COMPLETE"
-        || selected_route
-            .and_then(measured_work_unit_progress)
-            .is_some()
+    let selected_progress_is_reported = selected_status == "COMPLETE"
+        || selected_route.and_then(worker_reported_progress).is_some()
         || task.live.as_ref().is_none_or(|live| live.engine.is_none());
     let selected_fallback_text = selected_device_fallback
         .map(|(from, reason)| format!("Device: {from} -> current ({reason})"))
@@ -728,6 +585,7 @@ fn spawn_analysis_session_surface(
         })
         .unwrap_or_else(|| "None".to_string());
     let selected_duration_text = node_duration_copy(selected_route);
+    let selected_worker_task_text = selected_worker_task_text(selected_route);
     let selected_error_text = if viewing_history {
         history_error
             .clone()
@@ -799,23 +657,38 @@ fn spawn_analysis_session_surface(
                     });
             }
 
-            let active_node_progress = task.live.as_ref().and_then(|live| {
-                let node_id = live.node_id.as_deref()?;
-                live.stage_routes.iter().rev().find_map(|route| {
-                    (route.node_id.as_deref() == Some(node_id)
-                        && route.finished_at_ms.is_none()
-                        && route.node_event.as_deref() == Some("node_progress"))
-                    .then(|| measured_work_unit_progress(route).map(|(percent, _)| percent))
-                    .flatten()
-                })
-            });
             if !inspect_only {
                 // Every node and binding comes from the compiled Processing Studio
                 // workflow selected above. Layout receives arbitrary workflow ids
                 // and uses only topology plus compiled metadata.
                 let render_graph = authoritative_render_graph.clone();
                 let locale = effective_ui_locale(session.config);
-                let layout_nodes = render_graph
+                let mode = analysis_graph_mode(viewing_history, active_task.is_some());
+                let counts = analysis_graph_node_counts(&render_graph.nodes);
+                let overall_progress = if let Some(history) = history {
+                    Some(if history.status == "completed" {
+                        100
+                    } else {
+                        history.snapshot.overall_progress.clamp(0, 100)
+                    })
+                } else {
+                    task.live
+                        .as_ref()
+                        .map(|live| live.overall_progress.clamp(0, 100))
+                };
+                let current_label = (mode == AnalysisGraphMode::Live).then_some(operation);
+                spawn_analysis_graph_context_bar(
+                    session_card,
+                    font.clone(),
+                    theme,
+                    mode,
+                    overall_progress,
+                    current_label,
+                    counts,
+                );
+
+                let mut steps = std::collections::BTreeMap::new();
+                let specs = render_graph
                     .nodes
                     .iter()
                     .enumerate()
@@ -834,239 +707,351 @@ fn spawn_analysis_session_surface(
                             &detail,
                             order_hint,
                         );
-                        let (column_span, row_span) =
-                            analysis_node_tile_span(node.capability_id.as_deref());
-                        spec.width *= column_span as f32;
-                        spec.height *= row_span as f32;
-                        (spec, workflow_graph_step(node.capability_id.as_deref()))
+                        // §5: width may widen for real multi-model/long-label
+                        // content; height never varies -- no execution state
+                        // or selection enters this at all.
+                        spec.width *= analysis_node_width_scale(&node.label, &node.model_ids);
+                        steps.insert(
+                            node.id.clone(),
+                            workflow_graph_step(node.capability_id.as_deref()),
+                        );
+                        spec
                     })
                     .collect::<Vec<_>>();
                 let edge_pairs = render_graph.edge_pairs();
                 let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
-                // The first frame uses a close reference fallback. Once Bevy
-                // reports the real viewport, the Metro packer consumes that
-                // exact space and only grows vertically when the tiles need it.
-                let graph_viewport_height = if session.analysis_graph_viewport_height > 16.0 {
-                    session.analysis_graph_viewport_height
-                } else {
-                    780.0
-                };
-                let target_canvas_width = if session.analysis_graph_viewport_width > 16.0 {
-                    (session.analysis_graph_viewport_width - ANALYSIS_GRAPH_FIT_PADDING).max(780.0)
-                } else {
-                    1180.0
-                };
-                let target_canvas_height =
-                    (graph_viewport_height - ANALYSIS_GRAPH_FIT_PADDING).max(500.0);
-                let layout = metro_tile_layout_with_specs(
-                    &layout_nodes,
-                    &edge_pairs,
-                    target_canvas_width,
-                    target_canvas_height,
-                );
-                let canvas_width = layout
+                let routed = cached_canvas_routed_layout_with_specs(&specs, &edge_pairs);
+                let canvas_width = routed
                     .as_ref()
-                    .map_or(780.0, |layout| layout.canvas_width)
+                    .map_or(780.0, |routed| routed.layout.canvas_width)
                     .max(780.0);
-                let canvas_height = layout
+                let canvas_height = routed
                     .as_ref()
-                    .map_or(450.0, |layout| layout.canvas_height)
+                    .map_or(450.0, |routed| routed.layout.canvas_height)
                     .max(450.0);
                 let scaled_canvas_width = canvas_width * zoom;
                 let scaled_canvas_height = canvas_height * zoom;
-                // Match the reference composition: center the actual DAG in a
-                // full-page workspace, keep the legend attached to that page,
-                // and let history begin below the first fold.
+                // Center the fitted graph inside the viewport when it is
+                // smaller than the available space (direct feedback that a
+                // small/simple workflow sat pinned to the top-left with
+                // dead space on the right and bottom). `.max(0.0)` keeps
+                // this a no-op the moment content is at least as big as the
+                // viewport, so the documented FlexStart/full-reachability
+                // guarantee right below is untouched whenever scrolling is
+                // actually needed.
+                let viewport_width = if session.analysis_graph_viewport_width > 16.0 {
+                    session.analysis_graph_viewport_width
+                } else {
+                    scaled_canvas_width
+                };
+                let viewport_height = if session.analysis_graph_viewport_height > 16.0 {
+                    session.analysis_graph_viewport_height
+                } else {
+                    scaled_canvas_height
+                };
+                let horizontal_slack = ((viewport_width - scaled_canvas_width) / 2.0).max(0.0);
+                let vertical_slack = ((viewport_height - scaled_canvas_height) / 2.0).max(0.0);
+                let selected_lineage = session.selected_analysis_node.as_deref().and_then(|id| {
+                    let node_id = app_core::AnalysisNodeId::new(id);
+                    render_graph
+                        .node(&node_id)
+                        .map(|_| compute_analysis_lineage(&edge_pairs, &node_id))
+                });
+                let follow_available = analysis_graph_follow_available(mode);
+                // Center the actual DAG in a full-page workspace and keep the
+                // legend attached. Run history stays in the Activity panel so
+                // this surface remains one fitted 1080p composition.
 
                 session_card
-                    .spawn((
-                        AnalysisGraphViewport {
-                            unscaled_width: canvas_width,
-                            unscaled_height: canvas_height,
-                        },
-                        UiPointerApi(&["ui.pointer.analysis_viewport_pan"]),
-                        ScrollPosition(Vec2::new(
-                            session.analysis_graph_scroll_offset,
-                            session.analysis_graph_vertical_scroll_offset,
-                        )),
-                        Node {
-                            width: percent(100),
-                            min_width: px(0),
-                            max_width: percent(100),
-                            height: vh(ANALYSIS_GRAPH_VIEWPORT_VH),
-                            min_height: px(520),
-                            flex_shrink: 0.0,
-                            // An oversized scroll child must start at the
-                            // viewport origin. Centering it makes its left/top
-                            // half unreachable at Fit's minimum zoom, which is
-                            // why the old canvas opened in the middle of the
-                            // vocal chain instead of at Preflight.
-                            justify_content: JustifyContent::FlexStart,
-                            align_items: AlignItems::FlexStart,
-                            overflow: Overflow::scroll(),
-                            border: UiRect::all(px(1)),
-                            border_radius: studio_card_radius(),
-                            ..default()
-                        },
-                        studio_card_background(theme),
-                        studio_card_border(theme),
-                    ))
-                    .with_children(|viewport| {
-                        viewport
-                            .spawn(Node {
-                                width: percent(100),
-                                min_width: px(scaled_canvas_width),
-                                height: px(graph_viewport_height),
-                                min_height: px(scaled_canvas_height),
-                                flex_shrink: 0.0,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            })
-                            .with_children(|canvas| {
-                                canvas
+                    .spawn(Node {
+                        position_type: PositionType::Relative,
+                        width: percent(100),
+                        min_width: px(0),
+                        max_width: percent(100),
+                        min_height: px(0),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Column,
+                        ..default()
+                    })
+                    .with_children(|frame| {
+                        frame
+                            .spawn((
+                                AnalysisGraphViewport {
+                                    unscaled_width: canvas_width,
+                                    unscaled_height: canvas_height,
+                                },
+                                UiPointerApi(&["ui.pointer.analysis_viewport_pan"]),
+                                ScrollPosition(Vec2::new(
+                                    session.analysis_graph_scroll_offset,
+                                    session.analysis_graph_vertical_scroll_offset,
+                                )),
+                                Node {
+                                    width: percent(100),
+                                    min_width: px(0),
+                                    max_width: percent(100),
+                                    // §12: flex_grow lets the viewport claim
+                                    // the extra height the full-width legend
+                                    // row used to occupy below it -- that
+                                    // row is now a compact in-viewport
+                                    // overlay (§11) instead of consuming its
+                                    // own flex slot.
+                                    height: vh(ANALYSIS_GRAPH_VIEWPORT_VH),
+                                    min_height: px(520),
+                                    flex_grow: 1.0,
+                                    flex_shrink: 0.0,
+                                    // An oversized scroll child must start at the
+                                    // viewport origin. Centering it makes its left/top
+                                    // half unreachable at Fit's minimum zoom, which is
+                                    // why the old canvas opened in the middle of the
+                                    // vocal chain instead of at Preflight.
+                                    justify_content: JustifyContent::FlexStart,
+                                    align_items: AlignItems::FlexStart,
+                                    overflow: Overflow::scroll(),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: studio_card_radius(),
+                                    ..default()
+                                },
+                                studio_card_background(theme),
+                                studio_card_border(theme),
+                            ))
+                            .with_children(|viewport| {
+                                viewport
                                     .spawn(Node {
-                                        position_type: PositionType::Relative,
-                                        width: percent(100),
-                                        min_width: px(scaled_canvas_width),
-                                        height: px(graph_viewport_height),
+                                        width: px(scaled_canvas_width),
+                                        height: px(scaled_canvas_height),
+                                        margin: UiRect {
+                                            left: px(horizontal_slack),
+                                            top: px(vertical_slack),
+                                            ..default()
+                                        },
                                         flex_shrink: 0.0,
+                                        align_items: AlignItems::Center,
                                         ..default()
                                     })
-                                    .with_children(|graph| {
-                                        let Some(layout) = layout.as_ref() else {
-                                            return;
-                                        };
-                                        // Topological order is retained by the
-                                        // tile packer; the dense color surface
-                                        // replaces connector rails and lane
-                                        // chrome with direct operation cards.
-                                        for node in &render_graph.nodes {
-                                            let Some(rect) = layout.rect(&node.id) else {
-                                                continue;
-                                            };
-                                            let bounds = zoomed_box(rect, zoom);
-                                            let lineage_dimmed = false;
-                                            match node.kind {
-                                                RenderNodeKind::Compute => {
-                                                    let capability_id = node
-                                                        .capability_id
-                                                        .as_deref()
-                                                        .unwrap_or("workflow");
-                                                    let (state, override_text) =
-                                                        graph_node_visual_state(
-                                                            node.state,
-                                                            active_node_progress,
+                                    .with_children(|canvas| {
+                                        canvas
+                                            .spawn(Node {
+                                                position_type: PositionType::Relative,
+                                                width: percent(100),
+                                                min_width: px(scaled_canvas_width),
+                                                height: px(scaled_canvas_height),
+                                                flex_shrink: 0.0,
+                                                ..default()
+                                            })
+                                            .with_children(|graph| {
+                                                // Round-7 feedback: clicking empty
+                                                // canvas clears the selected node (and
+                                                // its lineage highlight). Spawned
+                                                // first (and left unstyled) so real
+                                                // nodes/edges/bands paint over it and
+                                                // only genuinely blank space is
+                                                // reachable.
+                                                graph.spawn((
+                                                    UiPointerApi(&[
+                                                        "ui.pointer.dismiss_analysis_selection",
+                                                    ]),
+                                                    Node {
+                                                        position_type: PositionType::Absolute,
+                                                        left: px(0),
+                                                        top: px(0),
+                                                        right: px(0),
+                                                        bottom: px(0),
+                                                        ..default()
+                                                    },
+                                                )).observe(
+                                                    |mut event: On<Pointer<Click>>,
+                                                     mut analysis: ResMut<AnalysisUiState>,
+                                                     mut invalidated: ResMut<UiInvalidated>| {
+                                                        if event.button != PointerButton::Primary {
+                                                            return;
+                                                        }
+                                                        event.propagate(false);
+                                                        if analysis.selected_analysis_node.is_none()
+                                                        {
+                                                            return;
+                                                        }
+                                                        analysis.selected_analysis_node = None;
+                                                        invalidated
+                                                            .invalidate(UiDirtyRegion::Analysis);
+                                                    },
+                                                );
+                                                let Some(routed) = routed.as_ref() else {
+                                                    return;
+                                                };
+                                                let stage_bands = compute_analysis_stage_bands(
+                                                    &routed.layout,
+                                                    &steps,
+                                                );
+                                                spawn_analysis_stage_bands(
+                                                    graph,
+                                                    font.clone(),
+                                                    theme,
+                                                    &stage_bands,
+                                                    zoom,
+                                                );
+                                                spawn_analysis_graph_edges(
+                                                    graph,
+                                                    theme,
+                                                    routed,
+                                                    &render_graph,
+                                                    selected_lineage.as_ref(),
+                                                    zoom,
+                                                );
+                                                // Topological order is retained by the
+                                                // layered layout; real semantic
+                                                // bindings drive both node rank and
+                                                // the edges drawn above.
+                                                for node in &render_graph.nodes {
+                                                    let Some(rect) = routed.layout.rect(&node.id)
+                                                    else {
+                                                        continue;
+                                                    };
+                                                    let bounds = zoomed_box(rect, zoom);
+                                                    let lineage_dimmed =
+                                                        selected_lineage.as_ref().is_some_and(
+                                                            |lineage| !lineage.contains(&node.id),
                                                         );
-                                                    let (mut route, mut warning) =
-                                                        analysis_graph_route_summary(
-                                                            task,
-                                                            node.id.as_str(),
-                                                            node.state == GraphNodeState::Complete,
-                                                        );
-                                                    if let Some(text) = override_text {
-                                                        // Explain why a configured card was not
-                                                        // selected by this exact execution plan.
-                                                        route = not_requested_reason(
-                                                            node.state,
-                                                            capability_id,
-                                                        )
-                                                        .unwrap_or(text)
-                                                        .to_string();
-                                                        warning =
-                                                            node.state == GraphNodeState::Failed;
-                                                    } else if matches!(
-                                                        route.as_str(),
-                                                        "Complete · no runtime trace"
-                                                            | "Awaiting connected inputs"
-                                                    ) {
-                                                        route = node.detail.clone();
-                                                    }
-                                                    if let Some(output) =
-                                                        node.terminal_outputs.first()
-                                                    {
-                                                        let semantic = output
-                                                            .audio_role
-                                                            .as_deref()
-                                                            .map(|role| {
-                                                                format!(
-                                                                    "{} · {role}",
-                                                                    output.semantic_type
-                                                                )
-                                                            })
-                                                            .unwrap_or_else(|| {
-                                                                output.semantic_type.clone()
-                                                            });
-                                                        route = format!(
-                                                            "{route} · {} → {semantic}",
-                                                            output.port
-                                                        );
-                                                    }
-                                                    spawn_workflow_graph_node(
-                                                        graph,
-                                                        font.clone(),
-                                                        theme,
-                                                        WorkflowNodeCardSpec {
-                                                            bounds,
-                                                            capability_id,
-                                                            node_id: node.id.as_str(),
-                                                            file_hash: &task.file_hash,
-                                                            label: &node.label,
-                                                            state,
-                                                            selected: session
-                                                                .selected_analysis_node
+                                                    match node.kind {
+                                                        RenderNodeKind::Compute => {
+                                                            let capability_id = node
+                                                                .capability_id
                                                                 .as_deref()
-                                                                == Some(node.id.as_str()),
-                                                            route: &route,
-                                                            warning,
-                                                            dimmed: lineage_dimmed,
-                                                            zoom,
-                                                            input_ports: 0,
-                                                            output_ports: 0,
-                                                            category: node.category,
-                                                            selected_run_id: session
-                                                                .selected_analysis_history,
-                                                        },
-                                                    );
+                                                                .unwrap_or("workflow");
+                                                            let (state, override_text) =
+                                                                graph_node_visual_state(
+                                                                    node.state,
+                                                                    analysis_graph_node_progress(
+                                                                        task, node,
+                                                                    ),
+                                                                );
+                                                            let AnalysisGraphRouteSummary {
+                                                                mut model_ids,
+                                                                runtime: mut route,
+                                                                mut warning,
+                                                            } = analysis_graph_route_summary(
+                                                                task,
+                                                                node,
+                                                                node.state
+                                                                    == GraphNodeState::Complete,
+                                                            );
+                                                            if model_ids.is_empty() {
+                                                                model_ids
+                                                                    .clone_from(&node.model_ids);
+                                                            }
+                                                            if let Some(text) = override_text {
+                                                                // Explain why a configured card was not
+                                                                // selected by this exact execution plan.
+                                                                route = not_requested_reason(
+                                                                    node.state,
+                                                                    capability_id,
+                                                                )
+                                                                .unwrap_or(text)
+                                                                .to_string();
+                                                                warning = node.state
+                                                                    == GraphNodeState::Failed;
+                                                            } else if matches!(
+                                                                route.as_str(),
+                                                                "Complete · no runtime trace"
+                                                                    | "Awaiting connected inputs"
+                                                            ) {
+                                                                route = node.detail.clone();
+                                                            }
+                                                            if let Some(output) =
+                                                                node.terminal_outputs.first()
+                                                            {
+                                                                let semantic = output
+                                                                    .audio_role
+                                                                    .as_deref()
+                                                                    .map(|role| {
+                                                                        format!(
+                                                                            "{} · {role}",
+                                                                            output.semantic_type
+                                                                        )
+                                                                    })
+                                                                    .unwrap_or_else(|| {
+                                                                        output.semantic_type.clone()
+                                                                    });
+                                                                route = format!(
+                                                                    "{route} · {} → {semantic}",
+                                                                    output.port
+                                                                );
+                                                            }
+                                                            spawn_workflow_graph_node(
+                                                                graph,
+                                                                font.clone(),
+                                                                theme,
+                                                                WorkflowNodeCardSpec {
+                                                                    bounds,
+                                                                    capability_id,
+                                                                    node_id: node.id.as_str(),
+                                                                    file_hash: &task.file_hash,
+                                                                    label: &node.label,
+                                                                    model_ids: &model_ids,
+                                                                    state,
+                                                                    selected: session
+                                                                        .selected_analysis_node
+                                                                        .as_deref()
+                                                                        == Some(node.id.as_str()),
+                                                                    route: &route,
+                                                                    warning,
+                                                                    dimmed: lineage_dimmed,
+                                                                    zoom,
+                                                                    input_ports: 0,
+                                                                    output_ports: 0,
+                                                                    category: node.category,
+                                                                },
+                                                            );
+                                                        }
+                                                    }
                                                 }
-                                            }
-                                        }
+                                            });
                                     });
-                            });
-                    })
-                    .observe(
-                        |mut drag: On<Pointer<Drag>>,
-                         ui_scale: Res<UiScale>,
-                         mut analysis: ResMut<AnalysisUiState>,
-                         mut viewports: Query<
-                            (&ComputedNode, &mut ScrollPosition),
-                            With<AnalysisGraphViewport>,
-                        >| {
-                            if drag.button != PointerButton::Primary {
-                                return;
-                            }
-                            drag.propagate(false);
-                            let Ok((computed, mut position)) = viewports.single_mut() else {
-                                return;
-                            };
-                            let size = computed.size() * computed.inverse_scale_factor();
-                            let content = computed.content_size() * computed.inverse_scale_factor();
-                            let delta = drag.delta / ui_scale.0;
-                            position.x =
-                                (position.x - delta.x).clamp(0.0, (content.x - size.x).max(0.0));
-                            position.y =
-                                (position.y - delta.y).clamp(0.0, (content.y - size.y).max(0.0));
-                            analysis.analysis_graph_scroll_offset = position.x;
-                            analysis.analysis_graph_vertical_scroll_offset = position.y;
-                        },
-                    );
-                spawn_analysis_graph_legend(session_card, font.clone(), theme);
-                spawn_analysis_history_below_graph(
-                    session_card,
-                    font.clone(),
-                    session,
-                    theme,
-                    active_task.is_some(),
-                );
+                            })
+                            .observe(
+                                |mut drag: On<Pointer<Drag>>,
+                                 ui_scale: Res<UiScale>,
+                                 mut analysis: ResMut<AnalysisUiState>,
+                                 mut viewports: Query<
+                                    (&ComputedNode, &mut ScrollPosition),
+                                    With<AnalysisGraphViewport>,
+                                >| {
+                                    if drag.button != PointerButton::Primary {
+                                        return;
+                                    }
+                                    drag.propagate(false);
+                                    let Ok((computed, mut position)) = viewports.single_mut()
+                                    else {
+                                        return;
+                                    };
+                                    let size = computed.size() * computed.inverse_scale_factor();
+                                    let content =
+                                        computed.content_size() * computed.inverse_scale_factor();
+                                    let delta = drag.delta / ui_scale.0;
+                                    position.x = (position.x - delta.x)
+                                        .clamp(0.0, (content.x - size.x).max(0.0));
+                                    position.y = (position.y - delta.y)
+                                        .clamp(0.0, (content.y - size.y).max(0.0));
+                                    analysis.analysis_graph_scroll_offset = position.x;
+                                    analysis.analysis_graph_vertical_scroll_offset = position.y;
+                                    // §10: a manual pan always pauses Follow; the
+                                    // user must click Follow again to resume it.
+                                    analysis.analysis_graph_follow_enabled = false;
+                                },
+                            );
+                        // Overlays live outside the scrolling viewport so they
+                        // stay fixed in the frame instead of scrolling away
+                        // with the canvas content.
+                        spawn_analysis_graph_pan_hint(frame, font.clone(), theme);
+                        spawn_analysis_graph_viewport_controls(
+                            frame,
+                            font.clone(),
+                            theme,
+                            zoom,
+                            follow_available && session.analysis_graph_follow_enabled,
+                            follow_available,
+                        );
+                        spawn_analysis_graph_legend(frame, font.clone(), theme);
+                    });
             }
 
             if inspect_only {
@@ -1113,10 +1098,10 @@ fn spawn_analysis_session_surface(
                                 spawn_text(
                                     header,
                                     font.clone(),
-                                    if selected_progress_is_measured {
+                                    if selected_progress_is_reported {
                                         format!("{selected_status} · {selected_progress}%")
                                     } else {
-                                        format!("{selected_status} · measured progress unavailable")
+                                        format!("{selected_status} · progress unavailable")
                                     },
                                     9.0,
                                     if selected_status == "WAITING" {
@@ -1169,6 +1154,7 @@ fn spawn_analysis_session_surface(
                                     ("IMPLEMENTATION", selected_implementation.to_string()),
                                     ("MODEL", selected_model.to_string()),
                                     ("DEVICE", selected_actual_device.to_string()),
+                                    ("WORKER TASK", selected_worker_task_text.clone()),
                                     ("INPUT", selected_input.to_string()),
                                     ("OUTPUT", selected_output.to_string()),
                                     ("DURATION", selected_duration_text.clone()),

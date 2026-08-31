@@ -100,7 +100,7 @@ fn technique_evidence() -> TechniqueEvidenceV1 {
 
 #[test]
 fn fractional_game_midi_is_retained_at_explicit_target_decision() {
-    assert_eq!(FUSION_VERSION, "fusion-v16");
+    assert_eq!(FUSION_VERSION, "fusion-v17");
     let fused = fuse_singing_evidence(
         &[],
         &boundaries(69.25),

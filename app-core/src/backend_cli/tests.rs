@@ -389,7 +389,7 @@ fn runtime_client_configures_observes_resolves_and_clears_the_fusion_adapter() {
             "version": 1,
             "adapter_id": "fusion_agent_adapter",
             "adapter_version": "app-core-smoke",
-            "fusion_protocol_version": 3
+            "fusion_protocol_version": 4
         }))
         .unwrap(),
     )
@@ -416,7 +416,7 @@ fn runtime_client_configures_observes_resolves_and_clears_the_fusion_adapter() {
         resolved.executable,
         std::fs::canonicalize(&adapter).unwrap()
     );
-    assert_eq!(resolved.protocol_version, 3);
+    assert_eq!(resolved.protocol_version, 4);
     client.clear_tool("fusion_agent_adapter").unwrap();
     assert!(
         !launched.exists(),

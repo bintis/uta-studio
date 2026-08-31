@@ -177,17 +177,26 @@ target-relative peer support, bounded endpoint-indexed second-order decoding,
 a first-class hard-boundary pool shared by both selectors, confidence-weighted
 phrase-start relaxation of melody/octave priors only, target-relative Acoustic
 fundamental support, and indexed hard-edge traversal.
-The external Fusion Agent request protocol is version 3 because candidates now
-carry those expanded typed semantics under the complete pool contract. The
+The external Fusion Agent request protocol is version 4. Analysis Engine keeps
+the complete immutable typed pool and its digest, but sends the provider only a
+compact, index-addressed decision projection plus canonical lyrics and the
+normalized hard-boundary set. The adapter exposes those inputs as three scoped
+temporary JSON files and the provider returns candidate indices, which the
+Engine maps back to the full pool before the existing validation path. The
 accepted current identities are therefore:
 
 ```text
 acoustic-dsp-v2
-fusion-v16
+fusion-v17
 hsmm-v15
-fusion-agent-protocol-v3
+fusion-agent-protocol-v4
 finalize-vocal-chart-v3
 ```
+
+`fusion-v17` preserves the selector's immutable candidate pool and chosen path,
+then projects otherwise-unowned selected notes onto their authoritative Timed
+LRC line before chart finalization. This prevents collapsed forced-alignment
+spans from silently deleting measured notes in the middle of a lyric line.
 
 Intermediate identities must not be reused for these semantics. Serialized
 canonical evidence adds backward-compatible optional/default fields for

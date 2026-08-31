@@ -190,7 +190,7 @@ pub(super) fn spawn_fusion_stage_card(
         spawn_wrapped_text(
             lane,
             font.clone(),
-            "Candidate metadata may be sent to its external AI provider; no source audio or project files are included. Any adapter, provider, timeout, cancellation, or validation failure stops analysis without Algorithm fallback.",
+            "Candidate metadata and canonical lyrics may be sent to its external AI provider; no source audio or project files are included. Any adapter, provider, timeout, cancellation, or validation failure stops analysis without Algorithm fallback.",
             8.0,
             theme.editor_warning,
         );

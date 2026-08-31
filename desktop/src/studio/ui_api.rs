@@ -108,6 +108,7 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.close_model_downloads",
     "ui.settings.open_settings_select",
     "ui.settings.select_settings_value",
+    "ui.settings.toggle_model_runtime_select",
     "ui.settings.set_model_backend",
     "ui.settings.set_model_device",
     "ui.settings.set_analysis_quality",
@@ -125,6 +126,8 @@ const SETTINGS_COMMANDS: &[&str] = &[
     "ui.settings.request_clear_cache",
     "ui.settings.cancel_clear_cache",
     "ui.settings.confirm_clear_cache",
+    "ui.settings.select_fusion_provider",
+    "ui.settings.clear_fusion_provider",
     "ui.settings.choose_fusion_agent_adapter",
     "ui.settings.clear_fusion_agent_adapter",
 ];
@@ -153,6 +156,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.add_optional_workflow_card",
     "ui.analysis.set_workflow_parameter",
     "ui.analysis.set_workflow_policy",
+    "ui.analysis.set_workflow_preprocessing_enabled",
     "ui.analysis.set_workflow_skip_if_unchanged",
     "ui.analysis.adjust_workflow_priority",
     "ui.analysis.rebind_workflow_analyzer",
@@ -164,6 +168,7 @@ const ANALYSIS_COMMANDS: &[&str] = &[
     "ui.analysis.toggle_analysis_model_panel",
     "ui.analysis.close_analysis_model_panel",
     "ui.analysis.fit_analysis_graph",
+    "ui.analysis.toggle_analysis_graph_follow",
     "ui.analysis.dismiss_analysis_node_context",
     "ui.analysis.request_clear_analysis_history",
     "ui.analysis.cancel_clear_analysis_history",
@@ -204,7 +209,6 @@ const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.use_lrclib_plain",
     "ui.editor.use_lrclib_timed",
     "ui.editor.save_lyrics_editor",
-    "ui.editor.save_lyrics_editor_and_run_downstream",
     "ui.editor.adjust_transcript_boundary",
     "ui.editor.preview_transcript_at",
     "ui.editor.open_language_editor",
@@ -279,6 +283,7 @@ const POINTER_COMMANDS: &[&str] = &[
     "ui.pointer.transcript_boundary_drag",
     "ui.pointer.editor_viewport_pan",
     "ui.pointer.analysis_viewport_pan",
+    "ui.pointer.dismiss_analysis_selection",
 ];
 
 fn snake_variant(debug: &str) -> String {
@@ -654,6 +659,7 @@ mod tests {
         for command in [
             "ui.settings.toggle_analysis_quantization",
             "ui.analysis.set_workflow_policy",
+            "ui.analysis.set_workflow_preprocessing_enabled",
             "ui.analysis.merge_selected_candidate_phrase",
             "ui.editor.select_waveform_source",
             "ui.editor.select_editor_track",

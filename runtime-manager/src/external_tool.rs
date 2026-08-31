@@ -9,7 +9,7 @@ use crate::store::StorePaths;
 
 pub const FUSION_AGENT_ADAPTER_ID: &str = "fusion_agent_adapter";
 pub const FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT: &str = "uta.fusion_agent_adapter";
-pub const FUSION_AGENT_PROTOCOL_VERSION: u32 = 3;
+pub const FUSION_AGENT_PROTOCOL_VERSION: u32 = 4;
 const EXTERNAL_TOOLS_CONFIG_VERSION: u32 = 1;
 const EXTERNAL_TOOLS_CONFIG_FILE: &str = "external-tools.json";
 
@@ -47,6 +47,11 @@ struct ExternalToolRegistryV1 {
     version: u32,
     #[serde(default)]
     tools: BTreeMap<String, ExternalToolConfigurationV1>,
+    /// Provider identity is persisted separately from executable paths. This
+    /// keeps Studio from owning or serializing a raw adapter path while still
+    /// allowing Runtime Manager to select one of its discovered adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fusion_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +118,51 @@ pub(crate) fn clear_tool_path(paths: &StorePaths, tool_id: &str) -> RuntimeManag
     };
     let mut registry = read_registry(paths)?;
     registry.tools.remove(tool_id);
+    if registry.tools.is_empty() && registry.fusion_provider.is_none() {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|error| {
+                RuntimeManagerError::new(
+                    "publish_failed",
+                    format!("could not clear {}: {error}", path.display()),
+                )
+            })?;
+        }
+        return Ok(());
+    }
+    write_registry(paths, &registry)
+}
+
+pub(crate) fn configured_fusion_provider(
+    paths: &StorePaths,
+) -> RuntimeManagerResult<Option<String>> {
+    Ok(read_registry(paths)?.fusion_provider)
+}
+
+pub(crate) fn configure_fusion_provider(
+    paths: &StorePaths,
+    provider: &str,
+) -> RuntimeManagerResult<()> {
+    if !valid_identity(provider) {
+        return Err(RuntimeManagerError::new(
+            "invalid_resource",
+            "fusion provider id is invalid",
+        ));
+    }
+    let mut registry = read_registry(paths)?;
+    registry.version = EXTERNAL_TOOLS_CONFIG_VERSION;
+    registry.fusion_provider = Some(provider.to_string());
+    write_registry(paths, &registry)
+}
+
+pub(crate) fn clear_fusion_provider(paths: &StorePaths) -> RuntimeManagerResult<()> {
+    let Some(path) = registry_path(paths) else {
+        return Err(RuntimeManagerError::new(
+            "runtime_store_unconfigured",
+            "runtime store is not configured",
+        ));
+    };
+    let mut registry = read_registry(paths)?;
+    registry.fusion_provider = None;
     if registry.tools.is_empty() {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|error| {
@@ -231,6 +281,7 @@ fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistr
             return Ok(ExternalToolRegistryV1 {
                 version: EXTERNAL_TOOLS_CONFIG_VERSION,
                 tools: BTreeMap::new(),
+                fusion_provider: None,
             });
         }
         Err(error) => {
@@ -377,6 +428,7 @@ mod tests {
         let canonical = executable.canonicalize().unwrap();
         let paths = StorePaths::new(root.join("store"));
         configure_tool_path(&paths, FUSION_AGENT_ADAPTER_ID, &executable).unwrap();
+        configure_fusion_provider(&paths, "pi").unwrap();
         assert_eq!(
             configured_tool_path(&paths, FUSION_AGENT_ADAPTER_ID)
                 .unwrap()
@@ -389,6 +441,13 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(
+            configured_fusion_provider(&paths).unwrap().as_deref(),
+            Some("pi"),
+            "clearing the last tool path must preserve provider selection"
+        );
+        clear_fusion_provider(&paths).unwrap();
+        assert_eq!(configured_fusion_provider(&paths).unwrap(), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 

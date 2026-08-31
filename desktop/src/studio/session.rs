@@ -127,6 +127,7 @@ pub(crate) enum PendingLeave {
     Documentation,
     Library(LibraryView),
     OpenSongAnalysis(String),
+    OpenAnalysisHistory(i64),
     OpenSongModelSelection(String),
     OpenProcessingStudio(Option<String>),
 }

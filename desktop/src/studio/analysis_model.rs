@@ -45,11 +45,23 @@ pub(crate) struct RenderNode {
     pub(crate) id: AnalysisNodeId,
     pub(crate) kind: RenderNodeKind,
     pub(crate) label: String,
+    pub(crate) model_ids: Vec<String>,
     pub(crate) detail: String,
     pub(crate) state: GraphNodeState,
     pub(crate) category: GraphNodeCategory,
     pub(crate) capability_id: Option<String>,
     pub(crate) terminal_outputs: Vec<RenderTerminalOutput>,
+    /// Concrete configured executions represented by this purpose card.
+    /// Parallel experts that produce the same semantic evidence are grouped
+    /// here while retaining their independent runtime identities/progress.
+    pub(crate) members: Vec<RenderNodeMember>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RenderNodeMember {
+    pub(crate) id: AnalysisNodeId,
+    pub(crate) model_ids: Vec<String>,
+    pub(crate) state: GraphNodeState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
