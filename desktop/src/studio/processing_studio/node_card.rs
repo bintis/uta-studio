@@ -9,6 +9,7 @@ pub(super) struct NodeCardContext<'a> {
     pub(super) expanded: bool,
     pub(super) embedded: bool,
     pub(super) compact: bool,
+    pub(super) allow_drag_reorder: bool,
     pub(super) definition: &'a app_core::WorkflowDefinition,
     pub(super) analyzer_binding: Option<&'a app_core::AnalyzerBinding>,
     pub(super) audio_sources: &'a [(app_core::WorkflowNodeId, String, String)],
@@ -406,7 +407,7 @@ pub(super) fn spawn_node_card(
             theme.border.with_alpha(0.4)
         }),
     ));
-    if capability.preserves_audio_role {
+    if capability.preserves_audio_role && context.allow_drag_reorder {
         card_entity.insert((
             Button,
             UiPointerApi(&["ui.analysis.move_workflow_node"]),
@@ -450,7 +451,7 @@ pub(super) fn spawn_node_card(
                 },
                 BackgroundColor(Color::NONE),
             ));
-            if capability.preserves_audio_role && expanded {
+            if capability.preserves_audio_role && expanded && context.allow_drag_reorder {
                 header.insert(WorkflowReorderHandle {
                     node_id: node.instance_id.clone(),
                 });
@@ -471,7 +472,10 @@ pub(super) fn spawn_node_card(
                         ..default()
                     })
                     .with_children(|status_group| {
-                        if capability.preserves_audio_role && expanded {
+                        if capability.preserves_audio_role
+                            && expanded
+                            && context.allow_drag_reorder
+                        {
                             spawn_text(
                                 status_group,
                                 font.clone(),

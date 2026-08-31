@@ -6,6 +6,7 @@ mod node_card;
 mod stage_fusion;
 mod stage_header;
 mod status_strip;
+mod workspace_sidebar;
 
 #[derive(Component)]
 pub(crate) struct ProcessingStudioScroll;
@@ -580,15 +581,19 @@ pub(crate) fn spawn_processing_studio(
         .collect::<Vec<_>>();
 
     parent
-        .spawn(Node {
-            min_width: px(0),
-            min_height: px(0),
-            flex_grow: 1.0,
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::all(px(12)),
-            row_gap: px(8),
-            ..default()
-        })
+        .spawn((
+            Node {
+                min_width: px(0),
+                min_height: px(0),
+                height: percent(100),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(12)),
+                row_gap: px(8),
+                ..default()
+            },
+            BackgroundColor(theme.background),
+        ))
         .with_children(|page| {
             status_strip::spawn_workflow_status_strip(page, font.clone(), theme, session, stored);
 
@@ -600,11 +605,12 @@ pub(crate) fn spawn_processing_studio(
                 )),
                 Node {
                     width: percent(100),
+                    height: percent(100),
                     min_width: px(0),
                     min_height: px(0),
                     flex_grow: 1.0,
+                    flex_direction: FlexDirection::Row,
                     column_gap: px(8),
-                    flex_wrap: FlexWrap::NoWrap,
                     align_items: AlignItems::Stretch,
                     overflow: Overflow::scroll_y(),
                     ..default()
@@ -623,6 +629,18 @@ pub(crate) fn spawn_processing_studio(
                     "vocal_bgm_split",
                     "instrumental",
                 );
+                workspace
+                    .spawn(Node {
+                        min_width: px(0),
+                        flex_basis: px(0),
+                        flex_grow: 1.0,
+                        flex_shrink: 1.0,
+                        flex_direction: FlexDirection::Row,
+                        column_gap: px(8),
+                        align_items: AlignItems::FlexStart,
+                        ..default()
+                    })
+                    .with_children(|stages| {
                 for (stage, title, description) in [
                     (
                         1u8,
@@ -650,12 +668,10 @@ pub(crate) fn spawn_processing_studio(
                         4 => 0.92,
                         _ => 1.0,
                     };
-                    workspace
+                    stages
                         .spawn((
                             Node {
                                 min_width: px(0),
-                                min_height: percent(100),
-                                align_self: AlignSelf::Stretch,
                                 flex_basis: px(0),
                                 flex_grow: lane_weight,
                                 flex_shrink: 1.0,
@@ -771,14 +787,6 @@ pub(crate) fn spawn_processing_studio(
                                     stored,
                                     stage_fusion::fusion_adapter_readiness(session),
                                 );
-                                stage_header::spawn_stage_footer(
-                                    lane,
-                                    font.clone(),
-                                    theme,
-                                    "PRODUCT OUTPUT",
-                                    "Candidate singing track",
-                                    "Exact providers, resources and execution order are confirmed in Plan Preview.",
-                                );
                                 return;
                             }
 
@@ -807,10 +815,6 @@ pub(crate) fn spawn_processing_studio(
                                     let provider_count = group.len();
                                     let group_stats =
                                         stage_header::StageCardStats::from_nodes(&group);
-                                    let selected_member = group.iter().copied().find(|member| {
-                                        session.selected_workflow_node.as_ref()
-                                            == Some(&member.instance_id)
-                                    });
                                     for member in &group {
                                         rendered.insert(member.instance_id.clone());
                                     }
@@ -895,6 +899,7 @@ pub(crate) fn spawn_processing_studio(
                                                             expanded: false,
                                                             embedded: true,
                                                             compact: true,
+                                                            allow_drag_reorder: true,
                                                             definition: &stored.definition,
                                                             analyzer_binding: analyzer_bindings
                                                                 .get(&member.instance_id)
@@ -904,26 +909,6 @@ pub(crate) fn spawn_processing_studio(
                                                     );
                                                 }
                                             });
-                                        if let Some(member) = selected_member {
-                                            node_card::spawn_node_card(
-                                                group_card,
-                                                font.clone(),
-                                                theme,
-                                                member,
-                                                capability,
-                                                node_card::NodeCardContext {
-                                                    selected: true,
-                                                    expanded: true,
-                                                    embedded: true,
-                                                    compact: false,
-                                                    definition: &stored.definition,
-                                                    analyzer_binding: analyzer_bindings
-                                                        .get(&member.instance_id)
-                                                        .copied(),
-                                                    audio_sources: &audio_sources,
-                                                },
-                                            );
-                                        }
                                     });
                                 } else {
                                     let selected = session.selected_workflow_node.as_ref()
@@ -936,9 +921,10 @@ pub(crate) fn spawn_processing_studio(
                                         capability,
                                         node_card::NodeCardContext {
                                             selected,
-                                            expanded: selected,
+                                            expanded: false,
                                             embedded: false,
                                             compact: stage == 3,
+                                            allow_drag_reorder: true,
                                             definition: &stored.definition,
                                             analyzer_binding: analyzer_bindings
                                                 .get(&node.instance_id)
@@ -1093,31 +1079,18 @@ pub(crate) fn spawn_processing_studio(
                                     });
                                 }
                             }
-                            let (output, output_detail) = match stage {
-                                1 => (
-                                    "Vocal + Instrumental audio",
-                                    "Typed audio branches feed lyric, pitch and note analysis.",
-                                ),
-                                2 => (
-                                    "Canonical lyrics + word timing",
-                                    "Aligned lyric evidence feeds note and candidate construction.",
-                                ),
-                                3 => (
-                                    "Pitch, boundary, technique + acoustic evidence",
-                                    "Enabled and conditional experts remain distinct evidence providers.",
-                                ),
-                                _ => unreachable!("Stage 4 returns after rendering its product output"),
-                            };
-                            stage_header::spawn_stage_footer(
-                                lane,
-                                font.clone(),
-                                theme,
-                                "STAGE OUTPUT",
-                                output,
-                                output_detail,
-                            );
                         });
                 }
+                    });
+                workspace_sidebar::spawn_workflow_sidebar(
+                    workspace,
+                    font.clone(),
+                    theme,
+                    session,
+                    stored,
+                    &capabilities,
+                    &audio_sources,
+                );
             });
         });
 }
