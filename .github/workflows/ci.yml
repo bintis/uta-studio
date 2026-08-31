@@ -133,7 +133,7 @@ jobs:
           scripts/wayland-smoke.sh target/debug/uta-studio smoke/ja-large-font.png ja 960x720 140
 
       - name: Upload Wayland smoke evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wayland-smoke-screenshots
           path: smoke/*.png

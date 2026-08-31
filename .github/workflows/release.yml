@@ -97,7 +97,7 @@ jobs:
           ls -lh "${artifact}.bin"
 
       - name: Upload portable Linux package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-portable-package
           path: uta-studio-${{ needs.metadata.outputs.version }}-x86_64-linux.bin
@@ -293,7 +293,7 @@ jobs:
           ls -lh "$package"
 
       - name: Upload DEB package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-deb-package
           path: uta-studio_${{ needs.metadata.outputs.version }}-1_amd64.deb
@@ -519,7 +519,7 @@ jobs:
           ls -lh "$output"
 
       - name: Upload RPM package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-linux-rpm-package
           path: uta-studio-${{ needs.metadata.outputs.version }}-1.x86_64.rpm
@@ -572,7 +572,7 @@ jobs:
           Compress-Archive -Path "$root/*" -DestinationPath "uta-studio-$version-x86_64-windows.zip"
 
       - name: Upload Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: uta-studio-${{ needs.metadata.outputs.version }}-windows-package
           path: uta-studio-${{ needs.metadata.outputs.version }}-x86_64-windows.zip
