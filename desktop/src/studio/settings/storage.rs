@@ -16,33 +16,60 @@ pub(crate) fn spawn_storage_settings(
         "Storage",
         "Manage watched folders and generated data. Your source media is never moved or deleted.",
     );
-    spawn_watched_folders_setting(parent, font.clone(), session, theme);
+    spawn_settings_group(
+        parent,
+        font.clone(),
+        theme,
+        "LIBRARY LOCATIONS",
+        "Folders scanned into the library. Source media remains in place and is never moved or deleted.",
+        |group| {
+            spawn_watched_folders_setting(group, font.clone(), session, theme);
+        },
+    );
     let export_path = session
         .config
         .export_path
         .as_ref()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Use the last folder chosen by the system dialog".to_string());
-    spawn_setting_row_with_actions(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "Default export folder",
-        format!(
-            "Every format opens Save As here first. You can still choose another folder for each export.\n\n{export_path}"
-        ),
-        vec![
-            (
-                "Choose…".to_string(),
-                UiAction::from(LibraryCommand::ChooseExportFolder),
-            ),
-            (
-                "Use system default".to_string(),
-                UiAction::from(LibraryCommand::ClearExportFolder),
-            ),
-        ],
+        "EXPORTS",
+        "Default location used by Save As while preserving a per-export choice.",
+        |group| {
+            spawn_setting_row_with_actions(
+                group,
+                font.clone(),
+                theme,
+                "Default export folder",
+                format!(
+                    "Every format opens Save As here first. You can still choose another folder for each export.\n\n{export_path}"
+                ),
+                vec![
+                    (
+                        "Choose…".to_string(),
+                        UiAction::from(LibraryCommand::ChooseExportFolder),
+                    ),
+                    (
+                        "Use system default".to_string(),
+                        UiAction::from(LibraryCommand::ClearExportFolder),
+                    ),
+                ],
+            );
+        },
     );
-    spawn_storage_usage_row(parent, font.clone(), session.config, theme, cache_stats);
+    spawn_settings_group(
+        parent,
+        font.clone(),
+        theme,
+        "GENERATED DATA",
+        "Generated song artifacts and installed model usage. Source media is not included.",
+        |group| {
+            spawn_storage_usage_row(group, font.clone(), session.config, theme, cache_stats);
+        },
+    );
 }
 
 pub(crate) fn spawn_storage_usage_row(

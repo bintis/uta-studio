@@ -16,7 +16,7 @@ pub(crate) fn spawn_settings_header_toolbar(
             parent,
             font.clone(),
             theme,
-            "Return to model selection",
+            "Song analysis profile",
             UiAction::from(AnalysisCommand::OpenSongModelSelection(file_hash.clone())),
         );
     }
@@ -67,28 +67,56 @@ pub(crate) fn spawn_settings(
             settings
                 .spawn((
                     Node {
-                        width: px(224),
+                        width: px(244),
                         height: percent(100),
                         flex_shrink: 0.0,
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::axes(px(24), px(16)),
-                        row_gap: px(4),
+                        padding: UiRect::axes(px(18), px(16)),
+                        row_gap: px(5),
                         border: UiRect::right(px(1)),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.38)),
+                    BackgroundColor(theme.card.with_alpha(0.28)),
                     BorderColor::all(theme.border.with_alpha(0.26)),
                 ))
                 .with_children(|nav| {
+                    spawn_text(nav, font.clone(), "SETTINGS", 8.0, theme.primary);
+                    spawn_wrapped_text(
+                        nav,
+                        font.clone(),
+                        "Preferences, storage and execution defaults.",
+                        8.0,
+                        theme.muted_foreground,
+                    );
                     nav.spawn(Node {
-                        height: px(6),
+                        height: px(10),
                         ..default()
                     });
-                    for (tab, icon, label) in [
-                        (SettingsTab::General, UiIcon::Monitor, "General"),
-                        (SettingsTab::Storage, UiIcon::Database, "Storage"),
-                        (SettingsTab::Models, UiIcon::Box, "Models & runtime"),
-                        (SettingsTab::Analysis, UiIcon::Sparkles, "Analysis"),
+                    for (tab, icon, label, subtitle) in [
+                        (
+                            SettingsTab::General,
+                            UiIcon::Monitor,
+                            "General",
+                            "Appearance, language and help",
+                        ),
+                        (
+                            SettingsTab::Storage,
+                            UiIcon::Database,
+                            "Storage",
+                            "Library folders and generated data",
+                        ),
+                        (
+                            SettingsTab::Models,
+                            UiIcon::Box,
+                            "Models & runtime",
+                            "Resources, acceleration and adapters",
+                        ),
+                        (
+                            SettingsTab::Analysis,
+                            UiIcon::Sparkles,
+                            "Analysis",
+                            "Defaults and strategy for future runs",
+                        ),
                     ] {
                         spawn_settings_tab(
                             nav,
@@ -98,6 +126,7 @@ pub(crate) fn spawn_settings(
                             tab,
                             icon,
                             label,
+                            subtitle,
                             session.settings_tab == tab,
                         );
                     }
@@ -129,7 +158,7 @@ pub(crate) fn spawn_settings(
                         overflow: Overflow::scroll_y(),
                         ..default()
                     },
-                    BackgroundColor(theme.card.with_alpha(0.54)),
+                    BackgroundColor(theme.background),
                 ))
                 .with_children(|content| {
                     // A scrollable flex column otherwise shrinks its direct
@@ -145,6 +174,8 @@ pub(crate) fn spawn_settings(
                                 align_self: AlignSelf::Center,
                                 flex_shrink: 0.0,
                                 flex_direction: FlexDirection::Column,
+                                row_gap: px(14),
+                                padding: UiRect::bottom(px(24)),
                                 ..default()
                             },
                         ))
@@ -226,6 +257,7 @@ pub(crate) fn spawn_settings_tab(
     tab: SettingsTab,
     icon: UiIcon,
     label: &'static str,
+    subtitle: &'static str,
     active: bool,
 ) {
     parent
@@ -234,14 +266,23 @@ pub(crate) fn spawn_settings_tab(
             UiAction::from(SettingsCommand::SettingsTab(tab)),
             Node {
                 width: percent(100),
-                height: px(36),
+                min_height: px(50),
                 align_items: AlignItems::Center,
-                padding: UiRect::horizontal(px(12)),
-                border: UiRect::left(px(1)),
+                padding: UiRect::axes(px(10), px(7)),
+                border: UiRect::left(px(2)),
+                border_radius: BorderRadius::all(px(6)),
                 ..default()
             },
-            BackgroundColor(Color::NONE),
-            BorderColor::all(if active { theme.primary } else { Color::NONE }),
+            BackgroundColor(if active {
+                theme.primary.with_alpha(0.08)
+            } else {
+                Color::NONE
+            }),
+            BorderColor::all(if active {
+                theme.primary.with_alpha(0.9)
+            } else {
+                Color::NONE
+            }),
         ))
         .with_children(|row| {
             let color = if active {
@@ -249,22 +290,42 @@ pub(crate) fn spawn_settings_tab(
             } else {
                 theme.muted_foreground
             };
-            spawn_icon(row, icons, icon, 15.0, color);
+            spawn_icon(row, icons, icon, 16.0, color);
             row.spawn(Node {
-                width: px(9),
+                width: px(10),
                 ..default()
             });
-            spawn_text(
-                row,
-                font,
-                label,
-                11.0,
-                if active {
-                    theme.foreground.with_alpha(0.78)
-                } else {
-                    theme.muted_foreground
-                },
-            );
+            row.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(1),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(
+                    copy,
+                    font.clone(),
+                    label,
+                    10.5,
+                    if active {
+                        theme.foreground
+                    } else {
+                        theme.foreground.with_alpha(0.76)
+                    },
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    subtitle,
+                    7.2,
+                    if active {
+                        theme.muted_foreground.with_alpha(0.9)
+                    } else {
+                        theme.muted_foreground.with_alpha(0.72)
+                    },
+                );
+            });
         });
 }
 
@@ -281,18 +342,17 @@ pub(crate) fn spawn_settings_header(
             Node {
                 width: percent(100),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(4),
-                padding: UiRect::bottom(px(20)),
-                margin: UiRect::bottom(px(6)),
+                row_gap: px(3),
+                padding: UiRect::bottom(px(18)),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
-            BorderColor::all(theme.border.with_alpha(0.55)),
+            BorderColor::all(theme.border.with_alpha(0.42)),
         ))
         .with_children(|header| {
-            spawn_text(header, font.clone(), eyebrow, 8.0, theme.primary);
-            spawn_text(header, font.clone(), title, 20.0, theme.foreground);
-            spawn_wrapped_text(header, font, description, 10.0, theme.muted_foreground);
+            spawn_text(header, font.clone(), eyebrow, 7.8, theme.primary);
+            spawn_text(header, font.clone(), title, 22.0, theme.foreground);
+            spawn_wrapped_text(header, font, description, 9.5, theme.muted_foreground);
         });
 }
 
@@ -311,78 +371,105 @@ pub(crate) fn spawn_general_settings(
         "General",
         "Window behavior and diagnostic tools.",
     );
-    spawn_switch_setting_row(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "Dark mode",
-        "Enable a dark palette across the application.",
-        session.config.dark_mode.unwrap_or(false),
-        UiAction::from(SettingsCommand::ToggleTheme),
-    );
-    spawn_switch_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Fullscreen workspace",
-        if session.config.fullscreen.unwrap_or(false) {
-            "The editor fills this display."
-        } else {
-            "The app uses a standard window."
+        "APPEARANCE & WINDOW",
+        "Theme, scale and how Uta! Studio uses this display.",
+        |group| {
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Dark mode",
+                "Enable a dark palette across the application.",
+                session.config.dark_mode.unwrap_or(false),
+                UiAction::from(SettingsCommand::ToggleTheme),
+            );
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Fullscreen workspace",
+                if session.config.fullscreen.unwrap_or(false) {
+                    "The editor fills this display."
+                } else {
+                    "The app uses a standard window."
+                },
+                session.config.fullscreen.unwrap_or(false),
+                UiAction::from(AppCommand::ToggleFullscreen),
+            );
+            spawn_shift_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Font size",
+                "Set the base UI font size. The interface is scaled using this size (10px–18px), which maps to 80%–140%.",
+                format!(
+                    "{}px",
+                    ui_font_size_percent_to_points(session.config.font_scale_percent())
+                ),
+                UiAction::from(SettingsCommand::AdjustUiFontScale(-1)),
+                UiAction::from(SettingsCommand::AdjustUiFontScale(1)),
+            );
         },
-        session.config.fullscreen.unwrap_or(false),
-        UiAction::from(AppCommand::ToggleFullscreen),
     );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons,
-        theme,
-        "Interface language",
-        "Choose the language used by Uta! Studio. System default follows the locale provided by your operating environment.",
-        SettingsSelectKind::UiLanguage,
-        session,
-    );
-    spawn_setting_row(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "User guide",
-        "Open the built-in offline documentation center. F1 opens context help from the current workspace.",
-        Some(("Open user guide", UiAction::from(AppCommand::Documentation))),
+        "LANGUAGE & HELP",
+        "Interface language and offline help resources.",
+        |group| {
+            spawn_select_setting_row(
+                group,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Interface language",
+                "Choose the language used by Uta! Studio. System default follows the locale provided by your operating environment.",
+                SettingsSelectKind::UiLanguage,
+                session,
+            );
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "User guide",
+                "Open the built-in offline documentation center. F1 opens context help from the current workspace.",
+                Some(("Open user guide", UiAction::from(AppCommand::Documentation))),
+            );
+        },
     );
-    spawn_setting_row(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "Application log",
-        "Review recent events when analysis, editing, or export needs troubleshooting.",
-        Some(("View log", UiAction::from(AppCommand::OpenLog))),
+        "DIAGNOSTICS",
+        "Local troubleshooting tools. These checks do not install models or modify source media.",
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Application log",
+                "Review recent events when analysis, editing, or export needs troubleshooting.",
+                Some(("View log", UiAction::from(AppCommand::OpenLog))),
+            );
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Feature API diagnostics",
+                "Verify local APIs, native audio, and real UTZ/UltraStar exports in a unique temporary folder that is always removed.",
+                Some(("Run checks", UiAction::from(AppCommand::RunDiagnostics))),
+            );
+            if let Some(report) = session.diagnostic_report.as_ref() {
+                spawn_diagnostics_report(group, font.clone(), session.config, theme, report);
+            }
+        },
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Feature API diagnostics",
-        "Verify local APIs, native audio, and real UTZ/UltraStar exports in a unique temporary folder that is always removed.",
-        Some(("Run checks", UiAction::from(AppCommand::RunDiagnostics))),
-    );
-    spawn_shift_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Font size",
-        "Set the base UI font size. The interface is scaled using this size (10px–18px), which maps to 80%–140%.",
-        format!(
-            "{}px",
-            ui_font_size_percent_to_points(session.config.font_scale_percent())
-        ),
-        UiAction::from(SettingsCommand::AdjustUiFontScale(-1)),
-        UiAction::from(SettingsCommand::AdjustUiFontScale(1)),
-    );
-    if let Some(report) = session.diagnostic_report.as_ref() {
-        spawn_diagnostics_report(parent, font.clone(), session.config, theme, report);
-    }
 }
 
 pub(crate) fn spawn_diagnostics_report(

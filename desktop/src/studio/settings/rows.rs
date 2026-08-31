@@ -25,11 +25,14 @@ pub(crate) fn spawn_select_setting_row(
             Node {
                 position_type: PositionType::Relative,
                 width: percent(100),
-                min_height: px(76),
+                min_height: px(72),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -40,29 +43,23 @@ pub(crate) fn spawn_select_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(260),
-                flex_basis: px(360),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
-                spawn_wrapped_text(
-                    copy,
-                    font.clone(),
-                    description,
-                    10.0,
-                    theme.muted_foreground,
-                );
+                spawn_text(copy, font.clone(), label, 11.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 9.2, theme.muted_foreground);
             });
             row.spawn(Node {
                 position_type: PositionType::Relative,
                 min_width: px(180),
                 max_width: px(SETTINGS_CONTROL_WIDTH),
                 flex_basis: px(SETTINGS_CONTROL_WIDTH),
-                flex_grow: 1.0,
+                flex_grow: 0.0,
                 height: if open { Val::Auto } else { px(36) },
                 margin: UiRect::top(px(2)),
                 flex_direction: FlexDirection::Column,
@@ -200,11 +197,14 @@ pub(crate) fn spawn_setting_row(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(76),
+                min_height: px(72),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -214,35 +214,29 @@ pub(crate) fn spawn_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(180),
-                flex_basis: px(220),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
-                spawn_wrapped_text(
-                    copy,
-                    font.clone(),
-                    description,
-                    10.0,
-                    theme.muted_foreground,
-                );
+                spawn_text(copy, font.clone(), label, 11.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 9.2, theme.muted_foreground);
             });
             if let Some((label, action)) = action {
                 row.spawn(Node {
-                    min_width: px(160),
+                    min_width: px(180),
                     max_width: px(SETTINGS_CONTROL_WIDTH),
-                    flex_basis: px(180),
+                    flex_basis: px(SETTINGS_CONTROL_WIDTH),
                     flex_grow: 0.0,
                     margin: UiRect::top(px(2)),
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
                 })
                 .with_children(|control_column| {
-                    spawn_action_button(control_column, font, theme, label, action);
+                    spawn_compact_action_button(control_column, font, theme, label, action);
                 });
             }
         });
@@ -262,11 +256,14 @@ pub(crate) fn spawn_setting_row_with_actions(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(92),
+                min_height: px(84),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -276,22 +273,16 @@ pub(crate) fn spawn_setting_row_with_actions(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(180),
-                flex_basis: px(220),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
-                spawn_wrapped_text(
-                    copy,
-                    font.clone(),
-                    description,
-                    10.0,
-                    theme.muted_foreground,
-                );
+                spawn_text(copy, font.clone(), label, 11.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 9.2, theme.muted_foreground);
             });
             spawn_setting_actions(row, font, theme, actions);
         });
@@ -305,9 +296,9 @@ pub(crate) fn spawn_setting_actions(
 ) {
     parent
         .spawn(Node {
-            min_width: px(160),
+            min_width: px(180),
             max_width: px(SETTINGS_CONTROL_WIDTH),
-            flex_basis: px(180),
+            flex_basis: px(SETTINGS_CONTROL_WIDTH),
             flex_grow: 0.0,
             margin: UiRect::top(px(2)),
             justify_content: JustifyContent::FlexEnd,

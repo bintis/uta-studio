@@ -7,6 +7,11 @@ use crate::studio::*;
 pub(crate) const SETTINGS_CONTROL_WIDTH: f32 = 230.0;
 pub(crate) const SETTINGS_CONTENT_HORIZONTAL_PADDING: f32 = 40.0;
 pub(crate) const SETTINGS_CONTENT_VERTICAL_PADDING: f32 = 24.0;
+pub(crate) const SETTINGS_COPY_MIN_WIDTH: f32 = 260.0;
+pub(crate) const SETTINGS_COPY_BASIS: f32 = 380.0;
+pub(crate) const SETTINGS_ROW_HORIZONTAL_PADDING: f32 = 18.0;
+pub(crate) const SETTINGS_ROW_VERTICAL_PADDING: f32 = 14.0;
+pub(crate) const SETTINGS_WIDE_CONTROL_WIDTH: f32 = 340.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsTab {

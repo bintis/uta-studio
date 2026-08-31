@@ -18,239 +18,243 @@ pub(crate) fn spawn_model_settings(
         "Inspect installed tools and tune runtime parameters for each model. Lifecycle actions remain explicit; these controls never choose analysis outputs or change workflow topology.",
     );
 
-    spawn_settings_section(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "PER-MODEL RUNTIME PARAMETERS",
-        "Each model has one device selector and one runtime menu. Click the selected device again to return to Auto. Runtime Default keeps the Runtime Manager-pinned route.",
-    );
-
-    if let Some(snapshot) = session.model_settings_job.current.as_ref() {
-        spawn_model_backend_settings(
-            parent,
-            font.clone(),
-            icons,
-            theme,
-            session.config,
-            &snapshot.runtime_models,
-            session.open_model_runtime_select.as_deref(),
-        );
-    } else {
-        let (title, description) = if session.model_settings_job.receiver.is_some() {
-            (
+        "MODEL RUNTIME ROUTING",
+        "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs.",
+        |group| {
+            if let Some(snapshot) = session.model_settings_job.current.as_ref() {
+                spawn_model_backend_settings(
+                    group,
+                    font.clone(),
+                    icons,
+                    theme,
+                    session.config,
+                    &snapshot.runtime_models,
+                    session.open_model_runtime_select.as_deref(),
+                );
+            } else {
+                let (title, description) = if session.model_settings_job.receiver.is_some() {
+                    (
                 "Reading model parameters…",
                 "Loading the installed model registry without changing any analysis or model files."
                     .to_string(),
             )
-        } else if let Some(error) = session.model_settings_job.error.as_deref() {
-            (
-                "Could not read model parameters",
-                format!("{error} Retry to reload the local model registry."),
-            )
-        } else {
-            (
+                } else if let Some(error) = session.model_settings_job.error.as_deref() {
+                    (
+                        "Could not read model parameters",
+                        format!("{error} Retry to reload the local model registry."),
+                    )
+                } else {
+                    (
                 "Model parameters are not loaded",
                 "Load the local model registry to show editable per-model runtime parameters."
                     .to_string(),
             )
-        };
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            title,
-            description,
-            Some((
-                if session.model_settings_job.receiver.is_some() {
-                    "Loading…"
-                } else {
-                    "Load parameters"
-                },
-                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
-            )),
-        );
-    }
-
-    spawn_settings_section(
-        parent,
-        font.clone(),
-        theme,
-        "FUSION AGENT PROVIDER",
-        "Runtime Manager discovers Pi, Codex, and Claude CLIs without launching them, then pairs each one with its packaged, manifest-verified Uta adapter. Provider presence does not claim authentication readiness.",
-    );
-    let snapshot = session.model_settings_job.current.as_ref();
-    let provider_report = snapshot.and_then(|snapshot| snapshot.fusion_providers.as_ref());
-    let selected_provider = provider_report.and_then(|report| report.selected_provider.as_deref());
-    if let Some(report) = provider_report {
-        for provider in &report.providers {
-            let state = if provider.usable {
-                "Ready"
-            } else if !provider.available {
-                "Provider CLI missing"
-            } else if !provider.adapter_available {
-                "Uta adapter missing or incompatible"
-            } else {
-                "Unavailable"
-            };
-            let version = provider.adapter_version.as_deref().unwrap_or("unknown");
-            let reasons = if provider.reasons.is_empty() {
-                String::new()
-            } else {
-                format!(" · {}", provider.reasons.join(", "))
-            };
-            let description = format!(
-                "{state} · executable {} · adapter {version}{reasons}. Credentials and provider charges remain owned by the provider CLI.",
-                provider.executable_name
-            );
-            if provider.selected {
+                };
                 spawn_setting_row(
-                    parent,
+                    group,
                     font.clone(),
                     theme,
-                    format!("{} · Selected", provider.display_name),
-                    description,
-                    None::<(String, UiAction)>,
-                );
-            } else if provider.usable {
-                spawn_setting_row(
-                    parent,
-                    font.clone(),
-                    theme,
-                    provider.display_name.clone(),
+                    title,
                     description,
                     Some((
-                        format!("Use {}", provider.display_name),
-                        UiAction::from(SettingsCommand::SelectFusionProvider(
-                            provider.provider.clone(),
-                        )),
+                        if session.model_settings_job.receiver.is_some() {
+                            "Loading…"
+                        } else {
+                            "Load parameters"
+                        },
+                        UiAction::from(SettingsCommand::RefreshRuntimeStatus),
                     )),
                 );
-            } else {
-                spawn_setting_row(
-                    parent,
-                    font.clone(),
-                    theme,
-                    provider.display_name.clone(),
-                    description,
-                    None::<(String, UiAction)>,
-                );
             }
-        }
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "External provider disclosure",
-            report.network_disclosure.clone(),
-            None::<(String, UiAction)>,
-        );
-    } else {
-        let description = snapshot
-            .and_then(|snapshot| snapshot.fusion_providers_error.as_deref())
-            .map_or_else(
-                || "Provider discovery is loading.".to_string(),
-                |error| format!("Could not read provider discovery: {error}"),
-            );
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Fusion providers",
-            description,
-            Some((
-                "Scan again",
-                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
-            )),
-        );
-    }
-    if selected_provider.is_some() {
-        spawn_setting_row(
-            parent,
-            font.clone(),
-            theme,
-            "Clear selected provider",
-            "Clears only Runtime Manager's provider identity. It does not change provider credentials or delete any executable.",
-            Some((
-                "Clear",
-                UiAction::from(SettingsCommand::ClearFusionProvider),
-            )),
-        );
-    }
+        },
+    );
 
-    let adapter = snapshot.and_then(|snapshot| snapshot.fusion_agent_adapter.as_ref());
-    let adapter_description = if let Some(status) = adapter {
-        let state = if status.usable {
-            "Usable"
-        } else if matches!(status.install_state, app_core::InstallStateWireV1::Absent) {
-            "Missing"
-        } else {
-            "Unusable"
-        };
-        let identity = status.tool_identity.as_deref().unwrap_or("unverified");
-        let version = status.tool_version.as_deref().unwrap_or("unknown version");
-        let reasons = if status.reasons.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " · {}",
-                status
-                    .reasons
-                    .iter()
-                    .map(readiness_reason_label)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        format!(
-            "Effective tool: {state} · {identity} · {version}{reasons}. Preview checks readiness without contacting the provider."
-        )
-    } else {
-        snapshot
-            .and_then(|snapshot| snapshot.fusion_agent_adapter_error.as_deref())
-            .map_or_else(
-                || "Effective adapter status is loading.".to_string(),
-                |error| format!("Could not read adapter status: {error}"),
-            )
-    };
-    let mut adapter_actions = vec![(
-        "Scan again".to_string(),
-        UiAction::from(SettingsCommand::RefreshRuntimeStatus),
-    )];
-    if selected_provider.is_none() {
-        adapter_actions.push((
-            "Choose custom adapter…".to_string(),
-            UiAction::from(SettingsCommand::ChooseFusionAgentAdapter),
-        ));
-    }
-    spawn_setting_row_with_actions(
+    spawn_settings_group(
         parent,
         font.clone(),
         theme,
-        "Effective Fusion Agent Adapter",
-        adapter_description,
-        adapter_actions,
+        "FUSION AGENT",
+        "Discover a provider CLI and its compatible Uta adapter without launching either one. Credentials and provider charges remain external.",
+        |group| {
+            let snapshot = session.model_settings_job.current.as_ref();
+            let provider_report = snapshot.and_then(|snapshot| snapshot.fusion_providers.as_ref());
+            let selected_provider =
+                provider_report.and_then(|report| report.selected_provider.as_deref());
+            if let Some(report) = provider_report {
+                for provider in &report.providers {
+                    let state = if provider.usable {
+                        "Ready"
+                    } else if !provider.available {
+                        "Provider CLI missing"
+                    } else if !provider.adapter_available {
+                        "Uta adapter missing or incompatible"
+                    } else {
+                        "Unavailable"
+                    };
+                    let version = provider.adapter_version.as_deref().unwrap_or("unknown");
+                    let reasons = if provider.reasons.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", provider.reasons.join(", "))
+                    };
+                    let description = format!(
+                        "{state} · executable {} · adapter {version}{reasons}. Credentials and provider charges remain owned by the provider CLI.",
+                        provider.executable_name
+                    );
+                    if provider.selected {
+                        spawn_setting_row(
+                            group,
+                            font.clone(),
+                            theme,
+                            format!("{} · Selected", provider.display_name),
+                            description,
+                            None::<(String, UiAction)>,
+                        );
+                    } else if provider.usable {
+                        spawn_setting_row(
+                            group,
+                            font.clone(),
+                            theme,
+                            provider.display_name.clone(),
+                            description,
+                            Some((
+                                format!("Use {}", provider.display_name),
+                                UiAction::from(SettingsCommand::SelectFusionProvider(
+                                    provider.provider.clone(),
+                                )),
+                            )),
+                        );
+                    } else {
+                        spawn_setting_row(
+                            group,
+                            font.clone(),
+                            theme,
+                            provider.display_name.clone(),
+                            description,
+                            None::<(String, UiAction)>,
+                        );
+                    }
+                }
+                spawn_setting_row(
+                    group,
+                    font.clone(),
+                    theme,
+                    "External provider disclosure",
+                    report.network_disclosure.clone(),
+                    None::<(String, UiAction)>,
+                );
+            } else {
+                let description = snapshot
+                    .and_then(|snapshot| snapshot.fusion_providers_error.as_deref())
+                    .map_or_else(
+                        || "Provider discovery is loading.".to_string(),
+                        |error| format!("Could not read provider discovery: {error}"),
+                    );
+                spawn_setting_row(
+                    group,
+                    font.clone(),
+                    theme,
+                    "Fusion providers",
+                    description,
+                    Some((
+                        "Scan again",
+                        UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+                    )),
+                );
+            }
+            if selected_provider.is_some() {
+                spawn_setting_row(
+                    group,
+                    font.clone(),
+                    theme,
+                    "Clear selected provider",
+                    "Clears only Runtime Manager's provider identity. It does not change provider credentials or delete any executable.",
+                    Some((
+                        "Clear",
+                        UiAction::from(SettingsCommand::ClearFusionProvider),
+                    )),
+                );
+            }
+
+            let adapter = snapshot.and_then(|snapshot| snapshot.fusion_agent_adapter.as_ref());
+            let adapter_description = if let Some(status) = adapter {
+                let state = if status.usable {
+                    "Usable"
+                } else if matches!(status.install_state, app_core::InstallStateWireV1::Absent) {
+                    "Missing"
+                } else {
+                    "Unusable"
+                };
+                let identity = status.tool_identity.as_deref().unwrap_or("unverified");
+                let version = status.tool_version.as_deref().unwrap_or("unknown version");
+                let reasons = if status.reasons.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " · {}",
+                        status
+                            .reasons
+                            .iter()
+                            .map(readiness_reason_label)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                format!(
+                    "Effective tool: {state} · {identity} · {version}{reasons}. Preview checks readiness without contacting the provider."
+                )
+            } else {
+                snapshot
+                    .and_then(|snapshot| snapshot.fusion_agent_adapter_error.as_deref())
+                    .map_or_else(
+                        || "Effective adapter status is loading.".to_string(),
+                        |error| format!("Could not read adapter status: {error}"),
+                    )
+            };
+            let mut adapter_actions = vec![(
+                "Scan again".to_string(),
+                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+            )];
+            if selected_provider.is_none() {
+                adapter_actions.push((
+                    "Choose custom adapter…".to_string(),
+                    UiAction::from(SettingsCommand::ChooseFusionAgentAdapter),
+                ));
+            }
+            spawn_setting_row_with_actions(
+                group,
+                font.clone(),
+                theme,
+                "Effective Fusion Agent Adapter",
+                adapter_description,
+                adapter_actions,
+            );
+            if selected_provider.is_none()
+                && adapter.is_some_and(|status| {
+                    matches!(
+                        status.origin,
+                        app_core::ResourceOriginWireV1::ExternalConfiguration
+                    )
+                })
+            {
+                spawn_setting_row(
+                    group,
+                    font,
+                    theme,
+                    "Clear custom Fusion Agent Adapter",
+                    "Clears Runtime Manager's configured external-tool path without deleting the executable.",
+                    Some((
+                        "Clear",
+                        UiAction::from(SettingsCommand::ClearFusionAgentAdapter),
+                    )),
+                );
+            }
+        },
     );
-    if selected_provider.is_none()
-        && adapter.is_some_and(|status| {
-            matches!(
-                status.origin,
-                app_core::ResourceOriginWireV1::ExternalConfiguration
-            )
-        })
-    {
-        spawn_setting_row(
-            parent,
-            font,
-            theme,
-            "Clear custom Fusion Agent Adapter",
-            "Clears Runtime Manager's configured external-tool path without deleting the executable.",
-            Some((
-                "Clear",
-                UiAction::from(SettingsCommand::ClearFusionAgentAdapter),
-            )),
-        );
-    }
 }
 
 fn backend_value(backend: app_core::RuntimeBackendPresentation) -> &'static str {
@@ -410,12 +414,15 @@ fn spawn_model_runtime_row(
             Node {
                 position_type: PositionType::Relative,
                 width: percent(100),
-                min_height: px(122),
+                min_height: px(116),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
-                column_gap: px(28),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
+                column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
@@ -425,8 +432,8 @@ fn spawn_model_runtime_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(280),
-                flex_basis: px(420),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(5),
@@ -437,21 +444,21 @@ fn spawn_model_runtime_row(
                     copy,
                     font.clone(),
                     model_backend_display_name(&model.model_id),
-                    12.0,
+                    11.5,
                     theme.foreground,
                 );
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
                     format!("Model ID · {}", model.model_id),
-                    9.0,
+                    8.8,
                     theme.muted_foreground,
                 );
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
                     format!("Available runtimes · {capabilities}"),
-                    9.0,
+                    8.8,
                     theme.muted_foreground,
                 );
                 spawn_wrapped_text(
@@ -466,8 +473,8 @@ fn spawn_model_runtime_row(
             row.spawn(Node {
                 position_type: PositionType::Relative,
                 min_width: px(280),
-                max_width: px(340),
-                flex_basis: px(340),
+                max_width: px(SETTINGS_WIDE_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_WIDE_CONTROL_WIDTH),
                 flex_grow: 0.0,
                 margin: UiRect::top(px(1)),
                 flex_direction: FlexDirection::Column,
