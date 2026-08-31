@@ -737,13 +737,6 @@ pub(crate) fn library_select_options(
             ("analyzed", "Analyzed"),
             ("failed", "Failed"),
         ],
-        LibrarySelectKind::TranscriptSource => &[
-            ("all", "All lyric types"),
-            ("generated", "Generated"),
-            ("lyrics", "AI aligned"),
-            ("lrc", "LRC"),
-            ("usdx", "UltraStar"),
-        ],
     }
 }
 
@@ -753,10 +746,6 @@ pub(crate) fn library_select_value<'a>(
 ) -> &'a str {
     match kind {
         LibrarySelectKind::Status => session.library_status.as_deref().unwrap_or("all"),
-        LibrarySelectKind::TranscriptSource => session
-            .library_transcript_source
-            .as_deref()
-            .unwrap_or("all"),
     }
 }
 

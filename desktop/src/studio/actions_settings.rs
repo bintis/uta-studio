@@ -415,16 +415,26 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::ToggleTheme) => {
-            studio.shell.config.dark_mode = Some(!theme.dark);
+            let dark = !theme.dark;
+            let transparent = studio.shell.config.window_transparency.unwrap_or(false);
+            studio.shell.config.dark_mode = Some(dark);
             studio.shell.notice = save_config_error(&studio.shell.config);
-            *theme = StudioTheme::new(!theme.dark);
-            clear_color.0 = theme.background;
+            *theme = StudioTheme::new_with_transparency(dark, transparent);
+            clear_color.0 = window_clear_color(theme, transparent);
             window.window_theme = Some(if theme.dark {
                 WindowTheme::Dark
             } else {
                 WindowTheme::Light
             });
-            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
+        UiCommand::Settings(SettingsCommand::ToggleWindowTransparency) => {
+            let transparent = !studio.shell.config.window_transparency.unwrap_or(false);
+            studio.shell.config.window_transparency = Some(transparent);
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            *theme = StudioTheme::new_with_transparency(theme.dark, transparent);
+            clear_color.0 = window_clear_color(theme, transparent);
+            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Library(LibraryCommand::ChooseFolder) => {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {

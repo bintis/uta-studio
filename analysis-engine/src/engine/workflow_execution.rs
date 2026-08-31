@@ -557,6 +557,14 @@ pub(super) fn workflow_transform_input(
         })
 }
 
+pub(super) fn workflow_cleanup_output_role(input_role: &str) -> crate::contract::AudioRole {
+    if input_role == crate::contract::AudioRole::Instrumental.as_str() {
+        crate::contract::AudioRole::Instrumental
+    } else {
+        crate::contract::AudioRole::CleanLeadVocal
+    }
+}
+
 pub(super) fn has_capability(plan: &EnginePlan, capability: &str) -> bool {
     plan.execution_nodes
         .iter()
@@ -771,6 +779,7 @@ pub(super) fn run_openvino_workflow_cleanup(
     task: &DenoiseTask<'_>,
     analysis_node: &str,
     denoise: bool,
+    role: crate::contract::AudioRole,
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
     let safe = analysis_node
@@ -784,11 +793,12 @@ pub(super) fn run_openvino_workflow_cleanup(
         })
         .collect::<String>();
     let worker_directory = format!("worker/workflow/{safe}");
-    let destination = format!("workflow-audio/{safe}.flac");
+    let operation = if denoise { "denoise" } else { "dereverb" };
+    let destination = format!("workflow-audio/{safe}-{operation}.flac");
     let spec = if denoise {
         CleanupSpec {
             model_id: "melband_roformer_denoise_aufr33",
-            role: crate::contract::AudioRole::CleanLeadVocal,
+            role,
             node_id: "audio.denoise",
             presentation_node_id: Some(analysis_node),
             semantic_output: "dry",
@@ -799,7 +809,7 @@ pub(super) fn run_openvino_workflow_cleanup(
     } else {
         CleanupSpec {
             model_id: "melband_roformer_dereverb_anvuew",
-            role: crate::contract::AudioRole::CleanLeadVocal,
+            role,
             node_id: "audio.dereverb",
             presentation_node_id: Some(analysis_node),
             semantic_output: "noreverb",
@@ -820,6 +830,18 @@ mod tests {
     use crate::workflow_executor::{
         WorkflowExecutionNodePlanV1, WorkflowNodeExecutionStateV1, WorkflowPlanIdentityV1,
     };
+
+    #[test]
+    fn cleanup_preserves_the_instrumental_branch_role() {
+        assert_eq!(
+            workflow_cleanup_output_role("instrumental"),
+            crate::contract::AudioRole::Instrumental
+        );
+        assert_eq!(
+            workflow_cleanup_output_role("lead_vocal"),
+            crate::contract::AudioRole::CleanLeadVocal
+        );
+    }
 
     fn node(
         instance: &str,

@@ -255,7 +255,6 @@ pub(crate) fn spawn_editor_lyrics(
                     );
                 }
                 spawn_editor_alignment_guide(lane, theme, 8);
-                spawn_editor_binding_guide(lane, theme, EditorBindingGuidePart::Lane);
             })
             .observe(
                 |event: On<Pointer<Click>>,
@@ -332,9 +331,9 @@ pub(crate) fn spawn_editor_file_menu(
                     )),
                 ),
             ] {
-                spawn_text_button(menu, font.clone(), theme, label, 9.0, action);
+                spawn_menu_text_button(menu, font.clone(), theme, label, 9.0, action);
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,
@@ -423,7 +422,7 @@ pub(crate) fn spawn_editor_layout_menu(
                     UiAction::from(EditorCommand::Editor(action)),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,
@@ -536,7 +535,7 @@ pub(crate) fn spawn_note_context_menu(
             if let Some(word) = context.continue_word
                 && let Some(note_index) = editor.selected_note
             {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -560,7 +559,7 @@ pub(crate) fn spawn_note_context_menu(
                 .as_ref()
                 .is_some_and(|note| note.lyric.is_none() && !note.continues_lyric)
             {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -569,7 +568,7 @@ pub(crate) fn spawn_note_context_menu(
                     UiAction::from(EditorCommand::Editor(EditorAction::EditNoteLyric)),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -578,7 +577,7 @@ pub(crate) fn spawn_note_context_menu(
                 UiAction::from(EditorCommand::Editor(EditorAction::PlayNotePitch)),
             );
             if editor.chart.audio.vocals.is_some() {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -587,7 +586,7 @@ pub(crate) fn spawn_note_context_menu(
                     UiAction::from(EditorCommand::Editor(EditorAction::PlayNoteVocal)),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -596,7 +595,7 @@ pub(crate) fn spawn_note_context_menu(
                 UiAction::from(EditorCommand::Editor(EditorAction::SplitSelection)),
             );
             if count > 1 {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -605,7 +604,7 @@ pub(crate) fn spawn_note_context_menu(
                     UiAction::from(EditorCommand::Editor(EditorAction::MergeSelection)),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -613,7 +612,7 @@ pub(crate) fn spawn_note_context_menu(
                 10.0,
                 UiAction::from(EditorCommand::Editor(EditorAction::DuplicateNotes)),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -621,7 +620,7 @@ pub(crate) fn spawn_note_context_menu(
                 10.0,
                 UiAction::from(EditorCommand::Editor(EditorAction::CopyNotes)),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -629,7 +628,7 @@ pub(crate) fn spawn_note_context_menu(
                 10.0,
                 UiAction::from(EditorCommand::Editor(EditorAction::QuantizeNotes)),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -658,7 +657,7 @@ pub(crate) fn spawn_note_context_menu(
                     BackgroundColor(theme.border.with_alpha(0.5)),
                 ));
                 spawn_text(menu, font.clone(), "CANDIDATE", 8.0, theme.muted_foreground);
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -669,7 +668,7 @@ pub(crate) fn spawn_note_context_menu(
                         authored_ref.clone(),
                     )),
                 );
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -716,7 +715,7 @@ pub(crate) fn spawn_note_context_menu(
                 },
                 BackgroundColor(theme.border.with_alpha(0.5)),
             ));
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,
@@ -814,7 +813,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 height: px(3),
                 ..default()
             });
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -826,7 +825,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 10.0,
                 UiAction::from(EditorCommand::Editor(EditorAction::MergeLyrics)),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -834,7 +833,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 10.0,
                 UiAction::from(EditorCommand::Editor(EditorAction::SplitLyrics)),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -850,7 +849,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 },
                 BackgroundColor(theme.border.with_alpha(0.5)),
             ));
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -862,7 +861,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 && let Some(word) = editor.selected_word
                 && let Some(next_note) = next_extendable_editor_note(&editor.document, word)
             {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -871,7 +870,7 @@ pub(crate) fn spawn_lyric_context_menu(
                     UiAction::from(EditorCommand::ExtendLyricOverNote(word, next_note)),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -887,7 +886,7 @@ pub(crate) fn spawn_lyric_context_menu(
                 },
                 BackgroundColor(theme.border.with_alpha(0.5)),
             ));
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,
@@ -934,34 +933,6 @@ pub(crate) fn spawn_editor_alignment_guide(
                 ));
             }
         });
-}
-
-/// A short vertical mark at the shared start time of a bound note and lyric,
-/// placed in one of three containers — see `EditorBindingGuidePart`.
-/// `update_editor_binding_guides` positions and sizes each part every frame
-/// so together they read as one line from the bound note's own pitch height,
-/// through the gap, down to the bound word's own lane.
-pub(crate) fn spawn_editor_binding_guide(
-    parent: &mut ChildSpawnerCommands,
-    theme: &StudioTheme,
-    part: EditorBindingGuidePart,
-) {
-    parent.spawn((
-        EditorBindingGuide,
-        part,
-        Node {
-            position_type: PositionType::Absolute,
-            left: percent(0),
-            top: px(0),
-            height: px(0),
-            width: px(3),
-            display: Display::None,
-            ..default()
-        },
-        BackgroundColor(theme.editor_selection),
-        ZIndex(6),
-        Pickable::IGNORE,
-    ));
 }
 
 type EditorAlignmentGuides<'w, 's> = Query<
@@ -1098,101 +1069,5 @@ pub(crate) fn update_editor_playhead(
     let label = format_editor_clock(editor.visible_position, editor.audio_status.duration_secs);
     for mut text in &mut clocks {
         **text = label.clone();
-    }
-}
-
-/// Highlights the shared time of the current selection's bound note and
-/// lyric by sizing the three `EditorBindingGuide` parts (see
-/// `EditorBindingGuidePart`) so the line runs from the note's own pitch
-/// height down to the lyric's own lane — plain percent/px positioning within
-/// each part's own container, the same approach `update_editor_geometry`
-/// uses for notes, lyrics, and the alignment guide. No world-space
-/// transform math.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EditorBindingGuideSignature {
-    revision: u64,
-    viewport_start: u64,
-    viewport_duration: u64,
-    pitch_min: u64,
-    pitch_max: u64,
-    selected_word: Option<WordSelection>,
-    selected_note: Option<usize>,
-}
-
-pub(crate) fn update_editor_binding_guides(
-    state: Res<EditorUiState>,
-    mut previous: Local<Option<EditorBindingGuideSignature>>,
-    added_guides: Query<(), Added<EditorBindingGuide>>,
-    mut guides: Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>,
-) {
-    let hide =
-        |guides: &mut Query<(&EditorBindingGuidePart, &mut Node), With<EditorBindingGuide>>| {
-            for (_, mut node) in guides.iter_mut() {
-                node.display = Display::None;
-            }
-        };
-    let Some(editor) = state.editor.as_ref() else {
-        *previous = None;
-        hide(&mut guides);
-        return;
-    };
-    let signature = EditorBindingGuideSignature {
-        revision: editor.document.revision(),
-        viewport_start: editor.viewport_start.to_bits(),
-        viewport_duration: editor.viewport_duration.to_bits(),
-        pitch_min: editor.pitch_min.to_bits(),
-        pitch_max: editor.pitch_max.to_bits(),
-        selected_word: editor.selected_word,
-        selected_note: editor.selected_note,
-    };
-    if previous.as_ref() == Some(&signature) && added_guides.is_empty() {
-        return;
-    }
-    *previous = Some(signature);
-
-    let lyrics = chart_lyrics(&editor.document);
-    let lyric = if let Some(word) = editor.selected_word {
-        lyrics
-            .iter()
-            .find(|lyric| lyric.segment == word.segment && lyric.word == word.word && lyric.guided)
-    } else {
-        editor
-            .selected_note
-            .and_then(|note_index| lyrics.iter().find(|lyric| lyric.note == note_index))
-    };
-    let Some(lyric) = lyric.filter(|lyric| {
-        lyric.start >= editor.viewport_start && lyric.start <= editor.viewport_end()
-    }) else {
-        hide(&mut guides);
-        return;
-    };
-
-    let left = percent(time_percent(lyric.start, editor));
-    let note_top = chart_notes(&editor.document)
-        .iter()
-        .find(|note| note.index == lyric.note)
-        .map(|note| pitch_percent(note.midi, editor))
-        .unwrap_or(50.0);
-    // Lane rows start 6px down and are spaced 26px apart (see
-    // `spawn_editor_lyrics`); the lyric's own vertical center sits 11px
-    // (half its 22px height) into its row.
-    let lane_center = 6.0 + lyric.lane as f32 * 26.0 + 11.0;
-    for (part, mut node) in &mut guides {
-        node.display = Display::Flex;
-        node.left = left;
-        match part {
-            EditorBindingGuidePart::Canvas => {
-                node.top = percent(note_top);
-                node.height = percent((100.0 - note_top).max(0.0));
-            }
-            EditorBindingGuidePart::Gap => {
-                node.top = px(0);
-                node.height = percent(100);
-            }
-            EditorBindingGuidePart::Lane => {
-                node.top = px(0);
-                node.height = px(lane_center);
-            }
-        }
     }
 }

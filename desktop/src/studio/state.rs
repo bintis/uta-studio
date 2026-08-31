@@ -34,7 +34,6 @@ pub(crate) struct LibraryState {
     pub(crate) library_view: LibraryView,
     pub(crate) library_search: Option<String>,
     pub(crate) library_status: Option<String>,
-    pub(crate) library_transcript_source: Option<String>,
     pub(crate) library_facet: Option<LibraryFacet>,
     pub(crate) menu_items: LibraryMenuItems,
     pub(crate) selected_song: Option<String>,
@@ -65,7 +64,6 @@ impl LibraryState {
         let mut filters = self.library_view.filters();
         filters.search = self.library_search.clone();
         filters.status = self.library_status.clone();
-        filters.transcript_source = self.library_transcript_source.clone();
         match self.library_facet.as_ref() {
             Some(LibraryFacet::Artist { value, .. }) => filters.artist = Some(value.clone()),
             Some(LibraryFacet::Album { value, .. }) => filters.album = Some(value.clone()),
@@ -255,7 +253,6 @@ impl StudioStateBundle {
                 library_view: LibraryView::All,
                 library_search: None,
                 library_status: None,
-                library_transcript_source: None,
                 library_facet: None,
                 menu_items: app_core::load_library_menu_items().unwrap_or_default(),
                 selected_song: None,
@@ -447,7 +444,6 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) library_view: LibraryView,
     pub(crate) library_search: &'a Option<String>,
     pub(crate) library_status: &'a Option<String>,
-    pub(crate) library_transcript_source: &'a Option<String>,
     pub(crate) library_facet: &'a Option<LibraryFacet>,
     pub(crate) menu_items: &'a LibraryMenuItems,
     pub(crate) notice: &'a Option<String>,
@@ -525,7 +521,6 @@ impl<'a> StudioSessionView<'a> {
             library_view: library.library_view,
             library_search: &library.library_search,
             library_status: &library.library_status,
-            library_transcript_source: &library.library_transcript_source,
             library_facet: &library.library_facet,
             menu_items: &library.menu_items,
             notice: &shell.notice,

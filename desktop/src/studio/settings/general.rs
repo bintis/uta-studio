@@ -391,6 +391,15 @@ pub(crate) fn spawn_general_settings(
                 group,
                 font.clone(),
                 theme,
+                "Transparent window",
+                "Let the Wayland compositor show subtly through the workspace.",
+                session.config.window_transparency.unwrap_or(false),
+                UiAction::from(SettingsCommand::ToggleWindowTransparency),
+            );
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
                 "Fullscreen workspace",
                 if session.config.fullscreen.unwrap_or(false) {
                     "The editor fills this display."

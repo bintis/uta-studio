@@ -1330,6 +1330,7 @@
   "UTZ project": "UTZ 项目",
   "UVR MDX-NET Karaoke 2": "UVR MDX-NET 卡拉 OK 2",
   "Validate": "验证",
+  "Validate + save": "验证 + 保存",
   "Validate export": "校验导出",
   "Validated audio, runtime plan, tempo and key context": "已验证的音频、运行计划、速度和调性上下文",
   "Validated runtime routing": "已验证的运行时路由",
@@ -1478,6 +1479,8 @@
   "Compatible pitch tuning": "兼容音高调节",
   "Voiced sensitivity belongs to the RMVPE-compatible route and remains separate from note-boundary thresholds.": "有声灵敏度属于 RMVPE 兼容路径，并与音符边界阈值保持独立。",
   "RUN ANALYSIS": "运行分析",
+  "RUN SUMMARY": "运行摘要",
+  "LYRICS CONTEXT": "歌词上下文",
   "Exact Engine plan preview": "精确的引擎计划预览",
   "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.": "以下临时选项仅影响本次运行，不会更改全局默认值、歌曲配置或已安装资源。",
   "OUTPUT TARGET · Source: GLOBAL": "输出目标 · 来源：全局",
@@ -1500,6 +1503,9 @@
   "No Runtime Manager status was returned.": "运行时管理器未返回状态。",
   "DECLARED OUTPUTS": "声明的输出",
   "All capabilities required by this exact request are ready under Production policy.": "此精确请求所需的所有能力均已按生产策略就绪。",
+  "This exact request is not ready to queue.": "此精确请求尚未达到入队条件。",
+  "Start now": "立即开始",
+  "Workflow validated and saved.": "工作流已验证并保存。",
   "REQUEST BLOCKERS": "请求阻塞原因",
   "PREVIEW UNAVAILABLE": "预览不可用",
   "Decode & source validation": "解码与源验证",
@@ -1997,5 +2003,8 @@
   "Production": "生产",
   "Fast · Production": "快速 · 生产",
   "Balanced · Production": "均衡 · 生产",
-  "Maximum · Production": "最高质量 · 生产"
+  "Maximum · Production": "最高质量 · 生产",
+  "All": "全部",
+  "Let the Wayland compositor show subtly through the workspace.": "让 Wayland 合成器轻微透过工作区显示。",
+  "Transparent window": "透明窗口"
 }

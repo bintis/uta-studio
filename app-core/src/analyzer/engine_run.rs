@@ -666,6 +666,9 @@ fn validate_and_publish_engine_result(
             ArtifactKind::InstrumentalStem => chain_fingerprints.instrumental.clone(),
             ArtifactKind::AnalysisVocalStem => chain_fingerprints.isolate.clone(),
             ArtifactKind::DereverbedVocalStem => chain_fingerprints.cleanup.clone(),
+            ArtifactKind::DenoisedInstrumentalStem | ArtifactKind::DereverbedInstrumentalStem => {
+                chain_fingerprints.cleanup.clone()
+            }
             _ => None,
         };
         let config_hash =
@@ -707,14 +710,11 @@ fn validate_and_publish_engine_result(
         &analyzed_file_hashes,
     )
     .map_err(|error| error.to_string())?;
-    // Every published revision gets a compatibility-path materialization
-    // attempt, not just the CandidateChart: `refresh_authoring_state` (and
+    // Materialize every published revision, not just CandidateChart:
+    // `refresh_authoring_state` (and
     // other legacy readiness checks) key off flat `{hash}_instrumental.*` /
     // `{hash}_vocals.*` files, not the content-addressed artifact store, so
-    // skipping stem kinds here left songs stuck showing "Analysis
-    // incomplete" (and the editor unopenable) despite a fully completed,
-    // published run -- confirmed against a real song whose InstrumentalStem
-    // revision was published but never reached its compatibility path.
+    // skipping stem kinds here leaves completed songs "Analysis incomplete".
     // `compatibility_paths` already no-ops for kinds with no legacy
     // location, so this is safe to call unconditionally.
     for revision in &published_revisions {
@@ -1083,11 +1083,10 @@ fn result_artifacts(
     }
     for stem in &manifest.artifacts.stems {
         let (role, kind, producer) = match stem.role {
-            AudioRoleWireV1::Instrumental => (
-                "instrumental",
-                ArtifactKind::InstrumentalStem,
-                "extract-instrumental",
-            ),
+            AudioRoleWireV1::Instrumental => {
+                let (kind, producer) = instrumental_result_kind(&stem.artifact.path);
+                ("instrumental", kind, producer)
+            }
             AudioRoleWireV1::GuideVocals => {
                 ("guide_vocals", ArtifactKind::VocalStem, "extract-vocals")
             }
@@ -1116,6 +1115,18 @@ fn result_artifacts(
         result.push((format!("stem:{role}"), &stem.artifact, kind, producer));
     }
     result
+}
+
+fn instrumental_result_kind(path: &Path) -> (ArtifactKind, &'static str) {
+    if !path.starts_with(Path::new("workflow-audio")) {
+        return (ArtifactKind::InstrumentalStem, "extract-instrumental");
+    }
+    let kind = if path.to_string_lossy().contains("-dereverb.flac") {
+        ArtifactKind::DereverbedInstrumentalStem
+    } else {
+        ArtifactKind::DenoisedInstrumentalStem
+    };
+    (kind, "cleanup")
 }
 
 fn validate_semantic_artifact(semantic: &str, path: &Path) -> Result<(), String> {

@@ -38,5 +38,5 @@ pub(crate) use tracks::{spawn_editor_tracks, sync_editor_singer_input};
 pub(crate) use view::{
     spawn_editor, spawn_editor_file_menu, spawn_editor_layout_menu, spawn_lyric_context_menu,
     spawn_menu_check_row, spawn_note_context_menu, spawn_waveform_context_menu,
-    update_editor_binding_guides, update_editor_geometry, update_editor_playhead,
+    update_editor_geometry, update_editor_playhead,
 };

@@ -12,7 +12,9 @@ pub fn run() {
     } = StudioStateBundle::load();
     let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
-    let theme = StudioTheme::new(shell.config.dark_mode.unwrap_or(false));
+    let transparent = shell.config.window_transparency.unwrap_or(false);
+    let theme =
+        StudioTheme::new_with_transparency(shell.config.dark_mode.unwrap_or(false), transparent);
     set_ui_font_scale(shell.config.font_scale());
     let mut window = studio_window(&shell.config, theme.dark);
     let restore_window_mode = window.mode;
@@ -21,7 +23,7 @@ pub fn run() {
     }
 
     App::new()
-        .insert_resource(ClearColor(theme.background))
+        .insert_resource(ClearColor(window_clear_color(&theme, transparent)))
         .insert_resource(theme)
         .insert_resource(shell)
         .insert_resource(library)
@@ -234,7 +236,6 @@ pub fn run() {
         .add_systems(Update, sync_library_audio)
         .add_systems(Update, update_editor_geometry)
         .add_systems(Update, update_editor_playhead)
-        .add_systems(Update, update_editor_binding_guides)
         .add_systems(Update, update_editor_shortcuts_panel_visibility)
         .add_systems(Update, update_library_player_ui)
         .run();
@@ -358,7 +359,14 @@ pub(crate) fn studio_window(config: &AppConfig, dark: bool) -> Window {
         name: Some("com.uta-studio.desktop".to_string()),
         resolution: debug_window_size().unwrap_or((1280, 720)).into(),
         decorations: false,
-        transparent: false,
+        // The Wayland surface must be created with alpha support; Bevy cannot
+        // change this flag after creation. Opaque mode is still pixel-opaque,
+        // while the persisted setting controls the clear/root alpha live.
+        transparent: true,
+        // Wayland/Vulkan compositors commonly expose premultiplied alpha.
+        // Requesting PostMultiplied unconditionally makes wgpu reject the
+        // surface on otherwise alpha-capable drivers (for example Intel Xe).
+        composite_alpha_mode: CompositeAlphaMode::PreMultiplied,
         resizable: true,
         mode: if debug_window_size().is_some() {
             WindowMode::Windowed
@@ -652,13 +660,15 @@ pub(crate) fn rebuild_ui(
             }
         }
         if editor_dirty && session.route == StudioRoute::Editor {
-            for entity in &ui.editor_regions {
-                commands.entity(entity).despawn();
-            }
-            if let Ok(root) = ui.roots.single() {
-                commands.entity(root).with_children(|root| {
-                    spawn_editor_region(
-                        root,
+            if let Ok(region) = ui.editor_regions.single() {
+                // Preserve the editor region itself while refreshing its
+                // contents. Replacing the whole route subtree briefly exposed
+                // an empty root to the Wayland surface and appeared as a
+                // flash during common edits, scrolling and auto-follow.
+                commands.entity(region).despawn_children();
+                commands.entity(region).with_children(|region| {
+                    spawn_editor(
+                        region,
                         asset_server.load(FONT_PATH),
                         asset_server.load(ICON_ATLAS_PATH),
                         &session,

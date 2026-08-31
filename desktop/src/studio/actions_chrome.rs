@@ -625,17 +625,6 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
-        UiCommand::Analysis(AnalysisCommand::PreviewWorkflow) => {
-            refresh_workflow_snapshot(studio.analysis);
-            studio.shell.notice = Some(
-                studio
-                    .analysis
-                    .workflow_compile_error
-                    .clone()
-                    .unwrap_or_else(|| "Workflow compiles to a valid DAG.".to_string()),
-            );
-            invalidated.invalidate(UiDirtyRegion::Analysis);
-        }
         UiCommand::Analysis(AnalysisCommand::SaveWorkflow) => {
             if let (Some(file_hash), Some(workflow)) = (
                 studio.library.selected_song.as_deref(),
@@ -649,7 +638,7 @@ pub(crate) fn apply_chrome_action(
                     Ok(saved) => {
                         studio.analysis.workflow = Some(saved);
                         refresh_workflow_snapshot(studio.analysis);
-                        studio.shell.notice = Some("Workflow saved.".to_string());
+                        studio.shell.notice = Some("Workflow validated and saved.".to_string());
                     }
                     Err(error) => {
                         studio.analysis.workflow_compile_error = Some(error.clone());
@@ -1115,9 +1104,6 @@ pub(crate) fn apply_chrome_action(
             let value = (value != "all").then(|| value.clone());
             match kind {
                 LibrarySelectKind::Status => studio.library.library_status = value,
-                LibrarySelectKind::TranscriptSource => {
-                    studio.library.library_transcript_source = value
-                }
             }
             studio.dialogs.open_library_select = None;
             studio.library.refresh();

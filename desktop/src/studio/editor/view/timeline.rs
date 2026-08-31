@@ -636,7 +636,6 @@ pub(crate) fn spawn_editor_timeline(
                 }
                 let playhead = time_percent(editor.visible_position, editor);
                 spawn_editor_alignment_guide(canvas, theme, 42);
-                spawn_editor_binding_guide(canvas, theme, EditorBindingGuidePart::Canvas);
                 canvas.spawn((
                     EditorPlayhead,
                     Node {

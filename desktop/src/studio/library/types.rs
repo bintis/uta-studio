@@ -5,7 +5,6 @@ use crate::studio::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibrarySelectKind {
     Status,
-    TranscriptSource,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

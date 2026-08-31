@@ -168,18 +168,13 @@ pub(super) fn spawn_workflow_status_strip(
                     );
                 });
             let notice = session.notice.as_deref().filter(|notice| !notice.is_empty());
-            strip
-                .spawn((
+            if let Some(notice) = notice {
+                strip
+                    .spawn((
                     Node {
                         width: percent(100),
                         min_width: px(0),
                         align_items: AlignItems::Center,
-                        justify_content: if notice.is_some() {
-                            JustifyContent::SpaceBetween
-                        } else {
-                            JustifyContent::FlexEnd
-                        },
-                        column_gap: px(10),
                         padding: UiRect::new(px(9), px(0), px(5), px(0)),
                         border: UiRect::top(px(1)),
                         ..default()
@@ -187,30 +182,22 @@ pub(super) fn spawn_workflow_status_strip(
                     BorderColor::all(theme.border.with_alpha(0.34)),
                 ))
                 .with_children(|action_row| {
-                    if let Some(notice) = notice {
-                        action_row
-                            .spawn(Node {
-                                min_width: px(0),
-                                flex_grow: 1.0,
-                                ..default()
-                            })
-                            .with_children(|notice_slot| {
-                                spawn_wrapped_text(
-                                    notice_slot,
-                                    font.clone(),
-                                    notice,
-                                    8.0,
-                                    theme.foreground,
-                                );
-                            });
-                    }
-                    spawn_compact_action_button(
-                        action_row,
-                        font.clone(),
-                        theme,
-                        "Re-run",
-                        UiAction::from(AnalysisCommand::RunWorkflow),
-                    );
+                    action_row
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            ..default()
+                        })
+                        .with_children(|notice_slot| {
+                            spawn_wrapped_text(
+                                notice_slot,
+                                font.clone(),
+                                notice,
+                                8.0,
+                                theme.foreground,
+                            );
+                        });
                 });
+            }
         });
 }

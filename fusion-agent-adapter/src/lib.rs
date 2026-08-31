@@ -904,6 +904,20 @@ mod tests {
     }
 
     #[test]
+    fn provider_prompt_names_scoped_files_without_embedding_their_contents() {
+        let parsed: FusionRequest = serde_json::from_slice::<FusionRequest>(&request())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let prompt = build_prompt(&parsed).unwrap();
+        for name in ["candidates.json", "lyrics.json", "hard_boundaries.json"] {
+            assert!(prompt.contains(name));
+        }
+        assert!(!prompt.contains("fixture-candidate-set"));
+        assert!(!prompt.contains("la la"));
+    }
+
+    #[test]
     fn markdown_fence_and_index_selection_are_normalized() {
         let request = String::from_utf8(request()).unwrap();
         let parsed: FusionRequest = serde_json::from_str::<FusionRequest>(&request)
@@ -995,11 +1009,21 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let _provider = fake_provider(&root, "codex", "exit 9");
+        let workspace_marker = root.join("provider-workspace");
+        let _provider = fake_provider(
+            &root,
+            "codex",
+            &format!("pwd > '{}'\nexit 9", workspace_marker.display()),
+        );
         assert!(matches!(
             run_request_with_search_path(Provider::Codex, &request(), Some(root.as_os_str())),
             Err(AdapterError::ProviderFailed(_))
         ));
+        let workspace = std::fs::read_to_string(&workspace_marker).unwrap();
+        assert!(
+            !Path::new(workspace.trim()).exists(),
+            "failed provider workspace was not removed"
+        );
         assert!(matches!(
             run_request_with_search_path(Provider::Claude, &request(), Some(root.as_os_str())),
             Err(AdapterError::ProviderUnavailable(_))

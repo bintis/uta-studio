@@ -459,6 +459,132 @@ pub(crate) fn exact_preview_allows_queue(
     ready && blockers.is_empty() && !invalidated
 }
 
+fn plan_preview_status(draft: &PlanPreviewDraft, theme: &StudioTheme) -> (&'static str, Color) {
+    match &draft.engine_preview {
+        Ok(preview)
+            if exact_preview_allows_queue(
+                preview.ready,
+                &preview.blockers,
+                preview.invalidated,
+            ) =>
+        {
+            ("Ready to run", theme.primary)
+        }
+        Ok(_) => ("Blocked", theme.editor_warning),
+        Err(_) => ("Preview unavailable", theme.destructive),
+    }
+}
+
+fn spawn_plan_preview_card(
+    parent: &mut ChildSpawnerCommands,
+    theme: &StudioTheme,
+    min_width: f32,
+    build: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(min_width),
+                flex_basis: px(min_width),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(14)),
+                row_gap: px(8),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.28)),
+            BorderColor::all(theme.border.with_alpha(0.46)),
+        ))
+        .with_children(build);
+}
+
+fn spawn_plan_preview_divider(parent: &mut ChildSpawnerCommands, theme: &StudioTheme) {
+    parent.spawn((
+        Node {
+            width: percent(100),
+            height: px(1),
+            margin: UiRect::axes(px(0), px(4)),
+            ..default()
+        },
+        BackgroundColor(theme.border.with_alpha(0.34)),
+    ));
+}
+
+fn spawn_plan_preview_readiness(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    draft: &PlanPreviewDraft,
+) {
+    let (label, color) = plan_preview_status(draft, theme);
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(62),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(px(14), px(11)),
+                row_gap: px(5),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            BackgroundColor(color.with_alpha(0.065)),
+            BorderColor::all(color.with_alpha(0.28)),
+        ))
+        .with_children(|status| {
+            spawn_text(status, font.clone(), label, 10.0, color);
+            match &draft.engine_preview {
+                Ok(preview)
+                    if exact_preview_allows_queue(
+                        preview.ready,
+                        &preview.blockers,
+                        preview.invalidated,
+                    ) => {
+                        spawn_wrapped_text(
+                            status,
+                            font.clone(),
+                            "All capabilities required by this exact request are ready under Production policy.",
+                            8.5,
+                            theme.muted_foreground,
+                        );
+                    }
+                Ok(preview) => {
+                    if preview.blockers.is_empty() {
+                        spawn_wrapped_text(
+                            status,
+                            font.clone(),
+                            "This exact request is not ready to queue.",
+                            8.5,
+                            theme.muted_foreground,
+                        );
+                    } else {
+                        for blocker in &preview.blockers {
+                            spawn_wrapped_text(
+                                status,
+                                font.clone(),
+                                format!("• {blocker}"),
+                                8.5,
+                                theme.editor_warning,
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    spawn_wrapped_text(
+                        status,
+                        font.clone(),
+                        error,
+                        8.5,
+                        theme.destructive,
+                    );
+                }
+            }
+        });
+}
+
 pub(crate) fn spawn_plan_preview_dialog(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -466,6 +592,7 @@ pub(crate) fn spawn_plan_preview_dialog(
     draft: &PlanPreviewDraft,
     notice: Option<&str>,
 ) {
+    let (status_label, status_color) = plan_preview_status(draft, theme);
     parent.spawn((
         Button,
         UiAction::from(AnalysisCommand::ClosePlanPreview),
@@ -501,78 +628,167 @@ pub(crate) fn spawn_plan_preview_dialog(
             overlay
                 .spawn((
                     Node {
-                        width: percent(100),
-                        height: percent(100),
+                        position_type: PositionType::Relative,
+                        width: Val::Vw(96.0),
+                        max_width: px(1520),
+                        height: Val::Vh(94.0),
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(18)),
-                        row_gap: px(10),
-                        overflow: Overflow::scroll_y(),
-                        border: UiRect::ZERO,
-                        border_radius: BorderRadius::ZERO,
+                        overflow: Overflow::clip(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(8)),
                         ..default()
                     },
-                    PlanPreviewScroll,
-                    ScrollPosition::default(),
-                    BackgroundColor(theme.card),
-                    BorderColor::all(theme.border),
+                    BackgroundColor(theme.card.with_alpha(0.985)),
+                    BorderColor::all(theme.border.with_alpha(0.82)),
+                    BoxShadow::new(
+                        Color::srgba(0.0, 0.0, 0.0, 0.34),
+                        px(0),
+                        px(18),
+                        px(42),
+                        px(-12),
+                    ),
                 ))
-                .with_children(|body| {
-                    spawn_text(body, font.clone(), "RUN ANALYSIS", 8.0, theme.primary);
-                    spawn_text(
-                        body,
-                        font.clone(),
-                        "Confirm this analysis run",
-                        18.0,
-                        theme.foreground,
-                    );
-                    spawn_wrapped_text(
-                        body,
-                        font.clone(),
-                        "Choose what to generate and the quality for this run. The summary below shows the resolved workflow, resources, and any blockers before anything starts.",
-                        10.0,
-                        theme.muted_foreground,
-                    );
+                .with_children(|dialog| {
+                    dialog.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(0),
+                            top: px(0),
+                            bottom: px(0),
+                            width: px(3),
+                            ..default()
+                        },
+                        BackgroundColor(status_color.with_alpha(0.64)),
+                        ZIndex(2),
+                        Pickable::IGNORE,
+                    ));
+                    dialog
+                        .spawn((
+                            Node {
+                                width: percent(100),
+                                flex_shrink: 0.0,
+                                align_items: AlignItems::Center,
+                                flex_wrap: FlexWrap::Wrap,
+                                padding: UiRect::axes(px(20), px(14)),
+                                column_gap: px(14),
+                                row_gap: px(8),
+                                border: UiRect::bottom(px(1)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.card.with_alpha(0.72)),
+                            BorderColor::all(theme.border.with_alpha(0.5)),
+                        ))
+                        .with_children(|header| {
+                            header
+                                .spawn(Node {
+                                    min_width: px(280),
+                                    flex_basis: px(620),
+                                    flex_grow: 1.0,
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(2),
+                                    ..default()
+                                })
+                                .with_children(|copy| {
+                                    spawn_text(
+                                        copy,
+                                        font.clone(),
+                                        "RUN ANALYSIS",
+                                        7.5,
+                                        theme.primary,
+                                    );
+                                    spawn_text(
+                                        copy,
+                                        font.clone(),
+                                        "Exact Engine plan preview",
+                                        17.0,
+                                        theme.foreground,
+                                    );
+                                    spawn_wrapped_text(
+                                        copy,
+                                        font.clone(),
+                                        "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.",
+                                        8.5,
+                                        theme.muted_foreground,
+                                    );
+                                });
+                            spawn_settings_badge(
+                                header,
+                                font.clone(),
+                                status_label,
+                                status_color,
+                            );
+                            spawn_text_button(
+                                header,
+                                font.clone(),
+                                theme,
+                                "Close",
+                                9.0,
+                                UiAction::from(AnalysisCommand::ClosePlanPreview),
+                            );
+                        });
 
-                    spawn_text(
-                        body,
-                        font.clone(),
-                        format!("OUTPUTS · {}", preview_target_source(draft)),
-                        8.0,
-                        theme.primary,
-                    );
-                    spawn_run_output_sheet(body, font.clone(), theme, draft);
-
-                    spawn_text(
-                        body,
-                        font.clone(),
-                        format!("QUALITY · {}", preview_quality_source(draft)),
-                        8.0,
-                        theme.primary,
-                    );
-                    spawn_run_quality_row(body, font.clone(), theme, draft);
-
-                    match &draft.engine_preview {
-                        Ok(preview) => {
-                            body.spawn(Node {
+                    dialog
+                        .spawn((
+                            Node {
                                 width: percent(100),
                                 min_height: px(0),
                                 flex_grow: 1.0,
-                                align_items: AlignItems::FlexStart,
+                                flex_direction: FlexDirection::Column,
+                                padding: UiRect::all(px(16)),
+                                row_gap: px(14),
+                                overflow: Overflow::scroll_y(),
+                                ..default()
+                            },
+                            PlanPreviewScroll,
+                            ScrollPosition::default(),
+                            BackgroundColor(theme.background.with_alpha(0.2)),
+                        ))
+                        .with_children(|body| {
+                            body.spawn(Node {
+                                width: percent(100),
+                                align_items: AlignItems::Stretch,
                                 flex_wrap: FlexWrap::Wrap,
                                 column_gap: px(12),
+                                row_gap: px(12),
                                 ..default()
                             })
-                            .with_children(|details| {
-                                details
-                                    .spawn(Node {
-                                        min_width: px(260),
-                                        flex_basis: px(300),
-                                        flex_grow: 1.0,
-                                        flex_direction: FlexDirection::Column,
-                                        row_gap: px(6),
-                                        ..default()
-                                    })
-                                    .with_children(|request| {
+                            .with_children(|setup| {
+                                spawn_plan_preview_card(setup, theme, 340.0, |outputs| {
+                                    spawn_text(
+                                        outputs,
+                                        font.clone(),
+                                        format!("OUTPUTS · {}", preview_target_source(draft)),
+                                        8.0,
+                                        theme.primary,
+                                    );
+                                    spawn_run_output_sheet(outputs, font.clone(), theme, draft);
+                                });
+                                spawn_plan_preview_card(setup, theme, 280.0, |quality| {
+                                    spawn_text(
+                                        quality,
+                                        font.clone(),
+                                        format!(
+                                            "QUALITY · Source: {}",
+                                            preview_quality_source(draft)
+                                        ),
+                                        8.0,
+                                        theme.primary,
+                                    );
+                                    spawn_run_quality_row(quality, font.clone(), theme, draft);
+                                });
+                            });
+
+                            if let Ok(preview) = &draft.engine_preview {
+                                body.spawn(Node {
+                                    width: percent(100),
+                                    align_items: AlignItems::FlexStart,
+                                    flex_wrap: FlexWrap::Wrap,
+                                    column_gap: px(12),
+                                    row_gap: px(12),
+                                    ..default()
+                                })
+                                .with_children(|details| {
+                                    spawn_plan_preview_card(details, theme, 280.0, |request| {
                                         spawn_preview_request_summary(
                                             request,
                                             font.clone(),
@@ -580,6 +796,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                                             draft,
                                             preview,
                                         );
+                                        spawn_plan_preview_divider(request, theme);
                                         spawn_preview_lyrics_context(
                                             request,
                                             font.clone(),
@@ -587,16 +804,7 @@ pub(crate) fn spawn_plan_preview_dialog(
                                             preview,
                                         );
                                     });
-                                details
-                                    .spawn(Node {
-                                        min_width: px(320),
-                                        flex_basis: px(380),
-                                        flex_grow: 1.0,
-                                        flex_direction: FlexDirection::Column,
-                                        row_gap: px(6),
-                                        ..default()
-                                    })
-                                    .with_children(|plan| {
+                                    spawn_plan_preview_card(details, theme, 340.0, |plan| {
                                         spawn_preview_execution_plan(
                                             plan,
                                             font.clone(),
@@ -604,145 +812,157 @@ pub(crate) fn spawn_plan_preview_dialog(
                                             preview,
                                         );
                                     });
-                                details
-                                    .spawn(Node {
-                                        min_width: px(320),
-                                        flex_basis: px(380),
-                                        flex_grow: 1.0,
-                                        flex_direction: FlexDirection::Column,
-                                        row_gap: px(6),
-                                        ..default()
-                                    })
-                                    .with_children(|resources| {
+                                    spawn_plan_preview_card(details, theme, 340.0, |resources| {
                                         spawn_preview_resources(
                                             resources,
                                             font.clone(),
                                             theme,
                                             preview,
                                         );
+                                        spawn_plan_preview_divider(resources, theme);
                                         spawn_preview_outputs(
                                             resources,
                                             font.clone(),
                                             theme,
                                             preview,
                                         );
-                                        if preview.blockers.is_empty() {
-                                            spawn_wrapped_text(
-                                                resources,
-                                                font.clone(),
-                                                "Ready to run. All resources required by this request are available.",
-                                                9.0,
-                                                theme.primary,
-                                            );
-                                        } else {
-                                            spawn_text(
-                                                resources,
-                                                font.clone(),
-                                                "NEEDS ATTENTION",
-                                                8.0,
-                                                theme.editor_warning,
-                                            );
-                                            for blocker in &preview.blockers {
-                                                spawn_wrapped_text(
-                                                    resources,
-                                                    font.clone(),
-                                                    format!("• {blocker}"),
-                                                    9.0,
-                                                    theme.editor_warning,
-                                                );
-                                            }
-                                        }
                                     });
-                            });
-                        }
-                        Err(error) => {
-                            spawn_text(body, font.clone(), "PREVIEW UNAVAILABLE", 8.0, theme.destructive);
-                            spawn_wrapped_text(
+                                });
+                            }
+
+                            spawn_plan_preview_readiness(
                                 body,
                                 font.clone(),
-                                error,
-                                10.0,
-                                theme.destructive,
-                            );
-                        }
-                    }
-                    if let Some(notice) = notice {
-                        spawn_wrapped_text(body, font.clone(), notice, 9.0, theme.destructive);
-                    }
-
-                    body.spawn(Node {
-                        width: percent(100),
-                        flex_wrap: FlexWrap::Wrap,
-                        justify_content: JustifyContent::FlexEnd,
-                        row_gap: px(8),
-                        column_gap: px(8),
-                        margin: UiRect::top(px(6)),
-                        ..default()
-                    })
-                    .with_children(|actions| {
-                        spawn_text_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Cancel",
-                            10.0,
-                            UiAction::from(AnalysisCommand::ClosePlanPreview),
-                        );
-                        spawn_compact_action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Model parameters",
-                            UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
-                        );
-                        let request_ready = draft.engine_preview.as_ref().is_ok_and(|preview| {
-                            exact_preview_allows_queue(
-                                preview.ready,
-                                &preview.blockers,
-                                preview.invalidated,
-                            )
-                        });
-                        if request_ready {
-                            spawn_compact_action_button(
-                                actions,
-                                font.clone(),
                                 theme,
-                                "Start now",
-                                UiAction::from(AnalysisCommand::QueueExactPreview),
+                                draft,
                             );
-                        } else {
-                            actions
-                                .spawn((
+                            if let Some(notice) = notice {
+                                body.spawn((
                                     Node {
-                                        min_width: px(142),
-                                        height: px(36),
-                                        align_items: AlignItems::Center,
-                                        justify_content: JustifyContent::Center,
-                                        padding: UiRect::horizontal(px(13)),
+                                        width: percent(100),
+                                        padding: UiRect::axes(px(14), px(10)),
                                         border: UiRect::all(px(1)),
-                                        border_radius: BorderRadius::all(px(6)),
+                                        border_radius: studio_card_radius(),
                                         ..default()
                                     },
-                                    BackgroundColor(theme.background.with_alpha(0.48)),
-                                    BorderColor::all(theme.border.with_alpha(0.62)),
-                                    Pickable::IGNORE,
+                                    BackgroundColor(theme.destructive.with_alpha(0.055)),
+                                    BorderColor::all(theme.destructive.with_alpha(0.28)),
                                 ))
-                                .with_children(|disabled| {
-                                    let label = if draft.engine_preview.is_ok() {
-                                        "Blocked"
-                                    } else {
-                                        "Preview unavailable"
-                                    };
-                                    spawn_text(
-                                        disabled,
+                                .with_children(|message| {
+                                    spawn_wrapped_text(
+                                        message,
                                         font.clone(),
-                                        label,
-                                        10.0,
+                                        notice,
+                                        8.5,
+                                        theme.destructive,
+                                    );
+                                });
+                            }
+                        });
+
+                    dialog
+                        .spawn((
+                            Node {
+                                width: percent(100),
+                                min_height: px(62),
+                                flex_shrink: 0.0,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::SpaceBetween,
+                                flex_wrap: FlexWrap::Wrap,
+                                padding: UiRect::axes(px(18), px(11)),
+                                column_gap: px(14),
+                                row_gap: px(8),
+                                border: UiRect::top(px(1)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.card.with_alpha(0.82)),
+                            BorderColor::all(theme.border.with_alpha(0.5)),
+                        ))
+                        .with_children(|footer| {
+                            footer
+                                .spawn(Node {
+                                    min_width: px(240),
+                                    flex_basis: px(520),
+                                    flex_grow: 1.0,
+                                    ..default()
+                                })
+                                .with_children(|copy| {
+                                    spawn_wrapped_text(
+                                        copy,
+                                        font.clone(),
+                                        "Read-only preview. No analysis, cache, Active selection, or export is changed here.",
+                                        8.0,
                                         theme.muted_foreground,
                                     );
                                 });
-                        }
-                    });
+                            footer
+                                .spawn(Node {
+                                    align_items: AlignItems::Center,
+                                    flex_wrap: FlexWrap::Wrap,
+                                    column_gap: px(8),
+                                    row_gap: px(8),
+                                    ..default()
+                                })
+                                .with_children(|actions| {
+                                    spawn_compact_action_button(
+                                        actions,
+                                        font.clone(),
+                                        theme,
+                                        "Models & runtime",
+                                        UiAction::from(SettingsCommand::SettingsTab(
+                                            SettingsTab::Models,
+                                        )),
+                                    );
+                                    let request_ready = draft.engine_preview.as_ref().is_ok_and(
+                                        |preview| {
+                                            exact_preview_allows_queue(
+                                                preview.ready,
+                                                &preview.blockers,
+                                                preview.invalidated,
+                                            )
+                                        },
+                                    );
+                                    if request_ready {
+                                        spawn_compact_primary_action_button(
+                                            actions,
+                                            font.clone(),
+                                            theme,
+                                            "Start now",
+                                            UiAction::from(AnalysisCommand::QueueExactPreview),
+                                        );
+                                    } else {
+                                        actions
+                                            .spawn((
+                                                Node {
+                                                    min_width: px(116),
+                                                    min_height: px(STUDIO_CONTROL_HEIGHT),
+                                                    align_items: AlignItems::Center,
+                                                    justify_content: JustifyContent::Center,
+                                                    padding: UiRect::axes(px(11), px(7)),
+                                                    border: UiRect::all(px(1)),
+                                                    border_radius: studio_card_radius(),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(
+                                                    theme.background.with_alpha(0.28),
+                                                ),
+                                                BorderColor::all(
+                                                    theme.border.with_alpha(0.38),
+                                                ),
+                                                Pickable::IGNORE,
+                                            ))
+                                            .with_children(|disabled| {
+                                                spawn_text(
+                                                    disabled,
+                                                    font.clone(),
+                                                    status_label,
+                                                    9.0,
+                                                    theme.muted_foreground,
+                                                );
+                                            });
+                                    }
+                                });
+                        });
                 });
         });
 }

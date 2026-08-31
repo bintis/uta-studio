@@ -1330,6 +1330,7 @@
   "UTZ project": "UTZ project",
   "UVR MDX-NET Karaoke 2": "UVR MDX-NET Karaoke 2",
   "Validate": "Validate",
+  "Validate + save": "Validate + save",
   "Validate export": "Validate export",
   "Validated audio, runtime plan, tempo and key context": "Validated audio, runtime plan, tempo and key context",
   "Validated runtime routing": "Validated runtime routing",
@@ -1478,6 +1479,8 @@
   "Compatible pitch tuning": "Compatible pitch tuning",
   "Voiced sensitivity belongs to the RMVPE-compatible route and remains separate from note-boundary thresholds.": "Voiced sensitivity belongs to the RMVPE-compatible route and remains separate from note-boundary thresholds.",
   "RUN ANALYSIS": "RUN ANALYSIS",
+  "RUN SUMMARY": "RUN SUMMARY",
+  "LYRICS CONTEXT": "LYRICS CONTEXT",
   "Exact Engine plan preview": "Exact Engine plan preview",
   "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.": "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.",
   "OUTPUT TARGET · Source: GLOBAL": "OUTPUT TARGET · Source: GLOBAL",
@@ -1500,6 +1503,9 @@
   "No Runtime Manager status was returned.": "No Runtime Manager status was returned.",
   "DECLARED OUTPUTS": "DECLARED OUTPUTS",
   "All capabilities required by this exact request are ready under Production policy.": "All capabilities required by this exact request are ready under Production policy.",
+  "This exact request is not ready to queue.": "This exact request is not ready to queue.",
+  "Start now": "Start now",
+  "Workflow validated and saved.": "Workflow validated and saved.",
   "REQUEST BLOCKERS": "REQUEST BLOCKERS",
   "PREVIEW UNAVAILABLE": "PREVIEW UNAVAILABLE",
   "Decode & source validation": "Decode & source validation",
@@ -1997,5 +2003,8 @@
   "Production": "Production",
   "Fast · Production": "Fast · Production",
   "Balanced · Production": "Balanced · Production",
-  "Maximum · Production": "Maximum · Production"
+  "Maximum · Production": "Maximum · Production",
+  "All": "All",
+  "Let the Wayland compositor show subtly through the workspace.": "Let the Wayland compositor show subtly through the workspace.",
+  "Transparent window": "Transparent window"
 }

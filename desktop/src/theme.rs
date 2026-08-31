@@ -69,6 +69,22 @@ impl StudioTheme {
             }
         }
     }
+
+    pub fn new_with_transparency(dark: bool, transparent: bool) -> Self {
+        let mut theme = Self::new(dark);
+        if transparent {
+            theme.background = theme.background.with_alpha(if dark { 0.86 } else { 0.90 });
+        }
+        theme
+    }
+}
+
+pub fn window_clear_color(theme: &StudioTheme, transparent: bool) -> Color {
+    if transparent {
+        Color::NONE
+    } else {
+        theme.background
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +112,13 @@ mod tests {
         assert_srgb(theme.background, [0.965, 0.969, 0.98, 1.0]);
         assert_srgb(theme.foreground, [0.15, 0.155, 0.19, 1.0]);
         assert_srgb(theme.primary, [0.51, 0.48, 0.96, 1.0]);
+    }
+
+    #[test]
+    fn transparent_theme_keeps_content_readable_over_a_clear_surface() {
+        let theme = StudioTheme::new_with_transparency(true, true);
+        assert_srgb(theme.background, [0.055, 0.058, 0.075, 0.86]);
+        assert_srgb(window_clear_color(&theme, true), [0.0, 0.0, 0.0, 0.0]);
+        assert_srgb(theme.foreground, [0.92, 0.925, 0.95, 1.0]);
     }
 }

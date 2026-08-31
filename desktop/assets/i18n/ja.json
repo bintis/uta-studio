@@ -1330,6 +1330,7 @@
   "UTZ project": "UTZ プロジェクト",
   "UVR MDX-NET Karaoke 2": "UVR MDX-NET Karaoke 2",
   "Validate": "検証",
+  "Validate + save": "検証 + 保存",
   "Validate export": "書き出しを検証",
   "Validated audio, runtime plan, tempo and key context": "検証済み音声、実行プラン、テンポとキー情報",
   "Validated runtime routing": "検証済みランタイムルーティング",
@@ -1478,6 +1479,8 @@
   "Compatible pitch tuning": "互換ピッチの調整",
   "Voiced sensitivity belongs to the RMVPE-compatible route and remains separate from note-boundary thresholds.": "有声感度は RMVPE 互換経路に属し、ノート境界しきい値とは分離されます。",
   "RUN ANALYSIS": "解析を実行",
+  "RUN SUMMARY": "実行概要",
+  "LYRICS CONTEXT": "歌詞コンテキスト",
   "Exact Engine plan preview": "Engine の正確なプランプレビュー",
   "Temporary choices below affect this run only. They do not change Global defaults, the Song Profile, or installed resources.": "以下の一時的な選択は今回の実行だけに適用され、グローバル既定値、曲プロファイル、インストール済みリソースは変更しません。",
   "OUTPUT TARGET · Source: GLOBAL": "出力対象 · ソース：グローバル",
@@ -1500,6 +1503,9 @@
   "No Runtime Manager status was returned.": "Runtime Manager から状態が返されませんでした。",
   "DECLARED OUTPUTS": "宣言済み出力",
   "All capabilities required by this exact request are ready under Production policy.": "この正確なリクエストに必要なすべての機能は Production ポリシーで準備済みです。",
+  "This exact request is not ready to queue.": "この正確なリクエストはまだキューに追加できません。",
+  "Start now": "今すぐ開始",
+  "Workflow validated and saved.": "ワークフローを検証して保存しました。",
   "REQUEST BLOCKERS": "リクエストのブロッカー",
   "PREVIEW UNAVAILABLE": "プレビューを利用できません",
   "Decode & source validation": "デコードとソース検証",
@@ -1997,5 +2003,8 @@
   "Production": "本番",
   "Fast · Production": "高速 · 本番",
   "Balanced · Production": "バランス · 本番",
-  "Maximum · Production": "最高品質 · 本番"
+  "Maximum · Production": "最高品質 · 本番",
+  "All": "すべて",
+  "Let the Wayland compositor show subtly through the workspace.": "Wayland コンポジターがワークスペース越しにわずかに見えるようにします。",
+  "Transparent window": "透明ウィンドウ"
 }
