@@ -605,7 +605,7 @@ pub(crate) fn spawn_processing_studio(
                     flex_grow: 1.0,
                     column_gap: px(8),
                     flex_wrap: FlexWrap::NoWrap,
-                    align_items: AlignItems::FlexStart,
+                    align_items: AlignItems::Stretch,
                     overflow: Overflow::scroll_y(),
                     ..default()
                 },
@@ -623,28 +623,55 @@ pub(crate) fn spawn_processing_studio(
                     "vocal_bgm_split",
                     "instrumental",
                 );
-                for (stage, heading, description) in [
-                    (1u8, "01 · PRE-PROCESSING", "Separate the source and optionally clean either audio branch."),
-                    (2u8, "02 · LYRICS", "Transcribe, combine lyric evidence, then align it to the song."),
-                    (3u8, "03 · PITCH & NOTE EXPERTS", "Multiple providers for the same purpose are grouped together."),
-                    (4u8, "04 · FINAL FUSION", "Combine evidence into the candidate singing track."),
+                for (stage, title, description) in [
+                    (
+                        1u8,
+                        "Pre-processing",
+                        "Separate the source, then clean the vocal or instrumental branch when needed.",
+                    ),
+                    (
+                        2u8,
+                        "Lyrics & transcription",
+                        "Build canonical lyric evidence, combine transcripts and align text to the song.",
+                    ),
+                    (
+                        3u8,
+                        "Pitch & note experts",
+                        "Configure independent evidence providers; shared capabilities stay grouped.",
+                    ),
+                    (
+                        4u8,
+                        "Fusion & output",
+                        "Choose only the final decision mode; the Engine owns candidate construction.",
+                    ),
                 ] {
+                    let lane_weight = match stage {
+                        3 => 1.18,
+                        4 => 0.92,
+                        _ => 1.0,
+                    };
                     workspace
                         .spawn((
                             Node {
                                 min_width: px(0),
+                                min_height: percent(100),
+                                align_self: AlignSelf::Stretch,
                                 flex_basis: px(0),
-                                flex_grow: 1.0,
+                                flex_grow: lane_weight,
                                 flex_shrink: 1.0,
                                 flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(px(8)),
-                                row_gap: px(6),
+                                padding: UiRect::all(px(9)),
+                                row_gap: px(8),
                                 border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(10)),
+                                border_radius: BorderRadius::all(px(8)),
                                 ..default()
                             },
-                            BackgroundColor(theme.background.with_alpha(0.32)),
-                            BorderColor::all(theme.border.with_alpha(0.44)),
+                            BackgroundColor(theme.card.with_alpha(if stage == 4 {
+                                0.22
+                            } else {
+                                0.17
+                            })),
+                            BorderColor::all(theme.border.with_alpha(0.46)),
                         ))
                         .with_children(|lane| {
                             let stage_nodes = ordered_nodes
@@ -663,7 +690,8 @@ pub(crate) fn spawn_processing_studio(
                                 lane,
                                 font.clone(),
                                 theme,
-                                heading,
+                                stage,
+                                title,
                                 description,
                                 stats,
                             );
@@ -681,170 +709,61 @@ pub(crate) fn spawn_processing_studio(
                                         )
                                     },
                                 );
-                                stage_header::spawn_quiet_add_button(
+                                stage_header::spawn_compact_toggle_row(
                                     lane,
                                     font.clone(),
                                     theme,
-                                    if optional_preprocessing_is_enabled {
-                                        "Turn Lead isolation, dereverb + denoise off"
-                                    } else {
-                                        "Turn Lead isolation, dereverb + denoise on"
-                                    },
+                                    "Optional cleanup",
+                                    "Lead isolation, denoise and dereverb share this quick switch; each card remains independently editable.",
+                                    optional_preprocessing_is_enabled,
                                     UiAction::from(
                                         AnalysisCommand::SetWorkflowPreprocessingEnabled(
                                             !optional_preprocessing_is_enabled,
                                         ),
                                     ),
                                 );
-                                lane.spawn(Node {
-                                    width: percent(100),
-                                    column_gap: px(6),
-                                    row_gap: px(6),
-                                    flex_wrap: FlexWrap::Wrap,
-                                    ..default()
-                                })
-                                .with_children(|adds| {
-                                    for (label, tail, capability, model) in [
-                                        ("+ Vocal denoise", &vocal_tail, "audio.denoise", Some("melband_roformer_denoise_aufr33")),
-                                        ("+ Vocal dereverb", &vocal_tail, "audio.dereverb", Some("melband_roformer_dereverb_anvuew")),
-                                        ("+ BGM denoise", &bgm_tail, "audio.denoise", Some("melband_roformer_denoise_aufr33")),
-                                        ("+ BGM dereverb", &bgm_tail, "audio.dereverb", Some("melband_roformer_dereverb_anvuew")),
-                                    ] {
-                                        stage_header::spawn_quiet_add_button(
-                                            adds,
-                                            font.clone(),
-                                            theme,
-                                            label,
-                                            UiAction::from(AnalysisCommand::AddWorkflowProcessor(
-                                                tail.0.to_string(),
-                                                tail.1.clone(),
-                                                capability.to_string(),
-                                                model.map(str::to_string),
-                                            )),
-                                        );
-                                    }
-                                });
-                                spawn_wrapped_text(
-                                    lane,
-                                    font.clone(),
-                                    "Vocal and BGM are required outputs. Cleanup processors are optional and can be disabled after they are added.",
-                                    8.0,
-                                    theme.muted_foreground,
-                                );
-                            } else if stage == 2 {
-                                if let Some(status) = session
+                            } else if stage == 2
+                                && let Some(status) = session
                                     .selected_song
                                     .as_deref()
                                     .and_then(app_core::canonical_lyrics_status)
-                                {
-                                    let count = status.line_count.to_string();
-                                    let message = match status.source {
-                                        app_core::CanonicalLyricsSource::Plain => {
-                                            localized_message(
-                                                session.config,
-                                                UiMessage::CanonicalLyricsAvailablePlain,
-                                                &[("{count}", &count)],
-                                            )
-                                        }
-                                        app_core::CanonicalLyricsSource::TimedLrc => {
-                                            localized_message(
-                                                session.config,
-                                                UiMessage::CanonicalLyricsAvailableTimedLrc,
-                                                &[("{count}", &count)],
-                                            )
-                                        }
-                                    };
-                                    spawn_wrapped_text(lane, font.clone(), message, 8.0, theme.primary);
-                                }
-                                spawn_wrapped_text(
-                                    lane,
-                                    font.clone(),
-                                    "Online lyric acquisition is an explicit Song Detail action. Plan Preview never downloads or writes lyrics; only user-confirmed supplied text becomes canonical input.",
-                                    8.0,
-                                    theme.muted_foreground,
-                                );
-                                spawn_text(
-                                    lane,
-                                    font.clone(),
-                                    "ADD OPTIONAL LYRICS PROCESSOR",
-                                    8.0,
-                                    theme.primary,
-                                );
-                                lane.spawn(Node {
-                                    width: percent(100),
-                                    column_gap: px(6),
-                                    row_gap: px(6),
-                                    flex_wrap: FlexWrap::Wrap,
-                                    ..default()
-                                })
-                                .with_children(|adds| {
-                                    stage_header::optional_card_add_button(
-                                        adds,
-                                        font.clone(),
-                                        theme,
-                                        &stored.definition,
-                                        &vocal_tail,
-                                        app_core::OptionalWorkflowCardV1::FireRedTranscript,
-                                    );
-                                });
-                            } else if stage == 3 {
-                                let expert_cards = [
-                                    app_core::OptionalWorkflowCardV1::RmvpePitch,
-                                    app_core::OptionalWorkflowCardV1::FcpePitch,
-                                    app_core::OptionalWorkflowCardV1::GameBoundary,
-                                    app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
-                                    app_core::OptionalWorkflowCardV1::RosvotBoundary,
-                                    app_core::OptionalWorkflowCardV1::StarsBoundary,
-                                    app_core::OptionalWorkflowCardV1::Jbm555Boundary,
-                                    app_core::OptionalWorkflowCardV1::StarsTechnique,
-                                    app_core::OptionalWorkflowCardV1::AcousticDsp,
-                                ];
-                                let missing_experts = expert_cards
-                                    .into_iter()
-                                    .filter(|card| {
-                                        !app_core::workflow_has_optional_card(
-                                            &stored.definition,
-                                            *card,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>();
-                                if missing_experts.is_empty() {
+                            {
+                                let count = status.line_count.to_string();
+                                let message = match status.source {
+                                    app_core::CanonicalLyricsSource::Plain => localized_message(
+                                        session.config,
+                                        UiMessage::CanonicalLyricsAvailablePlain,
+                                        &[("{count}", &count)],
+                                    ),
+                                    app_core::CanonicalLyricsSource::TimedLrc => localized_message(
+                                        session.config,
+                                        UiMessage::CanonicalLyricsAvailableTimedLrc,
+                                        &[("{count}", &count)],
+                                    ),
+                                };
+                                lane.spawn((
+                                    Node {
+                                        width: percent(100),
+                                        padding: UiRect::axes(px(9), px(7)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: studio_card_radius(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.primary.with_alpha(0.05)),
+                                    BorderColor::all(theme.primary.with_alpha(0.2)),
+                                ))
+                                .with_children(|lyrics_status| {
                                     spawn_wrapped_text(
-                                        lane,
+                                        lyrics_status,
                                         font.clone(),
-                                        format!("{} experts configured", expert_cards.len()),
-                                        8.0,
-                                        theme.muted_foreground,
-                                    );
-                                } else {
-                                    spawn_text(
-                                        lane,
-                                        font.clone(),
-                                        "RESTORE MISSING EXPERTS",
+                                        message,
                                         8.0,
                                         theme.primary,
                                     );
-                                    lane.spawn(Node {
-                                        width: percent(100),
-                                        column_gap: px(6),
-                                        row_gap: px(6),
-                                        flex_wrap: FlexWrap::Wrap,
-                                        ..default()
-                                    })
-                                    .with_children(|adds| {
-                                        for card in missing_experts {
-                                            stage_header::optional_card_add_button(
-                                                adds,
-                                                font.clone(),
-                                                theme,
-                                                &stored.definition,
-                                                &vocal_tail,
-                                                card,
-                                            );
-                                        }
-                                    });
-                                }
-                            } else if stage == 4 {
+                                });
+                            }
+
+                            if stage == 4 {
                                 stage_fusion::spawn_fusion_stage_card(
                                     lane,
                                     font.clone(),
@@ -852,9 +771,14 @@ pub(crate) fn spawn_processing_studio(
                                     stored,
                                     stage_fusion::fusion_adapter_readiness(session),
                                 );
-                            }
-
-                            if stage == 4 {
+                                stage_header::spawn_stage_footer(
+                                    lane,
+                                    font.clone(),
+                                    theme,
+                                    "PRODUCT OUTPUT",
+                                    "Candidate singing track",
+                                    "Exact providers, resources and execution order are confirmed in Plan Preview.",
+                                );
                                 return;
                             }
 
@@ -881,6 +805,8 @@ pub(crate) fn spawn_processing_studio(
                                 };
                                 if group.len() > 1 {
                                     let provider_count = group.len();
+                                    let group_stats =
+                                        stage_header::StageCardStats::from_nodes(&group);
                                     let selected_member = group.iter().copied().find(|member| {
                                         session.selected_workflow_node.as_ref()
                                             == Some(&member.instance_id)
@@ -892,40 +818,55 @@ pub(crate) fn spawn_processing_studio(
                                         Node {
                                             width: percent(100),
                                             flex_direction: FlexDirection::Column,
-                                            padding: UiRect::all(px(7)),
-                                            row_gap: px(5),
+                                            padding: UiRect::all(px(8)),
+                                            row_gap: px(6),
                                             border: UiRect::all(px(1)),
                                             border_radius: studio_card_radius(),
                                             ..default()
                                         },
-                                        BackgroundColor(theme.card.with_alpha(0.24)),
-                                        BorderColor::all(theme.border.with_alpha(0.48)),
+                                        BackgroundColor(theme.card.with_alpha(0.18)),
+                                        BorderColor::all(theme.border.with_alpha(0.38)),
                                     ))
                                     .with_children(|group_card| {
                                         group_card
                                             .spawn(Node {
                                                 width: percent(100),
-                                                min_height: px(18),
+                                                min_width: px(0),
                                                 align_items: AlignItems::Center,
                                                 justify_content: JustifyContent::SpaceBetween,
-                                                column_gap: px(6),
+                                                column_gap: px(8),
                                                 ..default()
                                             })
                                             .with_children(|group_header| {
-                                                spawn_text(
-                                                    group_header,
-                                                    font.clone(),
-                                                    &capability.label,
-                                                    10.0,
-                                                    theme.foreground,
-                                                );
-                                                spawn_text(
-                                                    group_header,
-                                                    font.clone(),
-                                                    format!("{provider_count} MODELS"),
-                                                    7.0,
-                                                    theme.muted_foreground,
-                                                );
+                                                group_header
+                                                    .spawn(Node {
+                                                        min_width: px(0),
+                                                        flex_grow: 1.0,
+                                                        flex_direction: FlexDirection::Column,
+                                                        row_gap: px(1),
+                                                        ..default()
+                                                    })
+                                                    .with_children(|copy| {
+                                                        spawn_wrapped_text(
+                                                            copy,
+                                                            font.clone(),
+                                                            &capability.label,
+                                                            9.5,
+                                                            theme.foreground,
+                                                        );
+                                                        spawn_wrapped_text(
+                                                            copy,
+                                                            font.clone(),
+                                                            format!(
+                                                                "{} providers · {} enabled · {} conditional",
+                                                                provider_count,
+                                                                group_stats.enabled,
+                                                                group_stats.conditional
+                                                            ),
+                                                            6.8,
+                                                            theme.muted_foreground,
+                                                        );
+                                                    });
                                             });
                                         group_card
                                             .spawn(Node {
@@ -934,8 +875,8 @@ pub(crate) fn spawn_processing_studio(
                                                 flex_direction: FlexDirection::Row,
                                                 flex_wrap: FlexWrap::Wrap,
                                                 align_items: AlignItems::FlexStart,
-                                                column_gap: px(4),
-                                                row_gap: px(4),
+                                                column_gap: px(5),
+                                                row_gap: px(5),
                                                 ..default()
                                             })
                                             .with_children(|providers| {
@@ -1007,6 +948,174 @@ pub(crate) fn spawn_processing_studio(
                                     );
                                 }
                             }
+
+                            if stage == 1 {
+                                stage_header::spawn_lane_section_label(
+                                    lane,
+                                    font.clone(),
+                                    theme,
+                                    "ADD PROCESSOR",
+                                );
+                                lane.spawn(Node {
+                                    width: percent(100),
+                                    column_gap: px(5),
+                                    row_gap: px(5),
+                                    flex_wrap: FlexWrap::Wrap,
+                                    ..default()
+                                })
+                                .with_children(|adds| {
+                                    for (label, tail, capability, model) in [
+                                        (
+                                            "+ Vocal denoise",
+                                            &vocal_tail,
+                                            "audio.denoise",
+                                            Some("melband_roformer_denoise_aufr33"),
+                                        ),
+                                        (
+                                            "+ Vocal dereverb",
+                                            &vocal_tail,
+                                            "audio.dereverb",
+                                            Some("melband_roformer_dereverb_anvuew"),
+                                        ),
+                                        (
+                                            "+ BGM denoise",
+                                            &bgm_tail,
+                                            "audio.denoise",
+                                            Some("melband_roformer_denoise_aufr33"),
+                                        ),
+                                        (
+                                            "+ BGM dereverb",
+                                            &bgm_tail,
+                                            "audio.dereverb",
+                                            Some("melband_roformer_dereverb_anvuew"),
+                                        ),
+                                    ] {
+                                        stage_header::spawn_quiet_add_button(
+                                            adds,
+                                            font.clone(),
+                                            theme,
+                                            label,
+                                            UiAction::from(
+                                                AnalysisCommand::AddWorkflowProcessor(
+                                                    tail.0.to_string(),
+                                                    tail.1.clone(),
+                                                    capability.to_string(),
+                                                    model.map(str::to_string),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                });
+                                spawn_wrapped_text(
+                                    lane,
+                                    font.clone(),
+                                    "Vocal and instrumental outputs are required. Added cleanup cards remain optional and may be bypassed individually.",
+                                    7.0,
+                                    theme.muted_foreground,
+                                );
+                            } else if stage == 2 {
+                                stage_header::spawn_lane_section_label(
+                                    lane,
+                                    font.clone(),
+                                    theme,
+                                    "OPTIONAL TRANSCRIPTION",
+                                );
+                                lane.spawn(Node {
+                                    width: percent(100),
+                                    column_gap: px(5),
+                                    row_gap: px(5),
+                                    flex_wrap: FlexWrap::Wrap,
+                                    ..default()
+                                })
+                                .with_children(|adds| {
+                                    stage_header::optional_card_add_button(
+                                        adds,
+                                        font.clone(),
+                                        theme,
+                                        &stored.definition,
+                                        &vocal_tail,
+                                        app_core::OptionalWorkflowCardV1::FireRedTranscript,
+                                    );
+                                });
+                                spawn_wrapped_text(
+                                    lane,
+                                    font.clone(),
+                                    "Online lyric acquisition remains an explicit Song Detail action. Plan Preview never downloads or writes lyrics.",
+                                    7.0,
+                                    theme.muted_foreground,
+                                );
+                            } else if stage == 3 {
+                                let expert_cards = [
+                                    app_core::OptionalWorkflowCardV1::RmvpePitch,
+                                    app_core::OptionalWorkflowCardV1::FcpePitch,
+                                    app_core::OptionalWorkflowCardV1::GameBoundary,
+                                    app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
+                                    app_core::OptionalWorkflowCardV1::RosvotBoundary,
+                                    app_core::OptionalWorkflowCardV1::StarsBoundary,
+                                    app_core::OptionalWorkflowCardV1::Jbm555Boundary,
+                                    app_core::OptionalWorkflowCardV1::StarsTechnique,
+                                    app_core::OptionalWorkflowCardV1::AcousticDsp,
+                                ];
+                                let missing_experts = expert_cards
+                                    .into_iter()
+                                    .filter(|card| {
+                                        !app_core::workflow_has_optional_card(
+                                            &stored.definition,
+                                            *card,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                if !missing_experts.is_empty() {
+                                    stage_header::spawn_lane_section_label(
+                                        lane,
+                                        font.clone(),
+                                        theme,
+                                        "RESTORE EXPERT",
+                                    );
+                                    lane.spawn(Node {
+                                        width: percent(100),
+                                        column_gap: px(5),
+                                        row_gap: px(5),
+                                        flex_wrap: FlexWrap::Wrap,
+                                        ..default()
+                                    })
+                                    .with_children(|adds| {
+                                        for card in missing_experts {
+                                            stage_header::optional_card_add_button(
+                                                adds,
+                                                font.clone(),
+                                                theme,
+                                                &stored.definition,
+                                                &vocal_tail,
+                                                card,
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                            let (output, output_detail) = match stage {
+                                1 => (
+                                    "Vocal + Instrumental audio",
+                                    "Typed audio branches feed lyric, pitch and note analysis.",
+                                ),
+                                2 => (
+                                    "Canonical lyrics + word timing",
+                                    "Aligned lyric evidence feeds note and candidate construction.",
+                                ),
+                                3 => (
+                                    "Pitch, boundary, technique + acoustic evidence",
+                                    "Enabled and conditional experts remain distinct evidence providers.",
+                                ),
+                                _ => unreachable!("Stage 4 returns after rendering its product output"),
+                            };
+                            stage_header::spawn_stage_footer(
+                                lane,
+                                font.clone(),
+                                theme,
+                                "STAGE OUTPUT",
+                                output,
+                                output_detail,
+                            );
                         });
                 }
             });

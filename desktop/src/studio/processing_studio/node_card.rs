@@ -27,6 +27,7 @@ pub(super) fn node_execution_badge(policy: &app_core::ExecutionPolicy) -> (&'sta
     }
 }
 
+#[cfg(test)]
 pub(super) fn provider_metadata(model_id: Option<&str>) -> String {
     match model_id {
         Some(model_id) => format!(
@@ -162,18 +163,16 @@ pub(super) fn policy_choice_button(
         Node {
             min_width: px(0),
             max_width: percent(100),
-            min_height: px(46),
-            flex_basis: px(160),
+            min_height: px(34),
+            flex_basis: px(118),
             flex_grow: 1.0,
             flex_shrink: 1.0,
-            padding: UiRect::axes(px(10), px(6)),
+            padding: UiRect::axes(px(8), px(5)),
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
-            flex_direction: FlexDirection::Column,
+            border_radius: studio_card_radius(),
             overflow: Overflow::clip(),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            row_gap: px(1),
             ..default()
         },
         BackgroundColor(background),
@@ -223,6 +222,93 @@ pub(super) fn policy_choice_button(
     });
 }
 
+fn spawn_section_heading(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            align_items: AlignItems::Center,
+            column_gap: px(7),
+            margin: UiRect::top(px(3)),
+            ..default()
+        })
+        .with_children(|row| {
+            spawn_text(row, font, label, 6.8, theme.muted_foreground);
+            row.spawn((
+                Node {
+                    height: px(1),
+                    flex_grow: 1.0,
+                    ..default()
+                },
+                BackgroundColor(theme.border.with_alpha(0.32)),
+            ));
+        });
+}
+
+fn spawn_detail_fact(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+    value: impl Into<String>,
+    value_color: Color,
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(104),
+                flex_basis: px(126),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(7)),
+                row_gap: px(2),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.18)),
+            BorderColor::all(theme.border.with_alpha(0.3)),
+        ))
+        .with_children(|fact| {
+            spawn_text(fact, font.clone(), label, 6.3, theme.muted_foreground);
+            spawn_wrapped_text(fact, font, value, 7.8, value_color);
+        });
+}
+
+fn spawn_destructive_action_button(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    action: UiAction,
+) {
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                min_width: px(92),
+                min_height: px(30),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::axes(px(10), px(5)),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.destructive.with_alpha(0.08)),
+            BorderColor::all(theme.destructive.with_alpha(0.34)),
+        ))
+        .with_children(|button| {
+            spawn_wrapped_text(button, font, label, 8.0, theme.destructive);
+        });
+}
+
 pub(super) fn spawn_node_card(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -247,7 +333,7 @@ pub(super) fn spawn_node_card(
         capability.label.clone()
     };
     let secondary_label = (!context.embedded && !expanded)
-        .then(|| node.model_id.as_deref())
+        .then_some(node.model_id.as_deref())
         .flatten()
         .map(app_core::workflow_model_label);
     let disable_availability = workflow_policy_availability(
@@ -261,14 +347,15 @@ pub(super) fn spawn_node_card(
         app_core::ExecutionPolicy::Always,
     );
     let collapsed_min_height = if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
-        64
+        68
     } else if context.compact {
-        46
+        50
     } else {
-        52
+        58
     };
     let mut card_entity = parent.spawn((
         Node {
+            position_type: PositionType::Relative,
             width: if context.embedded && context.compact && !expanded {
                 percent(49)
             } else {
@@ -276,7 +363,7 @@ pub(super) fn spawn_node_card(
             },
             min_width: px(0),
             min_height: px(if expanded {
-                if context.compact { 46 } else { 88 }
+                if context.compact { 54 } else { 92 }
             } else {
                 collapsed_min_height
             }),
@@ -291,31 +378,32 @@ pub(super) fn spawn_node_card(
                 Val::Auto
             },
             padding: UiRect::all(px(if context.compact || !expanded {
-                6
-            } else if context.embedded {
                 8
+            } else if context.embedded {
+                9
             } else {
-                12
+                11
             })),
             flex_direction: FlexDirection::Column,
-            row_gap: px(if context.compact { 3 } else { 6 }),
+            row_gap: px(if context.compact { 4 } else { 6 }),
             border: UiRect::all(px(if context.selected { 2 } else { 1 })),
             border_radius: studio_card_radius(),
+            overflow: Overflow::clip(),
             ..default()
         },
         BackgroundColor(if context.selected {
-            theme.primary.with_alpha(0.12)
+            theme.primary.with_alpha(0.055)
         } else if context.embedded {
-            theme.background.with_alpha(0.24)
+            theme.background.with_alpha(0.2)
         } else {
-            theme.card.with_alpha(STUDIO_CARD_BACKGROUND_ALPHA)
+            theme.card.with_alpha(0.24)
         }),
         BorderColor::all(if context.selected {
-            theme.primary.with_alpha(0.72)
+            theme.primary.with_alpha(0.58)
         } else if context.embedded {
-            theme.border.with_alpha(0.32)
+            theme.border.with_alpha(0.3)
         } else {
-            theme.border.with_alpha(STUDIO_CARD_BORDER_ALPHA)
+            theme.border.with_alpha(0.4)
         }),
     ));
     if capability.preserves_audio_role {
@@ -331,6 +419,19 @@ pub(super) fn spawn_node_card(
         ));
     }
     card_entity.with_children(|card| {
+        card.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                top: px(7),
+                bottom: px(7),
+                width: px(if context.selected { 3 } else { 2 }),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(status_color.with_alpha(if context.selected { 0.84 } else { 0.28 })),
+            Pickable::IGNORE,
+        ));
             let mut header = card.spawn((
                 Button,
                 UiAction::from(AnalysisCommand::SelectWorkflowNode(
@@ -445,7 +546,7 @@ pub(super) fn spawn_node_card(
                         8.0,
                         theme.muted_foreground,
                     );
-                    spawn_text(card, font.clone(), "SEPARATION STRATEGY", 8.0, theme.primary);
+                    spawn_section_heading(card, font.clone(), theme, "SEPARATION STRATEGY");
                     card.spawn(Node {
                         width: percent(100),
                         column_gap: px(6),
@@ -488,14 +589,45 @@ pub(super) fn spawn_node_card(
                     );
                 }
             } else if expanded {
-                spawn_text(card, font.clone(), "PROVIDER / MODEL", 8.0, theme.primary);
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    provider_metadata(node.model_id.as_deref()),
-                    9.0,
-                    theme.muted_foreground,
-                );
+                spawn_section_heading(card, font.clone(), theme, "PROVIDER / MODEL");
+                card.spawn(Node {
+                    width: percent(100),
+                    min_width: px(0),
+                    column_gap: px(6),
+                    row_gap: px(6),
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|facts| {
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "CONFIGURED PROVIDER",
+                        node.model_id
+                            .as_deref()
+                            .map(app_core::workflow_model_label)
+                            .unwrap_or("Studio capability logic"),
+                        theme.foreground,
+                    );
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "RUNTIME RESOLUTION",
+                        "Exact Plan Preview",
+                        theme.primary,
+                    );
+                });
+                if let Some(model_id) = node.model_id.as_deref() {
+                    spawn_wrapped_text(
+                        card,
+                        font.clone(),
+                        format!("Provider ID · {model_id}"),
+                        6.8,
+                        theme.muted_foreground,
+                    );
+                }
             }
             if expanded && model_options.len() > 1 {
                 card.spawn(Node {
@@ -556,27 +688,55 @@ pub(super) fn spawn_node_card(
                 .collect::<Vec<_>>()
                 .join(" + ");
             if expanded {
-                spawn_text(card, font.clone(), "INPUT AND OUTPUT", 8.0, theme.primary);
-                spawn_wrapped_text(
-                    card,
-                    font.clone(),
-                    format!(
-                        "{} → {} · {} · priority {}",
+                spawn_section_heading(card, font.clone(), theme, "ROUTING");
+                card.spawn(Node {
+                    width: percent(100),
+                    min_width: px(0),
+                    column_gap: px(6),
+                    row_gap: px(6),
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|facts| {
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "INPUT",
                         if inputs.is_empty() { "source" } else { &inputs },
-                        outputs,
+                        theme.foreground,
+                    );
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "OUTPUT",
+                        &outputs,
+                        theme.foreground,
+                    );
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "CONDITION",
                         policy_label(&node.execution_policy),
-                        node.priority,
-                    ),
-                    8.0,
-                    theme.muted_foreground,
-                );
+                        status_color,
+                    );
+                    spawn_detail_fact(
+                        facts,
+                        font.clone(),
+                        theme,
+                        "PRIORITY",
+                        node.priority.to_string(),
+                        theme.foreground,
+                    );
+                });
                 if !capability.hard_dependencies.is_empty() {
-                    spawn_text(card, font.clone(), "DEPENDENCIES", 8.0, theme.primary);
                     spawn_wrapped_text(
                         card,
                         font.clone(),
                         format!(
-                            "Needs {}",
+                            "Requires · {}",
                             capability
                                 .hard_dependencies
                                 .iter()
@@ -584,13 +744,13 @@ pub(super) fn spawn_node_card(
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ),
-                        8.0,
+                        7.2,
                         theme.muted_foreground,
                     );
                 }
             }
             if capability.preserves_audio_role && expanded {
-                spawn_text(card, font.clone(), "REORDER", 8.0, theme.primary);
+                spawn_section_heading(card, font.clone(), theme, "ORDER");
                 let earlier = workflow_reorder_availability(
                     context.definition,
                     &node.instance_id,
@@ -650,68 +810,30 @@ pub(super) fn spawn_node_card(
                 }
             }
 
-            if expanded {
-                spawn_text(card, font.clone(), "DESTRUCTIVE ACTIONS", 8.0, theme.primary);
-                card.spawn(Node {
-                    width: percent(100),
-                    justify_content: JustifyContent::FlexEnd,
-                    ..default()
-                })
-                .with_children(|actions| {
-                    if workflow_node_can_be_removed(context.definition, &node.instance_id) {
-                        action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Delete",
-                            UiAction::from(AnalysisCommand::RemoveWorkflowNode(
-                                node.instance_id.to_string(),
-                            )),
-                        );
-                    } else {
-                        disabled_action_button(
-                            actions,
-                            font.clone(),
-                            theme,
-                            "Delete · required by the current topology",
-                        );
-                    }
-                });
-            }
 
             if expanded {
                 let preprocessing = uses_binary_preprocessing_switch(capability);
-                spawn_text(
+                spawn_section_heading(
                     card,
                     font.clone(),
+                    theme,
                     if preprocessing {
-                        "PREPROCESSING SWITCH"
+                        "PREPROCESSING"
                     } else {
-                        "WHEN THIS STEP RUNS"
+                        "EXECUTION CONDITION"
                     },
-                    8.0,
-                    theme.primary,
                 );
                 spawn_wrapped_text(
                     card,
                     font.clone(),
                     if preprocessing {
-                        "Turn this preprocessing step On or Off. Off is a transparent bypass; the exact analyzer input route is shown in Plan Preview."
+                        "Off is a transparent bypass. Exact analyzer routing remains visible in Plan Preview."
                     } else {
-                        "Choose when this step runs. The checked option is active. Dimmed options would make the current workflow invalid."
+                        "Choose when this expert participates. Unavailable choices would invalidate the current topology."
                     },
-                    8.0,
+                    7.4,
                     theme.muted_foreground,
                 );
-                if !preprocessing {
-                    spawn_wrapped_text(
-                        card,
-                        font.clone(),
-                        "Always runs every time. On disagreement runs the full step when results conflict; Disagreement windows runs only conflicting sections. Maximum only runs in Maximum quality; Disabled skips the step.",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                }
                 card.spawn(Node {
                     width: percent(100),
                     min_width: px(0),
@@ -808,7 +930,7 @@ pub(super) fn spawn_node_card(
                     );
                 }
                 if is_step1_cacheable(capability.id.as_str()) {
-                    spawn_text(card, font.clone(), "CACHE POLICY", 8.0, theme.primary);
+                    spawn_section_heading(card, font.clone(), theme, "CACHE");
                     card.spawn(Node {
                         width: percent(100),
                         column_gap: px(6),
@@ -901,7 +1023,7 @@ pub(super) fn spawn_node_card(
             }
 
             if capability.class == app_core::CapabilityClass::Analyzer && expanded {
-                spawn_text(card, font.clone(), "ANALYZER SOURCE", 8.0, theme.primary);
+                spawn_section_heading(card, font.clone(), theme, "ANALYZER SOURCE");
                 if let Some(binding) = context.analyzer_binding {
                     spawn_wrapped_text(
                         card,
@@ -938,6 +1060,35 @@ pub(super) fn spawn_node_card(
                                 source_node.to_string(),
                                 source_port.clone(),
                             )),
+                        );
+                    }
+                });
+            }
+
+            if expanded {
+                spawn_section_heading(card, font.clone(), theme, "REMOVE CARD");
+                card.spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                })
+                .with_children(|actions| {
+                    if workflow_node_can_be_removed(context.definition, &node.instance_id) {
+                        spawn_destructive_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Delete",
+                            UiAction::from(AnalysisCommand::RemoveWorkflowNode(
+                                node.instance_id.to_string(),
+                            )),
+                        );
+                    } else {
+                        disabled_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Delete · required by the current topology",
                         );
                     }
                 });
