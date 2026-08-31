@@ -390,3 +390,16 @@ fn expert_fusion_stage_hides_internal_execution_cards() {
         app_core::FusionModeV1::AiJudgment
     );
 }
+
+
+#[test]
+fn selected_module_edits_in_the_contextual_inspector_not_inside_a_stage_lane() {
+    let workspace = include_str!("mod.rs");
+    let inspector = include_str!("workspace_sidebar.rs");
+
+    assert!(workspace.contains("workspace_sidebar::spawn_workflow_sidebar"));
+    assert!(workspace.contains("expanded: false"));
+    assert!(inspector.contains("let Some(selected_id) = session.selected_workflow_node.as_ref() else"));
+    assert!(inspector.contains("allow_drag_reorder: false"));
+    assert!(inspector.contains("MODULE SETTINGS"));
+}

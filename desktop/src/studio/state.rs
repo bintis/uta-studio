@@ -346,6 +346,35 @@ impl StudioStateBundle {
             self.library.selected_song = Some(hash);
             self.shell.route = StudioRoute::SongDetail;
         }
+        if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_OPEN_PROCESSING_STUDIO") {
+            self.library.selected_song = Some(hash.clone());
+            self.analysis.selected_workflow_node =
+                std::env::var("UTA_STUDIO_DEBUG_SELECT_WORKFLOW_NODE")
+                    .ok()
+                    .filter(|node| !node.trim().is_empty())
+                    .map(app_core::WorkflowNodeId::new);
+            self.analysis.processing_studio_scroll_offset =
+                std::env::var("UTA_STUDIO_DEBUG_PROCESSING_SCROLL")
+                    .ok()
+                    .and_then(|offset| offset.parse::<f32>().ok())
+                    .unwrap_or(0.0)
+                    .max(0.0);
+            if let Ok(workflow) = app_core::load_song_workflow(&hash) {
+                match app_core::preview_workflow_compile(&workflow.definition) {
+                    Ok(snapshot) => {
+                        self.analysis.workflow_snapshot = Some(snapshot);
+                        self.analysis.workflow_compile_error = None;
+                    }
+                    Err(error) => {
+                        self.analysis.workflow_snapshot = None;
+                        self.analysis.workflow_compile_error = Some(error.to_string());
+                    }
+                }
+                self.analysis.workflow = Some(workflow);
+                self.shell.route = StudioRoute::ProcessingStudio;
+                self.jobs.request_model_settings_refresh = true;
+            }
+        }
         if std::env::var("UTA_STUDIO_DEBUG_OPEN_ACTIVITY").is_ok() {
             self.dialogs.activity_open = true;
         }
