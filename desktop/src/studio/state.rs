@@ -58,7 +58,7 @@ impl LibraryState {
         });
         self.songs.processed.extend(next.processed);
         self.songs.count = next.count;
-        self.songs.processed_count = self.songs.processed.len();
+        self.songs.processed_count = next.processed_count;
     }
 
     pub(crate) fn filters(&self) -> LibraryMenuFilters {
@@ -86,6 +86,11 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_graph_needs_fit: bool,
     pub(crate) analysis_graph_fit_active: bool,
     pub(crate) analysis_graph_follow_node: Option<String>,
+    /// Pure front-end view state (§10): whether the canvas should recenter
+    /// on the live running node as it changes. Manual pan clears it; the
+    /// Follow control restores it. Live/History/Draft applicability is
+    /// derived at render time, not stored here.
+    pub(crate) analysis_graph_follow_enabled: bool,
     pub(crate) analysis_tasks: Vec<AnalysisTask>,
     pub(crate) analysis_history: Vec<AnalysisRunHistory>,
     pub(crate) selected_analysis_history: Option<i64>,
@@ -125,6 +130,7 @@ pub(crate) struct DialogState {
     pub(crate) pending_cache_clear: Option<CacheClearScope>,
     pub(crate) pending_leave: Option<PendingLeave>,
     pub(crate) open_settings_select: Option<SettingsSelectKind>,
+    pub(crate) open_model_runtime_select: Option<String>,
     pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
@@ -139,6 +145,8 @@ pub(crate) struct ModelSettingsSnapshot {
     pub(crate) runtime_models: Vec<app_core::RuntimeModelPresentation>,
     pub(crate) fusion_agent_adapter: Option<app_core::RuntimeResourceStatusWireV1>,
     pub(crate) fusion_agent_adapter_error: Option<String>,
+    pub(crate) fusion_providers: Option<app_core::RuntimeFusionProviderReportWireV1>,
+    pub(crate) fusion_providers_error: Option<String>,
     pub(crate) audio_catalog: app_core::AudioModelCatalogSummary,
     pub(crate) audio_catalog_error: Option<String>,
 }
@@ -263,6 +271,7 @@ impl StudioStateBundle {
                 analysis_graph_needs_fit: true,
                 analysis_graph_fit_active: true,
                 analysis_graph_follow_node: None,
+                analysis_graph_follow_enabled: true,
                 analysis_tasks: app_core::load_analysis_tasks(),
                 analysis_history: app_core::load_analysis_history(100),
                 selected_analysis_history: None,
@@ -293,6 +302,7 @@ impl StudioStateBundle {
                 pending_cache_clear: None,
                 pending_leave: None,
                 open_settings_select: None,
+                open_model_runtime_select: None,
                 open_library_select: None,
                 export_all_open: false,
                 open_editor_select: None,
@@ -316,11 +326,21 @@ impl StudioStateBundle {
                 "analysis" => SettingsTab::Analysis,
                 _ => SettingsTab::General,
             };
+            self.jobs.request_cache_stats_refresh = self.shell.settings_tab == SettingsTab::Storage;
+            self.jobs.request_model_settings_refresh = matches!(
+                self.shell.settings_tab,
+                SettingsTab::Models | SettingsTab::Analysis
+            );
         }
         if let Ok(offset) = std::env::var("UTA_STUDIO_DEBUG_SETTINGS_SCROLL")
             && let Ok(offset) = offset.parse::<f32>()
         {
             self.shell.settings_scroll_offsets[self.shell.settings_tab.index()] = offset.max(0.0);
+        }
+        if let Ok(model_id) = std::env::var("UTA_STUDIO_DEBUG_OPEN_MODEL_RUNTIME_SELECT")
+            && !model_id.trim().is_empty()
+        {
+            self.dialogs.open_model_runtime_select = Some(model_id);
         }
         if let Ok(hash) = std::env::var("UTA_STUDIO_DEBUG_OPEN_SONG") {
             self.library.selected_song = Some(hash);
@@ -422,6 +442,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) pending_cache_clear: Option<CacheClearScope>,
     pub(crate) pending_leave: Option<PendingLeave>,
     pub(crate) open_settings_select: Option<SettingsSelectKind>,
+    pub(crate) open_model_runtime_select: &'a Option<String>,
     pub(crate) settings_scroll_offsets: [f32; 4],
     pub(crate) model_settings_job: &'a ModelSettingsJob,
     pub(crate) model_settings_refresh_pending: bool,
@@ -431,6 +452,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) analysis_graph_zoom: f32,
     pub(crate) analysis_graph_viewport_width: f32,
     pub(crate) analysis_graph_viewport_height: f32,
+    pub(crate) analysis_graph_follow_enabled: bool,
     pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
@@ -498,6 +520,7 @@ impl<'a> StudioSessionView<'a> {
             pending_cache_clear: dialogs.pending_cache_clear,
             pending_leave: dialogs.pending_leave.clone(),
             open_settings_select: dialogs.open_settings_select,
+            open_model_runtime_select: &dialogs.open_model_runtime_select,
             settings_scroll_offsets: shell.settings_scroll_offsets,
             model_settings_job: &jobs.model_settings_job,
             model_settings_refresh_pending: jobs.request_model_settings_refresh,
@@ -507,6 +530,7 @@ impl<'a> StudioSessionView<'a> {
             analysis_graph_zoom: analysis.analysis_graph_zoom,
             analysis_graph_viewport_width: analysis.analysis_graph_viewport_width,
             analysis_graph_viewport_height: analysis.analysis_graph_viewport_height,
+            analysis_graph_follow_enabled: analysis.analysis_graph_follow_enabled,
             open_library_select: dialogs.open_library_select,
             export_all_open: dialogs.export_all_open,
             open_editor_select: dialogs.open_editor_select,

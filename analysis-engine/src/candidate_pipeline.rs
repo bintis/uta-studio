@@ -7,7 +7,7 @@ use crate::artifact::{
 };
 use crate::contract::{
     BoundaryAuthority, BoundaryConstraintV1, BoundaryLevel, CANONICAL_TIMEBASE, EngineError,
-    EngineErrorCode, EngineResult,
+    EngineErrorCode, EngineResult, LyricsMode, LyricsV1,
 };
 use crate::execution::CancellationToken;
 use crate::fusion::{
@@ -190,6 +190,34 @@ fn transcript_tokens(artifact: &TranscriptArtifactV1) -> Vec<TranscriptTokenEvid
             confidence: token.confidence,
         })
         .collect()
+}
+
+/// Restores the caller's authoritative Timed-LRC line ranges after the
+/// transcript artifact has crossed the model-facing transcript protocol,
+/// whose tokens intentionally contain text but no timing fields.
+pub fn attach_caller_lyric_ranges(transcript: &mut CanonicalLyrics, lyrics: &LyricsV1) {
+    if transcript.authority != LyricsAuthority::CallerCanonical
+        || lyrics.mode != LyricsMode::Canonical
+    {
+        return;
+    }
+    for token in &mut transcript.tokens {
+        let Some(id) = token.id.as_deref() else {
+            continue;
+        };
+        let Some(caller) = lyrics
+            .tokens
+            .iter()
+            .find(|caller| caller.id == id && caller.text == token.text)
+        else {
+            continue;
+        };
+        if let (Some(start), Some(end)) = (caller.start, caller.end)
+            && let Ok(range) = crate::fusion::TimeRange::new(start, end)
+        {
+            token.range = Some(range);
+        }
+    }
 }
 
 pub fn fuse_transcript_stage(
@@ -1114,6 +1142,150 @@ pub fn execute_singing_fusion_stage(
     )
 }
 
+#[derive(Debug)]
+struct TimedLyricWordGroup {
+    range: crate::fusion::TimeRange,
+    word_indices: Vec<usize>,
+}
+
+fn timed_lyric_word_groups(
+    transcript: &CanonicalLyrics,
+    words: &[CanonicalWordBoundary],
+) -> Vec<TimedLyricWordGroup> {
+    let mut token_cursor = 0usize;
+    let token_spans = transcript
+        .tokens
+        .iter()
+        .map(|token| {
+            let start = token_cursor;
+            token_cursor += compact_normalized(&token.text).chars().count();
+            (start, token_cursor, token.range)
+        })
+        .collect::<Vec<_>>();
+
+    let mut word_cursor = 0usize;
+    let word_spans = words
+        .iter()
+        .map(|word| {
+            let start = word_cursor;
+            word_cursor += compact_normalized(&word.text).chars().count();
+            (start, word_cursor)
+        })
+        .collect::<Vec<_>>();
+
+    let timed_token_spans = token_spans
+        .into_iter()
+        .filter_map(|(token_start, token_end, range)| {
+            range.map(|range| (token_start, token_end, range))
+        })
+        .collect::<Vec<_>>();
+    let mut groups = timed_token_spans
+        .iter()
+        .map(|(_, _, range)| TimedLyricWordGroup {
+            range: *range,
+            word_indices: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for (word_index, &(word_start, word_end)) in word_spans.iter().enumerate() {
+        let owner = timed_token_spans
+            .iter()
+            .enumerate()
+            .filter_map(|(token_index, &(token_start, token_end, _))| {
+                let overlap = word_end
+                    .min(token_end)
+                    .saturating_sub(word_start.max(token_start));
+                (overlap > 0).then_some((overlap, std::cmp::Reverse(token_index), token_index))
+            })
+            .max_by_key(|(overlap, token_index, _)| (*overlap, *token_index));
+        if let Some((_, _, token_index)) = owner {
+            groups[token_index].word_indices.push(word_index);
+        }
+    }
+    groups.retain(|group| !group.word_indices.is_empty());
+    groups
+}
+
+fn range_overlap(left: crate::fusion::TimeRange, right: crate::fusion::TimeRange) -> u64 {
+    left.end
+        .min(right.end)
+        .saturating_sub(left.start.max(right.start))
+}
+
+fn range_distance(left: crate::fusion::TimeRange, right: crate::fusion::TimeRange) -> u64 {
+    if left.end <= right.start {
+        right.start - left.end
+    } else if right.end <= left.start {
+        left.start - right.end
+    } else {
+        0
+    }
+}
+
+fn timed_lyric_word_owner_from_groups<'a>(
+    note: crate::fusion::TimeRange,
+    groups: &[TimedLyricWordGroup],
+    words: &'a [CanonicalWordBoundary],
+) -> Option<&'a str> {
+    let group = groups
+        .iter()
+        .enumerate()
+        .filter_map(|(index, group)| {
+            let overlap = range_overlap(note, group.range);
+            (overlap > 0).then_some((overlap, std::cmp::Reverse(index), group))
+        })
+        .max_by_key(|(overlap, index, _)| (*overlap, *index))?
+        .2;
+
+    group
+        .word_indices
+        .iter()
+        .map(|&index| {
+            let word = &words[index];
+            (
+                range_overlap(note, word.range),
+                std::cmp::Reverse(range_distance(note, word.range)),
+                std::cmp::Reverse(index),
+                word,
+            )
+        })
+        .max_by_key(|(overlap, distance, index, _)| (*overlap, *distance, *index))
+        .map(|(_, _, _, word)| word.word_id.as_str())
+}
+
+#[cfg(test)]
+fn timed_lyric_word_owner<'a>(
+    note: crate::fusion::TimeRange,
+    transcript: &CanonicalLyrics,
+    words: &'a [CanonicalWordBoundary],
+) -> Option<&'a str> {
+    timed_lyric_word_owner_from_groups(note, &timed_lyric_word_groups(transcript, words), words)
+}
+
+/// The selector must see the original, immutable evidence pool. Once it has
+/// chosen a path, project only its otherwise-unowned notes onto the caller's
+/// timed lyric lines. This keeps model selection unchanged while preventing a
+/// collapsed forced-alignment word span from silently discarding real notes
+/// elsewhere in the same authoritative lyric line during chart finalization.
+fn attach_timed_lyric_owners(
+    selected: &mut [crate::fusion::SegmentCandidate],
+    transcript: &CanonicalLyrics,
+    words: &[CanonicalWordBoundary],
+) {
+    if transcript.authority != LyricsAuthority::CallerCanonical
+        || !transcript.tokens.iter().any(|token| token.range.is_some())
+    {
+        return;
+    }
+    let groups = timed_lyric_word_groups(transcript, words);
+    for candidate in selected
+        .iter_mut()
+        .filter(|candidate| candidate.word_id.is_none())
+    {
+        candidate.word_id =
+            timed_lyric_word_owner_from_groups(candidate.range, &groups, words).map(str::to_string);
+    }
+}
+
 pub fn execute_candidate_graph_stage(
     transcript: CanonicalLyrics,
     words: Vec<CanonicalWordBoundary>,
@@ -1129,7 +1301,7 @@ pub fn execute_candidate_graph_stage(
         .validate()
         .map_err(output_error)?;
     let candidate_set_digest = crate::execution::candidate_set_digest(&singing.fusion)?;
-    let (decoded, decision) = match mode {
+    let (mut decoded, decision) = match mode {
         FusionDecisionModeV1::Algorithm => {
             let decoded = decode_candidate_graph_with_boundaries(
                 &singing.fusion.candidates,
@@ -1150,9 +1322,11 @@ pub fn execute_candidate_graph_stage(
             timeout,
             cancellation,
         } => {
-            let agent = crate::execution::run_fusion_agent_for_pool(
+            let agent = crate::execution::run_fusion_agent_for_pool_with_lyrics(
                 executable,
                 &singing.fusion,
+                &transcript,
+                &words,
                 timeout,
                 cancellation,
             )?;
@@ -1177,6 +1351,7 @@ pub fn execute_candidate_graph_stage(
         &singing.fusion.hard_boundaries,
     )
     .map_err(output_error)?;
+    attach_timed_lyric_owners(&mut decoded, &transcript, &words);
     let track = build_canonical_singing_track(
         transcript,
         words,

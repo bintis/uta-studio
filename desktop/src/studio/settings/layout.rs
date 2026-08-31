@@ -91,7 +91,7 @@ pub(crate) fn spawn_settings_stage_header(
                     flex_basis: px(SETTINGS_CONTROL_WIDTH),
                     flex_grow: 1.0,
                     margin: UiRect::top(px(2)),
-                    align_items: AlignItems::FlexStart,
+                    align_items: AlignItems::FlexEnd,
                     flex_direction: FlexDirection::Column,
                     row_gap: px(8),
                     ..default()

@@ -395,12 +395,7 @@ pub(crate) fn apply_content_action(
             });
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Editor(EditorCommand::SaveLyricsEditor)
-        | UiCommand::Editor(EditorCommand::SaveLyricsEditorAndRunDownstream) => {
-            let run_downstream = matches!(
-                &action.0,
-                &UiCommand::Editor(EditorCommand::SaveLyricsEditorAndRunDownstream)
-            );
+        UiCommand::Editor(EditorCommand::SaveLyricsEditor) => {
             let value = text_inputs
                 .lyrics
                 .single()
@@ -423,11 +418,7 @@ pub(crate) fn apply_content_action(
                             &app_core::CacheDir::new(),
                             &draft,
                             app_core::ArtifactSaveOptions {
-                                mode: if run_downstream {
-                                    app_core::ArtifactSaveMode::SaveAndRunDownstream
-                                } else {
-                                    app_core::ArtifactSaveMode::SaveOnly
-                                },
+                                mode: app_core::ArtifactSaveMode::SaveOnly,
                                 set_active: true,
                                 fork_from_old_revision: false,
                             },
@@ -435,27 +426,11 @@ pub(crate) fn apply_content_action(
                     });
                     match result {
                         Ok(_commit) => {
-                            let queued = if run_downstream {
-                                Err("The exact Engine request contract cannot yet consume a precomputed edited artifact. The revision was saved, but nothing was queued; open Run Analysis to build a new exact preview.".to_string())
-                            } else {
-                                Ok(())
-                            };
-                            match queued {
-                                Ok(()) => {
-                                    studio.dialogs.lyrics_editor = None;
-                                    studio.library.refresh();
-                                    studio.shell.notice = Some(if run_downstream {
-                                            "Artifact revision saved; confirmed downstream work was queued."
-                                        } else {
-                                            "Artifact revision saved without queueing analysis."
-                                        }.to_string());
-                                }
-                                Err(error) => {
-                                    studio.shell.notice = Some(format!(
-                                        "Revision was saved, but downstream work could not be queued: {error}"
-                                    ));
-                                }
-                            }
+                            studio.dialogs.lyrics_editor = None;
+                            studio.library.refresh();
+                            studio.shell.notice = Some(
+                                "Artifact revision saved without queueing analysis.".to_string(),
+                            );
                         }
                         Err(error) => {
                             editor.artifact_draft = Some(draft);

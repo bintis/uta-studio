@@ -4,6 +4,7 @@ pub mod cli;
 pub mod doctor;
 pub mod error;
 pub mod external_tool;
+pub mod fusion_provider;
 pub mod install;
 pub mod lease;
 pub mod manifest;
@@ -32,6 +33,9 @@ pub use error::{RuntimeManagerError, RuntimeManagerResult};
 pub use external_tool::{
     FUSION_AGENT_ADAPTER_ID, FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT, FUSION_AGENT_PROTOCOL_VERSION,
     FusionAgentAdapterManifestV1, fusion_adapter_manifest_path,
+};
+pub use fusion_provider::{
+    FUSION_PROVIDER_NETWORK_DISCLOSURE, FusionProviderReport, FusionProviderStatus,
 };
 pub use install::{MutationOptions, MutationResult, PlannedResource, ResourcePlan};
 pub use lease::ResourceLease;

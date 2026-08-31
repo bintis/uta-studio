@@ -104,6 +104,30 @@ impl RuntimeCliClient {
         self.read("clear-tool", &[resource.to_string(), "--yes".to_string()])
     }
 
+    pub fn fusion_providers(&self) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+        self.read("fusion-providers", &[])
+    }
+
+    pub fn configure_fusion_provider(
+        &self,
+        provider: &str,
+    ) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+        self.read(
+            "configure-fusion-provider",
+            &[
+                "--provider".to_string(),
+                provider.to_string(),
+                "--yes".to_string(),
+            ],
+        )
+    }
+
+    pub fn clear_fusion_provider(
+        &self,
+    ) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+        self.read("clear-fusion-provider", &["--yes".to_string()])
+    }
+
     pub fn install(
         &self,
         resources: &[RuntimeResourceRefWireV1],

@@ -533,11 +533,12 @@ pub(crate) fn handle_library_scroll(
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     shell: Res<ShellState>,
+    dialogs: Res<DialogState>,
     mut library: ResMut<LibraryState>,
     mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<LibrarySongList>>,
     graphs: Query<(&ComputedNode, &UiGlobalTransform), With<AnalysisGraphViewport>>,
 ) {
-    if shell.route != StudioRoute::Library {
+    if shell.route != StudioRoute::Library || dialogs.activity_open {
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);

@@ -4,7 +4,7 @@ use crate::studio::*;
 pub(crate) fn spawn_model_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
-    _icons: Handle<Image>,
+    icons: Handle<Image>,
     session: &StudioSessionView<'_>,
     _native_setup: &NativeSetup,
     theme: &StudioTheme,
@@ -23,16 +23,18 @@ pub(crate) fn spawn_model_settings(
         font.clone(),
         theme,
         "PER-MODEL RUNTIME PARAMETERS",
-        "Each row belongs to one concrete model. Leaving a backend on Default keeps the Runtime Manager-pinned route; an explicit value changes only that model's runtime parameter.",
+        "Each model has one device selector and one runtime menu. Click the selected device again to return to Auto. Runtime Default keeps the Runtime Manager-pinned route.",
     );
 
     if let Some(snapshot) = session.model_settings_job.current.as_ref() {
         spawn_model_backend_settings(
             parent,
             font.clone(),
+            icons,
             theme,
             session.config,
             &snapshot.runtime_models,
+            session.open_model_runtime_select.as_deref(),
         );
     } else {
         let (title, description) = if session.model_settings_job.receiver.is_some() {
@@ -74,14 +76,109 @@ pub(crate) fn spawn_model_settings(
         parent,
         font.clone(),
         theme,
-        "FUSION AGENT ADAPTER",
-        "Runtime Manager automatically scans PATH for Uta Fusion Agent Adapters with a protocol-compatible sidecar manifest. A plain Pi, Codex, Claude, Gemini, or other coding-agent CLI cannot be selected directly because it does not implement Uta's bounded fusion protocol. An adapter may use one of those agents internally, may contact its external provider, and runs with your OS permissions.",
+        "FUSION AGENT PROVIDER",
+        "Runtime Manager discovers Pi, Codex, and Claude CLIs without launching them, then pairs each one with its packaged, manifest-verified Uta adapter. Provider presence does not claim authentication readiness.",
     );
-    let adapter = session
-        .model_settings_job
-        .current
-        .as_ref()
-        .and_then(|snapshot| snapshot.fusion_agent_adapter.as_ref());
+    let snapshot = session.model_settings_job.current.as_ref();
+    let provider_report = snapshot.and_then(|snapshot| snapshot.fusion_providers.as_ref());
+    let selected_provider = provider_report.and_then(|report| report.selected_provider.as_deref());
+    if let Some(report) = provider_report {
+        for provider in &report.providers {
+            let state = if provider.usable {
+                "Ready"
+            } else if !provider.available {
+                "Provider CLI missing"
+            } else if !provider.adapter_available {
+                "Uta adapter missing or incompatible"
+            } else {
+                "Unavailable"
+            };
+            let version = provider.adapter_version.as_deref().unwrap_or("unknown");
+            let reasons = if provider.reasons.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", provider.reasons.join(", "))
+            };
+            let description = format!(
+                "{state} · executable {} · adapter {version}{reasons}. Credentials and provider charges remain owned by the provider CLI.",
+                provider.executable_name
+            );
+            if provider.selected {
+                spawn_setting_row(
+                    parent,
+                    font.clone(),
+                    theme,
+                    format!("{} · Selected", provider.display_name),
+                    description,
+                    None::<(String, UiAction)>,
+                );
+            } else if provider.usable {
+                spawn_setting_row(
+                    parent,
+                    font.clone(),
+                    theme,
+                    provider.display_name.clone(),
+                    description,
+                    Some((
+                        format!("Use {}", provider.display_name),
+                        UiAction::from(SettingsCommand::SelectFusionProvider(
+                            provider.provider.clone(),
+                        )),
+                    )),
+                );
+            } else {
+                spawn_setting_row(
+                    parent,
+                    font.clone(),
+                    theme,
+                    provider.display_name.clone(),
+                    description,
+                    None::<(String, UiAction)>,
+                );
+            }
+        }
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "External provider disclosure",
+            report.network_disclosure.clone(),
+            None::<(String, UiAction)>,
+        );
+    } else {
+        let description = snapshot
+            .and_then(|snapshot| snapshot.fusion_providers_error.as_deref())
+            .map_or_else(
+                || "Provider discovery is loading.".to_string(),
+                |error| format!("Could not read provider discovery: {error}"),
+            );
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Fusion providers",
+            description,
+            Some((
+                "Scan again",
+                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+            )),
+        );
+    }
+    if selected_provider.is_some() {
+        spawn_setting_row(
+            parent,
+            font.clone(),
+            theme,
+            "Clear selected provider",
+            "Clears only Runtime Manager's provider identity. It does not change provider credentials or delete any executable.",
+            Some((
+                "Clear",
+                UiAction::from(SettingsCommand::ClearFusionProvider),
+            )),
+        );
+    }
+
+    let adapter = snapshot.and_then(|snapshot| snapshot.fusion_agent_adapter.as_ref());
     let adapter_description = if let Some(status) = adapter {
         let state = if status.usable {
             "Usable"
@@ -106,48 +203,48 @@ pub(crate) fn spawn_model_settings(
             )
         };
         format!(
-            "Status: {state} · {identity} · {version}{reasons}. Candidate metadata may be sent to the adapter's external AI provider only when AI judgment is selected."
+            "Effective tool: {state} · {identity} · {version}{reasons}. Preview checks readiness without contacting the provider."
         )
     } else {
-        session
-            .model_settings_job
-            .current
-            .as_ref()
+        snapshot
             .and_then(|snapshot| snapshot.fusion_agent_adapter_error.as_deref())
             .map_or_else(
-                || "Status is loading. AI judgment remains unavailable until Runtime Manager reports the adapter usable.".to_string(),
+                || "Effective adapter status is loading.".to_string(),
                 |error| format!("Could not read adapter status: {error}"),
             )
     };
+    let mut adapter_actions = vec![(
+        "Scan again".to_string(),
+        UiAction::from(SettingsCommand::RefreshRuntimeStatus),
+    )];
+    if selected_provider.is_none() {
+        adapter_actions.push((
+            "Choose custom adapter…".to_string(),
+            UiAction::from(SettingsCommand::ChooseFusionAgentAdapter),
+        ));
+    }
     spawn_setting_row_with_actions(
         parent,
         font.clone(),
         theme,
-        "Fusion Agent Adapter",
+        "Effective Fusion Agent Adapter",
         adapter_description,
-        vec![
-            (
-                "Scan again".to_string(),
-                UiAction::from(SettingsCommand::RefreshRuntimeStatus),
-            ),
-            (
-                "Choose compatible adapter…".to_string(),
-                UiAction::from(SettingsCommand::ChooseFusionAgentAdapter),
-            ),
-        ],
+        adapter_actions,
     );
-    if adapter.is_some_and(|status| {
-        matches!(
-            status.origin,
-            app_core::ResourceOriginWireV1::ExternalConfiguration
-        )
-    }) {
+    if selected_provider.is_none()
+        && adapter.is_some_and(|status| {
+            matches!(
+                status.origin,
+                app_core::ResourceOriginWireV1::ExternalConfiguration
+            )
+        })
+    {
         spawn_setting_row(
             parent,
             font,
             theme,
-            "Clear Fusion Agent Adapter",
-            "Clears Runtime Manager's configured external-tool path. AI workflows then fail closed; Algorithm workflows are unaffected.",
+            "Clear custom Fusion Agent Adapter",
+            "Clears Runtime Manager's configured external-tool path without deleting the executable.",
             Some((
                 "Clear",
                 UiAction::from(SettingsCommand::ClearFusionAgentAdapter),
@@ -214,18 +311,12 @@ fn model_backend_display_name(model_id: &str) -> String {
 fn spawn_model_backend_settings(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    icons: Handle<Image>,
     theme: &StudioTheme,
     config: &AppConfig,
     registry: &[app_core::RuntimeModelPresentation],
+    open_runtime_select: Option<&str>,
 ) {
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Runtime and device",
-        "Runtime is recommended on Default. Device is captured as a preference for upcoming multi-device routing and does not yet change which physical device Runtime Manager selects. Neither changes requested outputs, workflow topology, or provider selection.",
-        None::<(String, UiAction)>,
-    );
     if registry.is_empty() {
         spawn_setting_row(
             parent,
@@ -238,105 +329,417 @@ fn spawn_model_backend_settings(
         return;
     }
     for model in registry {
-        let selected = config.model_backend_overrides.get(&model.model_id);
-        let default = model
-            .selected_backend
-            .map(backend_label)
-            .unwrap_or("unresolved");
-        let capabilities = model
-            .backends
-            .iter()
-            .filter(|capability| {
-                capability.validation != app_core::RuntimeValidationPresentation::Unsupported
-            })
-            .map(|capability| {
-                format!(
-                    "{} ({})",
-                    backend_label(capability.backend),
-                    validation_label(capability.validation)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let mut actions = vec![(
-            if selected.is_none() {
-                format!("✓ Default · {default}")
-            } else {
-                format!("Default · {default}")
-            },
-            UiAction::from(SettingsCommand::SetModelBackend(
-                model.model_id.clone(),
-                None,
-            )),
-        )];
-        actions.extend(
-            model
-                .backends
-                .iter()
-                .filter(|capability| {
-                    capability.validation != app_core::RuntimeValidationPresentation::Unsupported
-                })
-                .map(|capability| {
-                    let value = backend_value(capability.backend);
-                    (
-                        if selected.is_some_and(|selected| selected == value) {
-                            format!("✓ {}", backend_label(capability.backend))
-                        } else {
-                            backend_label(capability.backend).to_string()
-                        },
-                        UiAction::from(SettingsCommand::SetModelBackend(
-                            model.model_id.clone(),
-                            Some(value.to_string()),
-                        )),
-                    )
-                }),
-        );
-        spawn_setting_row_with_actions(
+        spawn_model_runtime_row(
             parent,
             font.clone(),
+            icons.clone(),
             theme,
-            format!("{} · Runtime", model_backend_display_name(&model.model_id)),
-            format!(
-                "Model ID: {} · Available runtimes: {}",
-                model.model_id, capabilities
-            ),
-            actions,
-        );
-
-        let selected_device = config.model_device_overrides.get(&model.model_id);
-        let mut device_actions = vec![(
-            if selected_device.is_none() {
-                "✓ Default".to_string()
-            } else {
-                "Default".to_string()
-            },
-            UiAction::from(SettingsCommand::SetModelDevice(
-                model.model_id.clone(),
-                None,
-            )),
-        )];
-        device_actions.extend(DEVICE_CLASS_OPTIONS.iter().map(|(value, label)| {
-            (
-                if selected_device.is_some_and(|selected| selected == value) {
-                    format!("✓ {label}")
-                } else {
-                    label.to_string()
-                },
-                UiAction::from(SettingsCommand::SetModelDevice(
-                    model.model_id.clone(),
-                    Some((*value).to_string()),
-                )),
-            )
-        }));
-        spawn_setting_row_with_actions(
-            parent,
-            font.clone(),
-            theme,
-            format!("{} · Device", model_backend_display_name(&model.model_id)),
-            "Preferred device class for this model. Recorded for upcoming multi-device routing.",
-            device_actions,
+            config,
+            model,
+            open_runtime_select == Some(model.model_id.as_str()),
         );
     }
+}
+
+fn selected_device_label(selected: Option<&str>) -> &'static str {
+    match selected {
+        Some("cpu") => "CPU",
+        Some("gpu") => "GPU",
+        Some("integrated_gpu") => "iGPU",
+        _ => "Auto",
+    }
+}
+
+fn selected_runtime_label(
+    model: &app_core::RuntimeModelPresentation,
+    selected: Option<&str>,
+) -> String {
+    if let Some(selected) = selected
+        && let Some(capability) = model
+            .backends
+            .iter()
+            .find(|capability| backend_value(capability.backend) == selected)
+    {
+        return backend_label(capability.backend).to_string();
+    }
+    format!(
+        "Default · {}",
+        model
+            .selected_backend
+            .map(backend_label)
+            .unwrap_or("Unresolved")
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_model_runtime_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    config: &AppConfig,
+    model: &app_core::RuntimeModelPresentation,
+    runtime_open: bool,
+) {
+    let selected_backend = config
+        .model_backend_overrides
+        .get(&model.model_id)
+        .map(String::as_str);
+    let selected_device = config
+        .model_device_overrides
+        .get(&model.model_id)
+        .map(String::as_str);
+    let capabilities = model
+        .backends
+        .iter()
+        .filter(|capability| {
+            capability.validation != app_core::RuntimeValidationPresentation::Unsupported
+        })
+        .map(|capability| {
+            format!(
+                "{} · {}",
+                backend_label(capability.backend),
+                validation_label(capability.validation)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("  /  ");
+
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Relative,
+                width: percent(100),
+                min_height: px(122),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::axes(px(20), px(16)),
+                column_gap: px(28),
+                row_gap: px(12),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.42)),
+            ZIndex(if runtime_open { 60 } else { 0 }),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(280),
+                flex_basis: px(420),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(
+                    copy,
+                    font.clone(),
+                    model_backend_display_name(&model.model_id),
+                    12.0,
+                    theme.foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    format!("Model ID · {}", model.model_id),
+                    9.0,
+                    theme.muted_foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    format!("Available runtimes · {capabilities}"),
+                    9.0,
+                    theme.muted_foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    "Device is a request preference for upcoming multi-device routing; it does not yet force a physical adapter.",
+                    8.0,
+                    theme.muted_foreground.with_alpha(0.78),
+                );
+            });
+
+            row.spawn(Node {
+                position_type: PositionType::Relative,
+                min_width: px(280),
+                max_width: px(340),
+                flex_basis: px(340),
+                flex_grow: 0.0,
+                margin: UiRect::top(px(1)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(7),
+                ..default()
+            })
+            .with_children(|controls| {
+                controls
+                    .spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: px(8),
+                        ..default()
+                    })
+                    .with_children(|label_row| {
+                        spawn_text(
+                            label_row,
+                            font.clone(),
+                            "DEVICE",
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                        spawn_text(
+                            label_row,
+                            font.clone(),
+                            selected_device_label(selected_device),
+                            8.0,
+                            theme.primary,
+                        );
+                    });
+                controls
+                    .spawn(Node {
+                        width: percent(100),
+                        height: px(32),
+                        column_gap: px(4),
+                        ..default()
+                    })
+                    .with_children(|devices| {
+                        for (value, label) in DEVICE_CLASS_OPTIONS {
+                            let active = selected_device == Some(value);
+                            devices
+                                .spawn((
+                                    Button,
+                                    UiAction::from(SettingsCommand::SetModelDevice(
+                                        model.model_id.clone(),
+                                        (!active).then(|| value.to_string()),
+                                    )),
+                                    Node {
+                                        min_width: px(0),
+                                        height: percent(100),
+                                        flex_grow: 1.0,
+                                        align_items: AlignItems::Center,
+                                        justify_content: JustifyContent::Center,
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(5)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(if active {
+                                        theme.primary.with_alpha(0.14)
+                                    } else {
+                                        theme.background.with_alpha(0.38)
+                                    }),
+                                    BorderColor::all(if active {
+                                        theme.primary.with_alpha(0.68)
+                                    } else {
+                                        theme.border.with_alpha(0.48)
+                                    }),
+                                ))
+                                .with_children(|button| {
+                                    spawn_text(
+                                        button,
+                                        font.clone(),
+                                        if value == "integrated_gpu" { "iGPU" } else { label },
+                                        9.0,
+                                        if active { theme.primary } else { theme.foreground },
+                                    );
+                                });
+                        }
+                    });
+
+                controls
+                    .spawn(Node {
+                        position_type: PositionType::Relative,
+                        width: percent(100),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(4),
+                        ..default()
+                    })
+                    .with_children(|runtime| {
+                        runtime
+                            .spawn((
+                                Button,
+                                UiAction::from(SettingsCommand::ToggleModelRuntimeSelect(
+                                    model.model_id.clone(),
+                                )),
+                                Node {
+                                    width: percent(100),
+                                    height: px(36),
+                                    align_items: AlignItems::Center,
+                                    padding: UiRect::horizontal(px(11)),
+                                    column_gap: px(8),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(6)),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.background.with_alpha(if runtime_open {
+                                    0.74
+                                } else {
+                                    0.42
+                                })),
+                                BorderColor::all(if runtime_open {
+                                    theme.primary.with_alpha(0.68)
+                                } else {
+                                    theme.border.with_alpha(0.54)
+                                }),
+                            ))
+                            .with_children(|button| {
+                                spawn_text(
+                                    button,
+                                    font.clone(),
+                                    "RUNTIME",
+                                    8.0,
+                                    theme.muted_foreground,
+                                );
+                                button.spawn(Node {
+                                    flex_grow: 1.0,
+                                    ..default()
+                                });
+                                spawn_text(
+                                    button,
+                                    font.clone(),
+                                    selected_runtime_label(model, selected_backend),
+                                    9.0,
+                                    theme.foreground,
+                                );
+                                spawn_icon(
+                                    button,
+                                    icons.clone(),
+                                    UiIcon::ChevronDown,
+                                    13.0,
+                                    theme.muted_foreground,
+                                );
+                            });
+                        if runtime_open {
+                            spawn_runtime_options(
+                                runtime,
+                                font.clone(),
+                                icons.clone(),
+                                theme,
+                                model,
+                                selected_backend,
+                            );
+                        }
+                    });
+            });
+        });
+}
+
+fn spawn_runtime_options(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    model: &app_core::RuntimeModelPresentation,
+    selected: Option<&str>,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(5)),
+                row_gap: px(2),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(7)),
+                ..default()
+            },
+            BackgroundColor(theme.card),
+            BorderColor::all(theme.border.with_alpha(0.9)),
+            ZIndex(61),
+        ))
+        .with_children(|menu| {
+            let default = model
+                .selected_backend
+                .map(backend_label)
+                .unwrap_or("Unresolved");
+            spawn_runtime_option(
+                menu,
+                font.clone(),
+                icons.clone(),
+                theme,
+                format!("Default · {default}"),
+                selected.is_none(),
+                UiAction::from(SettingsCommand::SetModelBackend(
+                    model.model_id.clone(),
+                    None,
+                )),
+            );
+            for capability in model.backends.iter().filter(|capability| {
+                capability.validation != app_core::RuntimeValidationPresentation::Unsupported
+            }) {
+                let value = backend_value(capability.backend);
+                spawn_runtime_option(
+                    menu,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    format!(
+                        "{} · {}",
+                        backend_label(capability.backend),
+                        validation_label(capability.validation)
+                    ),
+                    selected == Some(value),
+                    UiAction::from(SettingsCommand::SetModelBackend(
+                        model.model_id.clone(),
+                        Some(value.to_string()),
+                    )),
+                );
+            }
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_runtime_option(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    label: String,
+    selected: bool,
+    action: UiAction,
+) {
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                width: percent(100),
+                min_height: px(31),
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(px(9), px(7)),
+                column_gap: px(7),
+                border_radius: BorderRadius::all(px(4)),
+                ..default()
+            },
+            BackgroundColor(if selected {
+                theme.primary.with_alpha(0.12)
+            } else {
+                Color::NONE
+            }),
+        ))
+        .with_children(|option| {
+            spawn_wrapped_text(
+                option,
+                font,
+                label,
+                9.0,
+                if selected {
+                    theme.primary
+                } else {
+                    theme.foreground
+                },
+            );
+            option.spawn(Node {
+                flex_grow: 1.0,
+                ..default()
+            });
+            if selected {
+                spawn_icon(option, icons, UiIcon::Check, 13.0, theme.primary);
+            }
+        });
 }
 
 pub(crate) fn model_install_role(

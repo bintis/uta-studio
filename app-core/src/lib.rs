@@ -109,9 +109,9 @@ pub use backend_cli::{
     AnalysisCliClient, AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalyzeRequestWireV1,
     BackendCliError, ContinuousF0SourceWireV1, ExpertFusionPolicyWireV1, FusionModeWireV1,
     InstallStateWireV1, NoteLengthSourceWireV1, OnsetSupportSourceWireV1, ReadinessReasonWireV1,
-    ResourceOriginWireV1, RuntimeCliClient, RuntimeResourceDetailsWireV1,
-    RuntimeResourceStatusWireV1, WorkflowExecutionNodePlanWireV1, WorkflowExecutionPlanWireV1,
-    WorkflowNodeExecutionStateWireV1,
+    ResourceOriginWireV1, RuntimeCliClient, RuntimeFusionProviderReportWireV1,
+    RuntimeFusionProviderStatusWireV1, RuntimeResourceDetailsWireV1, RuntimeResourceStatusWireV1,
+    WorkflowExecutionNodePlanWireV1, WorkflowExecutionPlanWireV1, WorkflowNodeExecutionStateWireV1,
 };
 pub use cache::{
     CacheDir, CachePaths, CacheStats, cache_roots, default_uta_studio_dir, normalized_target_path,
@@ -149,7 +149,8 @@ pub use lyrics::{
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
     RuntimeBackendPresentation, RuntimeModelPresentation, RuntimeValidationPresentation,
-    clear_fusion_agent_adapter, configure_fusion_agent_adapter, fusion_agent_adapter_status,
+    clear_fusion_agent_adapter, clear_fusion_provider, configure_fusion_agent_adapter,
+    configure_fusion_provider, fusion_agent_adapter_status, fusion_provider_status,
     runtime_model_presentations,
 };
 pub use scanner::{clear_library_index, start_scan};
@@ -190,9 +191,10 @@ pub use workflow::{
     load_song_workflow, preview_workflow_compile, remove_workflow_node,
     reorder_audio_transformation, save_song_workflow, separation_strategy_descriptor,
     separation_strategy_options, set_workflow_execution_policy, set_workflow_node_model,
-    set_workflow_parameter, set_workflow_priority, set_workflow_separation_strategy,
-    set_workflow_skip_if_unchanged, validate_workflow, workflow_definition_digest,
-    workflow_has_optional_card, workflow_model_label, workflow_model_options,
+    set_workflow_parameter, set_workflow_preprocessing_enabled, set_workflow_priority,
+    set_workflow_separation_strategy, set_workflow_skip_if_unchanged, validate_workflow,
+    workflow_definition_digest, workflow_has_optional_card, workflow_model_label,
+    workflow_model_options,
 };
 
 pub fn startup() -> Result<(), String> {

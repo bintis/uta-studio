@@ -18,7 +18,7 @@ use crate::audio::{
     topology_review_regions,
 };
 use crate::candidate_pipeline::{
-    CandidatePathDecisionV1, FusionDecisionModeV1, SingingStagesOutput,
+    CandidatePathDecisionV1, FusionDecisionModeV1, SingingStagesOutput, attach_caller_lyric_ranges,
     build_baseline_review_regions, build_transcript_disagreement_regions,
     execute_candidate_graph_stage, execute_singing_fusion_stage_with_timed_notes,
     fuse_alignment_stage, fuse_transcript_stage,
@@ -349,6 +349,12 @@ impl AnalysisEngine {
             &mut workflow_audio,
             &analysis_input,
             analysis_role,
+        );
+        record_reused_workflow_audio(
+            plan.workflow_execution.as_ref(),
+            primary.role,
+            &mut workflow_audio,
+            &analysis_input,
         );
         // A Step 1 cache hit changes execution input, but requested reused
         // stems remain first-class outputs of this run. Materialize them
@@ -784,8 +790,9 @@ impl AnalysisEngine {
             if let Some(challenger) = firered_evidence.as_ref() {
                 transcript_candidates.push(challenger.clone());
             }
-            let (artifact, canonical) =
+            let (artifact, mut canonical) =
                 fuse_transcript_stage(&transcript_candidates, reference_lyrics.as_deref())?;
+            attach_caller_lyric_ranges(&mut canonical, &request.lyrics);
             lifecycle.artifact("canonical_transcript");
             lifecycle.complete();
             (Some(artifact), Some(canonical))

@@ -357,7 +357,9 @@ fn lyrics_context_for_song(
         .ok_or_else(|| format!("song not found: {file_hash}"))?;
     if let Some(lyrics) = crate::lyrics::load_lyrics_file(file_hash) {
         if let Some(timed_lrc) = lyrics.timed_lrc {
-            let tokens = crate::lrc::parse_lrc(&timed_lrc)?
+            let mut parsed = crate::lrc::parse_lrc(&timed_lrc)?;
+            parsed.extend_inferred_final_end(song.duration_secs);
+            let tokens = parsed
                 .segments
                 .into_iter()
                 .enumerate()

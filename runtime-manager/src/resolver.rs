@@ -8,8 +8,12 @@ use crate::catalog::{
 };
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::external_tool::{
-    FUSION_AGENT_ADAPTER_ID, clear_tool_path, configure_tool_path, executable_file,
-    fusion_adapter_manifest,
+    FUSION_AGENT_ADAPTER_ID, clear_tool_path, configure_tool_path, configured_fusion_provider,
+    executable_file, fusion_adapter_manifest,
+};
+use crate::fusion_provider::{
+    FusionProviderReport, clear_provider, provider_report, select_provider, selected_adapter_path,
+    selected_provider_available,
 };
 use crate::lease::ResourceLease;
 use crate::manifest::{
@@ -350,6 +354,27 @@ impl RuntimeManager {
         self.status(resource, RuntimePolicy::Production)
     }
 
+    /// Report provider CLIs and their manifest-verified native adapters. This
+    /// is read-only: provider CLIs are never launched and authentication is
+    /// never inferred.
+    pub fn fusion_provider_report(&self) -> RuntimeManagerResult<FusionProviderReport> {
+        provider_report(&self.paths)
+    }
+
+    /// Persist a provider identity owned by Runtime Manager. The selected
+    /// provider determines which sibling adapter resolves to the canonical
+    /// `tool:fusion_agent_adapter` resource.
+    pub fn select_fusion_provider(
+        &self,
+        provider: &str,
+    ) -> RuntimeManagerResult<FusionProviderReport> {
+        select_provider(&self.paths, provider)
+    }
+
+    pub fn clear_fusion_provider(&self) -> RuntimeManagerResult<FusionProviderReport> {
+        clear_provider(&self.paths)
+    }
+
     pub fn resolve_tool(
         &self,
         tool_id: &str,
@@ -360,11 +385,17 @@ impl RuntimeManager {
         if !status.usable {
             return Err(error_for_unusable(&status));
         }
-        let executable = self
-            .paths
-            .tool_candidate_path_result(tool_id)?
-            .filter(|path| executable_file(path))
-            .ok_or_else(|| RuntimeManagerError::runtime_missing(&resource))?;
+        let executable = if tool_id == FUSION_AGENT_ADAPTER_ID {
+            if configured_fusion_provider(&self.paths)?.is_some() {
+                selected_adapter_path(&self.paths)?
+            } else {
+                self.paths.tool_candidate_path_result(tool_id)?
+            }
+        } else {
+            self.paths.tool_candidate_path_result(tool_id)?
+        }
+        .filter(|path| executable_file(path))
+        .ok_or_else(|| RuntimeManagerError::runtime_missing(&resource))?;
         if tool_id == FUSION_AGENT_ADAPTER_ID {
             let manifest = fusion_adapter_manifest(&executable)?;
             return Ok(ResolvedTool {
@@ -797,8 +828,15 @@ impl RuntimeManager {
         &self,
         resource: &ResourceRef,
     ) -> RuntimeManagerResult<ResourceStatus> {
-        let candidate = self.paths.tool_candidate_path_result(&resource.id)?;
-        let origin = if self.paths.tool_override_path(&resource.id).is_some() {
+        let selected_provider = configured_fusion_provider(&self.paths)?;
+        let candidate = if selected_provider.is_some() {
+            selected_adapter_path(&self.paths)?
+        } else {
+            self.paths.tool_candidate_path_result(&resource.id)?
+        };
+        let origin = if selected_provider.is_some() {
+            ResourceOrigin::ExternalConfiguration
+        } else if self.paths.tool_override_path(&resource.id).is_some() {
             ResourceOrigin::EnvironmentOverride
         } else if self
             .paths
@@ -821,6 +859,7 @@ impl RuntimeManager {
             Ok(manifest) => (manifest, executable_ready),
             Err(_) => (None, false),
         };
+        let provider_ready = selected_provider_available(&self.paths)?;
         let mut reasons = Vec::new();
         if candidate.is_none() {
             reasons.push(ReadinessReason::Absent);
@@ -829,7 +868,10 @@ impl RuntimeManager {
         } else if !protocol_ready {
             reasons.push(ReadinessReason::ProtocolMismatch);
         }
-        let usable = executable_ready && protocol_ready;
+        if selected_provider.is_some() && !provider_ready {
+            reasons.push(ReadinessReason::ExecutableMissing);
+        }
+        let usable = executable_ready && protocol_ready && provider_ready;
         Ok(ResourceStatus {
             resource: resource.clone(),
             install_state: if candidate.is_none() {

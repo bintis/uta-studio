@@ -55,7 +55,7 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         .ok_or_else(invalid_usage)?;
     if matches!(command, "help" | "--help" | "-h") {
         println!(
-            "uta-runtime <list|show|status|paths|plan|setup|install|import|verify|repair|reinstall|remove|doctor|smoke|resolve|configure-tool|clear-tool>\n\
+            "uta-runtime <list|show|status|paths|plan|setup|install|import|verify|repair|reinstall|remove|doctor|smoke|resolve|configure-tool|clear-tool|fusion-providers|configure-fusion-provider|clear-fusion-provider>\n\
              resources are positional kind:id values; resolve accepts models or tools; mutations require --yes"
         );
         return Ok(0);
@@ -239,6 +239,28 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
                     .map_err(CliError::from)?,
             )?
         }
+        "fusion-providers" | "fusion-provider-status" => {
+            serde_json::to_value(manager.fusion_provider_report().map_err(CliError::from)?)?
+        }
+        "configure-fusion-provider" => {
+            let _options = confirmed_mutation_options(&arguments)?;
+            let provider = required_option(&arguments, "--provider")?;
+            let resource = ResourceRef::tool(crate::external_tool::FUSION_AGENT_ADAPTER_ID)
+                .map_err(CliError::from)?;
+            print_operation_started(output, command, std::slice::from_ref(&resource))?;
+            serde_json::to_value(
+                manager
+                    .select_fusion_provider(provider)
+                    .map_err(CliError::from)?,
+            )?
+        }
+        "clear-fusion-provider" => {
+            let _options = confirmed_mutation_options(&arguments)?;
+            let resource = ResourceRef::tool(crate::external_tool::FUSION_AGENT_ADAPTER_ID)
+                .map_err(CliError::from)?;
+            print_operation_started(output, command, std::slice::from_ref(&resource))?;
+            serde_json::to_value(manager.clear_fusion_provider().map_err(CliError::from)?)?
+        }
         "doctor" => serde_json::to_value(manager.doctor())?,
         "smoke" => {
             let resource = exactly_one_resource(&arguments)?;
@@ -392,6 +414,7 @@ fn option_takes_value(argument: &str) -> bool {
             | "--from"
             | "--source"
             | "--path"
+            | "--provider"
     )
 }
 

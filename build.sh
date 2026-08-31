@@ -32,6 +32,7 @@ tools/check-product-identity.sh
 cargo build --release --locked \
     -p uta-studio-desktop --bin uta-studio \
     -p uta-runtime-manager --bin uta-runtime \
+    -p uta-fusion-agent-adapter --bins \
     -p uta-analysis-engine --bin uta-analyze \
     -p uta-ggml-worker --bin uta-ggml-worker \
     -p uta-openvino-worker --bin uta-openvino-worker \

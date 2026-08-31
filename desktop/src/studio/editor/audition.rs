@@ -900,7 +900,7 @@ mod tests {
             }],
             "provenance":{
                 "execution_fingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                "fusion_algorithm":"fusion-v16",
+                "fusion_algorithm":"fusion-v17",
                 "fusion_decision":{
                     "decision_mode":"algorithm",
                     "selector":"hsmm_viterbi",

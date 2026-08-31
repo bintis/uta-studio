@@ -39,17 +39,100 @@ pub fn finalize_candidate_vocal_chart(
         }
     }
 
-    let mut notes = Vec::new();
+    // Compute the exact pitched ranges that finalization will emit (including
+    // continuous-pitch merging). Spoken placeholders must be placed around
+    // these ranges, not around the raw forced-alignment words, because a
+    // selected note may legitimately cross a word edge.
+    let mut emitted_notes = Vec::<(String, TimeRange, usize)>::new();
     for (word_index, word) in track.words.iter().enumerate() {
+        let mut candidates = notes_by_word
+            .get(word.word_id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        candidates.sort_by_key(|note| (note.range.start, note.range.end, note.id.as_str()));
+        if preserve_continuous_pitch {
+            emitted_notes.extend(
+                merge_continuous_pitch_runs(&candidates)
+                    .into_iter()
+                    .map(|note| (note.id, note.range, word_index)),
+            );
+        } else {
+            emitted_notes.extend(
+                candidates
+                    .into_iter()
+                    .map(|note| (note.id.clone(), note.range, word_index)),
+            );
+        }
+    }
+    emitted_notes.sort_by_key(|(_, range, _)| (range.start, range.end));
+
+    let mut notes = Vec::new();
+    let mut deferred_lyrics = BTreeMap::<String, Vec<(usize, LyricToken)>>::new();
+    for (word_index, word) in track.words.iter().enumerate() {
+        let candidates = notes_by_word
+            .remove(word.word_id.as_str())
+            .unwrap_or_default();
+        let join_before = lyric_join_between(
+            word_index
+                .checked_sub(1)
+                .map(|previous| track.words[previous].text.as_str()),
+            &word.text,
+        );
+        let spoken_range = if candidates.is_empty() {
+            largest_unoccupied_range(word.range, emitted_notes.iter().map(|(_, range, _)| *range))
+        } else {
+            None
+        };
+        if candidates.is_empty() && spoken_range.is_none() {
+            let target_id = emitted_notes
+                .iter()
+                .filter_map(|(id, range, _)| {
+                    let overlap = range_overlap(word.range, *range);
+                    (overlap > 0).then_some((overlap, id))
+                })
+                .max_by_key(|(overlap, _)| *overlap)
+                .map(|(_, id)| id.clone())
+                .ok_or_else(|| invalid(format!("word {} has no lyric interval", word.word_id)))?;
+            deferred_lyrics.entry(target_id).or_default().push((
+                word_index,
+                LyricToken::Text(LyricTextToken {
+                    id: word.word_id.clone(),
+                    text: word.text.clone(),
+                    join_before,
+                    reading: None,
+                    phonemes: None,
+                }),
+            ));
+            continue;
+        }
         append_word_notes(
             &mut notes,
             word_index,
             word,
-            notes_by_word
-                .remove(word.word_id.as_str())
-                .unwrap_or_default(),
+            candidates,
             preserve_continuous_pitch,
+            spoken_range,
+            join_before,
         )?;
+    }
+    for note in &mut notes {
+        let Some(mut attached) = deferred_lyrics.remove(&note.id) else {
+            continue;
+        };
+        let owner_order = emitted_notes
+            .iter()
+            .find_map(|(id, _, order)| (id == &note.id).then_some(*order))
+            .unwrap_or(usize::MAX);
+        let mut lyrics = std::mem::take(&mut note.lyrics)
+            .into_iter()
+            .map(|token| (owner_order, token))
+            .collect::<Vec<_>>();
+        lyrics.append(&mut attached);
+        lyrics.sort_by_key(|(order, _)| *order);
+        note.lyrics = lyrics.into_iter().map(|(_, token)| token).collect();
+    }
+    if !deferred_lyrics.is_empty() {
+        return Err(invalid("Candidate lyric ownership did not resolve"));
     }
     notes.sort_by_key(|note| (note.start, note.id.clone()));
     if notes.is_empty() {
@@ -130,14 +213,17 @@ fn append_word_notes(
     word: &CanonicalWordBoundary,
     mut candidates: Vec<&CanonicalNote>,
     preserve_continuous_pitch: bool,
+    spoken_range: Option<TimeRange>,
+    join_before: LyricJoin,
 ) -> EngineResult<()> {
     candidates.sort_by_key(|note| (note.range.start, note.range.end, note.id.as_str()));
     let lyric_id = word.word_id.clone();
     if candidates.is_empty() {
+        let range = spoken_range.ok_or_else(|| invalid("spoken word has no available range"))?;
         output.push(VocalNote {
             id: format!("spoken-{word_index}"),
-            start: word.range.start,
-            duration: word.range.end.saturating_sub(word.range.start),
+            start: range.start,
+            duration: range.end - range.start,
             pitch: None,
             vocal_mode: VocalMode::Spoken,
             bonus: NoteBonus::Normal,
@@ -148,7 +234,7 @@ fn append_word_notes(
             lyrics: vec![LyricToken::Text(LyricTextToken {
                 id: lyric_id,
                 text: word.text.clone(),
-                join_before: lyric_join_for(output, &word.text),
+                join_before,
                 reading: None,
                 phonemes: None,
             })],
@@ -180,7 +266,7 @@ fn append_word_notes(
             vec![LyricToken::Text(LyricTextToken {
                 id: lyric_id.clone(),
                 text: word.text.clone(),
-                join_before: lyric_join_for(output, &word.text),
+                join_before,
                 reading: None,
                 phonemes: None,
             })]
@@ -209,22 +295,59 @@ fn append_word_notes(
     Ok(())
 }
 
-fn lyric_join_for(existing: &[VocalNote], text: &str) -> LyricJoin {
-    let previous_is_ascii_word = existing
-        .iter()
-        .rev()
-        .flat_map(|note| note.lyrics.iter().rev())
-        .find_map(|token| match token {
-            LyricToken::Text(token) => Some(token.text.chars().all(|character| {
-                character.is_ascii_alphanumeric() || character.is_ascii_punctuation()
-            })),
-            LyricToken::Continuation { .. } => None,
-        })
-        == Some(true);
-    let current_is_ascii_word = text
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation());
-    if previous_is_ascii_word && current_is_ascii_word {
+fn range_overlap(left: TimeRange, right: TimeRange) -> u64 {
+    left.end
+        .min(right.end)
+        .saturating_sub(left.start.max(right.start))
+}
+
+fn largest_unoccupied_range(
+    range: TimeRange,
+    occupied: impl IntoIterator<Item = TimeRange>,
+) -> Option<TimeRange> {
+    let mut occupied = occupied.into_iter().collect::<Vec<_>>();
+    occupied.sort_by_key(|range| (range.start, range.end));
+    let mut cursor = range.start;
+    let mut largest = None;
+    for occupied in occupied {
+        if occupied.end <= cursor || occupied.start >= range.end {
+            continue;
+        }
+        let clipped_start = occupied.start.max(range.start);
+        if clipped_start > cursor {
+            let gap = TimeRange::new(cursor, clipped_start).ok()?;
+            if largest
+                .is_none_or(|largest: TimeRange| gap.end - gap.start > largest.end - largest.start)
+            {
+                largest = Some(gap);
+            }
+        }
+        cursor = cursor.max(occupied.end.min(range.end));
+        if cursor >= range.end {
+            break;
+        }
+    }
+    if cursor < range.end {
+        let gap = TimeRange::new(cursor, range.end).ok()?;
+        if largest
+            .is_none_or(|largest: TimeRange| gap.end - gap.start > largest.end - largest.start)
+        {
+            largest = Some(gap);
+        }
+    }
+    largest
+}
+
+fn lyric_join_between(previous: Option<&str>, current: &str) -> LyricJoin {
+    let ascii_word = |text: &str| {
+        text.chars()
+            .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation())
+    };
+    if previous.is_some_and(ascii_word)
+        && current
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation())
+    {
         LyricJoin::Space
     } else {
         LyricJoin::None
@@ -402,6 +525,57 @@ mod tests {
         assert_eq!(note.vocal_mode, VocalMode::Spoken);
         assert!(note.pitch.is_none());
         chart.validate().unwrap();
+    }
+
+    fn cross_word_track(note_end: u64) -> CanonicalSingingTrack {
+        let mut track = track();
+        track.transcript.text = "sing now".to_string();
+        track.words[0].range = TimeRange::new(0, 1_000_000).unwrap();
+        track.words.push(CanonicalWordBoundary {
+            word_id: "word-2".to_string(),
+            text: "now".to_string(),
+            range: TimeRange::new(1_000_000, 2_000_000).unwrap(),
+            confidence: None,
+            disagreement: None,
+            source_experts: vec!["aligner".to_string()],
+        });
+        track.notes[0].range = TimeRange::new(500_000, note_end).unwrap();
+        track
+    }
+
+    #[test]
+    fn spoken_placeholder_uses_gap_after_a_cross_word_pitched_note() {
+        let chart = finalize_candidate_vocal_chart(
+            &cross_word_track(1_500_000),
+            &"h".repeat(64),
+            true,
+            None,
+        )
+        .unwrap();
+
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].start + notes[0].duration, notes[1].start);
+        assert_eq!(notes[1].start, 1_500_000);
+        assert_eq!(notes[1].duration, 500_000);
+    }
+
+    #[test]
+    fn fully_covered_word_attaches_to_real_note_without_overlap() {
+        let mut track = cross_word_track(2_000_000);
+        track.notes[0].range = TimeRange::new(0, 2_000_000).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"i".repeat(64), true, None).unwrap();
+
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].lyrics.len(), 2);
+        assert!(matches!(
+            &notes[0].lyrics[1],
+            LyricToken::Text(token)
+                if token.text == "now" && token.join_before == LyricJoin::Space
+        ));
     }
 
     #[test]

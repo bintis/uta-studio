@@ -51,8 +51,12 @@ impl LayoutSpacing {
     /// visually separable at normal zoom.
     pub(crate) fn canvas() -> Self {
         Self {
-            node_width: 148.0,
-            node_height: 104.0,
+            // Keep enough real card area for a wrapped operation title, the
+            // complete configured-model list, and the two-line status/footer
+            // region. The canvas is scrollable, so preserving readable node
+            // content is more useful than squeezing every rank into one fold.
+            node_width: 240.0,
+            node_height: 160.0,
             column_gap: 54.0,
             row_gap: 34.0,
             margin: 34.0,
@@ -291,9 +295,13 @@ pub(crate) fn cached_canvas_routed_layout_with_specs(
     routed
 }
 
+#[allow(dead_code)]
 const METRO_TILE_GAP: f32 = 7.0;
+#[allow(dead_code)]
 const METRO_TILE_MARGIN: f32 = 9.0;
+#[allow(dead_code)]
 const METRO_TILE_MIN_WIDTH: f32 = 154.0;
+#[allow(dead_code)]
 const METRO_TILE_MIN_HEIGHT: f32 = 92.0;
 
 /// Packs the compiled workflow into a Windows Phone-inspired tile surface.
@@ -303,6 +311,11 @@ const METRO_TILE_MIN_HEIGHT: f32 = 92.0;
 /// grid consumes the available viewport before it grows, so the analysis page
 /// reads as one dense execution surface instead of a sparse diagram floating
 /// inside a large scrolling canvas.
+///
+/// The Advanced Graph canvas now renders the layered/routed layout below
+/// instead, so real dependency edges are visible; this packer is kept,
+/// tested, as real geometry code rather than deleted.
+#[allow(dead_code)]
 pub(crate) fn metro_tile_layout_with_specs(
     nodes: &[(LayoutNodeSpec, u8)],
     edges: &[(AnalysisNodeId, AnalysisNodeId)],

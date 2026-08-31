@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::backend_cli::{
-    NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1, RuntimeResourceRefWireV1,
-    RuntimeResourceStatusWireV1, ValidationStateWireV1,
+    NativeBackendWireV1, RuntimeCliClient, RuntimeFusionProviderReportWireV1, RuntimePolicyWireV1,
+    RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1, ValidationStateWireV1,
 };
 
 pub const FUSION_AGENT_ADAPTER_RESOURCE_ID: &str = "fusion_agent_adapter";
@@ -154,6 +154,43 @@ pub fn clear_fusion_agent_adapter() -> Result<RuntimeResourceStatusWireV1, Strin
     invalidate_runtime_presentation_cache();
     crate::invalidate_analysis_runtime_status_cache();
     Ok(status)
+}
+
+/// Discover provider CLIs and native adapters through Runtime Manager. This
+/// projection contains no raw executable path and performs no provider call.
+pub fn fusion_provider_status() -> Result<RuntimeFusionProviderReportWireV1, String> {
+    RuntimeCliClient::discover()
+        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map_err(|error| error.to_string())?
+        .fusion_providers()
+        .map_err(|error| error.to_string())
+}
+
+/// Persist a provider identity (`pi`, `codex`, or `claude`) in Runtime Manager.
+/// The provider CLI remains responsible for credentials and external network
+/// policy; Studio never receives or stores its executable path.
+pub fn configure_fusion_provider(
+    provider: &str,
+) -> Result<RuntimeFusionProviderReportWireV1, String> {
+    let report = RuntimeCliClient::discover()
+        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map_err(|error| error.to_string())?
+        .configure_fusion_provider(provider)
+        .map_err(|error| error.to_string())?;
+    invalidate_runtime_presentation_cache();
+    crate::invalidate_analysis_runtime_status_cache();
+    Ok(report)
+}
+
+pub fn clear_fusion_provider() -> Result<RuntimeFusionProviderReportWireV1, String> {
+    let report = RuntimeCliClient::discover()
+        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map_err(|error| error.to_string())?
+        .clear_fusion_provider()
+        .map_err(|error| error.to_string())?;
+    invalidate_runtime_presentation_cache();
+    crate::invalidate_analysis_runtime_status_cache();
+    Ok(report)
 }
 
 pub fn runtime_model_presentations() -> Vec<RuntimeModelPresentation> {

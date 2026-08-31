@@ -1041,20 +1041,12 @@ pub(crate) fn spawn_lyrics_editor(
                                 UiAction::from(EditorCommand::CloseLyricsEditor),
                             );
                             if editor.artifact_draft.is_some() {
-                                spawn_text_button(
-                                    actions,
-                                    font.clone(),
-                                    theme,
-                                    "Save Only",
-                                    10.0,
-                                    UiAction::from(EditorCommand::SaveLyricsEditor),
-                                );
                                 spawn_action_button(
                                     actions,
                                     font,
                                     theme,
-                                    "Save and Run Downstream",
-                                    UiAction::from(EditorCommand::SaveLyricsEditorAndRunDownstream),
+                                    "Save",
+                                    UiAction::from(EditorCommand::SaveLyricsEditor),
                                 );
                             } else {
                                 spawn_action_button(

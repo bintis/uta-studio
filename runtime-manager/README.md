@@ -22,7 +22,13 @@ and must not parse stderr to infer lifecycle state.
 
 Supported commands include `list`, `show`, `status`, `paths`, `plan`, `setup`,
 `install`, `import`, `verify`, `repair`, `reinstall`, `remove`, `doctor`,
-`smoke`, and `resolve`. Non-interactive mutations require `--yes`.
+`smoke`, `resolve`, and the read-only `fusion-providers` discovery query.
+`configure-fusion-provider --provider <pi|codex|claude>` and
+`clear-fusion-provider` persist only the provider identity; non-interactive
+mutations require `--yes`. Provider rows report PATH and native-adapter
+availability, never authentication readiness. A selected provider may contact
+an external AI service and incur provider charges; credentials remain owned by
+the provider CLI.
 
 ## RMVPE audited import
 

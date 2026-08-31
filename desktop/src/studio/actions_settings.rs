@@ -26,6 +26,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.route = StudioRoute::Settings;
             studio.shell.notice = None;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             studio.dialogs.plan_preview_draft = None;
             if studio.shell.settings_tab == SettingsTab::Storage {
                 studio.jobs.request_cache_stats_refresh = true;
@@ -50,6 +51,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.shell.settings_tab = *tab;
             studio.shell.notice = None;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             studio.dialogs.plan_preview_draft = None;
             studio.jobs.request_cache_stats_refresh =
                 matches!(studio.shell.settings_tab, SettingsTab::Storage);
@@ -121,6 +123,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         UiCommand::Settings(SettingsCommand::OpenModelDownloads) => {
             studio.dialogs.model_downloads_open = true;
             studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
             if studio.jobs.model_settings_job.current.is_none() {
                 studio.jobs.request_model_settings_refresh = true;
             }
@@ -134,11 +137,22 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Settings(SettingsCommand::OpenSettingsSelect(kind)) => {
+            studio.dialogs.open_model_runtime_select = None;
             studio.dialogs.open_settings_select =
                 if studio.dialogs.open_settings_select == Some(*kind) {
                     None
                 } else {
                     Some(*kind)
+                };
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::ToggleModelRuntimeSelect(model_id)) => {
+            studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select =
+                if studio.dialogs.open_model_runtime_select.as_deref() == Some(model_id) {
+                    None
+                } else {
+                    Some(model_id.clone())
                 };
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
@@ -169,6 +183,39 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 })
             });
             invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::SelectFusionProvider(provider)) => {
+            studio.shell.notice = Some(match app_core::configure_fusion_provider(provider) {
+                Ok(report) => {
+                    studio.jobs.request_model_settings_refresh = true;
+                    let name = report
+                        .providers
+                        .iter()
+                        .find(|status| status.provider == *provider)
+                        .map(|status| status.display_name.as_str())
+                        .unwrap_or(provider);
+                    format!(
+                        "{name} selected for AI judgment. Provider authentication remains owned by its CLI."
+                    )
+                }
+                Err(error) => format!(
+                    "Could not select Fusion provider: {error}. Install both the provider CLI and its packaged Uta adapter, then scan again."
+                ),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
+        UiCommand::Settings(SettingsCommand::ClearFusionProvider) => {
+            studio.shell.notice = Some(match app_core::clear_fusion_provider() {
+                Ok(_) => {
+                    studio.jobs.request_model_settings_refresh = true;
+                    "Fusion provider selection cleared. Runtime Manager may use a configured custom adapter instead."
+                        .to_string()
+                }
+                Err(error) => format!("Could not clear Fusion provider: {error}"),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+            invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Settings(SettingsCommand::ChooseFusionAgentAdapter) => {
             if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -213,6 +260,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Settings(SettingsCommand::SetModelBackend(model_id, backend)) => {
+            studio.dialogs.open_model_runtime_select = None;
             let valid = backend.as_deref().is_none_or(|backend| {
                 matches!(
                     backend,

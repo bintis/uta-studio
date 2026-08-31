@@ -794,6 +794,26 @@ mod tests {
     }
 
     #[test]
+    fn preprocessing_master_switch_disables_every_optional_audio_processor() {
+        let mut workflow = default_workflow("song-a");
+        set_workflow_preprocessing_enabled(&mut workflow, true).unwrap();
+        set_workflow_preprocessing_enabled(&mut workflow, false).unwrap();
+
+        let optional_preprocessing = workflow.nodes.iter().filter(|node| {
+            matches!(
+                node.capability_id.as_str(),
+                "audio.lead_isolate" | "audio.denoise" | "audio.dereverb"
+            )
+        });
+        assert!(
+            optional_preprocessing
+                .into_iter()
+                .all(|node| node.execution_policy == ExecutionPolicy::Disabled)
+        );
+        assert!(compile_workflow(&workflow).is_ok());
+    }
+
+    #[test]
     fn all_optional_singing_experts_can_be_disabled_together() {
         let mut workflow = default_workflow("song-a");
         for node in [

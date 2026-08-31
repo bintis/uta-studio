@@ -1,0 +1,7 @@
+{
+  "contract": "uta.fusion_agent_adapter",
+  "version": 1,
+  "adapter_id": "fusion_agent_adapter",
+  "adapter_version": "0.8.1",
+  "fusion_protocol_version": 4
+}

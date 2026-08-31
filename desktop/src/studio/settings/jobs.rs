@@ -73,6 +73,10 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
                 Ok(status) => (Some(status), None),
                 Err(error) => (None, Some(error)),
             };
+        let (fusion_providers, fusion_providers_error) = match app_core::fusion_provider_status() {
+            Ok(report) => (Some(report), None),
+            Err(error) => (None, Some(error)),
+        };
         let (audio_catalog, audio_catalog_error) = match app_core::list_audio_models() {
             Ok(catalog) => (catalog, None),
             Err(error) => (
@@ -89,6 +93,8 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
             runtime_models,
             fusion_agent_adapter,
             fusion_agent_adapter_error,
+            fusion_providers,
+            fusion_providers_error,
             audio_catalog,
             audio_catalog_error,
         }));

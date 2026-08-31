@@ -9,9 +9,9 @@
 //! stdin closed to signal end of input, one JSON document read back from
 //! stdout after the process exits successfully within a generous timeout.
 //!
-//! The agent may only *select* from the candidates it was given — every
-//! returned candidate must equal (by id and full content) one of the
-//! candidates in the request. This keeps the "never fabricate a measured
+//! The agent may only *select* a compact candidate index it was given. The
+//! engine maps every returned index back to its immutable full candidate.
+//! This keeps the "never fabricate a measured
 //! value" invariant that the rest of this crate's fusion code already
 //! enforces: the agent chooses a path through real expert evidence, it does
 //! not invent new evidence. The caller still runs the result through the
@@ -29,7 +29,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
-use crate::fusion::{HardBoundarySetV1, SegmentCandidate, SingingFusionEvidence};
+use crate::fusion::{
+    CanonicalLyrics, CanonicalWordBoundary, HardBoundarySetV1, SegmentCandidate,
+    SingingFusionEvidence,
+};
 
 use super::client::CancellationToken;
 
@@ -184,7 +187,7 @@ fn resume_suspended_child(child: &Child) -> io::Result<()> {
     Ok(())
 }
 
-const FUSION_AGENT_INSTRUCTIONS: &str = "You are selecting the final non-overlapping sequence of singing note segments for a karaoke chart. You are given `candidates` plus the exact pool-level `hard_boundaries`; each candidate is already in the exact JSON shape you must also use in your response. Return one JSON document of the form {\"contract\":\"uta.fusion_agent_response\",\"version\":3,\"selected\":[...]} where `selected` is an ordered, non-overlapping valid subset that exactly covers represented voiced components and never crosses a hard-boundary edge. Silence, instrumental passages, intros, and outros do not require note coverage. Every object in `selected` must be copied verbatim from `candidates`; do not invent evidence. Return only the response JSON; do not return chain-of-thought.";
+const FUSION_AGENT_INSTRUCTIONS: &str = "Select the final ordered, non-overlapping singing-note path for a karaoke chart. Read candidates.json, lyrics.json, and hard_boundaries.json from the current temporary directory. candidates.json is a compact decision projection: each segment is [start,end,options], each option follows option_fields, and string-valued columns index string_table. Return only {\"contract\":\"uta.fusion_agent_response\",\"version\":4,\"selected\":[candidate_index,...]}. Cover every represented voiced segment exactly, never cross a hard boundary, and never invent an index. Silence, instrumental passages, intros, and outros need no coverage. Do not return chain-of-thought.";
 
 fn executable_file(path: &Path) -> bool {
     #[cfg(unix)]
@@ -200,13 +203,51 @@ fn executable_file(path: &Path) -> bool {
     }
 }
 
+const OPTION_FIELDS: [&str; 15] = [
+    "candidate_index",
+    "midi",
+    "boundary_source",
+    "boundary_kind",
+    "boundary_role",
+    "hard",
+    "boundary_support",
+    "boundary_confidence",
+    "pitch_source",
+    "pitch_support",
+    "pitch_confidence",
+    "context_support",
+    "acoustic_periodicity",
+    "acoustic_snr_db",
+    "basic_pitch_onset",
+];
+
+#[derive(Serialize, Default)]
+struct AgentLyricsV1 {
+    text: String,
+    language: Option<String>,
+    word_fields: [&'static str; 5],
+    words: Vec<Vec<serde_json::Value>>,
+}
+
+#[derive(Serialize)]
+struct AgentCandidateProjectionV1 {
+    candidate_set_digest: String,
+    string_table: Vec<String>,
+    option_fields: [&'static str; 15],
+    segments: Vec<Vec<serde_json::Value>>,
+}
+
 #[derive(Serialize)]
 struct AgentFusionRequestV1<'a> {
     contract: &'static str,
     version: u32,
     instructions: &'static str,
     hard_boundaries: &'a HardBoundarySetV1,
-    candidates: &'a [SegmentCandidate],
+    lyrics: &'a AgentLyricsV1,
+    candidate_set_digest: &'a str,
+    string_table: &'a [String],
+    option_fields: [&'static str; 15],
+    segments: &'a [Vec<serde_json::Value>],
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,7 +255,7 @@ struct AgentFusionRequestV1<'a> {
 struct AgentFusionResponseV1 {
     contract: String,
     version: u32,
-    selected: Vec<SegmentCandidate>,
+    selected: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,6 +338,163 @@ fn encode_agent_request(request: &AgentFusionRequestV1<'_>) -> EngineResult<Vec<
     Ok(writer.bytes)
 }
 
+fn json_value<T: Serialize>(value: T) -> EngineResult<serde_json::Value> {
+    serde_json::to_value(value)
+        .map_err(|error| worker_failed(format!("could not encode fusion decision input: {error}")))
+}
+
+fn rounded(value: Option<f32>) -> serde_json::Value {
+    value.map_or(serde_json::Value::Null, |value| {
+        serde_json::Value::from(f64::from((value * 10_000.0).round() / 10_000.0))
+    })
+}
+
+fn constraint_support(candidate: &SegmentCandidate) -> f32 {
+    let mut groups = BTreeMap::<String, f32>::new();
+    for constraint in &candidate.boundary_constraints {
+        let Some(value) = constraint
+            .calibrated_confidence
+            .or(constraint.source_local_strength)
+        else {
+            continue;
+        };
+        let group = constraint
+            .correlation_group
+            .clone()
+            .or_else(|| constraint.depends_on.first().cloned())
+            .unwrap_or_else(|| constraint.source_expert.clone());
+        groups
+            .entry(group)
+            .and_modify(|current| *current = current.max(value))
+            .or_insert(value);
+    }
+    groups.values().fold(0.0, |combined, value| {
+        1.0 - (1.0 - combined) * (1.0 - value.clamp(0.0, 1.0))
+    })
+}
+
+fn intern_string(
+    value: String,
+    table: &mut Vec<String>,
+    indices: &mut BTreeMap<String, usize>,
+) -> serde_json::Value {
+    let index = if let Some(index) = indices.get(&value) {
+        *index
+    } else {
+        let index = table.len();
+        table.push(value.clone());
+        indices.insert(value, index);
+        index
+    };
+    serde_json::Value::from(index as u64)
+}
+
+fn candidate_projection(
+    pool: &SingingFusionEvidence,
+    candidate_set_digest: String,
+) -> EngineResult<AgentCandidateProjectionV1> {
+    let mut by_range = BTreeMap::<(u64, u64), Vec<(usize, &SegmentCandidate)>>::new();
+    for (index, candidate) in pool.candidates.iter().enumerate() {
+        by_range
+            .entry((candidate.range.start, candidate.range.end))
+            .or_default()
+            .push((index, candidate));
+    }
+    let mut string_table = Vec::new();
+    let mut string_indices = BTreeMap::new();
+    let mut segments = Vec::with_capacity(by_range.len());
+    for ((start, end), candidates) in by_range {
+        let mut options = Vec::with_capacity(candidates.len());
+        for (index, candidate) in candidates {
+            let boundary_kind = serde_json::to_value(candidate.boundary_kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .ok_or_else(|| worker_failed("could not encode boundary kind"))?;
+            let boundary_role = serde_json::to_value(candidate.boundary_role)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .ok_or_else(|| worker_failed("could not encode boundary role"))?;
+            options.push(serde_json::Value::Array(vec![
+                serde_json::Value::from(index as u64),
+                serde_json::Value::from(candidate.target_midi),
+                intern_string(
+                    candidate.boundary_source.clone(),
+                    &mut string_table,
+                    &mut string_indices,
+                ),
+                intern_string(boundary_kind, &mut string_table, &mut string_indices),
+                intern_string(boundary_role, &mut string_table, &mut string_indices),
+                serde_json::Value::from(candidate.boundary_hard),
+                rounded(candidate.boundary_support),
+                rounded(candidate.boundary_calibrated_confidence),
+                intern_string(
+                    candidate.target_pitch_source.clone(),
+                    &mut string_table,
+                    &mut string_indices,
+                ),
+                rounded(candidate.target_pitch_source_local_score),
+                rounded(candidate.target_pitch_calibrated_confidence),
+                rounded(Some(constraint_support(candidate))),
+                rounded(
+                    candidate
+                        .acoustic
+                        .as_ref()
+                        .map(|value| value.mean_periodicity),
+                ),
+                rounded(candidate.acoustic.as_ref().map(|value| value.mean_snr_db)),
+                rounded(
+                    candidate
+                        .basic_pitch
+                        .as_ref()
+                        .map(|value| value.onset_activation),
+                ),
+            ]));
+        }
+        segments.push(vec![
+            serde_json::Value::from(start),
+            serde_json::Value::from(end),
+            serde_json::Value::Array(options),
+        ]);
+    }
+    Ok(AgentCandidateProjectionV1 {
+        candidate_set_digest,
+        string_table,
+        option_fields: OPTION_FIELDS,
+        segments,
+    })
+}
+
+fn lyric_projection(
+    transcript: Option<&CanonicalLyrics>,
+    words: Option<&[CanonicalWordBoundary]>,
+) -> EngineResult<AgentLyricsV1> {
+    let Some(transcript) = transcript else {
+        return Ok(AgentLyricsV1 {
+            word_fields: ["id", "text", "start", "end", "confidence"],
+            ..AgentLyricsV1::default()
+        });
+    };
+    let words = words
+        .unwrap_or_default()
+        .iter()
+        .map(|word| {
+            Ok(vec![
+                serde_json::Value::String(word.word_id.clone()),
+                serde_json::Value::String(word.text.clone()),
+                serde_json::Value::from(word.range.start),
+                serde_json::Value::from(word.range.end),
+                json_value(word.confidence)?,
+            ])
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
+    Ok(AgentLyricsV1 {
+        text: transcript.text.clone(),
+        language: transcript.language.clone(),
+        word_fields: ["id", "text", "start", "end", "confidence"],
+        words,
+    })
+}
+
 fn agent_error(code: EngineErrorCode, message: impl Into<String>) -> EngineError {
     EngineError::new(code, message)
         .with_capability(FUSION_CAPABILITY)
@@ -340,6 +538,35 @@ pub fn run_fusion_agent_for_pool(
     timeout: Duration,
     cancellation: &CancellationToken,
 ) -> EngineResult<FusionAgentDecisionV1> {
+    run_fusion_agent_for_pool_inner(executable, pool, None, None, timeout, cancellation)
+}
+
+pub fn run_fusion_agent_for_pool_with_lyrics(
+    executable: &Path,
+    pool: &SingingFusionEvidence,
+    transcript: &CanonicalLyrics,
+    words: &[CanonicalWordBoundary],
+    timeout: Duration,
+    cancellation: &CancellationToken,
+) -> EngineResult<FusionAgentDecisionV1> {
+    run_fusion_agent_for_pool_inner(
+        executable,
+        pool,
+        Some(transcript),
+        Some(words),
+        timeout,
+        cancellation,
+    )
+}
+
+fn run_fusion_agent_for_pool_inner(
+    executable: &Path,
+    pool: &SingingFusionEvidence,
+    transcript: Option<&CanonicalLyrics>,
+    words: Option<&[CanonicalWordBoundary]>,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+) -> EngineResult<FusionAgentDecisionV1> {
     if pool.candidates.is_empty() {
         return Err(worker_failed(
             "fusion agent has no candidates to select from",
@@ -355,12 +582,18 @@ pub fn run_fusion_agent_for_pool(
         )));
     }
     let candidate_set_digest = candidate_set_digest(pool)?;
+    let projection = candidate_projection(pool, candidate_set_digest.clone())?;
+    let lyrics = lyric_projection(transcript, words)?;
     let request = AgentFusionRequestV1 {
         contract: AGENT_REQUEST_CONTRACT,
         version: AGENT_PROTOCOL_VERSION,
         instructions: FUSION_AGENT_INSTRUCTIONS,
         hard_boundaries: &pool.hard_boundaries,
-        candidates: &pool.candidates,
+        lyrics: &lyrics,
+        candidate_set_digest: &projection.candidate_set_digest,
+        string_table: &projection.string_table,
+        option_fields: projection.option_fields,
+        segments: &projection.segments,
     };
     let payload = encode_agent_request(&request)?;
     let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
@@ -600,24 +833,27 @@ pub fn run_fusion_agent_for_pool(
             "fusion agent selected no candidates",
         ));
     }
-    let known: BTreeMap<&str, &SegmentCandidate> = pool
-        .candidates
-        .iter()
-        .map(|candidate| (candidate.id.as_str(), candidate))
-        .collect();
-    for selected in &response.selected {
-        match known.get(selected.id.as_str()) {
-            Some(original) if *original == selected => {}
-            _ => {
+    let mut selected_indices = std::collections::BTreeSet::new();
+    let selected = response
+        .selected
+        .into_iter()
+        .map(|index| {
+            if !selected_indices.insert(index) {
                 return Err(agent_error(
                     EngineErrorCode::OutputValidationFailed,
-                    "fusion agent selected a candidate that was not verbatim in the given candidate pool",
+                    "fusion agent selected a duplicate candidate index",
                 ));
             }
-        }
-    }
+            pool.candidates.get(index).cloned().ok_or_else(|| {
+                agent_error(
+                    EngineErrorCode::OutputValidationFailed,
+                    "fusion agent selected an index outside the immutable candidate pool",
+                )
+            })
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
     Ok(FusionAgentDecisionV1 {
-        selected: response.selected,
+        selected,
         candidate_set_digest,
         response_digest,
     })
@@ -644,7 +880,8 @@ mod tests {
 
     use super::*;
     use crate::fusion::{
-        BoundaryCandidateRole, BoundaryEvidenceKind, HardBoundaryV1, TechniqueScores, TimeRange,
+        BoundaryCandidateRole, BoundaryEvidenceKind, HardBoundaryV1, LyricsAuthority,
+        TechniqueScores, TimeRange, TranscriptTokenEvidence,
     };
 
     fn candidate(id: &str, start_seconds: f64, end_seconds: f64) -> SegmentCandidate {
@@ -709,7 +946,7 @@ mod tests {
         let response = serde_json::json!({
             "contract": AGENT_RESPONSE_CONTRACT,
             "version": AGENT_PROTOCOL_VERSION,
-            "selected": [serde_json::to_value(&candidates[0]).unwrap()],
+            "selected": [0],
         });
         let dir = tempdir();
         let script = script_executable(
@@ -746,7 +983,7 @@ mod tests {
         let response = serde_json::json!({
             "contract": AGENT_RESPONSE_CONTRACT,
             "version": AGENT_PROTOCOL_VERSION,
-            "selected": [serde_json::to_value(&candidates[0]).unwrap()],
+            "selected": [0],
         });
         let dir = tempdir();
         let pid_path = dir.path().join("descendant.pid");
@@ -797,7 +1034,7 @@ mod tests {
         let response = serde_json::json!({
             "contract": AGENT_RESPONSE_CONTRACT,
             "version": AGENT_PROTOCOL_VERSION,
-            "selected": [serde_json::to_value(&candidates[0]).unwrap()],
+            "selected": [0],
         });
         let dir = tempdir();
         let request_path = dir.path().join("request.json");
@@ -809,9 +1046,33 @@ mod tests {
                 request_path.display()
             ),
         );
-        let decision = run_fusion_agent_for_pool(
+        let transcript = CanonicalLyrics {
+            text: "la la".to_string(),
+            language: Some("en".to_string()),
+            authority: LyricsAuthority::CallerCanonical,
+            tokens: vec![TranscriptTokenEvidence {
+                id: Some("word-a".to_string()),
+                text: "la".to_string(),
+                range: Some(TimeRange::from_seconds(0.0, 0.5).unwrap()),
+                confidence: Some(0.9),
+            }],
+            confidence: Some(0.9),
+            source_experts: vec!["caller".to_string()],
+            alternatives: Vec::new(),
+        };
+        let words = vec![CanonicalWordBoundary {
+            word_id: "word-a".to_string(),
+            text: "la".to_string(),
+            range: TimeRange::from_seconds(0.0, 0.5).unwrap(),
+            confidence: Some(0.9),
+            disagreement: None,
+            source_experts: vec!["caller".to_string()],
+        }];
+        let decision = run_fusion_agent_for_pool_with_lyrics(
             &script,
             &pool,
+            &transcript,
+            &words,
             Duration::from_secs(10),
             &CancellationToken::default(),
         )
@@ -823,6 +1084,10 @@ mod tests {
             request["hard_boundaries"]["boundaries"][0]["source"],
             "caller"
         );
+        assert_eq!(request["lyrics"]["text"], "la la");
+        assert_eq!(request["lyrics"]["words"][0][1], "la");
+        assert!(request.get("segments").is_some());
+        assert!(request.get("candidates").is_none());
         assert_eq!(
             decision.candidate_set_digest,
             candidate_set_digest(&pool).unwrap()
@@ -845,15 +1110,12 @@ mod tests {
     }
 
     #[test]
-    fn fabricated_candidate_is_rejected() {
+    fn out_of_pool_candidate_index_is_rejected() {
         let candidates = vec![candidate("a", 0.0, 1.0)];
-        let mut fabricated = candidates[0].clone();
-        fabricated.id = "fabricated".to_string();
-        fabricated.center_pitch_hz = 999.0;
         let response = serde_json::json!({
             "contract": AGENT_RESPONSE_CONTRACT,
             "version": AGENT_PROTOCOL_VERSION,
-            "selected": [serde_json::to_value(&fabricated).unwrap()],
+            "selected": [99],
         });
         let dir = tempdir();
         let script = script_executable(
@@ -863,7 +1125,7 @@ mod tests {
         );
         let cancellation = CancellationToken::default();
         let error = run_fusion_agent(&script, &candidates, Duration::from_secs(10), &cancellation)
-            .expect_err("fabricated candidate must be rejected");
+            .expect_err("an index outside the immutable pool must be rejected");
         assert_eq!(error.code, EngineErrorCode::OutputValidationFailed);
         assert_adapter_error_context(&error);
     }

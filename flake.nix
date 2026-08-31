@@ -46,7 +46,7 @@
             zlib
           ];
 
-          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker";
+          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker";
 
           commonArgs = {
             inherit pname version src cargoExtraArgs;
@@ -102,6 +102,18 @@
               runHook preInstall
               install -Dm755 target/release/uta-studio $out/bin/.uta-studio-unwrapped
               install -Dm755 target/release/uta-runtime $out/bin/.uta-runtime-unwrapped
+              install -Dm755 target/release/uta-fusion-agent-adapter $out/bin/uta-fusion-agent-adapter
+              install -Dm755 target/release/uta-fusion-agent-pi $out/bin/uta-fusion-agent-pi
+              install -Dm755 target/release/uta-fusion-agent-codex $out/bin/uta-fusion-agent-codex
+              install -Dm755 target/release/uta-fusion-agent-claude $out/bin/uta-fusion-agent-claude
+              install -Dm644 target/release/uta-fusion-agent-adapter.uta-fusion-adapter.json \
+                $out/bin/uta-fusion-agent-adapter.uta-fusion-adapter.json
+              install -Dm644 target/release/uta-fusion-agent-pi.uta-fusion-adapter.json \
+                $out/bin/uta-fusion-agent-pi.uta-fusion-adapter.json
+              install -Dm644 target/release/uta-fusion-agent-codex.uta-fusion-adapter.json \
+                $out/bin/uta-fusion-agent-codex.uta-fusion-adapter.json
+              install -Dm644 target/release/uta-fusion-agent-claude.uta-fusion-adapter.json \
+                $out/bin/uta-fusion-agent-claude.uta-fusion-adapter.json
               install -Dm755 target/release/uta-analyze $out/bin/.uta-analyze-unwrapped
               install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
               install -Dm755 target/release/uta-ggml-worker $out/bin/uta-ggml-worker

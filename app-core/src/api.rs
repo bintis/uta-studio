@@ -135,6 +135,27 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Clear the Runtime Manager-owned Fusion Agent Adapter selection without deleting the executable"
     ),
     capability!(
+        "models & runtime",
+        "fusion_provider_status",
+        "read",
+        true,
+        "Read Runtime Manager discovery for Pi, Codex, and Claude Fusion providers"
+    ),
+    capability!(
+        "models & runtime",
+        "configure_fusion_provider",
+        "mutation",
+        false,
+        "Persist one discovered Fusion provider identity through Runtime Manager"
+    ),
+    capability!(
+        "models & runtime",
+        "clear_fusion_provider",
+        "mutation",
+        false,
+        "Clear the Runtime Manager-owned Fusion provider selection"
+    ),
+    capability!(
         "models",
         "install_audio_model",
         "external",

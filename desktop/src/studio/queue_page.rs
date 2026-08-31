@@ -159,6 +159,7 @@ fn spawn_queue_card(
                 width: percent(100),
                 flex_direction: FlexDirection::Row,
                 flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::FlexEnd,
                 column_gap: px(7),
                 row_gap: px(7),
                 ..default()

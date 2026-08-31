@@ -14,6 +14,7 @@ pub struct StorePaths {
     runtime_overrides: Vec<(String, PathBuf)>,
     tool_overrides: Vec<(String, PathBuf)>,
     tool_fallbacks: Vec<(String, PathBuf)>,
+    fusion_adapter_fallbacks: Vec<(String, PathBuf)>,
 }
 
 impl StorePaths {
@@ -38,6 +39,7 @@ impl StorePaths {
             runtime_overrides: Vec::new(),
             tool_overrides: Vec::new(),
             tool_fallbacks: Vec::new(),
+            fusion_adapter_fallbacks: Vec::new(),
         };
         let executable_directory = std::env::current_exe()
             .ok()
@@ -74,6 +76,20 @@ impl StorePaths {
         }
         if let Some(path) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH").map(PathBuf::from) {
             paths = paths.with_tool_override("ffmpeg", path);
+        }
+        for provider in uta_fusion_agent_adapter::Provider::ALL {
+            let discovered = executable_directory
+                .as_deref()
+                .and_then(|directory| {
+                    sibling_executable(directory, provider.adapter_executable_name())
+                })
+                .filter(|candidate| {
+                    crate::external_tool::fusion_adapter_manifest(candidate).is_ok()
+                })
+                .or_else(|| discover_provider_adapter_on_path(provider));
+            if let Some(path) = discovered {
+                paths = paths.with_fusion_adapter_fallback(provider.id(), path);
+            }
         }
         let configured_fusion_adapter = std::env::var_os("UTA_STUDIO_FUSION_AGENT_ADAPTER_PATH")
             .or_else(|| std::env::var_os("UTA_STUDIO_FUSION_AGENT_CLI_PATH"))
@@ -205,6 +221,25 @@ impl StorePaths {
         self
     }
 
+    pub(crate) fn with_fusion_adapter_fallback(
+        mut self,
+        provider: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        self.fusion_adapter_fallbacks
+            .push((provider.into(), path.into()));
+        self
+    }
+
+    pub(crate) fn fusion_adapter_fallback_path(&self, provider: &str) -> Option<PathBuf> {
+        self.fusion_adapter_fallbacks
+            .iter()
+            .rev()
+            .find(|(id, _)| id == provider)
+            .map(|(_, path)| path.clone())
+            .filter(|path| executable_file(path))
+    }
+
     pub fn tool_candidate_path(&self, tool_id: &str) -> Option<PathBuf> {
         self.tool_candidate_path_result(tool_id).ok().flatten()
     }
@@ -309,6 +344,23 @@ fn discover_fusion_adapter_on_path() -> Option<PathBuf> {
     };
     std::env::split_paths(&path)
         .flat_map(|directory| names.map(move |name| directory.join(name)))
+        .find(|candidate| {
+            executable_file(candidate)
+                && crate::external_tool::fusion_adapter_manifest(candidate).is_ok()
+        })
+}
+
+fn discover_provider_adapter_on_path(
+    provider: uta_fusion_agent_adapter::Provider,
+) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let filename = if cfg!(windows) {
+        format!("{}.exe", provider.adapter_executable_name())
+    } else {
+        provider.adapter_executable_name().to_string()
+    };
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(&filename))
         .find(|candidate| {
             executable_file(candidate)
                 && crate::external_tool::fusion_adapter_manifest(candidate).is_ok()

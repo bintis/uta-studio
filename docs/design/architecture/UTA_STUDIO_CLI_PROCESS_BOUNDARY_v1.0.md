@@ -400,7 +400,7 @@ Runtime mutation confirmation remains explicit.
 
 No HTTP control server is introduced.
 
-AI-judgment adapters are direct child processes of Analysis Engine after Runtime Manager resolution. They may use the network according to the user's configured external provider, but the Uta protocol sends only bounded fusion candidate metadata in v1—not source audio bytes, arbitrary project files, the library DB, model files, or unrelated user content. A configured adapter is external software running with the user's OS permissions; Uta does not claim it is sandboxed.
+AI-judgment adapters are direct child processes of Analysis Engine after Runtime Manager resolution. They may use the network according to the user's configured external provider, but Fusion Agent protocol v4 sends only a bounded compact candidate projection, canonical lyrics, and hard boundaries—not source audio bytes, arbitrary project files, the library DB, model files, or unrelated user content. The adapter exposes those inputs as three scoped temporary JSON files and gives the provider only relative paths. A configured adapter is external software running with the user's OS permissions; Uta does not claim that an arbitrary external executable is sandboxed.
 
 ---
 
