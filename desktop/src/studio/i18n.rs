@@ -647,6 +647,72 @@ mod tests {
     }
 
     #[test]
+    fn settings_information_architecture_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "Song analysis profile",
+            "SETTINGS",
+            "Preferences, storage and execution defaults.",
+            "Appearance, language and help",
+            "Library folders and generated data",
+            "Resources, acceleration and adapters",
+            "Defaults and strategy for future runs",
+            "APPEARANCE & WINDOW",
+            "Theme, scale and how Uta! Studio uses this display.",
+            "LANGUAGE & HELP",
+            "DIAGNOSTICS",
+            "Local troubleshooting tools. These checks do not install models or modify source media.",
+            "LIBRARY LOCATIONS",
+            "Folders scanned into the library. Source media remains in place and is never moved or deleted.",
+            "EXPORTS",
+            "Every format opens Save As here first. You can still choose another folder for each export.",
+            "GENERATED DATA",
+            "Generated song artifacts and installed model usage. Source media is not included.",
+            "MODEL RUNTIME ROUTING",
+            "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs.",
+            "MODELS & RUNTIME",
+            "FUSION AGENT",
+            "Effective Fusion Agent Adapter",
+            "External provider disclosure",
+            "Configure defaults for future runs",
+            "Set product-level defaults here. Processing Studio owns per-song topology, Models & runtime owns resources, and exact readiness remains visible in Plan Preview.",
+            "How future Candidate and partial analysis actions behave",
+            "Semantic preparation before analysis",
+            "Transcript authority and timing defaults",
+            "Continuous evidence and semantic-note policy",
+            "05 · ADVANCED PERFORMANCE / MODEL-OWNED PARAMETERS",
+            "When analysis should start automatically",
+            "Auto-analysis only queues eligible songs. It does not install models, change the selected workflow, or alter per-model parameters.",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+        assert_eq!(
+            translate_ui(UiLocale::SimplifiedChinese, "Default · cpu").as_deref(),
+            Some("默认 · cpu")
+        );
+        assert_eq!(
+            translate_ui(UiLocale::Japanese, "Use vulkan").as_deref(),
+            Some("vulkan を使用")
+        );
+        assert_eq!(
+            translate_ui(
+                UiLocale::SimplifiedChinese,
+                "Every format opens Save As here first. You can still choose another folder for each export.\n\n/home/user/Exports"
+            )
+            .as_deref(),
+            Some("所有格式的“另存为”都会先打开此位置；每次导出时仍可选择其他文件夹。\n\n/home/user/Exports")
+        );
+    }
+
+    #[test]
     fn preprocessing_ui_has_required_non_english_catalog_coverage() {
         let english = parse_catalog(ENGLISH_JSON);
         let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);

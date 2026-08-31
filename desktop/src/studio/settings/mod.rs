@@ -9,6 +9,9 @@ mod rows;
 mod storage;
 mod types;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use analysis::*;
 pub(crate) use dialogs::*;
 pub(crate) use general::*;

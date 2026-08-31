@@ -24,10 +24,10 @@ pub(crate) fn spawn_analysis_settings(
         theme,
         "ANALYSIS",
         "Configure defaults for future runs",
-        "Existing chart data changes only after explicit re-analysis. Models & runtime owns installation and acceleration; this page owns analysis behavior.",
+        "Set product-level defaults here. Processing Studio owns per-song topology, Models & runtime owns resources, and exact readiness remains visible in Plan Preview.",
     );
 
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -40,42 +40,44 @@ pub(crate) fn spawn_analysis_settings(
         ),
         None,
         None,
+        |group| {
+            spawn_quality_setting_row(
+                group,
+                font.clone(),
+                theme,
+                session.config.analysis_quality(),
+            );
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Preserve continuous pitch",
+                "Keep continuous F0 as independent PitchEvidence instead of replacing it with the final target-note track.",
+                session.config.preserve_continuous_pitch(),
+                UiAction::from(SettingsCommand::TogglePreserveContinuousPitch),
+            );
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Quantize candidate notes",
+                "Apply quantization only to candidate-chart behavior, after note inference; never to continuous PitchEvidence.",
+                session.config.enable_quantization(),
+                UiAction::from(SettingsCommand::ToggleAnalysisQuantization),
+            );
+            spawn_select_setting_row(
+                group,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Default analysis target",
+                "Choose the normal Analyze action's product output. This changes requested artifacts, not model selection.",
+                SettingsSelectKind::AnalysisTarget,
+                session,
+            );
+        },
     );
-    spawn_quality_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        session.config.analysis_quality(),
-    );
-    spawn_switch_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Preserve continuous pitch",
-        "Keep continuous F0 as independent PitchEvidence instead of replacing it with the final target-note track.",
-        session.config.preserve_continuous_pitch(),
-        UiAction::from(SettingsCommand::TogglePreserveContinuousPitch),
-    );
-    spawn_switch_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Quantize candidate notes",
-        "Apply quantization only to candidate-chart behavior, after note inference; never to continuous PitchEvidence.",
-        session.config.enable_quantization(),
-        UiAction::from(SettingsCommand::ToggleAnalysisQuantization),
-    );
-    spawn_select_setting_row(
-        parent,
-        font.clone(),
-        icons,
-        theme,
-        "Default analysis target",
-        "Choose the normal Analyze action's product output. This changes requested artifacts, not model selection.",
-        SettingsSelectKind::AnalysisTarget,
-        session,
-    );
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -85,16 +87,18 @@ pub(crate) fn spawn_analysis_settings(
         "Automatic · request-specific",
         None,
         None,
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Preparation ownership",
+                "The exact Plan Preview shows which source role, separation branch and cleanup stages will run. Instrumental generation remains independent from the analysis-lead branch.",
+                None::<(&str, UiAction)>,
+            );
+        },
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Preparation ownership",
-        "The exact Plan Preview shows which source role, separation branch and cleanup stages will run. Instrumental generation remains independent from the analysis-lead branch.",
-        None::<(&str, UiAction)>,
-    );
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -104,16 +108,18 @@ pub(crate) fn spawn_analysis_settings(
         "Automatic · Qwen baseline",
         None,
         None,
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Lyrics execution",
+                "The Engine requests transcription and forced alignment only when the selected outputs require them. Optional challengers never replace caller-canonical lyrics.",
+                None::<(&str, UiAction)>,
+            );
+        },
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Lyrics execution",
-        "The Engine requests transcription and forced alignment only when the selected outputs require them. Optional challengers never replace caller-canonical lyrics.",
-        None::<(&str, UiAction)>,
-    );
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -123,16 +129,18 @@ pub(crate) fn spawn_analysis_settings(
         "RMVPE + GAME · managed fusion",
         None,
         None,
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Expert policy",
+                "Plan Preview is authoritative for the selected primary evidence, conditional challengers, degraded fallback and requested outputs.",
+                None::<(&str, UiAction)>,
+            );
+        },
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Expert policy",
-        "Plan Preview is authoritative for the selected primary evidence, conditional challengers, degraded fallback and requested outputs.",
-        None::<(&str, UiAction)>,
-    );
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -142,16 +150,18 @@ pub(crate) fn spawn_analysis_settings(
         "Production defaults",
         None,
         None,
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Advanced execution",
+                "Use Processing Studio for per-song execution conditions and exact graph intent. Packaged worker-private tensor parameters are not duplicated as Studio settings.",
+                None::<(&str, UiAction)>,
+            );
+        },
     );
-    spawn_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Advanced execution",
-        "Use Processing Studio for per-song execution conditions and exact graph intent. Packaged worker-private tensor parameters are not duplicated as Studio settings.",
-        None::<(&str, UiAction)>,
-    );
-    spawn_settings_stage_header(
+    spawn_settings_stage_group(
         parent,
         font.clone(),
         theme,
@@ -165,30 +175,32 @@ pub(crate) fn spawn_analysis_settings(
         },
         None,
         None,
-    );
-    spawn_switch_setting_row(
-        parent,
-        font.clone(),
-        theme,
-        "Auto-analyze",
-        if session.config.auto_analyze() {
-            "On · Eligible songs are queued; any missing component is reported by that request."
-        } else {
-            "Off · New songs wait for an explicit analysis action."
+        |group| {
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Auto-analyze",
+                if session.config.auto_analyze() {
+                    "On · Eligible songs are queued; any missing component is reported by that request."
+                } else {
+                    "Off · New songs wait for an explicit analysis action."
+                },
+                session.config.auto_analyze(),
+                UiAction::from(SettingsCommand::ToggleAutoAnalyze),
+            );
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Analysis defaults",
+                "Restore recommended product behavior without changing installed models, per-model runtime tuning, source media, song profiles, or existing chart data.",
+                Some((
+                    "Restore defaults",
+                    UiAction::from(SettingsCommand::RestoreAnalysisDefaults),
+                )),
+            );
         },
-        session.config.auto_analyze(),
-        UiAction::from(SettingsCommand::ToggleAutoAnalyze),
-    );
-    spawn_setting_row(
-        parent,
-        font,
-        theme,
-        "Analysis defaults",
-        "Restore recommended product behavior without changing installed models, per-model runtime tuning, source media, song profiles, or existing chart data.",
-        Some((
-            "Restore defaults",
-            UiAction::from(SettingsCommand::RestoreAnalysisDefaults),
-        )),
     );
 }
 
@@ -210,11 +222,14 @@ fn spawn_quality_setting_row(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(92),
+                min_height: px(84),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -224,20 +239,20 @@ fn spawn_quality_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(260),
-                flex_basis: px(360),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), "Analysis quality", 12.0, theme.foreground);
+                spawn_text(copy, font.clone(), "Analysis quality", 11.5, theme.foreground);
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
                     "Fast prioritizes predictable cost. Balanced adds eligible quality checks. Maximum permits expensive optional processing under Production policy.",
-                    10.0,
+                    9.2,
                     theme.muted_foreground,
                 );
             });
@@ -245,7 +260,7 @@ fn spawn_quality_setting_row(
                 min_width: px(180),
                 max_width: px(SETTINGS_CONTROL_WIDTH),
                 flex_basis: px(SETTINGS_CONTROL_WIDTH),
-                flex_grow: 1.0,
+                flex_grow: 0.0,
                 height: px(36),
                 margin: UiRect::top(px(2)),
                 ..default()
@@ -309,11 +324,14 @@ pub(crate) fn spawn_switch_setting_row(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(76),
+                min_height: px(72),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
                 flex_wrap: FlexWrap::Wrap,
-                padding: UiRect::axes(px(20), px(16)),
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
                 column_gap: px(24),
                 row_gap: px(12),
                 border: UiRect::bottom(px(1)),
@@ -323,28 +341,22 @@ pub(crate) fn spawn_switch_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(260),
-                flex_basis: px(360),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
-                spawn_wrapped_text(
-                    copy,
-                    font.clone(),
-                    description,
-                    10.0,
-                    theme.muted_foreground,
-                );
+                spawn_text(copy, font.clone(), label, 11.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 9.2, theme.muted_foreground);
             });
             row.spawn(Node {
                 min_width: px(180),
                 max_width: px(SETTINGS_CONTROL_WIDTH),
                 flex_basis: px(SETTINGS_CONTROL_WIDTH),
-                flex_grow: 1.0,
+                flex_grow: 0.0,
                 margin: UiRect::top(px(2)),
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
@@ -416,11 +428,16 @@ pub(crate) fn spawn_shift_setting_row(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(68),
+                min_height: px(72),
                 flex_shrink: 0.0,
                 align_items: AlignItems::FlexStart,
-                padding: UiRect::axes(px(20), px(13)),
-                column_gap: px(22),
+                flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::axes(
+                    px(SETTINGS_ROW_HORIZONTAL_PADDING),
+                    px(SETTINGS_ROW_VERTICAL_PADDING),
+                ),
+                column_gap: px(24),
+                row_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
@@ -428,20 +445,23 @@ pub(crate) fn spawn_shift_setting_row(
         ))
         .with_children(|row| {
             row.spawn(Node {
-                min_width: px(0),
+                min_width: px(SETTINGS_COPY_MIN_WIDTH),
+                flex_basis: px(SETTINGS_COPY_BASIS),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), label, 12.0, theme.foreground);
-                spawn_wrapped_text(copy, font.clone(), description, 9.0, theme.muted_foreground);
+                spawn_text(copy, font.clone(), label, 11.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 9.2, theme.muted_foreground);
             });
             row.spawn(Node {
-                width: px(SETTINGS_CONTROL_WIDTH),
+                min_width: px(180),
+                max_width: px(SETTINGS_CONTROL_WIDTH),
+                flex_basis: px(SETTINGS_CONTROL_WIDTH),
+                flex_grow: 0.0,
                 margin: UiRect::top(px(2)),
-                flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })
