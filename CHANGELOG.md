@@ -2,6 +2,25 @@
 
 This changelog is generated from git history.
 
+## 0.8.2 — 2026-09-01
+
+### Studio workflow and authoring
+
+- Reworked Processing Studio preview and validation actions to match the current application hierarchy, and simplified library and editor controls.
+- Removed lyric-to-note connector lines while retaining correspondence highlighting, fixed conflicting sidebar selection, and reduced editor rebuild flicker.
+- Left-aligned context-menu actions and hid export actions for songs that have not completed analysis.
+
+### Audio pipeline
+
+- Made vocal and instrumental cleanup stages feed their terminal lossless outputs into downstream analysis, playback, editing, and export.
+- Collapsed processed audio choices to the final vocal and BGM result for each pipeline lane.
+
+### Wayland and reliability
+
+- Added persisted Wayland window transparency and made theme changes repaint the complete interface in the same frame.
+- Selected premultiplied surface alpha for broader Vulkan compositor support, fixing startup failure on supported Intel graphics.
+- Isolated generated decoder fixtures so parallel Nix tests cannot replace an executable still being released by another process.
+
 ## 0.8.1 — 2026-08-31
 
 ### Processing queue and workflow editing
