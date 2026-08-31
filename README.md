@@ -131,6 +131,14 @@ cargo run -p uta-studio-export -- list
 cargo run -p uta-studio-export -- export <file-hash> /path/to/song.utz
 ```
 
+## TODO
+
+1. Fix editor flicker while scrolling with the mouse wheel.
+2. Update model download and removal capabilities in Settings.
+3. Add a super-efficiency mode that runs GPU, integrated GPU, and CPU inference concurrently.
+4. Fix slight timing offsets in generated MIDI.
+5. Improve lyric download capabilities.
+
 ## Acknowledgements
 
 Uta! Studio thanks the following projects for technical and interface references:

@@ -13,9 +13,15 @@ fi
 
 TAG_VERSION="$1"
 MANIFESTS=(
+  analysis-engine/Cargo.toml
   app-core/Cargo.toml
   desktop/Cargo.toml
+  fusion-agent-adapter/Cargo.toml
   native-audio/Cargo.toml
+  native-inference/ggml-worker/Cargo.toml
+  native-inference/openvino-worker/Cargo.toml
+  native-inference/qwen-worker/Cargo.toml
+  runtime-manager/Cargo.toml
   studio-diagnostics/Cargo.toml
   utz-export/Cargo.toml
   xtask/Cargo.toml
