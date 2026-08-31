@@ -661,11 +661,10 @@ fn compatibility_paths(cache: &CacheDir, revision: &ArtifactRevision) -> Vec<Pat
             let role = match revision.kind {
                 ArtifactKind::VocalStem | ArtifactKind::AnalysisVocalStem => "vocals",
                 ArtifactKind::RawVocalStem => "vocals_raw",
-                ArtifactKind::DenoisedVocalStem => "vocals_denoised",
-                ArtifactKind::DereverbedVocalStem => "vocals_dry",
+                ArtifactKind::DenoisedVocalStem | ArtifactKind::DereverbedVocalStem => "vocals",
                 ArtifactKind::HighQualityInstrumentalStem => "instrumental_hq",
-                ArtifactKind::DenoisedInstrumentalStem => "instrumental_denoised",
-                ArtifactKind::DereverbedInstrumentalStem => "instrumental_dry",
+                ArtifactKind::DenoisedInstrumentalStem
+                | ArtifactKind::DereverbedInstrumentalStem => "instrumental",
                 ArtifactKind::KaraokeInstrumentalStem => "instrumental_karaoke",
                 ArtifactKind::DrumStem => "drums",
                 ArtifactKind::BassStem => "bass",
@@ -1105,6 +1104,45 @@ mod tests {
         assert!(artifact_present(&presence, ArtifactKind::AsrSegments));
         assert!(artifact_present(&presence, ArtifactKind::TimedTranscript));
 
+        cache.clear_all();
+    }
+
+    #[test]
+    fn cleanup_terminals_replace_the_canonical_authoring_stems() {
+        let cache = CacheDir {
+            path: temp_dir("cleanup-compatibility"),
+        };
+        let revision = |kind, id: &str| ArtifactRevision {
+            id: id.to_string(),
+            file_hash: "song-clean".to_string(),
+            kind,
+            path: cache.path.join(format!("{id}.flac")),
+            content_hash: id.to_string(),
+            producer_node: AnalysisNodeId::new("cleanup"),
+            input_revisions: Vec::new(),
+            config_hash: "cleanup".to_string(),
+            algorithm_version: "test".to_string(),
+            created_at_ms: 1,
+            byte_size: 1,
+            active: true,
+            legacy: false,
+            invalidated: false,
+        };
+
+        assert_eq!(
+            compatibility_paths(
+                &cache,
+                &revision(ArtifactKind::DereverbedVocalStem, "vocal")
+            ),
+            [cache.path.join("song-clean_vocals.flac")]
+        );
+        assert_eq!(
+            compatibility_paths(
+                &cache,
+                &revision(ArtifactKind::DenoisedInstrumentalStem, "bgm")
+            ),
+            [cache.path.join("song-clean_instrumental.flac")]
+        );
         cache.clear_all();
     }
 

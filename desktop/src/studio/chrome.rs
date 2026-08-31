@@ -81,7 +81,7 @@ pub(crate) fn spawn_sidebar(
                 icons.clone(),
                 theme,
                 Some(UiIcon::Home),
-                "All music",
+                "All",
                 session.meta.songs_count,
                 UiAction::from(LibraryCommand::SetLibraryView(LibraryView::All)),
                 session.route == StudioRoute::Library && session.library_view == LibraryView::All,
@@ -145,9 +145,7 @@ pub(crate) fn spawn_sidebar(
                 Some(UiAction::from(LibraryCommand::SetLibraryView(
                     LibraryView::Completed,
                 ))),
-                session.route == StudioRoute::Editor
-                    || (session.route == StudioRoute::Library
-                        && session.library_view == LibraryView::Completed),
+                session.route == StudioRoute::Editor,
             );
 
             spawn_section_label(sidebar, font.clone(), theme, "MY LIBRARY");
@@ -779,26 +777,19 @@ fn spawn_workspace_toolbar(
             }
         }
         StudioRoute::ProcessingStudio => {
-            spawn_compact_action_button(
-                parent,
-                font.clone(),
-                theme,
-                "Validate",
-                UiAction::from(AnalysisCommand::PreviewWorkflow),
-            );
-            spawn_compact_action_button(
-                parent,
-                font.clone(),
-                theme,
-                "Save workflow",
-                UiAction::from(AnalysisCommand::SaveWorkflow),
-            );
             spawn_compact_primary_action_button(
+                parent,
+                font.clone(),
+                theme,
+                "Re-run",
+                UiAction::from(AnalysisCommand::RunWorkflow),
+            );
+            spawn_compact_action_button(
                 parent,
                 font,
                 theme,
-                "Preview run…",
-                UiAction::from(AnalysisCommand::RunWorkflow),
+                "Validate + save",
+                UiAction::from(AnalysisCommand::SaveWorkflow),
             );
         }
         _ => {}

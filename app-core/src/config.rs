@@ -33,6 +33,11 @@ pub struct AppConfig {
     pub export_path: Option<PathBuf>,
     pub fullscreen: Option<bool>,
     pub dark_mode: Option<bool>,
+    /// Whether the application surface should let the native compositor show
+    /// through. The desktop creates an alpha-capable Wayland surface up front
+    /// and applies this preference through rendered pixel alpha.
+    #[serde(default)]
+    pub window_transparency: Option<bool>,
     /// Native acceleration preference. Production still uses only validated
     /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
@@ -91,6 +96,7 @@ impl Default for AppConfig {
             export_path: None,
             fullscreen: None,
             dark_mode: None,
+            window_transparency: None,
             compute_backend: None,
             default_device_class: None,
             model_backend_overrides: BTreeMap::new(),

@@ -1077,9 +1077,8 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
                 .fusion
                 .candidates
                 .iter()
-                .find(|candidate| &candidate.id == id)
+                .position(|candidate| &candidate.id == id)
                 .unwrap()
-                .clone()
         })
         .collect::<Vec<_>>();
     let response = serde_json::json!({

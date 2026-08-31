@@ -770,25 +770,6 @@ pub(crate) struct EditorLyricResizeHandle {
     pub(crate) edge: NoteEdge,
 }
 
-/// A vertical mark at the shared time of a bound note and lyric. Three
-/// instances — one in the pitch canvas, one in the gap strip between canvas
-/// and lyric lane, one in the lyric lane — are kept at the same `left` each
-/// frame and each sized to its `EditorBindingGuidePart`, so together they
-/// read as one line running from the note's own pitch height down to the
-/// lyric's own lane, through the gap in between.
-#[derive(Component)]
-pub(crate) struct EditorBindingGuide;
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EditorBindingGuidePart {
-    /// From the bound note's pitch height down to the bottom of the canvas.
-    Canvas,
-    /// The full height of the thin strip between canvas and lyric lane.
-    Gap,
-    /// From the top of the lyric lane down to the bound word's own lane.
-    Lane,
-}
-
 /// The rectangle drawn while shift-dragging a marquee selection over the
 /// note canvas.
 #[derive(Component)]

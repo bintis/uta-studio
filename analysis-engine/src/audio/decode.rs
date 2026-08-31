@@ -547,12 +547,15 @@ mod tests {
 
     use super::*;
 
+    static NEXT_FAKE_FFMPEG: AtomicU64 = AtomicU64::new(0);
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
 
     #[cfg(unix)]
     fn fake_process_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[cfg(unix)]
@@ -560,8 +563,12 @@ mod tests {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
-        let path = root.join("ffmpeg-fixture");
-        let staging = root.join("ffmpeg-fixture.part");
+        // Keep every published executable immutable for the lifetime of its
+        // test. Replacing a path that has just been executed can race with
+        // process teardown on Linux and make the next exec fail with ETXTBSY.
+        let fixture_id = NEXT_FAKE_FFMPEG.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!("ffmpeg-fixture-{fixture_id}"));
+        let staging = root.join(format!("ffmpeg-fixture-{fixture_id}.part"));
         {
             let mut file = std::fs::File::create(&staging).unwrap();
             file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())

@@ -212,20 +212,85 @@ fn audio_source_format(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "AUDIO".to_string())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PipelineAudioLane {
+    Vocal,
+    Instrumental,
+}
+
+fn pipeline_audio_lane(kind: app_core::ArtifactKind) -> Option<PipelineAudioLane> {
+    use app_core::ArtifactKind;
+    match kind {
+        ArtifactKind::VocalStem
+        | ArtifactKind::RawVocalStem
+        | ArtifactKind::DenoisedVocalStem
+        | ArtifactKind::DereverbedVocalStem
+        | ArtifactKind::AnalysisVocalStem => Some(PipelineAudioLane::Vocal),
+        ArtifactKind::InstrumentalStem
+        | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::DenoisedInstrumentalStem
+        | ArtifactKind::DereverbedInstrumentalStem
+        | ArtifactKind::KaraokeInstrumentalStem => Some(PipelineAudioLane::Instrumental),
+        _ => None,
+    }
+}
+
+fn pipeline_audio_stage(kind: app_core::ArtifactKind) -> u8 {
+    use app_core::ArtifactKind;
+    match kind {
+        ArtifactKind::DereverbedVocalStem
+        | ArtifactKind::DenoisedVocalStem
+        | ArtifactKind::DereverbedInstrumentalStem
+        | ArtifactKind::DenoisedInstrumentalStem => 3,
+        ArtifactKind::AnalysisVocalStem
+        | ArtifactKind::HighQualityInstrumentalStem
+        | ArtifactKind::KaraokeInstrumentalStem => 2,
+        ArtifactKind::VocalStem | ArtifactKind::InstrumentalStem => 1,
+        ArtifactKind::RawVocalStem => 0,
+        _ => 0,
+    }
+}
+
+/// Keep one user-facing result for each main audio branch. Newer runs win
+/// over stale cleanup artifacts; within one run, the farthest pipeline stage
+/// wins over its intermediate stems.
+fn retain_final_pipeline_audio(revisions: &mut Vec<app_core::ArtifactRevision>) {
+    let mut selected = std::collections::BTreeMap::<PipelineAudioLane, (i64, u8, String)>::new();
+    for revision in revisions.iter() {
+        let Some(lane) = pipeline_audio_lane(revision.kind) else {
+            continue;
+        };
+        let candidate = (
+            revision.created_at_ms,
+            pipeline_audio_stage(revision.kind),
+            revision.id.clone(),
+        );
+        if selected
+            .get(&lane)
+            .is_none_or(|current| &candidate > current)
+        {
+            selected.insert(lane, candidate);
+        }
+    }
+    revisions.retain(|revision| {
+        pipeline_audio_lane(revision.kind).is_none_or(|lane| {
+            selected
+                .get(&lane)
+                .is_some_and(|(_, _, id)| id == &revision.id)
+        })
+    });
+}
+
 fn artifact_audio_source_label(revision: &app_core::ArtifactRevision) -> Option<String> {
     use app_core::ArtifactKind;
 
+    if let Some(lane) = pipeline_audio_lane(revision.kind) {
+        return Some(match lane {
+            PipelineAudioLane::Vocal => "Vocals".to_string(),
+            PipelineAudioLane::Instrumental => "BGM".to_string(),
+        });
+    }
     Some(match revision.kind {
-        ArtifactKind::VocalStem => "Vocals".to_string(),
-        ArtifactKind::InstrumentalStem => "BGM".to_string(),
-        ArtifactKind::RawVocalStem => "Raw vocals".to_string(),
-        ArtifactKind::DenoisedVocalStem => "Denoised vocals".to_string(),
-        ArtifactKind::DereverbedVocalStem => "Dereverbed vocals".to_string(),
-        ArtifactKind::AnalysisVocalStem => "Lead vocal".to_string(),
-        ArtifactKind::HighQualityInstrumentalStem => "High-quality BGM".to_string(),
-        ArtifactKind::DenoisedInstrumentalStem => "Denoised BGM".to_string(),
-        ArtifactKind::DereverbedInstrumentalStem => "Dereverbed BGM".to_string(),
-        ArtifactKind::KaraokeInstrumentalStem => "Karaoke BGM".to_string(),
         ArtifactKind::DrumStem => "Drums".to_string(),
         ArtifactKind::BassStem => "Bass".to_string(),
         ArtifactKind::GuitarStem => "Guitar".to_string(),
@@ -245,11 +310,17 @@ pub(crate) fn library_audio_sources(song: &Song) -> Vec<LibraryAudioSource> {
     }];
     let mut paths = std::collections::BTreeSet::from([song.path.clone()]);
     let mut revisions = app_core::load_analysis_artifacts(&song.file_hash);
+    revisions
+        .retain(|revision| revision.active && !revision.invalidated && revision.path.is_file());
+    retain_final_pipeline_audio(&mut revisions);
     revisions.sort_by_key(|revision| std::cmp::Reverse(revision.created_at_ms));
+    let has_vocal_artifact = revisions
+        .iter()
+        .any(|revision| pipeline_audio_lane(revision.kind) == Some(PipelineAudioLane::Vocal));
+    let has_instrumental_artifact = revisions.iter().any(|revision| {
+        pipeline_audio_lane(revision.kind) == Some(PipelineAudioLane::Instrumental)
+    });
     for revision in revisions {
-        if !revision.active || revision.invalidated || !revision.path.is_file() {
-            continue;
-        }
         let Some(label) = artifact_audio_source_label(&revision) else {
             continue;
         };
@@ -267,19 +338,21 @@ pub(crate) fn library_audio_sources(song: &Song) -> Vec<LibraryAudioSource> {
     // Charts created before the immutable artifact inventory may still point
     // at authorized compatibility stems. Keep those stems auditionable too.
     if let Ok(chart) = app_core::load_chart(&song.file_hash) {
-        for (id, label, path) in [
+        for (id, label, path, already_listed) in [
             (
                 "chart:instrumental",
                 "BGM",
                 PathBuf::from(chart.audio.instrumental),
+                has_instrumental_artifact,
             ),
             (
                 "chart:vocals",
                 "Vocals",
                 chart.audio.vocals.map(PathBuf::from).unwrap_or_default(),
+                has_vocal_artifact,
             ),
         ] {
-            if path.is_file() && paths.insert(path.clone()) {
+            if !already_listed && path.is_file() && paths.insert(path.clone()) {
                 sources.push(LibraryAudioSource {
                     id: id.to_string(),
                     label: label.to_string(),
@@ -466,6 +539,54 @@ pub(crate) fn restart_library_song(
     playback.status = status;
     playback.last_audio_sync = Instant::now();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn revision(
+        id: &str,
+        kind: app_core::ArtifactKind,
+        created_at_ms: i64,
+    ) -> app_core::ArtifactRevision {
+        app_core::ArtifactRevision {
+            id: id.to_string(),
+            file_hash: "song".to_string(),
+            kind,
+            path: PathBuf::from(format!("{id}.flac")),
+            content_hash: id.to_string(),
+            producer_node: app_core::AnalysisNodeId::new("test"),
+            input_revisions: Vec::new(),
+            config_hash: "test".to_string(),
+            algorithm_version: "test".to_string(),
+            created_at_ms,
+            byte_size: 1,
+            active: true,
+            legacy: false,
+            invalidated: false,
+        }
+    }
+
+    #[test]
+    fn audio_picker_keeps_only_each_latest_pipeline_terminal() {
+        use app_core::ArtifactKind;
+        let mut revisions = vec![
+            revision("old-clean-vocal", ArtifactKind::DereverbedVocalStem, 10),
+            revision("new-raw-vocal", ArtifactKind::VocalStem, 11),
+            revision("new-lead-vocal", ArtifactKind::AnalysisVocalStem, 11),
+            revision("raw-bgm", ArtifactKind::InstrumentalStem, 11),
+            revision("clean-bgm", ArtifactKind::DenoisedInstrumentalStem, 11),
+            revision("drums", ArtifactKind::DrumStem, 9),
+        ];
+
+        retain_final_pipeline_audio(&mut revisions);
+        let ids = revisions
+            .iter()
+            .map(|revision| revision.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["new-lead-vocal", "clean-bgm", "drums"]);
+    }
 }
 
 pub(crate) fn set_library_volume(

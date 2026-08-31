@@ -309,14 +309,6 @@ pub(crate) fn spawn_library_header_toolbar(
         LibrarySelectKind::Status,
         session,
     );
-    spawn_library_filter_select(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        LibrarySelectKind::TranscriptSource,
-        session,
-    );
     spawn_export_all_menu(parent, font.clone(), icons.clone(), theme, session);
     spawn_toolbar_button(
         parent,
@@ -326,16 +318,6 @@ pub(crate) fn spawn_library_header_toolbar(
         UiIcon::Sparkles,
         "Analyze all",
         UiAction::from(LibraryCommand::AnalyzeAll),
-        false,
-    );
-    spawn_toolbar_button(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        UiIcon::Repair,
-        "Models",
-        UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
         false,
     );
     spawn_toolbar_button(
@@ -596,7 +578,7 @@ pub(crate) fn spawn_song_context_menu(
                 height: px(5),
                 ..default()
             });
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -607,7 +589,7 @@ pub(crate) fn spawn_song_context_menu(
                 )),
             );
             if context.song.editor_ready {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -616,7 +598,7 @@ pub(crate) fn spawn_song_context_menu(
                     UiAction::from(LibraryCommand::OpenEditor(context.song.file_hash.clone())),
                 );
             } else if !context.song.authoring_ready {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -629,7 +611,7 @@ pub(crate) fn spawn_song_context_menu(
                 app_core::candidate_chart_status(&context.song.file_hash),
                 app_core::CandidateChartStatus::NotAuthoredYet
             ) {
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -640,7 +622,7 @@ pub(crate) fn spawn_song_context_menu(
                     )),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -648,7 +630,7 @@ pub(crate) fn spawn_song_context_menu(
                 11.0,
                 UiAction::from(LibraryCommand::OpenSong(context.song.file_hash.clone())),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -658,8 +640,8 @@ pub(crate) fn spawn_song_context_menu(
                     context.song.file_hash.clone(),
                 )),
             );
-            if context.song.authoring_ready {
-                spawn_text_button(
+            if context.song.is_analyzed && context.song.authoring_ready {
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -667,7 +649,7 @@ pub(crate) fn spawn_song_context_menu(
                     11.0,
                     UiAction::from(LibraryCommand::ExportUtz(context.song.file_hash.clone())),
                 );
-                spawn_text_button(
+                spawn_menu_text_button(
                     menu,
                     font.clone(),
                     theme,
@@ -678,7 +660,7 @@ pub(crate) fn spawn_song_context_menu(
                     )),
                 );
             }
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -686,7 +668,7 @@ pub(crate) fn spawn_song_context_menu(
                 11.0,
                 UiAction::from(LibraryCommand::OpenSource(context.song.path.clone())),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,

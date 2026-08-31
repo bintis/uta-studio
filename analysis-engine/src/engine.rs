@@ -498,6 +498,7 @@ impl AnalysisEngine {
         let raw_cleanup_input = analysis_input.clone();
         let raw_cleanup_role = analysis_role.to_string();
         let mut cleanup_output = None;
+        let mut instrumental_cleanup_output = None;
         let mut cleanup_workflow_nodes = Vec::new();
         let mut denoise_participated = false;
         let mut dereverb_participated = false;
@@ -532,12 +533,13 @@ impl AnalysisEngine {
                 source_duration,
                 task_id: &task_id,
             };
+            let output_role = workflow_cleanup_output_role(&step_role);
             let result = match (capability.as_str(), workflow_node.as_deref()) {
                 ("audio.denoise", Some(node)) => {
-                    run_openvino_workflow_cleanup(&task, node, true, cancellation)
+                    run_openvino_workflow_cleanup(&task, node, true, output_role, cancellation)
                 }
                 ("audio.dereverb", Some(node)) => {
-                    run_openvino_workflow_cleanup(&task, node, false, cancellation)
+                    run_openvino_workflow_cleanup(&task, node, false, output_role, cancellation)
                 }
                 ("audio.denoise", None) => run_openvino_denoise(&task, cancellation),
                 ("audio.dereverb", None) => run_openvino_dereverb(&task, cancellation),
@@ -553,7 +555,11 @@ impl AnalysisEngine {
                             (output_path.clone(), step_role.clone()),
                         );
                     }
-                    if matches!(
+                    if step_role == crate::contract::AudioRole::Instrumental.as_str() {
+                        instrumental_audio =
+                            Some(decode_audio(&ffmpeg, "cleaned_instrumental", &output_path)?);
+                        instrumental_cleanup_output = Some(output);
+                    } else if matches!(
                         step_role.as_str(),
                         "vocal" | "guide_vocals" | "vocal_stem" | "lead_vocal"
                     ) {
@@ -603,6 +609,19 @@ impl AnalysisEngine {
             .contains(&crate::contract::AudioRole::CleanLeadVocal)
             && let Some(output) = cleanup_output
         {
+            artifacts.stems.push(StemArtifactRefV1 {
+                role: output.role,
+                artifact: output.artifact,
+            });
+        }
+        if let Some(output) = instrumental_cleanup_output {
+            // The branch's terminal processor replaces the raw accompaniment
+            // as the one deliverable Instrumental. Intermediate workflow
+            // audio remains available through execution provenance, while
+            // downstream quality, audition and authoring use this last stem.
+            artifacts
+                .stems
+                .retain(|stem| stem.role != crate::contract::AudioRole::Instrumental);
             artifacts.stems.push(StemArtifactRefV1 {
                 role: output.role,
                 artifact: output.artifact,

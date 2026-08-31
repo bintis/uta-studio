@@ -97,8 +97,8 @@ pub(crate) fn spawn_editor(
     let tracks_visible = !editor.tracks_hidden;
     let lyrics = chart_lyrics(&editor.document);
     // The lyric or note(s) the current selection is bound to, so its match
-    // can be highlighted and connected — the format ties a note's pitch and
-    // its lyric together, and clicking either one should show the other. A
+    // can be highlighted — the format ties a note's pitch and its lyric
+    // together, and clicking either one should show the other. A
     // syllable held across a pitch change spans more than one note (see
     // `ChartLyricView::continuation_notes`), so all of them highlight
     // together rather than just the one carrying the lyric text.
@@ -395,44 +395,12 @@ pub(crate) fn spawn_editor(
                                 theme,
                             );
                             if !editor.lyrics_hidden {
-                                // A thin strip between the pitch canvas and
-                                // the lyric lane, bridging the gap between
-                                // the canvas and lane segments spawned below
-                                // (see `spawn_editor_timeline` /
-                                // `spawn_editor_lyrics`) into one line. The
-                                // leading spacer matches the gutter both rows
-                                // above and below indent past, so the same
-                                // `left` percent lines up with them.
-                                timeline_column
-                                    .spawn(Node {
-                                        width: percent(100),
-                                        height: px(10),
-                                        flex_shrink: 0.0,
-                                        flex_direction: FlexDirection::Row,
-                                        ..default()
-                                    })
-                                    .with_children(|gap_row| {
-                                        gap_row.spawn(Node {
-                                            width: px(EDITOR_TRACK_GUTTER_WIDTH),
-                                            flex_shrink: 0.0,
-                                            ..default()
-                                        });
-                                        gap_row
-                                            .spawn(Node {
-                                                position_type: PositionType::Relative,
-                                                min_width: px(0),
-                                                height: percent(100),
-                                                flex_grow: 1.0,
-                                                ..default()
-                                            })
-                                            .with_children(|gap| {
-                                                spawn_editor_binding_guide(
-                                                    gap,
-                                                    theme,
-                                                    EditorBindingGuidePart::Gap,
-                                                );
-                                            });
-                                    });
+                                timeline_column.spawn(Node {
+                                    width: percent(100),
+                                    height: px(10),
+                                    flex_shrink: 0.0,
+                                    ..default()
+                                });
                                 spawn_editor_lyrics(
                                     timeline_column,
                                     font.clone(),

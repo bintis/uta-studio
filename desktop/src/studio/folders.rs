@@ -643,7 +643,7 @@ pub(crate) fn spawn_folder_context_menu(
                 9.0,
                 theme.muted_foreground,
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font.clone(),
                 theme,
@@ -657,7 +657,7 @@ pub(crate) fn spawn_folder_context_menu(
                     &context.entry.path,
                 ))),
             );
-            spawn_text_button(
+            spawn_menu_text_button(
                 menu,
                 font,
                 theme,

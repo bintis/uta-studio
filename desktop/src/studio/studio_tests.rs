@@ -57,7 +57,11 @@ mod tests {
         assert_eq!(window.width(), 1280.0);
         assert_eq!(window.height(), 720.0);
         assert!(!window.decorations);
-        assert!(!window.transparent);
+        assert!(window.transparent);
+        assert_eq!(
+            window.composite_alpha_mode,
+            CompositeAlphaMode::PreMultiplied
+        );
         assert_eq!(window.window_theme, Some(WindowTheme::Dark));
     }
 

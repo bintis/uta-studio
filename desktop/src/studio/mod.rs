@@ -25,10 +25,13 @@ use bevy::{
     log::{DEFAULT_FILTER, LogPlugin},
     prelude::*,
     text::{EditableText, TextCursorStyle},
-    window::{EnabledButtons, MonitorSelection, PrimaryWindow, WindowMode, WindowTheme},
+    window::{
+        CompositeAlphaMode, EnabledButtons, MonitorSelection, PrimaryWindow, WindowMode,
+        WindowTheme,
+    },
 };
 
-use crate::theme::StudioTheme;
+use crate::theme::{StudioTheme, window_clear_color};
 mod actions;
 mod actions_chrome;
 mod actions_content;

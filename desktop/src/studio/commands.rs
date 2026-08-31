@@ -100,6 +100,7 @@ pub(crate) enum SettingsCommand {
     CancelSetup,
     ConfirmSetup,
     ToggleTheme,
+    ToggleWindowTransparency,
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     RestoreAnalysisDefaults,
@@ -142,7 +143,6 @@ pub(crate) enum AnalysisCommand {
     AdjustWorkflowPriority(String, i32),
     RebindWorkflowAnalyzer(String, String, String),
     SaveWorkflow,
-    PreviewWorkflow,
     RunWorkflow,
     OpenAnalysisInspect(String, String),
     AdjustAnalysisGraphZoom(i32),
@@ -260,6 +260,9 @@ impl UiCommand {
                 | LibraryCommand::OpenEditor(_),
             ) => UiDirtyRegion::Chrome,
             Self::Library(_) => UiDirtyRegion::Library,
+            Self::Settings(
+                SettingsCommand::ToggleTheme | SettingsCommand::ToggleWindowTransparency,
+            ) => UiDirtyRegion::Chrome,
             Self::Settings(_) => UiDirtyRegion::Settings,
             // This command changes the top-level route.  Rebuilding only the
             // analysis workspace leaves the top bar and the persistent
@@ -384,6 +387,15 @@ mod tests {
             UiCommand::Settings(SettingsCommand::RefreshRuntimeStatus).dirty_region(),
             UiDirtyRegion::Settings
         );
+        for command in [
+            SettingsCommand::ToggleTheme,
+            SettingsCommand::ToggleWindowTransparency,
+        ] {
+            assert_eq!(
+                UiCommand::Settings(command).dirty_region(),
+                UiDirtyRegion::Chrome
+            );
+        }
         assert_eq!(
             UiCommand::Analysis(AnalysisCommand::MoveAnalysisQueueItem(
                 "song".to_string(),
