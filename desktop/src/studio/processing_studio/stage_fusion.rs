@@ -27,6 +27,7 @@ pub(super) fn classify_fusion_adapter_readiness(
     }
 }
 
+#[cfg(test)]
 pub(super) fn ai_mode_label(selected: bool, readiness: FusionAdapterReadinessUi) -> String {
     let selected = if selected { "✓ " } else { "" };
     let reason = match readiness {
@@ -94,6 +95,100 @@ fn evidence_summary(stored: &app_core::StoredWorkflow, configured: bool) -> Stri
     }
 }
 
+struct FusionModeChoice<'a> {
+    title: &'a str,
+    detail: &'a str,
+    selected: bool,
+    available: bool,
+    action: UiAction,
+}
+
+fn spawn_mode_choice(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    choice: FusionModeChoice<'_>,
+) {
+    let FusionModeChoice {
+        title,
+        detail,
+        selected,
+        available,
+        action,
+    } = choice;
+    let color = if selected {
+        theme.primary
+    } else if available {
+        theme.foreground
+    } else {
+        theme.muted_foreground
+    };
+    let mut choice = parent.spawn((
+        Node {
+            min_width: px(128),
+            flex_basis: px(150),
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(px(9)),
+            row_gap: px(4),
+            border: UiRect::all(px(if selected { 2 } else { 1 })),
+            border_radius: studio_card_radius(),
+            ..default()
+        },
+        BackgroundColor(if selected {
+            theme.primary.with_alpha(0.09)
+        } else {
+            theme.background.with_alpha(0.18)
+        }),
+        BorderColor::all(if selected {
+            theme.primary.with_alpha(0.52)
+        } else {
+            theme.border.with_alpha(0.32)
+        }),
+    ));
+    if available && !selected {
+        choice.insert((Button, action));
+    } else {
+        choice.insert(Pickable::IGNORE);
+    }
+    choice.with_children(|card| {
+        card.spawn(Node {
+            width: percent(100),
+            align_items: AlignItems::Center,
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|header| {
+            header
+                .spawn((
+                    Node {
+                        width: px(14),
+                        height: px(14),
+                        flex_shrink: 0.0,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(color.with_alpha(0.1)),
+                    BorderColor::all(color.with_alpha(0.28)),
+                ))
+                .with_children(|mark| {
+                    spawn_text(
+                        mark,
+                        font.clone(),
+                        if selected { "✓" } else { "" },
+                        7.0,
+                        color,
+                    );
+                });
+            spawn_wrapped_text(header, font.clone(), title, 9.0, color);
+        });
+        spawn_wrapped_text(card, font.clone(), detail, 6.9, theme.muted_foreground);
+    });
+}
+
 /// Step 4 exposes one product decision only. Evidence participation belongs
 /// exclusively to Stage 3; the Engine owns normalization, candidate
 /// construction and every internal baseline/fallback decision.
@@ -104,117 +199,246 @@ pub(super) fn spawn_fusion_stage_card(
     stored: &app_core::StoredWorkflow,
     adapter_readiness: FusionAdapterReadinessUi,
 ) {
-    spawn_wrapped_text(
-        lane,
-        font.clone(),
-        "STEP 4 · FINAL FUSION",
-        9.0,
-        theme.primary,
-    );
-    spawn_wrapped_text(
-        lane,
-        font.clone(),
-        "Choose only how the final path is selected. Configure expert participation in Step 3; the Engine owns evidence normalization and candidate construction.",
-        8.0,
-        theme.muted_foreground,
-    );
-
     let fusion_mode = app_core::fusion_mode(&stored.definition);
-    lane.spawn(Node {
-        width: percent(100),
-        column_gap: px(6),
-        row_gap: px(6),
-        flex_wrap: FlexWrap::Wrap,
-        ..default()
-    })
-    .with_children(|modes| {
-        let algorithm_selected = fusion_mode == app_core::FusionModeV1::Algorithm;
-        action_button(
-            modes,
-            font.clone(),
-            theme,
-            if algorithm_selected {
-                "✓ Algorithm".to_string()
-            } else {
-                "Algorithm".to_string()
-            },
-            UiAction::from(AnalysisCommand::SetWorkflowParameter(
-                "evidence_fusion".to_string(),
-                "fusion_mode".to_string(),
-                serde_json::Value::String("algorithm".to_string()),
-            )),
-        );
+    let algorithm_selected = fusion_mode == app_core::FusionModeV1::Algorithm;
+    let ai_selected = fusion_mode == app_core::FusionModeV1::AiJudgment;
+    let ai_available = adapter_readiness == FusionAdapterReadinessUi::Usable;
+    let selected_label = if algorithm_selected {
+        "Algorithm"
+    } else {
+        "AI judgment"
+    };
 
-        let ai_selected = fusion_mode == app_core::FusionModeV1::AiJudgment;
-        if adapter_readiness == FusionAdapterReadinessUi::Usable {
-            action_button(
-                modes,
-                font.clone(),
-                theme,
-                ai_mode_label(ai_selected, adapter_readiness),
-                UiAction::from(AnalysisCommand::SetWorkflowParameter(
-                    "evidence_fusion".to_string(),
-                    "fusion_mode".to_string(),
-                    serde_json::Value::String("ai".to_string()),
-                )),
-            );
-        } else {
-            disabled_action_button(
-                modes,
-                font.clone(),
-                theme,
-                ai_mode_label(ai_selected, adapter_readiness),
-            );
-        }
-    });
-
-    if fusion_mode == app_core::FusionModeV1::AiJudgment {
-        let readiness = match adapter_readiness {
-            FusionAdapterReadinessUi::Usable => {
-                "The verified adapter will select only from the Engine's real candidate pool."
-            }
-            FusionAdapterReadinessUi::Checking => {
-                "Saved AI mode is selected, but analysis is blocked while adapter status is checked."
-            }
-            FusionAdapterReadinessUi::Missing => {
-                "Saved AI mode is selected, but analysis is blocked until an adapter is configured."
-            }
-            FusionAdapterReadinessUi::Unusable => {
-                "Saved AI mode is selected, but analysis is blocked because the adapter is unusable."
-            }
-            FusionAdapterReadinessUi::StatusError => {
-                "Saved AI mode is selected, but analysis is blocked because adapter status is unavailable."
-            }
-        };
-        spawn_wrapped_text(lane, font.clone(), readiness, 8.0, theme.editor_warning);
+    lane.spawn((
+        Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(px(10)),
+            row_gap: px(8),
+            border: UiRect::all(px(1)),
+            border_radius: studio_card_radius(),
+            ..default()
+        },
+        BackgroundColor(theme.card.with_alpha(0.2)),
+        BorderColor::all(theme.border.with_alpha(0.38)),
+    ))
+    .with_children(|card| {
+        card.spawn(Node {
+            width: percent(100),
+            min_width: px(0),
+            align_items: AlignItems::Center,
+            column_gap: px(8),
+            ..default()
+        })
+        .with_children(|header| {
+            header.spawn(Node {
+                min_width: px(0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(2),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(
+                    copy,
+                    font.clone(),
+                    "STEP 4 · FINAL FUSION",
+                    6.8,
+                    theme.muted_foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    "Final decision mode",
+                    10.5,
+                    theme.foreground,
+                );
+            });
+            header
+                .spawn((
+                    Node {
+                        min_height: px(22),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(px(8), px(3)),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(theme.primary.with_alpha(0.1)),
+                    BorderColor::all(theme.primary.with_alpha(0.3)),
+                ))
+                .with_children(|badge| {
+                    spawn_text(badge, font.clone(), selected_label, 7.0, theme.primary);
+                });
+        });
         spawn_wrapped_text(
-            lane,
+            card,
             font.clone(),
-            "Candidate metadata and canonical lyrics may be sent to its external AI provider; no source audio or project files are included. Any adapter, provider, timeout, cancellation, or validation failure stops analysis without Algorithm fallback.",
-            8.0,
-            theme.editor_warning,
+            "Choose only how the final path is selected. Configure expert participation in Step 3; the Engine owns evidence normalization and candidate construction.",
+            7.4,
+            theme.muted_foreground,
         );
-    }
 
-    spawn_wrapped_text(
-        lane,
-        font.clone(),
-        format!("Configured evidence · {}", evidence_summary(stored, true)),
-        8.0,
-        theme.primary,
-    );
-    spawn_wrapped_text(
-        lane,
-        font.clone(),
-        format!("Potential evidence · {}", evidence_summary(stored, false)),
-        8.0,
-        theme.muted_foreground,
-    );
-    spawn_wrapped_text(
-        lane,
-        font,
-        "Evidence normalization -> candidate construction -> final path selection -> canonical singing track",
-        8.0,
-        theme.muted_foreground,
-    );
+        card.spawn(Node {
+            width: percent(100),
+            min_width: px(0),
+            column_gap: px(6),
+            row_gap: px(6),
+            flex_wrap: FlexWrap::Wrap,
+            ..default()
+        })
+        .with_children(|modes| {
+            spawn_mode_choice(
+                modes,
+                font.clone(),
+                theme,
+                FusionModeChoice {
+                    title: "Algorithm",
+                    detail: "Deterministic Engine candidate-path selection.",
+                    selected: algorithm_selected,
+                    available: true,
+                    action: UiAction::from(AnalysisCommand::SetWorkflowParameter(
+                        "evidence_fusion".to_string(),
+                        "fusion_mode".to_string(),
+                        serde_json::Value::String("algorithm".to_string()),
+                    )),
+                },
+            );
+            spawn_mode_choice(
+                modes,
+                font.clone(),
+                theme,
+                FusionModeChoice {
+                    title: "AI judgment",
+                    detail: match adapter_readiness {
+                        FusionAdapterReadinessUi::Usable => "Verified adapter is available.",
+                        FusionAdapterReadinessUi::Checking => "Checking local adapter status.",
+                        FusionAdapterReadinessUi::Missing => {
+                            "Configure an adapter in Models & runtime."
+                        }
+                        FusionAdapterReadinessUi::Unusable => {
+                            "Configured adapter is not currently usable."
+                        }
+                        FusionAdapterReadinessUi::StatusError => {
+                            "Adapter status is currently unavailable."
+                        }
+                    },
+                    selected: ai_selected,
+                    available: ai_available,
+                    action: UiAction::from(AnalysisCommand::SetWorkflowParameter(
+                        "evidence_fusion".to_string(),
+                        "fusion_mode".to_string(),
+                        serde_json::Value::String("ai".to_string()),
+                    )),
+                },
+            );
+        });
+
+        if ai_selected {
+            let readiness = match adapter_readiness {
+                FusionAdapterReadinessUi::Usable => {
+                    "The verified adapter will select only from the Engine's real candidate pool."
+                }
+                FusionAdapterReadinessUi::Checking => {
+                    "Saved AI mode is selected, but analysis is blocked while adapter status is checked."
+                }
+                FusionAdapterReadinessUi::Missing => {
+                    "Saved AI mode is selected, but analysis is blocked until an adapter is configured."
+                }
+                FusionAdapterReadinessUi::Unusable => {
+                    "Saved AI mode is selected, but analysis is blocked because the adapter is unusable."
+                }
+                FusionAdapterReadinessUi::StatusError => {
+                    "Saved AI mode is selected, but analysis is blocked because adapter status is unavailable."
+                }
+            };
+            card.spawn((
+                Node {
+                    width: percent(100),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(px(8)),
+                    row_gap: px(4),
+                    border: UiRect::all(px(1)),
+                    border_radius: studio_card_radius(),
+                    ..default()
+                },
+                BackgroundColor(theme.editor_warning.with_alpha(0.055)),
+                BorderColor::all(theme.editor_warning.with_alpha(0.28)),
+            ))
+            .with_children(|warning| {
+                spawn_wrapped_text(
+                    warning,
+                    font.clone(),
+                    readiness,
+                    7.4,
+                    theme.editor_warning,
+                );
+                spawn_wrapped_text(
+                    warning,
+                    font.clone(),
+                    "Candidate metadata and canonical lyrics may be sent to its external AI provider; no source audio or project files are included. Any adapter, provider, timeout, cancellation, or validation failure stops analysis without Algorithm fallback.",
+                    6.8,
+                    theme.muted_foreground,
+                );
+            });
+        }
+
+        card.spawn(Node {
+            width: percent(100),
+            min_width: px(0),
+            column_gap: px(6),
+            row_gap: px(6),
+            flex_wrap: FlexWrap::Wrap,
+            ..default()
+        })
+        .with_children(|evidence| {
+            for (label, value, color) in [
+                (
+                    "Configured evidence",
+                    evidence_summary(stored, true),
+                    theme.primary,
+                ),
+                (
+                    "Potential evidence",
+                    evidence_summary(stored, false),
+                    theme.muted_foreground,
+                ),
+            ] {
+                evidence
+                    .spawn((
+                        Node {
+                            min_width: px(112),
+                            flex_basis: px(142),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(px(7)),
+                            row_gap: px(2),
+                            border: UiRect::all(px(1)),
+                            border_radius: studio_card_radius(),
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.16)),
+                        BorderColor::all(theme.border.with_alpha(0.3)),
+                    ))
+                    .with_children(|fact| {
+                        spawn_text(
+                            fact,
+                            font.clone(),
+                            label,
+                            6.4,
+                            theme.muted_foreground,
+                        );
+                        spawn_wrapped_text(fact, font.clone(), value, 7.2, color);
+                    });
+            }
+        });
+        spawn_wrapped_text(
+            card,
+            font,
+            "Evidence normalization -> candidate construction -> final path selection -> canonical singing track",
+            6.8,
+            theme.muted_foreground,
+        );
+    });
 }

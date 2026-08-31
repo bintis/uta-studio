@@ -33,8 +33,31 @@ fn processing_cards_report_typed_condition_not_resource_readiness() {
 fn preprocessing_lane_exposes_one_master_bypass_for_all_optional_processors() {
     let source = include_str!("mod.rs");
     assert!(source.contains("SetWorkflowPreprocessingEnabled"));
-    assert!(source.contains("Turn Lead isolation, dereverb + denoise off"));
-    assert!(source.contains("Turn Lead isolation, dereverb + denoise on"));
+    assert!(source.contains("Optional cleanup"));
+    assert!(source.contains("Lead isolation, denoise and dereverb share this quick switch"));
+}
+
+#[test]
+fn stage_footers_name_real_handoffs_without_inventing_readiness_metrics() {
+    let source = include_str!("mod.rs");
+    for required in [
+        "Vocal + Instrumental audio",
+        "Canonical lyrics + word timing",
+        "Pitch, boundary, technique + acoustic evidence",
+        "Candidate singing track",
+        "confirmed in Plan Preview",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing truthful stage handoff: {required}"
+        );
+    }
+    for forbidden in ["readiness percentage", "success rate", "CPU usage"] {
+        assert!(
+            !source.contains(forbidden),
+            "fabricated metric copy remains: {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -91,8 +114,10 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     );
     let mod_source = include_str!("mod.rs");
     let node_card_source = include_str!("node_card.rs");
+    let fusion_source = include_str!("stage_fusion.rs");
     assert!(node_card_source.contains("SetWorkflowSeparationStrategy"));
-    assert!(mod_source.contains("04 · FINAL FUSION"));
+    assert!(mod_source.contains("Fusion & output"));
+    assert!(fusion_source.contains("STEP 4 · FINAL FUSION"));
     assert!(!mod_source.contains("04 · ENGINE FUSION POLICY"));
     assert!(!node_card_source.contains("04 · ENGINE FUSION POLICY"));
     assert!(!mod_source.contains("Choose typed ownership among evidence enabled in stage 03"));
