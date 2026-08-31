@@ -680,6 +680,7 @@ pub(crate) fn spawn_processing_studio(
                                 flex_grow: lane_weight,
                                 flex_shrink: 1.0,
                                 align_self: AlignSelf::Stretch,
+                                position_type: PositionType::Relative,
                                 flex_direction: FlexDirection::Column,
                                 padding: UiRect::all(px(9)),
                                 row_gap: px(8),
