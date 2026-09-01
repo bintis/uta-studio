@@ -38,6 +38,10 @@ pub struct AppConfig {
     /// and applies this preference through rendered pixel alpha.
     #[serde(default)]
     pub window_transparency: Option<bool>,
+    /// Background opacity applied while `window_transparency` is on, as a
+    /// percent of fully opaque. Has no effect when transparency is off.
+    #[serde(default)]
+    pub window_opacity_percent: Option<u32>,
     /// Native acceleration preference. Production still uses only validated
     /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
@@ -97,6 +101,7 @@ impl Default for AppConfig {
             fullscreen: None,
             dark_mode: None,
             window_transparency: None,
+            window_opacity_percent: None,
             compute_backend: None,
             default_device_class: None,
             model_backend_overrides: BTreeMap::new(),
@@ -242,6 +247,10 @@ impl AppConfig {
 
     pub fn font_scale_percent(&self) -> u32 {
         self.font_scale_percent.unwrap_or(100).clamp(80, 140)
+    }
+
+    pub fn window_opacity_percent(&self) -> u32 {
+        self.window_opacity_percent.unwrap_or(90).clamp(30, 100)
     }
 
     pub fn font_scale(&self) -> f32 {

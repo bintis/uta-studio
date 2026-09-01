@@ -35,9 +35,494 @@ fn analysis_profile_summary(
     )
 }
 
+fn spawn_song_hero_fact(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &'static str,
+    value: impl Into<String>,
+    accent: Color,
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(132),
+                flex_basis: px(158),
+                flex_grow: 1.0,
+                min_height: px(54),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::axes(px(12), px(8)),
+                row_gap: px(3),
+                overflow: Overflow::clip(),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.24)),
+            BorderColor::all(theme.border.with_alpha(0.38)),
+        ))
+        .with_children(|fact| {
+            spawn_text(fact, font.clone(), label, 7.0, theme.muted_foreground);
+            spawn_bounded_wrapped_text(fact, font, value, 9.5, accent);
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_song_next_step(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    icon: UiIcon,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    action_label: impl Into<String>,
+    action: UiAction,
+    accent: Color,
+) {
+    let title = title.into();
+    let detail = detail.into();
+    let action_label = action_label.into();
+    parent
+        .spawn((
+            Node {
+                min_width: px(236),
+                flex_basis: px(272),
+                flex_grow: 0.55,
+                min_height: px(160),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(14)),
+                row_gap: px(9),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            BackgroundColor(accent.with_alpha(0.08)),
+            BorderColor::all(accent.with_alpha(0.34)),
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::Center,
+                    column_gap: px(10),
+                    ..default()
+                })
+                .with_children(|header| {
+                    header
+                        .spawn((
+                            Node {
+                                width: px(36),
+                                height: px(36),
+                                flex_shrink: 0.0,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(9)),
+                                ..default()
+                            },
+                            BackgroundColor(accent.with_alpha(0.12)),
+                            BorderColor::all(accent.with_alpha(0.26)),
+                        ))
+                        .with_children(|slot| spawn_icon(slot, icons, icon, 17.0, accent));
+                    header
+                        .spawn(Node {
+                            min_width: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(2),
+                            ..default()
+                        })
+                        .with_children(|copy| {
+                            spawn_text(copy, font.clone(), "NEXT STEP", 7.0, accent);
+                            spawn_bounded_wrapped_text(
+                                copy,
+                                font.clone(),
+                                title,
+                                14.0,
+                                theme.foreground,
+                            );
+                        });
+                });
+            spawn_wrapped_text(panel, font.clone(), detail, 8.8, theme.muted_foreground);
+            panel.spawn(Node {
+                min_height: px(2),
+                flex_grow: 1.0,
+                ..default()
+            });
+            panel
+                .spawn(Node {
+                    width: percent(100),
+                    ..default()
+                })
+                .with_children(|actions| {
+                    spawn_compact_primary_action_button(actions, font, theme, action_label, action);
+                });
+        });
+}
+
+fn spawn_song_workspace_intro(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(58),
+                align_items: AlignItems::Center,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: px(12),
+                row_gap: px(8),
+                padding: UiRect::axes(px(4), px(8)),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.34)),
+        ))
+        .with_children(|intro| {
+            intro
+                .spawn(Node {
+                    min_width: px(260),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(2),
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_text(copy, font.clone(), "SONG WORKSPACE", 7.5, theme.primary);
+                    spawn_text(
+                        copy,
+                        font.clone(),
+                        "Production tools",
+                        16.0,
+                        theme.foreground,
+                    );
+                    spawn_wrapped_text(
+                        copy,
+                        font.clone(),
+                        "Analysis, lyrics, pitch, chart authoring and exports are grouped by task.",
+                        8.5,
+                        theme.muted_foreground,
+                    );
+                });
+            spawn_status_pill(
+                intro,
+                font,
+                "Source media is read-only",
+                theme.muted_foreground,
+            );
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_song_detail_hero(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    local_images: &mut LocalImages,
+    session: &StudioSessionView<'_>,
+    theme: &StudioTheme,
+    song: &Song,
+) {
+    let cover = album_art_handle(song, asset_server, images, local_images);
+    let current = session.library_playback.file_hash.as_deref() == Some(song.file_hash.as_str())
+        && session.library_playback.status.loaded;
+    let playing = current && session.library_playback.status.playing;
+    let play_action = if current {
+        UiAction::from(LibraryCommand::ToggleLibraryPlayback)
+    } else {
+        UiAction::from(LibraryCommand::PlayLibrarySong(song.file_hash.clone()))
+    };
+    let (primary_label, primary_action) = song_analysis_action(song);
+    let analysis_label = if song.is_analyzed {
+        "Analysis complete"
+    } else {
+        "Analysis needed"
+    };
+    let analysis_color = if song.is_analyzed {
+        theme.pitch_contour
+    } else {
+        theme.editor_warning
+    };
+    let chart_label = if song.authoring_ready {
+        "Chart ready"
+    } else if song.editor_ready {
+        "Candidate ready"
+    } else {
+        "Chart incomplete"
+    };
+    let chart_color = if song.authoring_ready || song.editor_ready {
+        theme.primary
+    } else {
+        theme.muted_foreground
+    };
+    let subtitle = if song.album.is_empty() {
+        song.artist.clone()
+    } else {
+        format!("{} · {}", song.artist, song.album)
+    };
+    let transcript = song
+        .transcript_source
+        .as_ref()
+        .map(|source| format!("{source:?}"))
+        .unwrap_or_else(|| "Not available".to_string());
+    let media_format = song
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("media")
+        .to_ascii_uppercase();
+    let media = format!(
+        "{} · {media_format}",
+        if song.is_video { "Video" } else { "Audio" }
+    );
+    let key = song
+        .override_key
+        .as_ref()
+        .or(song.key.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "Unknown key".to_string());
+    let (next_title, next_detail, next_icon, next_accent) = if primary_label
+        == "View processing queue"
+    {
+        (
+            "Analysis is running",
+            "Open the processing queue to review the active stage, progress and runtime details.",
+            UiIcon::Sparkles,
+            theme.primary,
+        )
+    } else if song.authoring_ready {
+        (
+            "Ready to edit & export",
+            "The authored chart is ready for detailed editing, validation and project export.",
+            UiIcon::Scissors,
+            theme.pitch_contour,
+        )
+    } else if song.editor_ready {
+        (
+            "Review the candidate chart",
+            "Open the editor to inspect timing, lyrics and notes before publishing an authored chart.",
+            UiIcon::Scissors,
+            theme.primary,
+        )
+    } else if song.is_analyzed {
+        (
+            "Continue the production path",
+            "Analysis evidence exists, but the chart is not ready yet. Queue another run or inspect the workflow.",
+            UiIcon::Sparkles,
+            theme.editor_warning,
+        )
+    } else {
+        (
+            "Analyze this song",
+            "Generate lyrics, timing, pitch and candidate-chart evidence while keeping the source file unchanged.",
+            UiIcon::Sparkles,
+            theme.primary,
+        )
+    };
+
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(18)),
+                row_gap: px(14),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.62)),
+            BorderColor::all(theme.primary.with_alpha(0.24)),
+            studio_card_shadow(theme),
+        ))
+        .with_children(|hero| {
+            hero.spawn(Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                align_items: AlignItems::Stretch,
+                column_gap: px(18),
+                row_gap: px(14),
+                ..default()
+            })
+            .with_children(|top| {
+                top.spawn((
+                    Node {
+                        width: px(158),
+                        height: px(158),
+                        flex_shrink: 0.0,
+                        overflow: Overflow::clip(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(14)),
+                        ..default()
+                    },
+                    ImageNode::new(cover),
+                    BorderColor::all(theme.border.with_alpha(0.86)),
+                    studio_card_shadow(theme),
+                ));
+
+                top.spawn(Node {
+                    min_width: px(260),
+                    flex_basis: px(346),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::Center,
+                    row_gap: px(8),
+                    ..default()
+                })
+                .with_children(|copy| {
+                    copy.spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(7),
+                        row_gap: px(6),
+                        ..default()
+                    })
+                    .with_children(|status| {
+                        spawn_text(status, font.clone(), "SONG", 7.5, theme.primary);
+                        spawn_status_pill(status, font.clone(), analysis_label, analysis_color);
+                        spawn_status_pill(status, font.clone(), chart_label, chart_color);
+                    });
+                    spawn_bounded_wrapped_text(
+                        copy,
+                        font.clone(),
+                        song.title.clone(),
+                        27.0,
+                        theme.foreground,
+                    );
+                    spawn_bounded_wrapped_text(
+                        copy,
+                        font.clone(),
+                        subtitle,
+                        12.5,
+                        theme.muted_foreground,
+                    );
+                    copy.spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(8),
+                        row_gap: px(8),
+                        ..default()
+                    })
+                    .with_children(|actions| {
+                        spawn_toolbar_button(
+                            actions,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            if playing { UiIcon::Pause } else { UiIcon::Play },
+                            if playing { "Pause" } else { "Play" },
+                            play_action,
+                            false,
+                        );
+                        spawn_toolbar_button(
+                            actions,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::Sparkles,
+                            "Workflow",
+                            UiAction::from(AnalysisCommand::OpenProcessingStudio(
+                                song.file_hash.clone(),
+                            )),
+                            false,
+                        );
+                        spawn_toolbar_button(
+                            actions,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::Settings,
+                            "Settings",
+                            UiAction::from(EditorCommand::OpenSongSettings(song.file_hash.clone())),
+                            false,
+                        );
+                    });
+                });
+
+                spawn_song_next_step(
+                    top,
+                    font.clone(),
+                    icons,
+                    theme,
+                    next_icon,
+                    next_title,
+                    next_detail,
+                    primary_label,
+                    primary_action,
+                    next_accent,
+                );
+            });
+
+            hero.spawn((
+                Node {
+                    width: percent(100),
+                    flex_wrap: FlexWrap::Wrap,
+                    padding: UiRect::top(px(14)),
+                    column_gap: px(8),
+                    row_gap: px(8),
+                    border: UiRect::top(px(1)),
+                    ..default()
+                },
+                BorderColor::all(theme.border.with_alpha(0.34)),
+            ))
+            .with_children(|facts| {
+                spawn_song_hero_fact(
+                    facts,
+                    font.clone(),
+                    theme,
+                    "DURATION",
+                    format_duration(song.duration_secs),
+                    theme.foreground,
+                );
+                spawn_song_hero_fact(
+                    facts,
+                    font.clone(),
+                    theme,
+                    "SOURCE",
+                    media,
+                    theme.foreground,
+                );
+                spawn_song_hero_fact(
+                    facts,
+                    font.clone(),
+                    theme,
+                    "LYRICS",
+                    transcript,
+                    if song.transcript_source.is_some() {
+                        theme.pitch_contour
+                    } else {
+                        theme.muted_foreground
+                    },
+                );
+                spawn_song_hero_fact(
+                    facts,
+                    font,
+                    theme,
+                    "KEY / SPEED",
+                    format!("{key} · {:.1}×", song.tempo),
+                    theme.foreground,
+                );
+            });
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_song_detail(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    icons: Handle<Image>,
+    asset_server: &AssetServer,
+    images: &mut Assets<Image>,
+    local_images: &mut LocalImages,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
@@ -53,25 +538,43 @@ pub(crate) fn spawn_song_detail(
                 ..default()
             })
             .with_children(|empty| {
+                empty
+                    .spawn((
+                        Node {
+                            width: px(68),
+                            height: px(68),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::MAX,
+                            margin: UiRect::bottom(px(4)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.primary.with_alpha(0.10)),
+                        BorderColor::all(theme.primary.with_alpha(0.32)),
+                    ))
+                    .with_children(|icon| {
+                        spawn_icon(icon, icons.clone(), UiIcon::Music, 28.0, theme.primary);
+                    });
                 spawn_text(
                     empty,
                     font.clone(),
-                    "Choose a song first",
+                    "Choose a song to open its workspace",
                     22.0,
                     theme.foreground,
                 );
                 spawn_wrapped_text(
                     empty,
                     font.clone(),
-                    "Open a track from the library to see its song workspace.",
+                    "Select a track from the library to review its analysis, edit lyrics and chart data, or export a project.",
                     11.0,
                     theme.muted_foreground,
                 );
-                spawn_action_button(
+                spawn_compact_primary_action_button(
                     empty,
                     font,
                     theme,
-                    "Back to library",
+                    "Browse library",
                     UiAction::from(AppCommand::Home),
                 );
             });
@@ -98,17 +601,30 @@ pub(crate) fn spawn_song_detail(
                     min_height: px(0),
                     flex_grow: 1.0,
                     flex_direction: FlexDirection::Column,
-                    padding: UiRect::axes(px(32), px(14)),
+                    padding: UiRect::axes(px(22), px(16)),
                     row_gap: px(16),
                     ..default()
                 })
                 .with_children(|body| {
+                    spawn_song_detail_hero(
+                        body,
+                        font.clone(),
+                        icons.clone(),
+                        asset_server,
+                        images,
+                        local_images,
+                        session,
+                        theme,
+                        &song,
+                    );
+                    spawn_song_workspace_intro(body, font.clone(), theme);
                     body.spawn(Node {
                         width: percent(100),
                         flex_direction: FlexDirection::Row,
                         flex_wrap: FlexWrap::Wrap,
-                        column_gap: px(18),
-                        row_gap: px(18),
+                        align_items: AlignItems::FlexStart,
+                        column_gap: px(16),
+                        row_gap: px(16),
                         ..default()
                     })
                     .with_children(|columns| {
@@ -131,13 +647,13 @@ pub(crate) fn spawn_song_detail(
                         // gating, just each with its own bordered card so
                         // the sections are independently legible and can
                         // reflow in the wrap layout.
-                        spawn_song_detail_section_card(columns, theme, 360.0, |overview| {
+                        spawn_song_detail_section_card(columns, theme, 400.0, |overview| {
                             spawn_detail_heading_with_action(
                                 overview,
                                 font.clone(),
                                 theme,
                                 "OVERVIEW",
-                                "Track information",
+                                "Technical details",
                                 Some((
                                     "Settings",
                                     UiAction::from(EditorCommand::OpenSongSettings(
@@ -145,13 +661,29 @@ pub(crate) fn spawn_song_detail(
                                     )),
                                 )),
                             );
-                            for (label, value) in song_overview_rows(&song) {
+                            for (label, value) in song_overview_rows(&song)
+                                .into_iter()
+                                .filter(|(label, _)| {
+                                    matches!(
+                                        *label,
+                                        "Language"
+                                            | "Last successful run"
+                                            | "Candidate availability"
+                                            | "Chart issues"
+                                            | "Detected key"
+                                            | "Musical BPM"
+                                            | "Extra descriptors"
+                                            | "Vocal / instrumental stems"
+                                            | "Pitch evidence"
+                                    )
+                                })
+                            {
                                 spawn_detail_value(overview, font.clone(), theme, label, value);
                             }
                             spawn_source_file_row(overview, font.clone(), theme, &song.path);
                         });
 
-                        spawn_song_detail_section_card(columns, theme, 420.0, |analysis| {
+                        spawn_song_detail_section_card(columns, theme, 500.0, |analysis| {
                             spawn_detail_heading_with_action(
                                 analysis,
                                 font.clone(),
@@ -170,7 +702,7 @@ pub(crate) fn spawn_song_detail(
                             for (label, value) in song_analysis_summary_rows(&song) {
                                 spawn_detail_value(analysis, font.clone(), theme, label, value);
                             }
-                            spawn_setting_row(
+                            spawn_song_detail_action_row(
                                 analysis,
                                 font.clone(),
                                 theme,
@@ -187,7 +719,7 @@ pub(crate) fn spawn_song_detail(
                                     )),
                                 )),
                             );
-                            spawn_setting_row(
+                            spawn_song_detail_action_row(
                                 analysis,
                                 font.clone(),
                                 theme,
@@ -197,7 +729,7 @@ pub(crate) fn spawn_song_detail(
                             );
                             let song_profile =
                                 app_core::get_song_analysis_profile(&song.file_hash);
-                            spawn_setting_row(
+                            spawn_song_detail_action_row(
                                 analysis,
                                 font.clone(),
                                 theme,
@@ -222,7 +754,7 @@ pub(crate) fn spawn_song_detail(
                                     app_core::CandidateChartStatus::CandidateAvailable(_)
                                 )
                             {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     analysis,
                                     font.clone(),
                                     theme,
@@ -238,7 +770,7 @@ pub(crate) fn spawn_song_detail(
                             }
                         });
 
-                        spawn_song_detail_section_card(columns, theme, 420.0, |lyrics| {
+                        spawn_song_detail_section_card(columns, theme, 400.0, |lyrics| {
                             spawn_detail_heading(
                                 lyrics,
                                 font.clone(),
@@ -246,7 +778,7 @@ pub(crate) fn spawn_song_detail(
                                 "LYRICS & TIMING",
                                 "Lyrics & timing",
                             );
-                            spawn_setting_row(
+                            spawn_song_detail_action_row(
                                 lyrics,
                                 font.clone(),
                                 theme,
@@ -262,7 +794,7 @@ pub(crate) fn spawn_song_detail(
                                 },
                             );
                             if native_source {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     lyrics,
                                     font.clone(),
                                     theme,
@@ -279,7 +811,7 @@ pub(crate) fn spawn_song_detail(
                             }
                         });
 
-                        spawn_song_detail_section_card(columns, theme, 420.0, |audio| {
+                        spawn_song_detail_section_card(columns, theme, 400.0, |audio| {
                             spawn_detail_heading(
                                 audio,
                                 font.clone(),
@@ -293,7 +825,7 @@ pub(crate) fn spawn_song_detail(
                                 // -- this row shifts the Detected Key by
                                 // semitones (Key Transpose), never the
                                 // detected musical BPM.
-                                spawn_shift_setting_row(
+                                spawn_song_detail_shift_row(
                                     audio,
                                     font.clone(),
                                     theme,
@@ -316,7 +848,7 @@ pub(crate) fn spawn_song_detail(
                                 // the detected Musical BPM (shown in Song
                                 // Settings) -- kept explicitly out of
                                 // "Tempo"/"BPM" territory.
-                                spawn_shift_setting_row(
+                                spawn_song_detail_shift_row(
                                     audio,
                                     font.clone(),
                                     theme,
@@ -327,7 +859,7 @@ pub(crate) fn spawn_song_detail(
                                     UiAction::from(EditorCommand::ShiftSongTempo(song.file_hash.clone(), 1)),
                                 );
                             } else {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     audio,
                                     font.clone(),
                                     theme,
@@ -343,7 +875,7 @@ pub(crate) fn spawn_song_detail(
                         // Export now lives with the rest of this song's
                         // authoring controls (phase plan §8.2's "Authoring &
                         // Export" section).
-                        spawn_song_detail_section_card(columns, theme, 430.0, |authoring| {
+                        spawn_song_detail_section_card(columns, theme, 500.0, |authoring| {
                             spawn_detail_heading(
                                 authoring,
                                 font.clone(),
@@ -351,7 +883,7 @@ pub(crate) fn spawn_song_detail(
                                 "AUTHORING",
                                 "Authoring & export",
                             );
-                            spawn_setting_row(
+                            spawn_song_detail_action_row(
                                 authoring,
                                 font.clone(),
                                 theme,
@@ -374,7 +906,7 @@ pub(crate) fn spawn_song_detail(
                                 app_core::candidate_chart_status(&song.file_hash),
                                 app_core::CandidateChartStatus::NotAuthoredYet
                             ) {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     authoring,
                                     font.clone(),
                                     theme,
@@ -391,7 +923,7 @@ pub(crate) fn spawn_song_detail(
                                 );
                             }
                             if song.authoring_ready {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     authoring,
                                     font.clone(),
                                     theme,
@@ -402,7 +934,7 @@ pub(crate) fn spawn_song_detail(
                                         UiAction::from(LibraryCommand::ExportUtz(song.file_hash.clone())),
                                     )),
                                 );
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     authoring,
                                     font.clone(),
                                     theme,
@@ -414,7 +946,7 @@ pub(crate) fn spawn_song_detail(
                                     )),
                                 );
                             } else {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     authoring,
                                     font.clone(),
                                     theme,
@@ -425,7 +957,7 @@ pub(crate) fn spawn_song_detail(
                             }
                         });
 
-                        spawn_song_detail_section_card(columns, theme, 380.0, |history| {
+                        spawn_song_detail_section_card(columns, theme, 400.0, |history| {
                             spawn_detail_heading(
                                 history,
                                 font.clone(),
@@ -434,7 +966,7 @@ pub(crate) fn spawn_song_detail(
                                 "Artifacts & history",
                             );
                             if analyzed_and_native {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     history,
                                     font.clone(),
                                     theme,
@@ -446,7 +978,7 @@ pub(crate) fn spawn_song_detail(
                                     )),
                                 );
                             } else {
-                                spawn_setting_row(
+                                spawn_song_detail_action_row(
                                     history,
                                     font.clone(),
                                     theme,

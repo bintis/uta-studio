@@ -58,9 +58,9 @@ mod worker_tasks;
 mod workflow_execution;
 use output_guard::OutputRunGuard;
 use runtime_route::{
-    caller_transcript, cancelled, execution_device, fingerprint_request, line_anchors_for_lyrics,
-    openvino_backend, request_lyrics_text, resource_provenance, roformer_backend,
-    roformer_component,
+    caller_transcript, cancelled, execution_device, fingerprint_request,
+    ggml_vulkan_device_class, line_anchors_for_lyrics, openvino_backend, request_lyrics_text,
+    resource_provenance, roformer_backend, roformer_component,
 };
 use worker_tasks::{run_native_task, typed_worker_output};
 use workflow_execution::*;
@@ -380,21 +380,35 @@ impl AnalysisEngine {
             });
         }
         if has_capability(&plan, "audio.extract_vocals") {
-            let model = resolved_model(&resolved, "bs_roformer_leap_xe90_vocals")?;
-            let output = run_openvino_vocals(
-                &DenoiseTask {
-                    model_path: &model.model_path,
-                    executable: &model.runtime_executable,
-                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                    backend: roformer_backend(model)?,
-                    ffmpeg: &ffmpeg,
-                    input: &primary.path,
-                    output_root: &output_root,
-                    source_duration,
-                    task_id: &format!("{}-extract-vocals", request.request_id),
-                },
-                cancellation,
-            )?;
+            // Defaults to Leap XE90 when no compiled workflow is present
+            // (e.g. legacy direct requests); a real compiled workflow always
+            // carries an explicit provider via `provider_preferences`.
+            let vocal_provider = workflow
+                .as_ref()
+                .and_then(|workflow| workflow.model_for_engine_capability("audio.extract_vocals"))
+                .unwrap_or("bs_roformer_leap_xe90_vocals");
+            let model = resolved_model(&resolved, vocal_provider)?;
+            let backend = roformer_backend(model)?;
+            let task = DenoiseTask {
+                model_path: &model.model_path,
+                executable: &model.runtime_executable,
+                runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                backend,
+                device_class: ggml_vulkan_device_class(
+                    backend,
+                    request.execution_policy.requested_device_for(&model.model_id),
+                ),
+                ffmpeg: &ffmpeg,
+                input: &primary.path,
+                output_root: &output_root,
+                source_duration,
+                task_id: &format!("{}-extract-vocals", request.request_id),
+            };
+            let output = if vocal_provider == "bs_polarformer_public_instrumental" {
+                run_openvino_polarformer_vocals(&task, cancellation)?
+            } else {
+                run_openvino_vocals(&task, cancellation)?
+            };
             analysis_input = output_root.join(&output.artifact.path);
             guide_vocal_profile =
                 Some(decode_audio(&ffmpeg, "guide_vocals", &analysis_input)?.profile);
@@ -420,12 +434,17 @@ impl AnalysisEngine {
         }
         if has_capability(&plan, "audio.lead_isolate") {
             let model = resolved_model(&resolved, "melband_roformer_harmony")?;
+            let backend = roformer_backend(model)?;
             let output = run_openvino_harmony(
                 &DenoiseTask {
                     model_path: &model.model_path,
                     executable: &model.runtime_executable,
                     runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                    backend: roformer_backend(model)?,
+                    backend,
+                    device_class: ggml_vulkan_device_class(
+                        backend,
+                        request.execution_policy.requested_device_for(&model.model_id),
+                    ),
                     ffmpeg: &ffmpeg,
                     input: &analysis_input,
                     output_root: &output_root,
@@ -465,21 +484,37 @@ impl AnalysisEngine {
             }
         }
         if has_capability(&plan, "audio.extract_instrumental") {
-            let model = resolved_model(&resolved, "bs_polarformer_public_instrumental")?;
-            let output = run_openvino_instrumental(
-                &DenoiseTask {
-                    model_path: &model.model_path,
-                    executable: &model.runtime_executable,
-                    runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                    backend: roformer_backend(model)?,
-                    ffmpeg: &ffmpeg,
-                    input: &primary.path,
-                    output_root: &output_root,
-                    source_duration,
-                    task_id: &format!("{}-instrumental", request.request_id),
-                },
-                cancellation,
-            )?;
+            // Defaults to PolarFormer when no compiled workflow is present
+            // (e.g. legacy direct requests); a real compiled workflow always
+            // carries an explicit provider via `provider_preferences`.
+            let instrumental_provider = workflow
+                .as_ref()
+                .and_then(|workflow| {
+                    workflow.model_for_engine_capability("audio.extract_instrumental")
+                })
+                .unwrap_or("bs_polarformer_public_instrumental");
+            let model = resolved_model(&resolved, instrumental_provider)?;
+            let backend = roformer_backend(model)?;
+            let task = DenoiseTask {
+                model_path: &model.model_path,
+                executable: &model.runtime_executable,
+                runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
+                backend,
+                device_class: ggml_vulkan_device_class(
+                    backend,
+                    request.execution_policy.requested_device_for(&model.model_id),
+                ),
+                ffmpeg: &ffmpeg,
+                input: &primary.path,
+                output_root: &output_root,
+                source_duration,
+                task_id: &format!("{}-instrumental", request.request_id),
+            };
+            let output = if instrumental_provider == "melband_roformer_inst_v2" {
+                run_openvino_inst_v2(&task, cancellation)?
+            } else {
+                run_openvino_instrumental(&task, cancellation)?
+            };
             let path = output_root.join(&output.artifact.path);
             instrumental_audio = Some(decode_audio(&ffmpeg, "instrumental", &path)?);
             record_workflow_audio(
@@ -522,11 +557,16 @@ impl AnalysisEngine {
                 request.request_id,
                 workflow_node.as_deref().unwrap_or(capability.as_str())
             );
+            let backend = roformer_backend(model)?;
             let task = DenoiseTask {
                 model_path: &model.model_path,
                 executable: &model.runtime_executable,
                 runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),
-                backend: roformer_backend(model)?,
+                backend,
+                device_class: ggml_vulkan_device_class(
+                    backend,
+                    request.execution_policy.requested_device_for(&model.model_id),
+                ),
                 ffmpeg: &ffmpeg,
                 input: &step_input,
                 output_root: &output_root,

@@ -301,25 +301,21 @@ pub(crate) fn spawn_library_header_toolbar(
             false,
         );
     }
-    spawn_library_filter_select(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        LibrarySelectKind::Status,
-        session,
-    );
-    spawn_export_all_menu(parent, font.clone(), icons.clone(), theme, session);
-    spawn_toolbar_button(
-        parent,
-        font.clone(),
-        icons.clone(),
-        theme,
-        UiIcon::Sparkles,
-        "Analyze all",
-        UiAction::from(LibraryCommand::AnalyzeAll),
-        false,
-    );
+    if session.library_view == LibraryView::Completed {
+        spawn_export_all_menu(parent, font.clone(), icons.clone(), theme, session);
+    }
+    if session.library_view == LibraryView::Queue {
+        spawn_toolbar_button(
+            parent,
+            font.clone(),
+            icons.clone(),
+            theme,
+            UiIcon::Sparkles,
+            "Analyze all",
+            UiAction::from(LibraryCommand::AnalyzeAll),
+            false,
+        );
+    }
     spawn_toolbar_button(
         parent,
         font,
@@ -410,7 +406,7 @@ pub(crate) fn spawn_library(
                         return;
                     }
                     if !grid {
-                        spawn_song_header(list, font.clone(), theme);
+                        spawn_song_header(list, font.clone(), theme, session);
                     }
                     for song in &session.songs.processed {
                         let cover = album_art_handle(song, asset_server, images, local_images);

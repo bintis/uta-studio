@@ -16,6 +16,12 @@ pub struct LibraryMenuFilters {
     pub transcript_source: Option<String>,
     #[serde(default)]
     pub search: Option<String>,
+    /// One of "artist", "album", "time", "status"; any other value (or
+    /// `None`) falls back to the default artist/title order.
+    #[serde(default)]
+    pub sort_column: Option<String>,
+    #[serde(default)]
+    pub sort_descending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

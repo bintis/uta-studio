@@ -1317,6 +1317,7 @@ fn uses_legacy_ggml_layout(model_id: &str) -> bool {
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
+            | "bs_polarformer_public_instrumental"
     )
 }
 
@@ -1337,6 +1338,10 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
         "melband_roformer_harmony" => Some((
             "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
             457_008_736,
+        )),
+        "bs_polarformer_public_instrumental" => Some((
+            "f5e40ac0dc7487a0c2ccb247e5b948cd6f2c7aaf46a2994023606e1e800ed2c1",
+            204_237_408,
         )),
         _ => None,
     }
@@ -1512,6 +1517,32 @@ mod tests {
         );
         let resolved = manager
             .resolve_model("melband_roformer_inst_v2", RuntimePolicy::Benchmark)
+            .unwrap();
+        assert_eq!(resolved.backend, NativeBackend::Vulkan);
+    }
+
+    #[test]
+    fn polarformer_pinned_ggml_route_resolves_from_the_flat_ggml_models_directory() {
+        let fixture = Fixture::new();
+        let catalog = ResourceCatalog::default_catalog().unwrap();
+        let ggml_root = fixture.root.join("ggml-models");
+        let model_dir = ggml_root.join("bs_polarformer_public_instrumental");
+        fs::create_dir_all(&model_dir).unwrap();
+        let model = fs::File::create(model_dir.join("model-fp16.gguf")).unwrap();
+        model.set_len(204_237_408).unwrap();
+        let worker = fixture.write_executable("ggml-worker");
+        let manager = RuntimeManager::new(
+            catalog,
+            StorePaths::default()
+                .with_store_root(&fixture.root)
+                .with_ggml_models_root(ggml_root)
+                .with_runtime_override("ggml_vulkan_v1", worker),
+        );
+        let resolved = manager
+            .resolve_model(
+                "bs_polarformer_public_instrumental",
+                RuntimePolicy::Production,
+            )
             .unwrap();
         assert_eq!(resolved.backend, NativeBackend::Vulkan);
     }

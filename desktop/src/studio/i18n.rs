@@ -264,6 +264,7 @@ pub(crate) enum UiMessage {
     CacheRecalculating,
     CacheStatsFailed,
     FolderReadFailed,
+    #[allow(dead_code)]
     WatchedLocations,
     LogMissing,
     TranscriptPreviewFailed,

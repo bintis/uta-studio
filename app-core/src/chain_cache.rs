@@ -10,11 +10,15 @@
 //! cache unit here, gated on both of their `skip_if_unchanged` boxes
 //! agreeing with whichever of them the workflow actually has enabled.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis_artifact::{compute_native_config_hash, load_active_artifact};
+use crate::analysis_artifact::{
+    ArtifactRevision, ArtifactStore, compute_native_config_hash, load_active_artifact,
+    record_artifact_revision, set_active_artifact_revision,
+};
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::backend_cli::AudioRoleWireV1;
 use crate::workflow::{ExecutionPolicy, WorkflowDefinition, WorkflowNodeInstance};
@@ -261,6 +265,240 @@ pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioR
     roles
 }
 
+/// Whether `this_node`'s own output is the *last* word in the cleanup pair
+/// -- i.e. nothing routes it onward into `other_node`. Denoise and dereverb
+/// can be wired in either order (the default workflow runs denoise then
+/// dereverb, but a workflow can reverse that), and only the one nothing
+/// else consumes produces the real, final `clean_lead_vocal` this cache
+/// unit represents; the other's own output is just that stage's
+/// intermediate input. `other_node: None` (the other stage doesn't exist
+/// in this workflow at all) trivially makes `this_node` the last stage.
+fn is_last_cleanup_stage(
+    workflow: &WorkflowDefinition,
+    this_node: &WorkflowNodeInstance,
+    other_node: Option<&WorkflowNodeInstance>,
+) -> bool {
+    match other_node {
+        None => true,
+        Some(other) => !workflow.edges.iter().any(|edge| {
+            edge.from.node == this_node.instance_id && edge.to.node == other.instance_id
+        }),
+    }
+}
+
+/// The active, non-invalidated revision's own content hash -- the same
+/// "what actually fed the next stage" identity `plan_chain_cache` threads
+/// through `chain_input_hash` above, just read back live instead of
+/// computed ahead of a request. Relies on this module's own persist calls
+/// already having kept `kind`'s revision current earlier in this same run
+/// (separation before isolate, isolate before cleanup): each downstream
+/// stage's own artifact event only ever arrives once its upstream native
+/// worker has already finished, and this module persists every stage the
+/// instant its own artifact event fires -- so by the time a later stage is
+/// asked about, its upstream's revision is guaranteed already recorded.
+fn active_content_hash(file_hash: &str, kind: ArtifactKind) -> Option<String> {
+    load_active_artifact(file_hash, kind)
+        .filter(|revision| !revision.invalidated)
+        .map(|revision| revision.content_hash)
+}
+
+fn finalize_and_persist_stem(
+    cache_root: &Path,
+    file_hash: &str,
+    kind: ArtifactKind,
+    node_id: &str,
+    fingerprint: String,
+    source: &Path,
+) {
+    let Ok(store) = ArtifactStore::new(cache_root) else {
+        return;
+    };
+    let Ok((path, content_hash, byte_size)) = store.capture(file_hash, kind, source) else {
+        return;
+    };
+    let revision = ArtifactRevision {
+        id: format!(
+            "{file_hash}:{}:{content_hash}",
+            serde_json::to_string(&kind).unwrap_or_else(|_| format!("{kind:?}"))
+        ),
+        file_hash: file_hash.to_string(),
+        kind,
+        path,
+        content_hash,
+        producer_node: AnalysisNodeId::new(node_id),
+        input_revisions: Vec::new(),
+        config_hash: fingerprint,
+        algorithm_version: format!("chain-cache-v1/app-{}", env!("CARGO_PKG_VERSION")),
+        created_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+        byte_size,
+        active: false,
+        legacy: false,
+        invalidated: false,
+    };
+    if record_artifact_revision(&revision).is_ok() {
+        let _ = set_active_artifact_revision(cache_root, file_hash, kind, &revision.id);
+    }
+}
+
+/// Persists a Step 1 audio-chain stem as soon as its own native worker task
+/// succeeds, independent of whether the run's *later* stages ultimately
+/// fail. This is what actually makes `skip_if_unchanged` useful for a song
+/// whose workflow keeps failing on some downstream stage (ASR, forced
+/// alignment, ...): before this, a stem only ever got recorded as a
+/// reusable revision by `validate_and_publish_engine_result`, which only
+/// ever runs for a *complete* Ok/OkDegraded result -- so any run that later
+/// failed lost this stage's real, valid, already-paid-for output and had to
+/// redo it from scratch on every retry, no matter how many times it had
+/// already succeeded. Called live, from the lifecycle event the Engine
+/// emits the moment a worker reports this exact output (see
+/// `analysis-engine`'s `LifecycleNodeGuard::artifact_with_path`).
+///
+/// Covers the whole Step 1 chain: separation's two stems (`guide_vocals`,
+/// `instrumental`, fingerprinted from `file_hash` alone -- see
+/// `plan_chain_cache` above), lead-isolate's `lead_vocal` (fingerprinted
+/// from separation's own active revision), and cleanup's combined
+/// `clean_lead_vocal`/`dereverbed_vocal` (fingerprinted from whichever of
+/// isolate's or separation's active revision fed it, and only for whichever
+/// of denoise/dereverb is this workflow's actual terminal stage --
+/// `is_last_cleanup_stage`). Each downstream stage reads its upstream
+/// identity from `active_content_hash`, which this same function keeps
+/// current as artifacts arrive in pipeline order within one run.
+///
+/// Silently does nothing for a semantic name this cache doesn't handle, a
+/// disabled/opted-out node, an upstream identity that isn't recorded yet,
+/// or a `source` this cache can't read/capture -- this must never turn an
+/// otherwise-successful worker output into a failed run merely because
+/// caching it hit a snag.
+pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str, source: &Path) {
+    let Ok(stored_workflow) = crate::workflow::load_song_workflow(file_hash) else {
+        return;
+    };
+    let workflow = &stored_workflow.definition;
+    match artifact {
+        "guide_vocals" | "instrumental" => {
+            let Some(separation_node) = find_node(workflow, "audio.separate_vocal_bgm") else {
+                return;
+            };
+            if separation_node.execution_policy == ExecutionPolicy::Disabled
+                || !separation_node.skip_if_unchanged
+            {
+                return;
+            }
+            let (kind, node_id) = if artifact == "guide_vocals" {
+                (ArtifactKind::VocalStem, "vocal_bgm_split")
+            } else {
+                (ArtifactKind::InstrumentalStem, "vocal_bgm_split_instrumental")
+            };
+            let fingerprint = compute_native_config_hash(
+                &AnalysisNodeId::new(node_id),
+                "audio.separate_vocal_bgm",
+                &normalized_parameters(separation_node),
+                &[file_hash],
+                separation_node.model_id.as_deref(),
+                None,
+            );
+            finalize_and_persist_stem(cache_root, file_hash, kind, node_id, fingerprint, source);
+        }
+        "lead_vocal" => {
+            let Some(isolate_node) = find_node(workflow, "audio.lead_isolate") else {
+                return;
+            };
+            if isolate_node.execution_policy == ExecutionPolicy::Disabled
+                || !isolate_node.skip_if_unchanged
+            {
+                return;
+            }
+            let Some(chain_input_hash) = active_content_hash(file_hash, ArtifactKind::VocalStem)
+            else {
+                return;
+            };
+            let fingerprint = compute_native_config_hash(
+                &AnalysisNodeId::new("lead_isolate"),
+                "audio.lead_isolate",
+                &normalized_parameters(isolate_node),
+                &[&chain_input_hash],
+                isolate_node.model_id.as_deref(),
+                None,
+            );
+            finalize_and_persist_stem(
+                cache_root,
+                file_hash,
+                ArtifactKind::AnalysisVocalStem,
+                "lead_isolate",
+                fingerprint,
+                source,
+            );
+        }
+        "clean_lead_vocal" | "dereverbed_vocal" => {
+            let denoise_node = find_node(workflow, "audio.denoise");
+            let dereverb_node = find_node(workflow, "audio.dereverb");
+            let denoise_enabled = enabled(denoise_node);
+            let dereverb_enabled = enabled(dereverb_node);
+            let is_terminal_stage = match artifact {
+                "clean_lead_vocal" if denoise_enabled => is_last_cleanup_stage(
+                    workflow,
+                    denoise_node.expect("enabled() only true when Some"),
+                    dereverb_node.filter(|_| dereverb_enabled),
+                ),
+                "dereverbed_vocal" if dereverb_enabled => is_last_cleanup_stage(
+                    workflow,
+                    dereverb_node.expect("enabled() only true when Some"),
+                    denoise_node.filter(|_| denoise_enabled),
+                ),
+                _ => false,
+            };
+            if !is_terminal_stage {
+                return;
+            }
+            let denoise_ready =
+                !denoise_enabled || denoise_node.is_some_and(|node| node.skip_if_unchanged);
+            let dereverb_ready =
+                !dereverb_enabled || dereverb_node.is_some_and(|node| node.skip_if_unchanged);
+            if !denoise_ready || !dereverb_ready {
+                return;
+            }
+            let isolate_node = find_node(workflow, "audio.lead_isolate");
+            let chain_input_kind = if enabled(isolate_node) {
+                ArtifactKind::AnalysisVocalStem
+            } else {
+                ArtifactKind::VocalStem
+            };
+            let Some(chain_input_hash) = active_content_hash(file_hash, chain_input_kind) else {
+                return;
+            };
+            let cleanup_recipe = serde_json::to_string(&(
+                denoise_enabled
+                    .then(|| denoise_node.map(normalized_parameters))
+                    .flatten(),
+                dereverb_enabled
+                    .then(|| dereverb_node.map(normalized_parameters))
+                    .flatten(),
+            ))
+            .unwrap_or_default();
+            let fingerprint = compute_native_config_hash(
+                &AnalysisNodeId::new("cleanup"),
+                "audio.denoise+audio.dereverb",
+                &cleanup_recipe,
+                &[&chain_input_hash],
+                None,
+                None,
+            );
+            finalize_and_persist_stem(
+                cache_root,
+                file_hash,
+                ArtifactKind::DereverbedVocalStem,
+                "cleanup",
+                fingerprint,
+                source,
+            );
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +590,133 @@ mod tests {
             decision.source_path,
             Some(std::path::PathBuf::from("vocal-1.flac"))
         );
+    }
+
+    #[test]
+    fn a_live_artifact_event_makes_separation_reusable_on_the_very_next_plan() {
+        // The whole point: a stem the worker just produced becomes a real,
+        // matching cached revision *without* the run it came from ever
+        // reaching a complete result manifest -- exactly the case a later,
+        // unrelated stage (ASR, forced alignment, ...) failing must not be
+        // allowed to erase.
+        let root = temp_root("live-persist");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        let file_hash = "song-live-persist";
+        let mut workflow = default_workflow(file_hash);
+        workflow.nodes[1].skip_if_unchanged = true;
+        crate::workflow::save_song_workflow(
+            file_hash,
+            workflow.clone(),
+            crate::workflow::WorkflowLayout::default(),
+        )
+        .unwrap();
+
+        let source = root.join("guide-vocals.flac");
+        std::fs::write(&source, b"fake vocal stem bytes").unwrap();
+        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source);
+
+        let revision = load_active_artifact(file_hash, ArtifactKind::VocalStem)
+            .expect("the live event must have published a matching revision");
+        assert!(!revision.invalidated);
+        assert_eq!(
+            revision.config_hash,
+            plan_chain_cache(file_hash, &workflow)
+                .fingerprints
+                .separation
+                .unwrap(),
+            "the persisted fingerprint must match what a future plan looks up"
+        );
+
+        let decision = plan_chain_cache(file_hash, &workflow);
+        assert_eq!(decision.role, AudioRoleWireV1::GuideVocals);
+        assert_eq!(decision.source_path, Some(revision.path));
+    }
+
+    #[test]
+    fn live_events_persist_the_whole_chain_and_only_the_workflows_real_terminal_cleanup_stage() {
+        // Default workflow order is denoise -> dereverb (see
+        // `default_definition.rs`'s own `vocal_tail` comment), so dereverb's
+        // own artifact is the real, final `clean_lead_vocal`; denoise's own
+        // artifact is an intermediate step in this order and must not be
+        // cached under the combined cleanup identity.
+        let root = temp_root("live-persist-full-chain");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        let file_hash = "song-live-persist-full-chain";
+        let mut workflow = default_workflow(file_hash);
+        workflow.nodes[1].skip_if_unchanged = true; // separation
+        workflow.nodes[2].execution_policy = ExecutionPolicy::Always; // lead_isolate
+        workflow.nodes[2].skip_if_unchanged = true;
+        workflow.nodes[3].execution_policy = ExecutionPolicy::Always; // denoise
+        workflow.nodes[3].skip_if_unchanged = true;
+        workflow.nodes[4].execution_policy = ExecutionPolicy::Always; // dereverb
+        workflow.nodes[4].skip_if_unchanged = true;
+        crate::workflow::save_song_workflow(
+            file_hash,
+            workflow.clone(),
+            crate::workflow::WorkflowLayout::default(),
+        )
+        .unwrap();
+
+        let write = |artifact: &str, name: &str| {
+            let source = root.join(format!("{name}.flac"));
+            std::fs::write(&source, format!("bytes for {name}")).unwrap();
+            persist_cacheable_stem(&root, file_hash, artifact, &source);
+        };
+        write("guide_vocals", "guide-vocals");
+        write("lead_vocal", "lead-vocal");
+        // Wrong order for this workflow: must be silently ignored.
+        write("clean_lead_vocal", "denoise-intermediate");
+        write("dereverbed_vocal", "dereverb-final");
+
+        assert!(
+            load_active_artifact(file_hash, ArtifactKind::VocalStem).is_some(),
+            "separation must be cached"
+        );
+        let isolate_revision = load_active_artifact(file_hash, ArtifactKind::AnalysisVocalStem)
+            .expect("lead-isolate must be cached");
+        let cleanup_revision = load_active_artifact(file_hash, ArtifactKind::DereverbedVocalStem)
+            .expect("dereverb's own output must be cached as the real cleanup result");
+
+        assert_eq!(
+            isolate_revision.config_hash,
+            plan_chain_cache(file_hash, &workflow)
+                .fingerprints
+                .isolate
+                .unwrap()
+        );
+        // `clean_lead_vocal` (denoise, not the terminal stage in this
+        // order) must not have overwritten the real cleanup revision with
+        // its own intermediate bytes. `ArtifactStore::capture` names files
+        // by content hash, not by source filename, so compare bytes.
+        assert_eq!(
+            std::fs::read_to_string(&cleanup_revision.path).unwrap(),
+            "bytes for dereverb-final"
+        );
+
+        let decision = plan_chain_cache(file_hash, &workflow);
+        assert_eq!(decision.role, AudioRoleWireV1::CleanLeadVocal);
+        assert_eq!(decision.source_path, Some(cleanup_revision.path));
+    }
+
+    #[test]
+    fn a_live_artifact_event_does_nothing_for_an_opted_out_node() {
+        let root = temp_root("live-opt-out");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        let file_hash = "song-live-opt-out";
+        let mut workflow = default_workflow(file_hash);
+        workflow.nodes[1].skip_if_unchanged = false;
+        crate::workflow::save_song_workflow(
+            file_hash,
+            workflow,
+            crate::workflow::WorkflowLayout::default(),
+        )
+        .unwrap();
+
+        let source = root.join("guide-vocals.flac");
+        std::fs::write(&source, b"fake vocal stem bytes").unwrap();
+        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source);
+
+        assert!(load_active_artifact(file_hash, ArtifactKind::VocalStem).is_none());
     }
 
     #[test]

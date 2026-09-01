@@ -25,15 +25,67 @@ fn model_path(config: &serde_json::Value) -> Result<PathBuf, String> {
         .ok_or_else(|| "GGML task requires Runtime Manager-resolved config.model_path".to_string())
 }
 
-fn vulkan_device(config: &serde_json::Value) -> Result<u32, String> {
-    let device = config
-        .get("vulkan_device")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    u32::try_from(device)
-        .ok()
-        .filter(|device| *device <= 255)
-        .ok_or_else(|| "GGML Vulkan device index is invalid".to_string())
+#[derive(serde::Deserialize)]
+struct VulkanDeviceEntry {
+    index: u32,
+    name: String,
+    kind: String,
+}
+
+/// Queries the engine binary's own `--list-vulkan-devices` for the physical
+/// devices it can see, in the same ICD-defined order `ggml_backend_vk_init`
+/// addresses by index -- this is the only place that order is exposed, since
+/// ggml-vulkan.h has no device-type query.
+fn list_vulkan_devices(engine: &Path) -> Result<Vec<VulkanDeviceEntry>, String> {
+    let output = Command::new(engine)
+        .arg("--list-vulkan-devices")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not list GGML Vulkan devices: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "GGML Vulkan device enumeration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("GGML Vulkan device list is invalid: {error}"))
+}
+
+fn resolve_device_class(devices: &[VulkanDeviceEntry], device_class: &str) -> Result<u32, String> {
+    devices
+        .iter()
+        .find(|device| device.kind == device_class)
+        .map(|device| device.index)
+        .ok_or_else(|| {
+            let available = devices
+                .iter()
+                .map(|device| format!("{} ({})", device.name, device.kind))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "no Vulkan {device_class} device is available; found: {}",
+                if available.is_empty() { "none" } else { &available }
+            )
+        })
+}
+
+/// `vulkan_device` in config is an explicit numeric override and always wins.
+/// Otherwise `device_class` ("gpu" / "integrated_gpu", from the Settings
+/// device-class preference) resolves to the first physical device of that
+/// class; with neither key, device 0 is unchanged prior behavior.
+fn vulkan_device(config: &serde_json::Value, engine: &Path) -> Result<u32, String> {
+    if let Some(device) = config.get("vulkan_device").and_then(serde_json::Value::as_u64) {
+        return u32::try_from(device)
+            .ok()
+            .filter(|device| *device <= 255)
+            .ok_or_else(|| "GGML Vulkan device index is invalid".to_string());
+    }
+    let Some(device_class) = config.get("device_class").and_then(serde_json::Value::as_str)
+    else {
+        return Ok(0);
+    };
+    resolve_device_class(&list_vulkan_devices(engine)?, device_class)
 }
 
 fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), String> {
@@ -43,6 +95,20 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
     let semantic = config
         .get("semantic_output")
         .and_then(serde_json::Value::as_str);
+    // PolarFormer's single trained stem is vocals (config.yaml's
+    // `training.target_instrument: vocals`); "instrumental" is a derived
+    // mix-minus-vocals residual computed in `run()` below. Both roles are
+    // legitimate, real outputs of the same native invocation, so this model
+    // accepts either semantic_output rather than exactly one.
+    if model_id == "bs_polarformer_public_instrumental" {
+        return if matches!(semantic, Some("instrumental") | Some("guide_vocals")) {
+            Ok(())
+        } else {
+            Err(format!(
+                "GGML {model_id} task requires semantic_output=instrumental or guide_vocals"
+            ))
+        };
+    }
     let expected = match model_id {
         "bs_roformer_leap_xe90_vocals" => "guide_vocals",
         "melband_roformer_inst_v2" => "instrumental",
@@ -82,24 +148,45 @@ fn prepend_library_path(
     Ok(())
 }
 
-fn output_name(model_id: &str) -> &'static str {
+fn polarformer_is_vocal_mode(config: &serde_json::Value) -> bool {
+    config
+        .get("semantic_output")
+        .and_then(serde_json::Value::as_str)
+        == Some("guide_vocals")
+}
+
+fn output_name(model_id: &str, config: &serde_json::Value) -> &'static str {
     match model_id {
         "bs_roformer_leap_xe90_vocals" => "guide-vocals.flac",
         "melband_roformer_inst_v2" => "instrumental.flac",
         "melband_roformer_denoise_aufr33" => "clean-lead-vocal.flac",
         "melband_roformer_dereverb_anvuew" => "noreverb-vocal.flac",
         "melband_roformer_harmony" => "lead-vocal.flac",
+        "bs_polarformer_public_instrumental" => {
+            if polarformer_is_vocal_mode(config) {
+                "guide-vocals.flac"
+            } else {
+                "instrumental.flac"
+            }
+        }
         _ => unreachable!("validated model id"),
     }
 }
 
-fn artifact_name(model_id: &str) -> &'static str {
+fn artifact_name(model_id: &str, config: &serde_json::Value) -> &'static str {
     match model_id {
         "bs_roformer_leap_xe90_vocals" => "guide_vocals",
         "melband_roformer_inst_v2" => "instrumental",
         "melband_roformer_denoise_aufr33" => "clean_lead_vocal",
         "melband_roformer_dereverb_anvuew" => "dereverbed_vocal",
         "melband_roformer_harmony" => "lead_vocal",
+        "bs_polarformer_public_instrumental" => {
+            if polarformer_is_vocal_mode(config) {
+                "guide_vocals"
+            } else {
+                "instrumental"
+            }
+        }
         _ => unreachable!("validated model id"),
     }
 }
@@ -180,7 +267,7 @@ pub fn run(
         &model,
         &input,
         &engine_output,
-        vulkan_device(config)?,
+        vulkan_device(config, &validated_runtime.engine)?,
     );
     #[cfg(target_os = "linux")]
     prepend_library_path(
@@ -246,11 +333,30 @@ pub fn run(
     }
 
     progress(0.92, "Atomically encoding lossless GGML output", None);
-    let destination = output_dir.join(output_name(model_id));
+    let destination = output_dir.join(output_name(model_id, config));
     let result = (|| {
-        audio::encode_flac(&engine_output, &destination)?;
+        if model_id == "bs_polarformer_public_instrumental" && !polarformer_is_vocal_mode(config) {
+            // The checkpoint's single trained stem is vocals
+            // (config.yaml's `training.target_instrument: vocals`) --
+            // verified against real output: the raw engine stem is clean
+            // lead vocal, not instrumental, matching this repository's
+            // existing mix-minus-vocals convention for deriving an
+            // instrumental/residual role (see melband_roformer_harmony's
+            // vocal-residual below). "Instrumental" for this model is the
+            // mixture with that vocal estimate subtracted out; the raw
+            // engine stem is published as-is when guide_vocals was
+            // requested instead (see the `else` branch).
+            audio::encode_residual_flac(
+                &input,
+                &engine_output,
+                &destination,
+                "PolarFormer instrumental residual",
+            )?;
+        } else {
+            audio::encode_flac(&engine_output, &destination)?;
+        }
         let mut published = vec![PublishedOutput {
-            artifact: artifact_name(model_id),
+            artifact: artifact_name(model_id, config),
             path: destination.clone(),
         }];
         if model_id == "melband_roformer_harmony" {
@@ -337,6 +443,45 @@ mod tests {
     }
 
     #[test]
+    fn vulkan_device_explicit_override_wins_over_device_class() {
+        assert_eq!(
+            vulkan_device(
+                &serde_json::json!({"vulkan_device": 3, "device_class": "integrated_gpu"}),
+                Path::new("unused-engine")
+            ),
+            Ok(3)
+        );
+    }
+
+    #[test]
+    fn vulkan_device_defaults_to_zero_without_any_override() {
+        assert_eq!(
+            vulkan_device(&serde_json::json!({}), Path::new("unused-engine")),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn resolve_device_class_picks_the_first_matching_physical_device() {
+        let devices = [
+            VulkanDeviceEntry {
+                index: 0,
+                name: "Intel(R) Arc(tm) B580 Graphics".to_string(),
+                kind: "gpu".to_string(),
+            },
+            VulkanDeviceEntry {
+                index: 1,
+                name: "AMD Radeon 780M Graphics".to_string(),
+                kind: "integrated_gpu".to_string(),
+            },
+        ];
+        assert_eq!(resolve_device_class(&devices, "gpu"), Ok(0));
+        assert_eq!(resolve_device_class(&devices, "integrated_gpu"), Ok(1));
+        assert!(resolve_device_class(&devices, "cpu").is_err());
+        assert!(resolve_device_class(&[], "gpu").is_err());
+    }
+
+    #[test]
     fn engine_diagnostics_keep_the_failure_tail() {
         let mut input = vec![b'x'; MAX_ENGINE_STDERR_BYTES + 32];
         input.extend_from_slice(b"final write failure");
@@ -405,6 +550,39 @@ mod tests {
                     "backend":"ggml_vulkan",
                     "input_semantics":"all_vocals",
                     "semantic_output":"lead_vocal+backing_vocal"
+                })
+            )
+            .is_err()
+        );
+        assert!(
+            validate_semantics(
+                "bs_polarformer_public_instrumental",
+                &serde_json::json!({
+                    "backend":"ggml_vulkan",
+                    "semantic_output":"instrumental"
+                })
+            )
+            .is_ok()
+        );
+        // PolarFormer's single trained stem is vocals; "instrumental" is a
+        // derived mix-minus-vocals residual computed in `run()`. Both are
+        // real, selectable outputs of the same native invocation.
+        assert!(
+            validate_semantics(
+                "bs_polarformer_public_instrumental",
+                &serde_json::json!({
+                    "backend":"ggml_vulkan",
+                    "semantic_output":"guide_vocals"
+                })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_semantics(
+                "bs_polarformer_public_instrumental",
+                &serde_json::json!({
+                    "backend":"ggml_vulkan",
+                    "semantic_output":"dry"
                 })
             )
             .is_err()

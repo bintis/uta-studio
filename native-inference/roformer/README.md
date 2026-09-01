@@ -70,7 +70,19 @@ Vulkan submission failures from host-side pipeline concurrency.
 
 `--chunk-size`, `--overlap`, `--batch-size`, and `--vulkan-device` are runtime
 arguments. Vulkan device defaults to 0. Effective values are written to the
-durable log before model initialization. Batch size is fixed to one on the
+durable log before model initialization.
+
+`--list-vulkan-devices` prints a JSON array of `{index, name, kind}` (`kind`
+is `gpu`, `integrated_gpu`, `cpu`, or `other`, from `VkPhysicalDeviceType`) and
+exits; it needs no model, input, or output argument. It enumerates through the
+CLI's own minimal Vulkan instance rather than ggml's, since `ggml-vulkan.h`
+exposes a device count and name but not a type. `uta-ggml-worker` calls this
+to turn a Settings device-class preference (GPU / Integrated GPU) into the
+`--vulkan-device` index for the matching physical adapter, letting a multi-GPU
+host route a model away from a specific adapter's known driver issues (like
+the Arc B580 failures below) without disabling that adapter system-wide.
+
+Batch size is fixed to one on the
 current runtime: a 12-second batch-two smoke produced the same WAV as batch one,
 but a sustained batch-two run enlarged the compute buffer from 623,780,352 to
 1,857,807,360 bytes and hard-reset the Arc B580 host at 60.4%. A second batch-two

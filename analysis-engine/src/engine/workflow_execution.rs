@@ -15,6 +15,10 @@ pub(super) struct DenoiseTask<'a> {
     pub(super) executable: &'a Path,
     pub(super) runtime_recipe_digest: Option<&'a str>,
     pub(super) backend: &'a str,
+    /// Resolved Settings device-class preference ("gpu" / "integrated_gpu"),
+    /// already filtered to `None` unless `backend == "ggml_vulkan"` by
+    /// `ggml_vulkan_device_class`. `None` keeps today's implicit device 0.
+    pub(super) device_class: Option<&'static str>,
     pub(super) ffmpeg: &'a Path,
     pub(super) input: &'a Path,
     pub(super) output_root: &'a Path,
@@ -667,6 +671,53 @@ pub(super) fn run_openvino_instrumental(
     )
 }
 
+/// MelBand-RoFormer Inst V2, retained as a selectable instrumental
+/// alternative to PolarFormer (Task 23 policy: PolarFormer is not chosen as
+/// instrumental truth solely by qualification).
+pub(super) fn run_openvino_inst_v2(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "melband_roformer_inst_v2",
+            role: crate::contract::AudioRole::Instrumental,
+            node_id: "audio.extract_instrumental",
+            presentation_node_id: None,
+            semantic_output: "instrumental",
+            artifact: "instrumental",
+            worker_directory: "worker/instrumental",
+            destination: "stems/instrumental.flac",
+        },
+        cancellation,
+    )
+}
+
+/// PolarFormer's raw trained stem is vocals (config.yaml's
+/// `training.target_instrument: vocals`); this publishes that stem directly
+/// as GuideVocals rather than the mix-minus-vocals residual that
+/// `run_openvino_instrumental` derives from the same underlying invocation.
+pub(super) fn run_openvino_polarformer_vocals(
+    task: &DenoiseTask<'_>,
+    cancellation: &CancellationToken,
+) -> EngineResult<SeparationOutput> {
+    run_openvino_cleanup(
+        task,
+        &CleanupSpec {
+            model_id: "bs_polarformer_public_instrumental",
+            role: crate::contract::AudioRole::GuideVocals,
+            node_id: "audio.extract_vocals",
+            presentation_node_id: None,
+            semantic_output: "guide_vocals",
+            artifact: "guide_vocals",
+            worker_directory: "worker/guide-vocals",
+            destination: "stems/guide_vocals.flac",
+        },
+        cancellation,
+    )
+}
+
 pub(super) fn run_openvino_harmony(
     task: &DenoiseTask<'_>,
     cancellation: &CancellationToken,
@@ -685,12 +736,18 @@ pub(super) fn run_openvino_harmony(
             model_id: "melband_roformer_harmony".to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
-            config: serde_json::json!({
-                "model_path": task.model_path,
-                "backend": task.backend,
-                "input_semantics": "all_vocals",
-                "semantic_output": "lead_vocal+backing_vocal_residual"
-            }),
+            config: {
+                let mut config = serde_json::json!({
+                    "model_path": task.model_path,
+                    "backend": task.backend,
+                    "input_semantics": "all_vocals",
+                    "semantic_output": "lead_vocal+backing_vocal_residual"
+                });
+                if let Some(device_class) = task.device_class {
+                    config["device_class"] = serde_json::Value::from(device_class);
+                }
+                config
+            },
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,

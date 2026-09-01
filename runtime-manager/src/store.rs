@@ -131,7 +131,8 @@ impl StorePaths {
             "melband_roformer_harmony" => "melband_roformer_karaoke_aufr33_viperx",
             "melband_roformer_inst_v2"
             | "melband_roformer_denoise_aufr33"
-            | "melband_roformer_dereverb_anvuew" => model_id,
+            | "melband_roformer_dereverb_anvuew"
+            | "bs_polarformer_public_instrumental" => model_id,
             _ => return None,
         };
         self.ggml_models_root

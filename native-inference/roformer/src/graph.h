@@ -59,6 +59,12 @@ public:
     bool HasFinalNorm() const { return has_final_norm_; }
     bool GetTransformerNormOutput() const { return transformer_norm_output_; }
 
+    // PoPE (Polar Positional Embedding) support -- BS-PolarFormer replaces
+    // RoPE with PoPE inside the public-schema attention blocks. See
+    // graph.cpp's `ApplyPopeInplace` for the exact math, reverse-engineered
+    // from the reference bs_polarformer ONNX graph.
+    bool GetUsePope() const { return use_pope_; }
+
     // RoformerRuntime defaults (from GGUF, can be overridden at runtime)
     int GetDefaultChunkSize() const { return default_chunk_size_; }
     int GetDefaultNumOverlap() const { return default_num_overlap_; }
@@ -154,6 +160,7 @@ private:
     // BS Roformer Specific
     std::string architecture_ = "mel_band";
     bool public_bs_schema_ = false;
+    bool use_pope_ = false;
     bool has_final_norm_ = false;            // BS has a global final norm
     bool transformer_norm_output_ = true;    // MelBand=true, BS=false
     int mlp_num_layers_ = 3;                 // Detected from weights (BS=2 for depth=2)

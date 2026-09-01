@@ -396,6 +396,18 @@ pub(crate) fn spawn_general_settings(
                 session.config.window_transparency.unwrap_or(false),
                 UiAction::from(SettingsCommand::ToggleWindowTransparency),
             );
+            if session.config.window_transparency.unwrap_or(false) {
+                spawn_shift_setting_row(
+                    group,
+                    font.clone(),
+                    theme,
+                    "Window opacity",
+                    "How much of the workspace shows through the compositor behind it.",
+                    format!("{}%", session.config.window_opacity_percent()),
+                    UiAction::from(SettingsCommand::AdjustWindowOpacity(-1)),
+                    UiAction::from(SettingsCommand::AdjustWindowOpacity(1)),
+                );
+            }
             spawn_switch_setting_row(
                 group,
                 font.clone(),

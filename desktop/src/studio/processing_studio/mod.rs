@@ -585,7 +585,6 @@ pub(crate) fn spawn_processing_studio(
             Node {
                 min_width: px(0),
                 min_height: px(0),
-                height: percent(100),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(12)),
@@ -605,12 +604,13 @@ pub(crate) fn spawn_processing_studio(
                 )),
                 Node {
                     width: percent(100),
-                    height: percent(100),
                     min_width: px(0),
                     min_height: px(0),
                     flex_grow: 1.0,
                     flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
                     column_gap: px(8),
+                    row_gap: px(8),
                     align_items: AlignItems::Stretch,
                     overflow: Overflow::scroll_y(),
                     ..default()
@@ -633,13 +633,14 @@ pub(crate) fn spawn_processing_studio(
                     .spawn(Node {
                         min_width: px(0),
                         min_height: vh(60.0),
-                        height: percent(100),
-                        flex_basis: px(0),
+                        flex_basis: px(720),
                         flex_grow: 1.0,
                         flex_shrink: 1.0,
                         align_self: AlignSelf::Stretch,
                         flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
                         column_gap: px(8),
+                        row_gap: px(8),
                         align_items: AlignItems::Stretch,
                         ..default()
                     })
@@ -674,9 +675,9 @@ pub(crate) fn spawn_processing_studio(
                     stages
                         .spawn((
                             Node {
-                                min_width: px(0),
-                                min_height: percent(100),
-                                flex_basis: px(0),
+                                min_width: px(210),
+                                min_height: vh(56.0),
+                                flex_basis: px(220),
                                 flex_grow: lane_weight,
                                 flex_shrink: 1.0,
                                 align_self: AlignSelf::Stretch,

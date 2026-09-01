@@ -18,13 +18,21 @@ pub(crate) const UI_FONT_SIZE_MAX_PX: u32 = 18;
 
 pub(crate) const UI_FONT_SIZE_STEP_PX: u32 = 1;
 
+pub(crate) const WINDOW_OPACITY_MIN_PERCENT: u32 = 30;
+
+pub(crate) const WINDOW_OPACITY_MAX_PERCENT: u32 = 100;
+
+pub(crate) const WINDOW_OPACITY_STEP_PERCENT: u32 = 5;
+
 pub(crate) const WORKSPACE_TOP_BAR_MIN_HEIGHT: f32 = 72.0;
-pub(crate) const STUDIO_CARD_RADIUS: f32 = 6.0;
-pub(crate) const STUDIO_CARD_BACKGROUND_ALPHA: f32 = 0.32;
-pub(crate) const STUDIO_CARD_BORDER_ALPHA: f32 = 0.55;
-pub(crate) const STUDIO_CONTROL_HEIGHT: f32 = 32.0;
-pub(crate) const STUDIO_CONTROL_BACKGROUND_ALPHA: f32 = 0.38;
-pub(crate) const STUDIO_CONTROL_BORDER_ALPHA: f32 = 0.44;
+pub(crate) const STUDIO_CARD_RADIUS: f32 = 10.0;
+pub(crate) const STUDIO_CONTROL_RADIUS: f32 = 8.0;
+pub(crate) const STUDIO_POPOVER_RADIUS: f32 = 12.0;
+pub(crate) const STUDIO_CARD_BACKGROUND_ALPHA: f32 = 0.40;
+pub(crate) const STUDIO_CARD_BORDER_ALPHA: f32 = 0.62;
+pub(crate) const STUDIO_CONTROL_HEIGHT: f32 = 36.0;
+pub(crate) const STUDIO_CONTROL_BACKGROUND_ALPHA: f32 = 0.52;
+pub(crate) const STUDIO_CONTROL_BORDER_ALPHA: f32 = 0.56;
 
 pub(crate) static GLOBAL_UI_FONT_SCALE_BITS: AtomicU32 = AtomicU32::new(f32::to_bits(1.0));
 
@@ -110,6 +118,34 @@ pub(crate) fn studio_card_radius() -> BorderRadius {
     BorderRadius::all(px(STUDIO_CARD_RADIUS))
 }
 
+pub(crate) fn studio_control_radius() -> BorderRadius {
+    BorderRadius::all(px(STUDIO_CONTROL_RADIUS))
+}
+
+pub(crate) fn studio_popover_radius() -> BorderRadius {
+    BorderRadius::all(px(STUDIO_POPOVER_RADIUS))
+}
+
+pub(crate) fn studio_card_shadow(theme: &StudioTheme) -> BoxShadow {
+    BoxShadow::new(
+        Color::srgba(0.0, 0.0, 0.0, if theme.dark { 0.22 } else { 0.10 }),
+        px(0),
+        px(10),
+        px(28),
+        px(-12),
+    )
+}
+
+pub(crate) fn studio_popover_shadow(theme: &StudioTheme) -> BoxShadow {
+    BoxShadow::new(
+        Color::srgba(0.0, 0.0, 0.0, if theme.dark { 0.34 } else { 0.16 }),
+        px(0),
+        px(14),
+        px(34),
+        px(-10),
+    )
+}
+
 pub(crate) fn spawn_icon(
     parent: &mut ChildSpawnerCommands,
     atlas: Handle<Image>,
@@ -145,7 +181,7 @@ pub(crate) fn spawn_icon_button(
     let color = if destructive {
         theme.destructive
     } else if active {
-        theme.foreground
+        theme.primary
     } else {
         theme.muted_foreground
     };
@@ -159,11 +195,17 @@ pub(crate) fn spawn_icon_button(
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                border_radius: studio_card_radius(),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
                 ..default()
             },
             BackgroundColor(if active {
-                theme.foreground.with_alpha(0.07)
+                theme.primary.with_alpha(0.12)
+            } else {
+                Color::NONE
+            }),
+            BorderColor::all(if active {
+                theme.primary.with_alpha(0.42)
             } else {
                 Color::NONE
             }),
@@ -251,18 +293,18 @@ pub(crate) fn spawn_toolbar_button(
                 height: px(STUDIO_CONTROL_HEIGHT),
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
-                padding: UiRect::horizontal(px(9)),
-                column_gap: px(6),
+                padding: UiRect::horizontal(px(11)),
+                column_gap: px(7),
                 border: UiRect::all(px(1)),
-                border_radius: studio_card_radius(),
+                border_radius: studio_control_radius(),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+            BackgroundColor(theme.card.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
             BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         ))
         .with_children(|button| {
             spawn_icon(button, atlas, icon, 14.0, color);
-            spawn_text(button, font, label, 9.0, color);
+            spawn_text(button, font, label, 9.5, color);
         });
 }
 
@@ -302,16 +344,16 @@ pub(crate) fn spawn_compact_action_button(
             flex_shrink: 1.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::axes(px(11), px(7)),
+            padding: UiRect::axes(px(12), px(8)),
             border: UiRect::all(px(1)),
-            border_radius: studio_card_radius(),
+            border_radius: studio_control_radius(),
             ..default()
         },
-        BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+        BackgroundColor(theme.card.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
         BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         children![(
             Text::new(label),
-            ui_text_font(font, 9.0),
+            ui_text_font(font, 9.5),
             TextColor(theme.foreground),
             TextLayout {
                 linebreak: bevy::text::LineBreak::WordOrCharacter,
@@ -322,10 +364,8 @@ pub(crate) fn spawn_compact_action_button(
 }
 
 /// A `spawn_compact_action_button` variant reserved for the single primary
-/// action on a page (for example Processing Studio's "Preview run…"). Uses
-/// only a restrained tint/border of `theme.primary`; callers must not apply
-/// this to more than one control at a time or the page loses its single
-/// clear primary action.
+/// action on a page. The solid accent surface gives the page one obvious next
+/// step while secondary controls remain quiet and outlined.
 pub(crate) fn spawn_compact_primary_action_button(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -343,17 +383,17 @@ pub(crate) fn spawn_compact_primary_action_button(
             flex_shrink: 1.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::axes(px(11), px(7)),
+            padding: UiRect::axes(px(13), px(8)),
             border: UiRect::all(px(1)),
-            border_radius: studio_card_radius(),
+            border_radius: studio_control_radius(),
             ..default()
         },
-        BackgroundColor(theme.primary.with_alpha(0.16)),
-        BorderColor::all(theme.primary.with_alpha(0.62)),
+        BackgroundColor(theme.primary.with_alpha(0.92)),
+        BorderColor::all(theme.primary),
         children![(
             Text::new(label),
-            ui_text_font(font, 9.0),
-            TextColor(theme.primary),
+            ui_text_font(font, 9.5),
+            TextColor(theme.primary_foreground),
             TextLayout {
                 linebreak: bevy::text::LineBreak::WordOrCharacter,
                 justify: Justify::Center,
@@ -379,12 +419,12 @@ pub(crate) fn spawn_action_button(
             flex_shrink: 1.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::axes(px(12), px(7)),
+            padding: UiRect::axes(px(13), px(8)),
             border: UiRect::all(px(1)),
-            border_radius: studio_card_radius(),
+            border_radius: studio_control_radius(),
             ..default()
         },
-        BackgroundColor(theme.background.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
+        BackgroundColor(theme.card.with_alpha(STUDIO_CONTROL_BACKGROUND_ALPHA)),
         BorderColor::all(theme.border.with_alpha(STUDIO_CONTROL_BORDER_ALPHA)),
         children![(
             Text::new(label),
@@ -396,6 +436,95 @@ pub(crate) fn spawn_action_button(
             },
         )],
     ));
+}
+
+pub(crate) fn spawn_status_pill(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    label: impl Into<String>,
+    color: Color,
+) {
+    parent.spawn((
+        Node {
+            min_height: px(24),
+            align_items: AlignItems::Center,
+            padding: UiRect::axes(px(9), px(4)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(color.with_alpha(0.10)),
+        BorderColor::all(color.with_alpha(0.34)),
+        children![(
+            Text::new(label),
+            ui_text_font(font, 8.0),
+            TextColor(color),
+            TextLayout::no_wrap(),
+        )],
+    ));
+}
+
+pub(crate) fn spawn_progress_bar(
+    parent: &mut ChildSpawnerCommands,
+    theme: &StudioTheme,
+    progress: usize,
+    accent: Color,
+) {
+    let progress = progress.clamp(0, 100);
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                height: px(7),
+                overflow: Overflow::clip(),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(theme.border.with_alpha(0.34)),
+        ))
+        .with_children(|track| {
+            track.spawn((
+                Node {
+                    width: percent(progress as f32),
+                    min_width: if progress > 0 { px(3) } else { px(0) },
+                    height: percent(100),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(accent),
+            ));
+        });
+}
+
+#[allow(dead_code)]
+pub(crate) fn spawn_metric_tile(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    accent: Color,
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(118),
+                flex_basis: px(150),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(11)),
+                row_gap: px(3),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.34)),
+            BorderColor::all(theme.border.with_alpha(0.44)),
+        ))
+        .with_children(|tile| {
+            spawn_text(tile, font.clone(), label, 7.5, theme.muted_foreground);
+            spawn_bounded_wrapped_text(tile, font, value, 10.0, accent);
+        });
 }
 
 pub(crate) fn spawn_wrapped_text(
@@ -455,6 +584,11 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 }
 
 pub(crate) fn ui_font_scale() -> f32 {
+    if let Ok(value) = std::env::var("UTA_STUDIO_DEBUG_UI_SCALE")
+        && let Ok(scale) = value.parse::<f32>()
+    {
+        return scale.clamp(0.8, 1.4);
+    }
     f32::from_bits(GLOBAL_UI_FONT_SCALE_BITS.load(Ordering::SeqCst))
 }
 
@@ -500,18 +634,18 @@ pub(crate) fn spawn_menu_text_button(
         action,
         Node {
             width: percent(100),
-            min_height: px(28),
+            min_height: px(34),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
-            padding: UiRect::axes(px(8), px(4)),
-            border_radius: BorderRadius::all(px(4)),
+            padding: UiRect::axes(px(10), px(6)),
+            border_radius: BorderRadius::all(px(7)),
             ..default()
         },
         BackgroundColor(Color::NONE),
         children![(
             Text::new(label),
             ui_text_font(font, size),
-            TextColor(theme.sidebar_foreground),
+            TextColor(theme.foreground),
             TextLayout::no_wrap(),
         )],
     ));
@@ -530,19 +664,19 @@ pub(crate) fn spawn_text_button(
         Button,
         action,
         Node {
-            min_width: px(28),
+            min_width: px(32),
             height: px(32),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding: UiRect::horizontal(px(3)),
-            border_radius: BorderRadius::MAX,
+            padding: UiRect::horizontal(px(6)),
+            border_radius: studio_control_radius(),
             ..default()
         },
         BackgroundColor(Color::NONE),
         children![(
             Text::new(label),
             ui_text_font(font, size),
-            TextColor(theme.sidebar_foreground),
+            TextColor(theme.foreground),
         )],
     ));
 }
@@ -649,10 +783,16 @@ fn button_background_for_target(
     }
     match interaction {
         Interaction::None => resting,
-        Interaction::Hovered if resting == Color::NONE => theme.sidebar_accent.with_alpha(0.48),
-        Interaction::Pressed if resting == Color::NONE => theme.sidebar_accent.with_alpha(0.72),
-        Interaction::Hovered => resting.mix(&theme.foreground, 0.06),
-        Interaction::Pressed => resting.mix(&theme.foreground, 0.12),
+        Interaction::Hovered if resting == Color::NONE => theme
+            .sidebar_accent
+            .mix(&theme.primary, 0.24)
+            .with_alpha(if theme.dark { 0.62 } else { 0.72 }),
+        Interaction::Pressed if resting == Color::NONE => theme
+            .sidebar_accent
+            .mix(&theme.primary, 0.34)
+            .with_alpha(if theme.dark { 0.82 } else { 0.90 }),
+        Interaction::Hovered => resting.mix(&theme.foreground, 0.08),
+        Interaction::Pressed => resting.mix(&theme.foreground, 0.16),
     }
 }
 
@@ -682,8 +822,8 @@ fn button_border_for_target(
     }
     let mix = match interaction {
         Interaction::None => return resting,
-        Interaction::Hovered => 0.14,
-        Interaction::Pressed => 0.28,
+        Interaction::Hovered => 0.34,
+        Interaction::Pressed => 0.58,
     };
     BorderColor {
         top: resting.top.mix(&theme.foreground, mix),

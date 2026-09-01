@@ -2,11 +2,6 @@
 
 use crate::studio::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LibrarySelectKind {
-    Status,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum LibraryView {
     #[default]

@@ -13,8 +13,11 @@ pub fn run() {
     let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let transparent = shell.config.window_transparency.unwrap_or(false);
-    let theme =
-        StudioTheme::new_with_transparency(shell.config.dark_mode.unwrap_or(false), transparent);
+    let theme = StudioTheme::new_with_transparency(
+        shell.config.dark_mode.unwrap_or(false),
+        transparent,
+        shell.config.window_opacity_percent(),
+    );
     set_ui_font_scale(shell.config.font_scale());
     let mut window = studio_window(&shell.config, theme.dark);
     let restore_window_mode = window.mode;
@@ -911,7 +914,13 @@ fn spawn_overlay_region(
                 );
             }
             if let Some(context) = session.analysis_node_context.as_ref() {
-                spawn_analysis_node_context_menu(overlay, font.clone(), theme, context);
+                spawn_analysis_node_context_menu(
+                    overlay,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    context,
+                );
             }
             if session.route == StudioRoute::Editor
                 && let Some(editor) = session.editor.as_ref()

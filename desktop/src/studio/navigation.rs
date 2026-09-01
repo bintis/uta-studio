@@ -27,7 +27,7 @@ pub(crate) fn register_navigation_targets(mut commands: Commands, targets: Navig
         }
         commands
             .entity(entity)
-            .try_insert((TabIndex(0), Outline::new(px(1), px(1), Color::NONE)));
+            .try_insert((TabIndex(0), Outline::new(px(2), px(2), Color::NONE)));
     }
 }
 
@@ -70,13 +70,14 @@ pub(crate) fn navigation_repeat(
     None
 }
 
-fn route_back_action(route: StudioRoute, library_view: LibraryView) -> Option<UiAction> {
+fn route_back_action(route: StudioRoute, _library_view: LibraryView) -> Option<UiAction> {
     if route == StudioRoute::Documentation {
         Some(UiAction::from(AppCommand::DocumentationBack))
-    } else if route != StudioRoute::Library || library_view == LibraryView::Queue {
-        Some(UiAction::from(AppCommand::Back))
     } else {
-        None
+        // Keep one predictable top-left navigation target on every workspace,
+        // including ordinary library views. In the library it first unwinds a
+        // filter/subview, then returns to the selected song when available.
+        Some(UiAction::from(AppCommand::Back))
     }
 }
 
@@ -140,9 +141,6 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     }
     if let Some(kind) = session.open_settings_select {
         return Some(UiAction::from(SettingsCommand::OpenSettingsSelect(kind)));
-    }
-    if let Some(kind) = session.open_library_select {
-        return Some(UiAction::from(LibraryCommand::OpenLibrarySelect(kind)));
     }
     if session.export_all_open {
         return Some(UiAction::from(LibraryCommand::ToggleExportAllMenu));
@@ -313,14 +311,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queue_is_a_back_navigable_library_subview() {
+    fn every_library_view_has_the_same_back_navigation_target() {
         assert_eq!(
             route_back_action(StudioRoute::Library, LibraryView::Queue),
             Some(UiAction::from(AppCommand::Back))
         );
         assert_eq!(
             route_back_action(StudioRoute::Library, LibraryView::All),
-            None
+            Some(UiAction::from(AppCommand::Back))
         );
     }
 

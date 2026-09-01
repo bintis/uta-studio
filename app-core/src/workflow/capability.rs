@@ -91,12 +91,46 @@ const SPECIALIST_EXECUTIONS: &[SeparationProviderExecutionV1] = &[
         output_roles: INSTRUMENTAL_ROLE,
     },
 ];
-const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[SeparationStrategyOptionV1 {
-    strategy: SeparationStrategyV1::IndependentSpecialists,
-    label: "Independent vocal + Instrumental specialists",
-    description: "Leap XE90 extracts GuideVocals and public PolarFormer independently extracts Instrumental, with separate native progress and logs.",
-    executions: SPECIALIST_EXECUTIONS,
-}];
+const SPECIALIST_EXECUTIONS_INST_V2: &[SeparationProviderExecutionV1] = &[
+    SeparationProviderExecutionV1 {
+        provider_id: "bs_roformer_leap_xe90_vocals",
+        output_roles: VOCAL_ROLE,
+    },
+    SeparationProviderExecutionV1 {
+        provider_id: "melband_roformer_inst_v2",
+        output_roles: INSTRUMENTAL_ROLE,
+    },
+];
+const SPECIALIST_EXECUTIONS_POLARFORMER_BOTH: &[SeparationProviderExecutionV1] = &[
+    SeparationProviderExecutionV1 {
+        provider_id: "bs_polarformer_public_instrumental",
+        output_roles: VOCAL_ROLE,
+    },
+    SeparationProviderExecutionV1 {
+        provider_id: "bs_polarformer_public_instrumental",
+        output_roles: INSTRUMENTAL_ROLE,
+    },
+];
+const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[
+    SeparationStrategyOptionV1 {
+        strategy: SeparationStrategyV1::IndependentSpecialists,
+        label: "Independent vocal + Instrumental specialists (PolarFormer)",
+        description: "Leap XE90 extracts GuideVocals and public PolarFormer independently extracts Instrumental, with separate native progress and logs.",
+        executions: SPECIALIST_EXECUTIONS,
+    },
+    SeparationStrategyOptionV1 {
+        strategy: SeparationStrategyV1::IndependentSpecialistsInstV2,
+        label: "Independent vocal + Instrumental specialists (Inst V2)",
+        description: "Leap XE90 extracts GuideVocals and MelBand-RoFormer Inst V2 independently extracts Instrumental, with separate native progress and logs.",
+        executions: SPECIALIST_EXECUTIONS_INST_V2,
+    },
+    SeparationStrategyOptionV1 {
+        strategy: SeparationStrategyV1::PolarformerBoth,
+        label: "PolarFormer for both roles",
+        description: "Public PolarFormer extracts both GuideVocals (its own trained stem) and Instrumental (that stem subtracted from the mix), as two independent native invocations.",
+        executions: SPECIALIST_EXECUTIONS_POLARFORMER_BOTH,
+    },
+];
 
 pub fn separation_strategy_options() -> &'static [SeparationStrategyOptionV1] {
     SEPARATION_STRATEGIES
@@ -120,6 +154,7 @@ pub fn workflow_model_label(model_id: &str) -> &str {
         "bs_polarformer_public_instrumental" => "BS-PolarFormer Public Instrumental",
         "jbm555_cectc_80" => "JBM555 CE-CTC 80",
         "melband_roformer_harmony" => "MelBand-RoFormer Lead Isolation",
+        "melband_roformer_inst_v2" => "MelBand-RoFormer Inst V2",
         "melband_roformer_denoise_aufr33" => "MelBand-RoFormer Denoise",
         "melband_roformer_dereverb_anvuew" => "MelBand-RoFormer Dereverb",
         "qwen3_asr_1_7b" => "Qwen3-ASR 1.7B",

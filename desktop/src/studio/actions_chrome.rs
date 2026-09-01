@@ -39,13 +39,40 @@ pub(crate) fn completed_analysis_run_id(
         .map(|run| run.id)
 }
 
+/// Whether `file_hash` already has a run in flight (queued, staged, or
+/// actively analyzing). Opening the graph/model pages must not pin the
+/// frozen completed-run snapshot over top of that: the queue can start a
+/// song's next run before the user ever navigates to it, so there is no
+/// `StartAnalysis` call on this path to clear the selection.
+fn song_has_active_task(tasks: &[app_core::AnalysisTask], file_hash: &str) -> bool {
+    tasks.iter().any(|task| {
+        task.file_hash == file_hash
+            && matches!(
+                task.status,
+                app_core::QueuedStatus::Staged
+                    | app_core::QueuedStatus::Analyzing(_)
+                    | app_core::QueuedStatus::Queued
+            )
+    })
+}
+
 fn open_song_analysis(studio: &mut StudioStateMut<'_>, file_hash: &str) {
-    // Advanced Graph opens on the current compiled workflow. A frozen
-    // historical plan becomes authoritative only after the user explicitly
-    // selects that run from the history strip.
+    // Advanced Graph defaults to the newest completed run's frozen evidence
+    // (same default as `open_song_model_selection`) so the DAG shows the
+    // last analysis' progress without the user having to dig through the
+    // history strip. A live run still wins: `StartAnalysis` clears this
+    // selection before kicking off, `open_analysis_history`/`SelectAnalysisHistory`
+    // overwrite it explicitly for any other run the user picks, and
+    // `song_has_active_task` skips the default entirely when a run is
+    // already queued or in flight for this song by the time it's opened.
     studio.library.selected_song = Some(file_hash.to_string());
     studio.analysis.analysis_history = app_core::load_analysis_history(500);
-    studio.analysis.selected_analysis_history = None;
+    studio.analysis.selected_analysis_history =
+        if song_has_active_task(&studio.analysis.analysis_tasks, file_hash) {
+            None
+        } else {
+            completed_analysis_run_id(&studio.analysis.analysis_history, file_hash)
+        };
     let expected_workflow_id = format!("song:{file_hash}:workflow");
     let current_matches = studio
         .analysis
@@ -98,7 +125,11 @@ fn open_song_model_selection(studio: &mut StudioStateMut<'_>, file_hash: &str) {
     studio.library.selected_song = Some(file_hash.to_string());
     studio.analysis.analysis_history = app_core::load_analysis_history(500);
     studio.analysis.selected_analysis_history =
-        completed_analysis_run_id(&studio.analysis.analysis_history, file_hash);
+        if song_has_active_task(&studio.analysis.analysis_tasks, file_hash) {
+            None
+        } else {
+            completed_analysis_run_id(&studio.analysis.analysis_history, file_hash)
+        };
     studio.analysis.selected_analysis_node = None;
     studio.analysis.analysis_graph_scroll_offset = 0.0;
     studio.analysis.analysis_graph_vertical_scroll_offset = 0.0;
@@ -745,6 +776,7 @@ pub(crate) fn apply_chrome_action(
             );
             studio.analysis.analysis_graph_needs_fit = false;
             studio.analysis.analysis_graph_fit_active = false;
+            studio.analysis.analysis_graph_follow_target = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::FitAnalysisGraph) => {
@@ -754,15 +786,17 @@ pub(crate) fn apply_chrome_action(
             // Fit zoom for the current viewport on the next frame".
             studio.analysis.analysis_graph_needs_fit = true;
             studio.analysis.analysis_graph_fit_active = true;
+            studio.analysis.analysis_graph_follow_target = None;
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::ToggleAnalysisGraphFollow) => {
             studio.analysis.analysis_graph_follow_enabled =
                 !studio.analysis.analysis_graph_follow_enabled;
+            studio.analysis.analysis_graph_follow_target = None;
             if studio.analysis.analysis_graph_follow_enabled {
                 // Force `follow_live_analysis_node` to treat the current
-                // live node as "changed" so it recenters immediately
-                // instead of waiting for the next node transition.
+                // live node as changed and animate there immediately instead
+                // of waiting for the next node transition.
                 studio.analysis.analysis_graph_follow_node = None;
             }
             invalidated.invalidate(UiDirtyRegion::Analysis);
@@ -863,6 +897,24 @@ pub(crate) fn apply_chrome_action(
                 studio.library.library_facet = None;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
+            } else if studio.library.library_view != LibraryView::All
+                || studio.library.library_facet.is_some()
+                || studio.library.library_search.is_some()
+            {
+                // Ordinary library pages now expose the same top-left Back
+                // affordance as every other workspace. Unwind the current
+                // collection/search before leaving the library altogether.
+                studio.library.library_view = LibraryView::All;
+                studio.library.library_facet = None;
+                studio.library.library_search = None;
+                studio.library.library_scroll_offset = 0.0;
+                studio.library.refresh();
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
+            } else if studio.library.selected_song.is_some() {
+                studio.shell.route = StudioRoute::SongDetail;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
             }
         }
         UiCommand::App(AppCommand::Home) => {
@@ -923,7 +975,6 @@ pub(crate) fn apply_chrome_action(
                     studio.editor.editor = None;
                     let view_changed = studio.library.library_view != view;
                     studio.library.library_view = view;
-                    studio.library.library_status = None;
                     studio.library.library_search = None;
                     studio.library.library_facet = None;
                     studio.shell.route = StudioRoute::Library;
@@ -991,7 +1042,6 @@ pub(crate) fn apply_chrome_action(
             }
             let view_changed = studio.library.library_view != *view;
             studio.library.library_view = *view;
-            studio.library.library_status = None;
             studio.library.library_search = None;
             studio.library.library_facet = None;
             studio.shell.route = StudioRoute::Library;
@@ -1063,7 +1113,6 @@ pub(crate) fn apply_chrome_action(
         }
         UiCommand::Library(LibraryCommand::ToggleExportAllMenu) => {
             studio.dialogs.export_all_open = !studio.dialogs.export_all_open;
-            studio.dialogs.open_library_select = None;
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Library(LibraryCommand::ExportAllUtz)
@@ -1090,24 +1139,14 @@ pub(crate) fn apply_chrome_action(
             }
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Library(LibraryCommand::OpenLibrarySelect(kind)) => {
-            studio.dialogs.open_library_select =
-                if studio.dialogs.open_library_select == Some(*kind) {
-                    None
-                } else {
-                    Some(*kind)
-                };
-            studio.dialogs.export_all_open = false;
-            invalidated.invalidate(action.0.dirty_region());
-        }
-        UiCommand::Library(LibraryCommand::SelectLibraryValue(kind, value)) => {
-            let value = (value != "all").then(|| value.clone());
-            match kind {
-                LibrarySelectKind::Status => studio.library.library_status = value,
+        UiCommand::Library(LibraryCommand::SetLibrarySort(column)) => {
+            if studio.library.library_sort_column.as_deref() == Some(*column) {
+                studio.library.library_sort_descending = !studio.library.library_sort_descending;
+            } else {
+                studio.library.library_sort_column = Some((*column).to_string());
+                studio.library.library_sort_descending = false;
             }
-            studio.dialogs.open_library_select = None;
             studio.library.refresh();
-            studio.shell.notice = None;
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Library(LibraryCommand::AnalyzeAll) => {
@@ -1264,6 +1303,36 @@ pub(crate) fn apply_chrome_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn task(file_hash: &str, status: app_core::QueuedStatus) -> app_core::AnalysisTask {
+        app_core::AnalysisTask {
+            file_hash: file_hash.to_string(),
+            title: "Test Song".to_string(),
+            artist: "Test Artist".to_string(),
+            status,
+            live: None,
+        }
+    }
+
+    #[test]
+    fn song_has_active_task_matches_in_flight_statuses_for_the_right_song() {
+        let tasks = vec![
+            task("song-a", app_core::QueuedStatus::Analyzing(12)),
+            task("song-b", app_core::QueuedStatus::Failed("boom".to_string())),
+        ];
+        assert!(song_has_active_task(&tasks, "song-a"));
+        assert!(!song_has_active_task(&tasks, "song-b"));
+        assert!(!song_has_active_task(&tasks, "song-c"));
+
+        assert!(song_has_active_task(
+            &[task("song-a", app_core::QueuedStatus::Staged)],
+            "song-a"
+        ));
+        assert!(song_has_active_task(
+            &[task("song-a", app_core::QueuedStatus::Queued)],
+            "song-a"
+        ));
+    }
 
     #[test]
     fn dirty_editor_requires_confirmation_before_library_navigation() {

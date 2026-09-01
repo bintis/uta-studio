@@ -43,6 +43,14 @@ const ALIGN_TIMESTAMP_TICK_SECONDS: f64 = 0.08;
 const ALIGN_COLLAPSED_WORD_MIN_CHARACTERS: usize = 12;
 const ALIGN_COLLAPSED_WORD_MAX_TICKS: f64 = 2.0;
 const ALIGN_CONTEXT_UNITS: usize = 3;
+/// How far a chained window's start is pulled back before the previous
+/// segment's own real last-word end (see `run_align_once`'s chaining
+/// comment). A small overlap, not zero: giving the model a few real seconds
+/// of the previous segment's own tail as extra acoustic context around its
+/// own `context_text` requirement is what actually lets it re-orient before
+/// searching for genuinely new content, rather than starting cold exactly
+/// where the last measurement stopped.
+const ALIGN_CHAIN_BACK_MARGIN_SECONDS: f64 = 2.0;
 /// Base search margin before each anchored window's real line span, and
 /// after the final window where there is no following lyric boundary to
 /// cross. Real singing commonly starts a beat before a crowd-sourced LRC
@@ -689,6 +697,19 @@ fn parse_asr_result(raw: &str, stdout: &[u8], stderr: &[u8]) -> Result<(String, 
         return Err("Qwen ASR returned conflicting detected-language logs".to_string());
     }
     let detected_language = stdout_language.or(stderr_language);
+    if prefix_language.is_none() && detected_language.is_none() {
+        // A window that covers no speech (a purely instrumental passage)
+        // legitimately produces an empty transcript and never logs a
+        // detected-language line -- there is nothing to detect. That's a
+        // valid silent window, not a runtime failure; only an empty
+        // transcript that claims no language evidence at all falls here,
+        // so a real transcript with a missing language tag is still an
+        // error below.
+        if text.is_empty() {
+            return Ok((String::new(), String::new()));
+        }
+        return Err("Qwen ASR did not report a runtime-detected language".to_string());
+    }
     let language = match (prefix_language, detected_language) {
         (Some((prefix, _prefix_length)), Some(logged)) if prefix != logged => {
             return Err("Qwen ASR returned conflicting detected-language metadata".to_string());
@@ -698,9 +719,7 @@ fn parse_asr_result(raw: &str, stdout: &[u8], stderr: &[u8]) -> Result<(String, 
             prefix
         }
         (None, Some(logged)) => logged,
-        (None, None) => {
-            return Err("Qwen ASR did not report a runtime-detected language".to_string());
-        }
+        (None, None) => unreachable!("handled above"),
     };
     if text.is_empty() {
         return Err("Qwen ASR returned an empty transcript".to_string());
@@ -983,16 +1002,50 @@ struct AlignmentSegmentPlan {
     anchor_start: Option<f64>,
 }
 
+/// CJK scripts (Chinese/Japanese ideographs, kana, and their punctuation)
+/// have no space-separated word boundaries, so each such character must be
+/// its own alignment unit; everything else keeps its natural
+/// whitespace-delimited word grouping.
+fn is_dense_script_character(character: char) -> bool {
+    matches!(character,
+        '\u{3000}'..='\u{303F}'   // CJK punctuation
+        | '\u{3040}'..='\u{30FF}' // hiragana + katakana
+        | '\u{3400}'..='\u{4DBF}' // CJK unified ideographs extension A
+        | '\u{4E00}'..='\u{9FFF}' // CJK unified ideographs
+        | '\u{FF00}'..='\u{FFEF}' // fullwidth forms
+    )
+}
+
+/// A transcript can legitimately mix both regimes -- a bilingual line, or a
+/// stray Latin-script phrase inside otherwise CJK lyrics (confirmed against
+/// a real ASR transcript that inserted an English phrase into a Japanese
+/// song). Deciding per character, not once for the whole transcript, keeps
+/// CJK segmentation correct regardless of what else shares the document:
+/// the previous whole-transcript choice (word-split the entire text the
+/// moment any whitespace-separated run existed anywhere in it) silently
+/// stopped segmenting the CJK portions too, which the aligner then measured
+/// as one gigantic "word" and collapsed into a near-zero-duration span.
 fn alignment_text_units(transcript: &str) -> Vec<String> {
-    let whitespace_units = transcript.split_whitespace().collect::<Vec<_>>();
-    if whitespace_units.len() > 1 {
-        return whitespace_units.into_iter().map(str::to_string).collect();
+    let mut units = Vec::new();
+    let mut word = String::new();
+    for character in transcript.chars() {
+        if character.is_whitespace() {
+            if !word.is_empty() {
+                units.push(std::mem::take(&mut word));
+            }
+        } else if is_dense_script_character(character) {
+            if !word.is_empty() {
+                units.push(std::mem::take(&mut word));
+            }
+            units.push(character.to_string());
+        } else {
+            word.push(character);
+        }
     }
-    transcript
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .map(|character| character.to_string())
-        .collect()
+    if !word.is_empty() {
+        units.push(word);
+    }
+    units
 }
 
 fn tick_floor(seconds: f64) -> f64 {
@@ -1023,18 +1076,66 @@ fn plan_alignment_segments(
         ));
     }
     let owner_seconds = source_duration_seconds / segment_count as f64;
+    let mut audio_starts = (0..segment_count)
+        .map(|index| {
+            if segment_count == 1 || index == 0 {
+                0.0
+            } else if index + 1 == segment_count {
+                tick_floor((source_duration_seconds - ALIGN_WINDOW_MAX_SECONDS).max(0.0))
+            } else {
+                let owner_center = (index as f64 + 0.5) * owner_seconds;
+                tick_floor((owner_center - ALIGN_WINDOW_MAX_SECONDS / 2.0).max(0.0))
+            }
+        })
+        .collect::<Vec<_>>();
+    // Centering a fixed `ALIGN_WINDOW_MAX_SECONDS`-wide window on each
+    // segment's own slice of the song clamps to 0 for every *leading*
+    // segment whose center sits within half that width of the start --
+    // several segments in a row, once a heavily retried plan (small
+    // `window_target_seconds`) packs many segments into a short span.
+    // Those segments then all get the exact same audio for different
+    // target text, which the aligner cannot place consistently and the
+    // seam check correctly refuses to reconcile (confirmed against a real
+    // production seam failure: segment 1 collapsed onto segment 0's
+    // identical [0, 140s] window). Ramp that collapsed leading run evenly
+    // up to the first segment whose centering already escaped the clamp,
+    // so every window's audio is genuinely distinct; segments outside the
+    // collapsed run keep their exact original position.
+    if segment_count > 2 {
+        let collapsed_run_end = audio_starts
+            .iter()
+            .position(|&start| start > 0.0)
+            .unwrap_or(segment_count - 1);
+        if collapsed_run_end > 1 {
+            let ramp_target = audio_starts[collapsed_run_end];
+            for (index, start) in audio_starts
+                .iter_mut()
+                .enumerate()
+                .take(collapsed_run_end)
+                .skip(1)
+            {
+                *start = tick_floor(ramp_target * index as f64 / collapsed_run_end as f64);
+            }
+        }
+    }
+    // The final segment's own tail-anchored start (placed so its window
+    // reaches exactly to the song's end) can land *before* the
+    // second-to-last segment's centered start once that segment's natural
+    // progression has already advanced past `duration - window`. Nothing
+    // above corrects that single-point inversion, so sweep the whole
+    // sequence once more: any segment that would not strictly advance on
+    // its predecessor is pushed just past it. This never widens a window
+    // beyond `ALIGN_WINDOW_MAX_SECONDS` and never pushes a start past the
+    // source duration -- `audio_end_seconds` below still clamps to it.
+    for index in 1..segment_count {
+        if audio_starts[index] <= audio_starts[index - 1] {
+            audio_starts[index] = audio_starts[index - 1] + ALIGN_TIMESTAMP_TICK_SECONDS;
+        }
+    }
     let mut plans = Vec::with_capacity(segment_count);
-    for index in 0..segment_count {
+    for (index, audio_start_seconds) in audio_starts.into_iter().enumerate() {
         let target_unit_start = (index * text_unit_count).div_ceil(segment_count);
         let target_unit_end = ((index + 1) * text_unit_count).div_ceil(segment_count);
-        let audio_start_seconds = if segment_count == 1 || index == 0 {
-            0.0
-        } else if index + 1 == segment_count {
-            tick_floor((source_duration_seconds - ALIGN_WINDOW_MAX_SECONDS).max(0.0))
-        } else {
-            let owner_center = (index as f64 + 0.5) * owner_seconds;
-            tick_floor((owner_center - ALIGN_WINDOW_MAX_SECONDS / 2.0).max(0.0))
-        };
         let audio_end_seconds =
             (audio_start_seconds + ALIGN_WINDOW_MAX_SECONDS).min(source_duration_seconds);
         plans.push(AlignmentSegmentPlan {
@@ -1606,7 +1707,95 @@ fn anchor_margin_seconds(attempt: u32) -> f64 {
     }
 }
 
+/// One bounded fallback attempt, tried only after `run_align_with_retries`
+/// has exhausted every ordinary window plan. This is specifically for a
+/// hallucinated transcribing-worker tail: confirmed against a real
+/// production song whose true singing ends well before the audio does (the
+/// remainder is an instrumental outro), where the upstream transcript
+/// nonetheless contained confident-looking text for that silent tail -- a
+/// different failure mode than the "no language detected" case
+/// `parse_asr_result` already treats as legitimate silence (that one *did*
+/// report a language, just for content that was never actually sung). No
+/// window plan can align text to audio it was never spoken over, so
+/// retrying with a different window can never succeed; only dropping that
+/// fabricated tail from the transcript can. Only ever drops from the very
+/// end, and only when there is a real, collapse-sized chunk to drop (the
+/// same `ALIGN_COLLAPSED_WORD_MIN_CHARACTERS` threshold the measurement
+/// check itself uses) -- a transcript that's merely short, or whose real
+/// failure has nothing to do with its tail, is not touched, and the
+/// original error still surfaces.
+/// Pure half of the trailing-drop fallback: the transcript to retry with,
+/// or `None` when there is nothing worth dropping (no windows at all, or
+/// the final window's own text is smaller than a real collapse-sized
+/// chunk -- see the caller's doc comment for why that threshold matters).
+fn trailing_drop_transcript(text_units: &[String], plans: &[AlignmentSegmentPlan]) -> Option<String> {
+    let last_plan = plans.last()?;
+    let dropped_characters: usize = text_units[last_plan.target_unit_start..]
+        .iter()
+        .map(|unit| compact_character_count(unit))
+        .sum();
+    if dropped_characters < ALIGN_COLLAPSED_WORD_MIN_CHARACTERS {
+        return None;
+    }
+    Some(text_units[..last_plan.target_unit_start].join(" "))
+}
+
+fn run_align_with_trailing_content_dropped(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let input = normalize_alignment_input(config)?;
+    let text_units = alignment_text_units(&input.transcript);
+    let source_duration_seconds = audio::wav_duration_seconds(audio)?;
+    let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let plans = plan_alignment_segments(source_duration_seconds, text_units.len(), finest_target)?;
+    let Some(adjusted_transcript) = trailing_drop_transcript(&text_units, &plans) else {
+        return Err(
+            "Qwen long-form alignment's final window is too small to drop".to_string(),
+        );
+    };
+    let mut adjusted_config = config.clone();
+    adjusted_config["text"] = serde_json::Value::String(adjusted_transcript);
+    run_align_once(
+        runtime,
+        model,
+        audio,
+        output_dir,
+        &adjusted_config,
+        finest_target,
+        ALIGN_ANCHOR_MARGIN_SECONDS,
+        progress,
+    )
+}
+
 fn run_align(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let anchored = config
+        .get("line_anchors")
+        .is_some_and(|value| !value.is_null());
+    match run_align_with_retries(runtime, model, audio, output_dir, config, progress) {
+        Ok(destination) => Ok(destination),
+        Err(error) if !anchored && is_retryable_window_measurement_error(&error) => {
+            run_align_with_trailing_content_dropped(
+                runtime, model, audio, output_dir, config, progress,
+            )
+            .map_err(|_| error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_align_with_retries(
     runtime: &ValidatedRuntime,
     model: &Path,
     audio: &Path,
@@ -1698,7 +1887,7 @@ fn run_align_once(
     let source_duration_seconds = audio::wav_duration_seconds(audio)?;
     let text_units = alignment_text_units(&input.transcript);
     let line_anchors = parsed_line_anchors(config)?;
-    let plans = if let Some(anchors) = line_anchors.as_ref() {
+    let mut plans = if let Some(anchors) = line_anchors.as_ref() {
         plan_alignment_segments_from_anchors(
             anchors,
             text_units.len(),
@@ -1715,7 +1904,40 @@ fn run_align_once(
     };
     let mut words: Vec<AlignmentWord> = Vec::new();
     let mut segment_evidence = Vec::with_capacity(plans.len());
-    for plan in &plans {
+    for index in 0..plans.len() {
+        // Blind planning's own upfront position is only ever a
+        // uniform-pacing guess (real songs are not uniformly paced -- see
+        // `plan_alignment_segments_from_anchors`'s doc comment for the same
+        // point about anchored mode). Once a previous segment has actually
+        // been measured, its own real end can show that guess sat too far
+        // *behind* where this segment's audio genuinely begins: confirmed
+        // against a real production seam where an independently-guessed
+        // window still measured its own target text starting *before* the
+        // previous window's own last word ended, no matter how far apart
+        // the two windows' guessed starts already were. Only ever move a
+        // window *later* than its already collision-safe static guess,
+        // never earlier -- `plan_alignment_segments`'s own spacing (the
+        // leading-run ramp, the monotonic sweep) stays the floor, and a
+        // real measurement can only raise it further. Anchored mode skips
+        // this: every one of its windows already comes from a real
+        // caller-supplied line time, not a guess.
+        if line_anchors.is_none()
+            && index > 0
+            && let Some(previous_word) = words.last()
+        {
+            let chained_start =
+                tick_floor((previous_word.end - ALIGN_CHAIN_BACK_MARGIN_SECONDS).max(0.0));
+            let latest_safe_start =
+                tick_floor((source_duration_seconds - ALIGN_TIMESTAMP_TICK_SECONDS).max(0.0));
+            let audio_start_seconds = plans[index]
+                .audio_start_seconds
+                .max(chained_start)
+                .min(latest_safe_start);
+            plans[index].audio_start_seconds = audio_start_seconds;
+            plans[index].audio_end_seconds =
+                (audio_start_seconds + ALIGN_WINDOW_MAX_SECONDS).min(source_duration_seconds);
+        }
+        let plan = &plans[index];
         let context_text = text_units[plan.context_unit_start..plan.target_unit_end].join(" ");
         let prefix_text = text_units[plan.context_unit_start..plan.target_unit_start].join(" ");
         let target_text = text_units[plan.target_unit_start..plan.target_unit_end].join(" ");

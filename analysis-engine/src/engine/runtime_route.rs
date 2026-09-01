@@ -146,6 +146,26 @@ pub(super) fn roformer_backend(
     }
 }
 
+/// Maps the Settings device-class preference onto the "gpu" / "integrated_gpu"
+/// strings `uta-ggml-worker` resolves to a physical Vulkan device index.
+/// `NativeDeviceClass::Cpu` and any non-Vulkan backend return `None`: GGML
+/// RoFormer has no supported CPU route through this pipeline (CPU stays a
+/// manual diagnostic-only lane, never an implicit production path), and
+/// OpenVINO's own device string is unrelated to this preference.
+pub(super) fn ggml_vulkan_device_class(
+    backend: &str,
+    device: Option<uta_runtime_manager::NativeDeviceClass>,
+) -> Option<&'static str> {
+    if backend != "ggml_vulkan" {
+        return None;
+    }
+    match device? {
+        uta_runtime_manager::NativeDeviceClass::Gpu => Some("gpu"),
+        uta_runtime_manager::NativeDeviceClass::IntegratedGpu => Some("integrated_gpu"),
+        uta_runtime_manager::NativeDeviceClass::Cpu => None,
+    }
+}
+
 pub(super) fn roformer_component(backend: &str) -> &'static str {
     match backend {
         "ggml_vulkan" => "uta-ggml-worker",
@@ -228,6 +248,41 @@ mod tests {
             language: None,
             tokens,
         }
+    }
+
+    #[test]
+    fn ggml_vulkan_device_class_only_applies_to_the_vulkan_backend() {
+        assert_eq!(
+            ggml_vulkan_device_class(
+                "ggml_vulkan",
+                Some(uta_runtime_manager::NativeDeviceClass::Gpu)
+            ),
+            Some("gpu")
+        );
+        assert_eq!(
+            ggml_vulkan_device_class(
+                "ggml_vulkan",
+                Some(uta_runtime_manager::NativeDeviceClass::IntegratedGpu)
+            ),
+            Some("integrated_gpu")
+        );
+        assert_eq!(ggml_vulkan_device_class("ggml_vulkan", None), None);
+        assert_eq!(
+            ggml_vulkan_device_class(
+                "openvino_gpu",
+                Some(uta_runtime_manager::NativeDeviceClass::Gpu)
+            ),
+            None,
+            "OpenVINO's device string is unrelated to this preference"
+        );
+        assert_eq!(
+            ggml_vulkan_device_class(
+                "ggml_vulkan",
+                Some(uta_runtime_manager::NativeDeviceClass::Cpu)
+            ),
+            None,
+            "GGML RoFormer has no supported CPU route through this pipeline"
+        );
     }
 
     #[test]

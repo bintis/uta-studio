@@ -419,7 +419,11 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             let transparent = studio.shell.config.window_transparency.unwrap_or(false);
             studio.shell.config.dark_mode = Some(dark);
             studio.shell.notice = save_config_error(&studio.shell.config);
-            *theme = StudioTheme::new_with_transparency(dark, transparent);
+            *theme = StudioTheme::new_with_transparency(
+                dark,
+                transparent,
+                studio.shell.config.window_opacity_percent(),
+            );
             clear_color.0 = window_clear_color(theme, transparent);
             window.window_theme = Some(if theme.dark {
                 WindowTheme::Dark
@@ -432,7 +436,25 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             let transparent = !studio.shell.config.window_transparency.unwrap_or(false);
             studio.shell.config.window_transparency = Some(transparent);
             studio.shell.notice = save_config_error(&studio.shell.config);
-            *theme = StudioTheme::new_with_transparency(theme.dark, transparent);
+            *theme = StudioTheme::new_with_transparency(
+                theme.dark,
+                transparent,
+                studio.shell.config.window_opacity_percent(),
+            );
+            clear_color.0 = window_clear_color(theme, transparent);
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+        }
+        UiCommand::Settings(SettingsCommand::AdjustWindowOpacity(delta)) => {
+            let next = (studio.shell.config.window_opacity_percent() as i64
+                + i64::from(*delta) * i64::from(WINDOW_OPACITY_STEP_PERCENT))
+            .clamp(
+                i64::from(WINDOW_OPACITY_MIN_PERCENT),
+                i64::from(WINDOW_OPACITY_MAX_PERCENT),
+            ) as u32;
+            studio.shell.config.window_opacity_percent = Some(next);
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            let transparent = studio.shell.config.window_transparency.unwrap_or(false);
+            *theme = StudioTheme::new_with_transparency(theme.dark, transparent, next);
             clear_color.0 = window_clear_color(theme, transparent);
             invalidated.invalidate(UiDirtyRegion::Chrome);
         }

@@ -10,8 +10,8 @@ use bevy::{
 use super::{
     ANALYSIS_GRAPH_ZOOM_DEFAULT, AnalysisLogViewerState, AnalysisNodeContextMenu, CacheClearScope,
     DocumentationState, EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback,
-    LibrarySelectKind, LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob,
-    NativeLanguageEditor, NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
+    LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob, NativeLanguageEditor,
+    NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
     NativeSongSettings, PendingLeave, PlanPreviewDraft, SettingsSelectKind, SettingsTab,
     SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu, load_songs,
 };
@@ -33,7 +33,8 @@ pub(crate) struct LibraryState {
     pub(crate) scanning: bool,
     pub(crate) library_view: LibraryView,
     pub(crate) library_search: Option<String>,
-    pub(crate) library_status: Option<String>,
+    pub(crate) library_sort_column: Option<String>,
+    pub(crate) library_sort_descending: bool,
     pub(crate) library_facet: Option<LibraryFacet>,
     pub(crate) menu_items: LibraryMenuItems,
     pub(crate) selected_song: Option<String>,
@@ -63,7 +64,8 @@ impl LibraryState {
     pub(crate) fn filters(&self) -> LibraryMenuFilters {
         let mut filters = self.library_view.filters();
         filters.search = self.library_search.clone();
-        filters.status = self.library_status.clone();
+        filters.sort_column = self.library_sort_column.clone();
+        filters.sort_descending = self.library_sort_descending;
         match self.library_facet.as_ref() {
             Some(LibraryFacet::Artist { value, .. }) => filters.artist = Some(value.clone()),
             Some(LibraryFacet::Album { value, .. }) => filters.album = Some(value.clone()),
@@ -84,6 +86,10 @@ pub(crate) struct AnalysisUiState {
     pub(crate) analysis_graph_needs_fit: bool,
     pub(crate) analysis_graph_fit_active: bool,
     pub(crate) analysis_graph_follow_node: Option<String>,
+    /// Animated camera destination for live-node follow. Kept outside the
+    /// render view because the viewport's `ScrollPosition` advances every
+    /// frame without rebuilding the DAG entity tree.
+    pub(crate) analysis_graph_follow_target: Option<Vec2>,
     /// Pure front-end view state (§10): whether the canvas should recenter
     /// on the live running node as it changes. Manual pan clears it; the
     /// Follow control restores it. Live/History/Draft applicability is
@@ -129,7 +135,6 @@ pub(crate) struct DialogState {
     pub(crate) pending_leave: Option<PendingLeave>,
     pub(crate) open_settings_select: Option<SettingsSelectKind>,
     pub(crate) open_model_runtime_select: Option<String>,
-    pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
     pub(crate) pending_analysis_history_clear: bool,
@@ -252,7 +257,8 @@ impl StudioStateBundle {
                 scanning: false,
                 library_view: LibraryView::All,
                 library_search: None,
-                library_status: None,
+                library_sort_column: None,
+                library_sort_descending: false,
                 library_facet: None,
                 menu_items: app_core::load_library_menu_items().unwrap_or_default(),
                 selected_song: None,
@@ -268,6 +274,7 @@ impl StudioStateBundle {
                 analysis_graph_needs_fit: true,
                 analysis_graph_fit_active: true,
                 analysis_graph_follow_node: None,
+                analysis_graph_follow_target: None,
                 analysis_graph_follow_enabled: true,
                 analysis_tasks: app_core::load_analysis_tasks(),
                 analysis_history: app_core::load_analysis_history(100),
@@ -300,7 +307,6 @@ impl StudioStateBundle {
                 pending_leave: None,
                 open_settings_select: None,
                 open_model_runtime_select: None,
-                open_library_select: None,
                 export_all_open: false,
                 open_editor_select: None,
                 pending_analysis_history_clear: false,
@@ -315,6 +321,9 @@ impl StudioStateBundle {
     }
 
     fn with_debug_navigation(mut self) -> Self {
+        if std::env::var("UTA_STUDIO_DEBUG_OPEN_FOLDERS").is_ok() {
+            self.shell.route = StudioRoute::Folders;
+        }
         if let Ok(tab) = std::env::var("UTA_STUDIO_DEBUG_OPEN_SETTINGS") {
             self.shell.route = StudioRoute::Settings;
             self.shell.settings_tab = match tab.trim().to_ascii_lowercase().as_str() {
@@ -397,6 +406,25 @@ impl StudioStateBundle {
         {
             self.analysis.analysis_graph_scroll_offset = offset;
         }
+        if let Ok(route) = std::env::var("UTA_STUDIO_DEBUG_ROUTE") {
+            self.shell.route = match route.trim().to_ascii_lowercase().as_str() {
+                "folders" => StudioRoute::Folders,
+                "song" | "song-detail" => StudioRoute::SongDetail,
+                "analysis" | "audit" => StudioRoute::AnalysisInspect,
+                "processing" => StudioRoute::ProcessingStudio,
+                "settings" => StudioRoute::Settings,
+                _ => self.shell.route,
+            };
+        }
+        if std::env::var("UTA_STUDIO_DEBUG_OPEN_FOLDER_CONTEXT").is_ok()
+            && let Some(entry) = self.library.folder_browser.entries.first().cloned()
+        {
+            self.library.folder_browser.context_menu = Some(super::FolderContextMenu {
+                entry,
+                position: Vec2::new(980.0, 240.0),
+                viewport_size: Vec2::new(1280.0, 720.0),
+            });
+        }
         if let Ok(zoom) = std::env::var("UTA_STUDIO_DEBUG_GRAPH_ZOOM")
             && let Ok(zoom) = zoom.parse::<f32>()
         {
@@ -443,7 +471,8 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) settings_tab: SettingsTab,
     pub(crate) library_view: LibraryView,
     pub(crate) library_search: &'a Option<String>,
-    pub(crate) library_status: &'a Option<String>,
+    pub(crate) library_sort_column: &'a Option<String>,
+    pub(crate) library_sort_descending: bool,
     pub(crate) library_facet: &'a Option<LibraryFacet>,
     pub(crate) menu_items: &'a LibraryMenuItems,
     pub(crate) notice: &'a Option<String>,
@@ -478,7 +507,6 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) analysis_graph_viewport_width: f32,
     pub(crate) analysis_graph_viewport_height: f32,
     pub(crate) analysis_graph_follow_enabled: bool,
-    pub(crate) open_library_select: Option<LibrarySelectKind>,
     pub(crate) export_all_open: bool,
     pub(crate) open_editor_select: Option<EditorDockSelectKind>,
     pub(crate) analysis_tasks: &'a [AnalysisTask],
@@ -520,7 +548,8 @@ impl<'a> StudioSessionView<'a> {
             settings_tab: shell.settings_tab,
             library_view: library.library_view,
             library_search: &library.library_search,
-            library_status: &library.library_status,
+            library_sort_column: &library.library_sort_column,
+            library_sort_descending: library.library_sort_descending,
             library_facet: &library.library_facet,
             menu_items: &library.menu_items,
             notice: &shell.notice,
@@ -555,7 +584,6 @@ impl<'a> StudioSessionView<'a> {
             analysis_graph_viewport_width: analysis.analysis_graph_viewport_width,
             analysis_graph_viewport_height: analysis.analysis_graph_viewport_height,
             analysis_graph_follow_enabled: analysis.analysis_graph_follow_enabled,
-            open_library_select: dialogs.open_library_select,
             export_all_open: dialogs.export_all_open,
             open_editor_select: dialogs.open_editor_select,
             analysis_tasks: &analysis.analysis_tasks,

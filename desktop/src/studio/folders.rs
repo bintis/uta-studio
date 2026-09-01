@@ -6,6 +6,31 @@ use crate::studio::*;
 pub(crate) struct FolderContextMenu {
     pub(crate) entry: LibraryFolderEntry,
     pub(crate) position: Vec2,
+    pub(crate) viewport_size: Vec2,
+}
+
+const FOLDER_CONTEXT_MENU_WIDTH: f32 = 286.0;
+const FOLDER_CONTEXT_MENU_HEIGHT: f32 = 292.0;
+const FOLDER_CONTEXT_MENU_EDGE: f32 = 8.0;
+const FOLDER_CONTEXT_PLAYER_RESERVE: f32 = 82.0;
+
+fn clamp_folder_context_position(position: Vec2, viewport: Vec2) -> Vec2 {
+    let local = Vec2::new(
+        position.x - SIDEBAR_WIDTH - FOLDER_CONTEXT_MENU_EDGE,
+        position.y - WORKSPACE_TOP_BAR_MIN_HEIGHT,
+    );
+    let max_x = (viewport.x - SIDEBAR_WIDTH - FOLDER_CONTEXT_MENU_WIDTH - FOLDER_CONTEXT_MENU_EDGE)
+        .max(FOLDER_CONTEXT_MENU_EDGE);
+    let max_y = (viewport.y
+        - WORKSPACE_TOP_BAR_MIN_HEIGHT
+        - FOLDER_CONTEXT_PLAYER_RESERVE
+        - FOLDER_CONTEXT_MENU_HEIGHT
+        - FOLDER_CONTEXT_MENU_EDGE)
+        .max(FOLDER_CONTEXT_MENU_EDGE);
+    Vec2::new(
+        local.x.clamp(FOLDER_CONTEXT_MENU_EDGE, max_x),
+        local.y.clamp(FOLDER_CONTEXT_MENU_EDGE, max_y),
+    )
 }
 
 #[derive(Default)]
@@ -63,6 +88,88 @@ impl FolderBrowser {
 #[derive(Component)]
 pub(crate) struct FolderEntryList;
 
+#[derive(Component)]
+pub(crate) struct FolderRootList;
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_folder_empty_state(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    icon: UiIcon,
+    accent: Color,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    action: Option<(&'static str, UiAction)>,
+) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            min_height: px(250),
+            flex_grow: 1.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(px(28)),
+            row_gap: px(9),
+            ..default()
+        })
+        .with_children(|empty| {
+            empty
+                .spawn((
+                    Node {
+                        width: px(58),
+                        height: px(58),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::MAX,
+                        margin: UiRect::bottom(px(3)),
+                        ..default()
+                    },
+                    BackgroundColor(accent.with_alpha(0.10)),
+                    BorderColor::all(accent.with_alpha(0.30)),
+                ))
+                .with_children(|slot| spawn_icon(slot, icons, icon, 24.0, accent));
+            spawn_text(empty, font.clone(), title, 16.0, theme.foreground);
+            empty
+                .spawn(Node {
+                    max_width: px(440),
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_wrapped_text(copy, font.clone(), detail, 10.0, theme.muted_foreground);
+                });
+            if let Some((label, action)) = action {
+                spawn_compact_primary_action_button(empty, font, theme, label, action);
+            }
+        });
+}
+
+fn folder_entry_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "folder" => "Folder",
+        "audio" => "Audio",
+        "video" => "Video",
+        "playlist" => "Playlist",
+        "chart" => "Chart",
+        _ => "File",
+    }
+}
+
+fn folder_entry_secondary_copy(entry: &LibraryFolderEntry) -> String {
+    if entry.kind == "folder" {
+        return folder_entry_kind_label(&entry.kind).to_string();
+    }
+    let extension = std::path::Path::new(&entry.path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| "FILE".to_string());
+    format!("{} · {}", folder_entry_kind_label(&entry.kind), extension)
+}
+
 pub(crate) fn spawn_folders(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -70,6 +177,20 @@ pub(crate) fn spawn_folders(
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
+    let current_name = session
+        .folder_browser
+        .current
+        .as_deref()
+        .map(folder_name)
+        .unwrap_or_else(|| "No folder selected".to_string());
+    let current_path = session
+        .folder_browser
+        .current
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Choose a library location to browse its files".to_string());
+    let can_go_up = session.folder_browser.parent().is_some();
+
     parent
         .spawn(Node {
             position_type: PositionType::Relative,
@@ -77,263 +198,412 @@ pub(crate) fn spawn_folders(
             min_height: px(0),
             flex_grow: 1.0,
             flex_direction: FlexDirection::Column,
-            padding: UiRect::axes(px(34), px(16)),
+            padding: UiRect::axes(px(26), px(16)),
             row_gap: px(12),
             overflow: Overflow::clip(),
             ..default()
         })
         .with_children(|page| {
-            page.spawn(Node {
-                min_width: px(0),
-                min_height: px(0),
-                flex_grow: 1.0,
-                flex_direction: FlexDirection::Row,
-                column_gap: px(16),
-                ..default()
-            })
-            .with_children(|body| {
-                body.spawn((
-                    Node {
-                        width: px(240),
-                        height: percent(100),
-                        flex_shrink: 0.0,
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(10)),
-                        row_gap: px(3),
-                        overflow: Overflow::clip(),
-                        border: UiRect::all(px(1)),
-                        border_radius: studio_card_radius(),
+            page.spawn((
+                FolderRootList,
+                ScrollPosition::default(),
+                Node {
+                    width: percent(100),
+                    max_height: px(140),
+                    flex_shrink: 0.0,
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(px(12)),
+                    row_gap: px(8),
+                    overflow: Overflow::scroll_y(),
+                    border: UiRect::all(px(1)),
+                    border_radius: studio_card_radius(),
+                    ..default()
+                },
+                studio_card_background(theme),
+                studio_card_border(theme),
+                studio_card_shadow(theme),
+            ))
+            .with_children(|locations| {
+                locations
+                    .spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        column_gap: px(8),
                         ..default()
-                    },
-                    studio_card_background(theme),
-                    studio_card_border(theme),
-                ))
-                .with_children(|roots| {
-                    spawn_text(
-                        roots,
-                        font.clone(),
-                        localized_message(
-                            session.config,
-                            UiMessage::WatchedLocations,
-                            &[("{count}", &session.config.library_paths().len().to_string())],
-                        ),
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                    roots.spawn(Node {
-                        height: px(5),
-                        ..default()
+                    })
+                    .with_children(|header| {
+                        spawn_text(
+                            header,
+                            font.clone(),
+                            "LIBRARY LOCATIONS",
+                            7.5,
+                            theme.primary,
+                        );
+                        header.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        });
+                        spawn_status_pill(
+                            header,
+                            font.clone(),
+                            format!("{} watched", session.config.library_paths().len()),
+                            theme.muted_foreground,
+                        );
                     });
-                    for root in session.config.library_paths() {
-                        let selected = session.folder_browser.root.as_ref() == Some(&root);
-                        roots
+
+                locations
+                    .spawn(Node {
+                        width: percent(100),
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(8),
+                        row_gap: px(8),
+                        ..default()
+                    })
+                    .with_children(|chips| {
+                        for root in session.config.library_paths() {
+                            let selected = session.folder_browser.root.as_ref() == Some(&root);
+                            let root_label = folder_name(&root);
+                            let root_path = root.to_string_lossy().into_owned();
+                            let select_path = root.clone();
+                            let remove_path = root;
+                            chips
+                                .spawn((
+                                    Node {
+                                        min_width: px(190),
+                                        flex_basis: px(230),
+                                        min_height: px(50),
+                                        flex_grow: 1.0,
+                                        align_items: AlignItems::Center,
+                                        padding: UiRect::right(px(4)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: studio_control_radius(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(if selected {
+                                        theme.primary.with_alpha(0.09)
+                                    } else {
+                                        theme.background.with_alpha(0.18)
+                                    }),
+                                    BorderColor::all(if selected {
+                                        theme.primary.with_alpha(0.44)
+                                    } else {
+                                        theme.border.with_alpha(0.34)
+                                    }),
+                                ))
+                                .with_children(|chip| {
+                                    chip.spawn((
+                                        Button,
+                                        UiAction::from(LibraryCommand::SelectFolderRoot(select_path)),
+                                        Node {
+                                            min_width: px(0),
+                                            height: percent(100),
+                                            flex_grow: 1.0,
+                                            align_items: AlignItems::Center,
+                                            padding: UiRect::horizontal(px(10)),
+                                            column_gap: px(9),
+                                            border_radius: studio_control_radius(),
+                                            ..default()
+                                        },
+                                        BackgroundColor(Color::NONE),
+                                    ))
+                                    .with_children(|select| {
+                                        select
+                                            .spawn((
+                                                Node {
+                                                    width: px(30),
+                                                    height: px(30),
+                                                    flex_shrink: 0.0,
+                                                    align_items: AlignItems::Center,
+                                                    justify_content: JustifyContent::Center,
+                                                    border_radius: BorderRadius::all(px(7)),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(
+                                                    theme.primary.with_alpha(if selected {
+                                                        0.15
+                                                    } else {
+                                                        0.07
+                                                    }),
+                                                ),
+                                            ))
+                                            .with_children(|slot| {
+                                                spawn_icon(
+                                                    slot,
+                                                    icons.clone(),
+                                                    UiIcon::Folder,
+                                                    15.0,
+                                                    if selected {
+                                                        theme.primary
+                                                    } else {
+                                                        theme.muted_foreground
+                                                    },
+                                                );
+                                            });
+                                        select
+                                            .spawn(Node {
+                                                min_width: px(0),
+                                                flex_grow: 1.0,
+                                                flex_direction: FlexDirection::Column,
+                                                justify_content: JustifyContent::Center,
+                                                row_gap: px(2),
+                                                overflow: Overflow::clip(),
+                                                ..default()
+                                            })
+                                            .with_children(|copy| {
+                                                copy.spawn((
+                                                    Text::new(root_label),
+                                                    ui_text_font(font.clone(), 10.5),
+                                                    TextColor(theme.foreground),
+                                                    TextLayout::no_wrap(),
+                                                ));
+                                                copy.spawn((
+                                                    Text::new(root_path),
+                                                    ui_text_font(font.clone(), 7.5),
+                                                    TextColor(
+                                                        theme.muted_foreground.with_alpha(0.72),
+                                                    ),
+                                                    TextLayout::no_wrap(),
+                                                ));
+                                            });
+                                    });
+                                    spawn_icon_button(
+                                        chip,
+                                        icons.clone(),
+                                        theme,
+                                        UiIcon::Trash,
+                                        UiAction::from(LibraryCommand::RequestRemoveFolder(
+                                            remove_path,
+                                        )),
+                                        false,
+                                        false,
+                                        30.0,
+                                    );
+                                });
+                        }
+
+                        if session.config.library_paths().is_empty() {
+                            chips
+                                .spawn((
+                                    Node {
+                                        min_width: px(220),
+                                        flex_basis: px(280),
+                                        min_height: px(50),
+                                        flex_grow: 1.0,
+                                        align_items: AlignItems::Center,
+                                        padding: UiRect::axes(px(10), px(7)),
+                                        column_gap: px(10),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: studio_control_radius(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(theme.background.with_alpha(0.18)),
+                                    BorderColor::all(theme.border.with_alpha(0.34)),
+                                ))
+                                .with_children(|empty| {
+                                    spawn_icon(
+                                        empty,
+                                        icons.clone(),
+                                        UiIcon::Folder,
+                                        17.0,
+                                        theme.muted_foreground,
+                                    );
+                                    empty
+                                        .spawn(Node {
+                                            min_width: px(0),
+                                            flex_grow: 1.0,
+                                            flex_direction: FlexDirection::Column,
+                                            ..default()
+                                        })
+                                        .with_children(|copy| {
+                                            spawn_text(
+                                                copy,
+                                                font.clone(),
+                                                "No library locations",
+                                                10.0,
+                                                theme.foreground,
+                                            );
+                                            spawn_text(
+                                                copy,
+                                                font.clone(),
+                                                "Add a folder to begin browsing",
+                                                7.5,
+                                                theme.muted_foreground,
+                                            );
+                                        });
+                                    spawn_compact_primary_action_button(
+                                        empty,
+                                        font.clone(),
+                                        theme,
+                                        "Add folder",
+                                        UiAction::from(LibraryCommand::ChooseFolder),
+                                    );
+                                });
+                        }
+
+                        let output_selected = session
+                            .config
+                            .export_path
+                            .as_ref()
+                            .is_some_and(|path| session.folder_browser.root.as_ref() == Some(path));
+                        chips
                             .spawn((
                                 Node {
-                                    width: percent(100),
-                                    min_height: px(46),
+                                    min_width: px(190),
+                                    flex_basis: px(230),
+                                    min_height: px(50),
+                                    flex_grow: 1.0,
                                     align_items: AlignItems::Center,
-                                    border_radius: BorderRadius::all(px(4)),
+                                    padding: UiRect::right(px(4)),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: studio_control_radius(),
                                     ..default()
                                 },
-                                BackgroundColor(if selected {
-                                    theme.foreground.with_alpha(0.07)
+                                BackgroundColor(if output_selected {
+                                    theme.primary.with_alpha(0.09)
                                 } else {
-                                    Color::NONE
+                                    theme.background.with_alpha(0.18)
+                                }),
+                                BorderColor::all(if output_selected {
+                                    theme.primary.with_alpha(0.44)
+                                } else {
+                                    theme.border.with_alpha(0.34)
                                 }),
                             ))
-                            .with_children(|row| {
-                                row.spawn((
+                            .with_children(|chip| {
+                                let (action, output_label, output_path) =
+                                    if let Some(path) = session.config.export_path.as_ref() {
+                                        (
+                                            UiAction::from(LibraryCommand::SelectFolderRoot(
+                                                path.clone(),
+                                            )),
+                                            folder_name(path),
+                                            path.to_string_lossy().into_owned(),
+                                        )
+                                    } else {
+                                        (
+                                            UiAction::from(LibraryCommand::ChooseExportFolder),
+                                            "Output folder".to_string(),
+                                            "Choose where processed files are written".to_string(),
+                                        )
+                                    };
+                                chip.spawn((
                                     Button,
-                                    UiAction::from(LibraryCommand::SelectFolderRoot(root.clone())),
+                                    action,
                                     Node {
                                         min_width: px(0),
                                         height: percent(100),
                                         flex_grow: 1.0,
-                                        flex_direction: FlexDirection::Column,
-                                        justify_content: JustifyContent::Center,
-                                        padding: UiRect::horizontal(px(8)),
-                                        ..default()
-                                    },
-                                    BackgroundColor(Color::NONE),
-                                    children![
-                                        (
-                                            Text::new(folder_name(&root)),
-                                            ui_text_font(font.clone(), 11.0),
-                                            TextColor(theme.foreground),
-                                            TextLayout::no_wrap(),
-                                        ),
-                                        (
-                                            Text::new(root.to_string_lossy().into_owned()),
-                                            ui_text_font(font.clone(), 8.0),
-                                            TextColor(theme.muted_foreground.with_alpha(0.64)),
-                                            TextLayout::no_wrap(),
-                                        )
-                                    ],
-                                ));
-                                spawn_text_button(
-                                    row,
-                                    font.clone(),
-                                    theme,
-                                    "×",
-                                    13.0,
-                                    UiAction::from(LibraryCommand::RequestRemoveFolder(root)),
-                                );
-                            });
-                    }
-                    if session.config.library_paths().is_empty() {
-                        spawn_wrapped_text(
-                            roots,
-                            font.clone(),
-                            "No folders added yet.",
-                            10.0,
-                            theme.muted_foreground,
-                        );
-                    }
-                    roots.spawn((
-                        Node {
-                            width: percent(100),
-                            margin: UiRect::top(px(12)),
-                            padding: UiRect::top(px(12)),
-                            border: UiRect::top(px(1)),
-                            ..default()
-                        },
-                        BorderColor::all(theme.border.with_alpha(0.42)),
-                    ));
-                    spawn_text(
-                        roots,
-                        font.clone(),
-                        "OUTPUT FOLDER",
-                        8.0,
-                        theme.muted_foreground,
-                    );
-                    roots.spawn(Node {
-                        height: px(5),
-                        ..default()
-                    });
-                    if let Some(path) = session.config.export_path.as_ref() {
-                        let selected = session.folder_browser.root.as_ref() == Some(path);
-                        roots
-                            .spawn((
-                                Node {
-                                    width: percent(100),
-                                    min_height: px(52),
-                                    border_radius: BorderRadius::all(px(4)),
-                                    ..default()
-                                },
-                                BackgroundColor(if selected {
-                                    theme.foreground.with_alpha(0.07)
-                                } else {
-                                    Color::NONE
-                                }),
-                            ))
-                            .with_children(|row| {
-                                row.spawn((
-                                    Button,
-                                    UiAction::from(LibraryCommand::SelectFolderRoot(path.clone())),
-                                    Node {
-                                        width: percent(100),
-                                        min_height: px(52),
-                                        flex_direction: FlexDirection::Column,
-                                        justify_content: JustifyContent::Center,
-                                        align_items: AlignItems::FlexStart,
-                                        padding: UiRect::horizontal(px(8)),
-                                        row_gap: px(2),
-                                        border_radius: BorderRadius::all(px(4)),
+                                        align_items: AlignItems::Center,
+                                        padding: UiRect::horizontal(px(10)),
+                                        column_gap: px(9),
+                                        border_radius: studio_control_radius(),
                                         ..default()
                                     },
                                     BackgroundColor(Color::NONE),
                                 ))
-                                .with_children(|output| {
-                                    spawn_text(
-                                        output,
-                                        font.clone(),
-                                        folder_name(path),
-                                        11.0,
-                                        theme.foreground,
-                                    );
-                                    output
+                                .with_children(|select| {
+                                    select
+                                        .spawn((
+                                            Node {
+                                                width: px(30),
+                                                height: px(30),
+                                                flex_shrink: 0.0,
+                                                align_items: AlignItems::Center,
+                                                justify_content: JustifyContent::Center,
+                                                border_radius: BorderRadius::all(px(7)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(theme.primary.with_alpha(0.08)),
+                                        ))
+                                        .with_children(|slot| {
+                                            spawn_icon(
+                                                slot,
+                                                icons.clone(),
+                                                UiIcon::Save,
+                                                15.0,
+                                                if output_selected {
+                                                    theme.primary
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            );
+                                        });
+                                    select
                                         .spawn(Node {
-                                            width: percent(100),
+                                            min_width: px(0),
+                                            flex_grow: 1.0,
+                                            flex_direction: FlexDirection::Column,
+                                            justify_content: JustifyContent::Center,
+                                            row_gap: px(2),
                                             overflow: Overflow::clip(),
                                             ..default()
                                         })
-                                        .with_children(|path_copy| {
-                                            path_copy.spawn((
-                                                Text::new(path.to_string_lossy().into_owned()),
-                                                ui_text_font(font.clone(), 8.0),
-                                                TextColor(theme.muted_foreground.with_alpha(0.64)),
+                                        .with_children(|copy| {
+                                            copy.spawn((
+                                                Text::new(format!("Output · {output_label}")),
+                                                ui_text_font(font.clone(), 10.5),
+                                                TextColor(theme.foreground),
+                                                TextLayout::no_wrap(),
+                                            ));
+                                            copy.spawn((
+                                                Text::new(output_path),
+                                                ui_text_font(font.clone(), 7.5),
+                                                TextColor(
+                                                    theme.muted_foreground.with_alpha(0.72),
+                                                ),
                                                 TextLayout::no_wrap(),
                                             ));
                                         });
                                 });
+                                if session.config.export_path.is_some() {
+                                    spawn_icon_button(
+                                        chip,
+                                        icons.clone(),
+                                        theme,
+                                        UiIcon::Close,
+                                        UiAction::from(LibraryCommand::ClearExportFolder),
+                                        false,
+                                        false,
+                                        30.0,
+                                    );
+                                }
                             });
-                    } else {
-                        roots
-                            .spawn((
-                                Button,
-                                UiAction::from(LibraryCommand::ChooseExportFolder),
-                                Node {
-                                    width: percent(100),
-                                    min_height: px(52),
-                                    flex_direction: FlexDirection::Column,
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::FlexStart,
-                                    padding: UiRect::horizontal(px(8)),
-                                    row_gap: px(2),
-                                    border_radius: BorderRadius::all(px(4)),
-                                    ..default()
-                                },
-                                BackgroundColor(theme.foreground.with_alpha(0.035)),
-                            ))
-                            .with_children(|output| {
-                                spawn_text(
-                                    output,
-                                    font.clone(),
-                                    "System default",
-                                    11.0,
-                                    theme.foreground,
-                                );
-                                spawn_wrapped_text(
-                                    output,
-                                    font.clone(),
-                                    "Choose an output folder",
-                                    8.0,
-                                    theme.muted_foreground,
-                                );
-                            });
-                    }
-                });
+                    });
+            });
 
-                body.spawn((
-                    Node {
-                        min_width: px(0),
-                        min_height: px(0),
-                        flex_grow: 1.0,
-                        flex_direction: FlexDirection::Column,
-                        overflow: Overflow::clip(),
-                        border: UiRect::all(px(1)),
-                        border_radius: studio_card_radius(),
-                        ..default()
-                    },
-                    studio_card_background(theme),
-                    studio_card_border(theme),
-                ))
-                .with_children(|browser| {
-                    browser
-                        .spawn((
-                            Node {
-                                width: percent(100),
-                                height: px(48),
-                                flex_shrink: 0.0,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::horizontal(px(12)),
-                                column_gap: px(8),
-                                border: UiRect::bottom(px(1)),
-                                ..default()
-                            },
-                            BorderColor::all(theme.border.with_alpha(0.45)),
-                        ))
-                        .with_children(|path_bar| {
+            page.spawn((
+                Node {
+                    min_width: px(0),
+                    min_height: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    overflow: Overflow::clip(),
+                    border: UiRect::all(px(1)),
+                    border_radius: studio_card_radius(),
+                    ..default()
+                },
+                studio_card_background(theme),
+                studio_card_border(theme),
+                studio_card_shadow(theme),
+            ))
+            .with_children(|browser| {
+                browser
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            height: px(64),
+                            flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
+                            padding: UiRect::horizontal(px(14)),
+                            column_gap: px(10),
+                            border: UiRect::bottom(px(1)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.16)),
+                        BorderColor::all(theme.border.with_alpha(0.46)),
+                    ))
+                    .with_children(|path_bar| {
+                        if can_go_up {
                             spawn_icon_button(
                                 path_bar,
                                 icons.clone(),
@@ -342,116 +612,253 @@ pub(crate) fn spawn_folders(
                                 UiAction::from(LibraryCommand::FolderUp),
                                 false,
                                 false,
-                                32.0,
+                                34.0,
                             );
-                            spawn_icon(
-                                path_bar,
-                                icons.clone(),
-                                UiIcon::Folder,
-                                15.0,
-                                theme.primary,
-                            );
-                            spawn_text(
-                                path_bar,
-                                font.clone(),
-                                session
-                                    .folder_browser
-                                    .current
-                                    .as_ref()
-                                    .map(|path| path.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| "Choose a watched folder".to_string()),
-                                10.0,
-                                theme.muted_foreground,
-                            );
-                        });
-
-                    browser
-                        .spawn((
-                            Node {
-                                width: percent(100),
-                                height: px(30),
-                                flex_shrink: 0.0,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::horizontal(px(14)),
-                                border: UiRect::bottom(px(1)),
-                                ..default()
-                            },
-                            BorderColor::all(theme.border.with_alpha(0.32)),
-                        ))
-                        .with_children(|columns| {
-                            spawn_text(columns, font.clone(), "Name", 9.0, theme.muted_foreground);
-                            columns.spawn(Node {
-                                flex_grow: 1.0,
-                                ..default()
+                        } else {
+                            path_bar
+                                .spawn(Node {
+                                    width: px(34),
+                                    height: px(34),
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    border_radius: studio_control_radius(),
+                                    ..default()
+                                })
+                                .with_children(|slot| {
+                                    spawn_icon(
+                                        slot,
+                                        icons.clone(),
+                                        UiIcon::ArrowLeft,
+                                        15.0,
+                                        theme.muted_foreground.with_alpha(0.26),
+                                    );
+                                });
+                        }
+                        path_bar
+                            .spawn((
+                                Node {
+                                    width: px(34),
+                                    height: px(34),
+                                    flex_shrink: 0.0,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    border_radius: BorderRadius::all(px(8)),
+                                    ..default()
+                                },
+                                BackgroundColor(theme.primary.with_alpha(0.10)),
+                            ))
+                            .with_children(|slot| {
+                                spawn_icon(
+                                    slot,
+                                    icons.clone(),
+                                    UiIcon::Folder,
+                                    16.0,
+                                    theme.primary,
+                                );
                             });
-                            spawn_text(columns, font.clone(), "Kind", 9.0, theme.muted_foreground);
-                            columns.spawn(Node {
-                                width: px(50),
-                                ..default()
-                            });
-                            spawn_text(columns, font.clone(), "Size", 9.0, theme.muted_foreground);
-                        });
-
-                    browser
-                        .spawn((
-                            FolderEntryList,
-                            ScrollPosition::default(),
-                            Node {
+                        path_bar
+                            .spawn(Node {
                                 min_width: px(0),
-                                min_height: px(0),
                                 flex_grow: 1.0,
                                 flex_direction: FlexDirection::Column,
-                                overflow: Overflow::scroll_y(),
+                                justify_content: JustifyContent::Center,
+                                row_gap: px(2),
+                                overflow: Overflow::clip(),
                                 ..default()
-                            },
-                        ))
-                        .with_children(|list| {
-                            if let Some(error) = session.folder_browser.error.as_deref() {
-                                spawn_wrapped_text(
-                                    list,
+                            })
+                            .with_children(|copy| {
+                                copy.spawn((
+                                    Text::new(current_name),
+                                    ui_text_font(font.clone(), 12.0),
+                                    TextColor(theme.foreground),
+                                    TextLayout::no_wrap(),
+                                ));
+                                copy.spawn((
+                                    Text::new(current_path),
+                                    ui_text_font(font.clone(), 8.0),
+                                    TextColor(theme.muted_foreground),
+                                    TextLayout::no_wrap(),
+                                ));
+                            });
+                        spawn_status_pill(
+                            path_bar,
+                            font.clone(),
+                            format!("{} items", session.folder_browser.entries.len()),
+                            theme.muted_foreground,
+                        );
+                    });
+
+                browser
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            height: px(34),
+                            flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
+                            padding: UiRect::horizontal(px(14)),
+                            border: UiRect::bottom(px(1)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.10)),
+                        BorderColor::all(theme.border.with_alpha(0.30)),
+                    ))
+                    .with_children(|columns| {
+                        columns
+                            .spawn(Node {
+                                min_width: px(0),
+                                flex_grow: 1.0,
+                                ..default()
+                            })
+                            .with_children(|name| {
+                                spawn_text(
+                                    name,
                                     font.clone(),
-                                    localized_message(
-                                        session.config,
-                                        UiMessage::FolderReadFailed,
-                                        &[("{error}", error)],
-                                    ),
-                                    10.0,
-                                    theme.destructive,
-                                );
-                            } else if session.folder_browser.current.is_none() {
-                                spawn_wrapped_text(
-                                    list,
-                                    font.clone(),
-                                    "Add a music folder to begin.",
-                                    11.0,
+                                    "NAME",
+                                    7.5,
                                     theme.muted_foreground,
                                 );
-                            } else {
-                                for entry in &session.folder_browser.entries {
-                                    spawn_folder_entry(
-                                        list,
-                                        font.clone(),
-                                        icons.clone(),
-                                        theme,
-                                        entry,
-                                    );
-                                }
-                                if session.folder_browser.entries.is_empty() {
-                                    spawn_wrapped_text(
-                                        list,
-                                        font.clone(),
-                                        "This folder is empty.",
-                                        10.0,
-                                        theme.muted_foreground,
-                                    );
-                                }
+                            });
+                        columns
+                            .spawn(Node {
+                                width: px(82),
+                                ..default()
+                            })
+                            .with_children(|kind| {
+                                spawn_text(
+                                    kind,
+                                    font.clone(),
+                                    "KIND",
+                                    7.5,
+                                    theme.muted_foreground,
+                                );
+                            });
+                        columns
+                            .spawn(Node {
+                                width: px(68),
+                                justify_content: JustifyContent::FlexEnd,
+                                ..default()
+                            })
+                            .with_children(|size| {
+                                spawn_text(
+                                    size,
+                                    font.clone(),
+                                    "SIZE",
+                                    7.5,
+                                    theme.muted_foreground,
+                                );
+                            });
+                    });
+
+                browser
+                    .spawn((
+                        FolderEntryList,
+                        ScrollPosition::default(),
+                        Node {
+                            min_width: px(0),
+                            min_height: px(0),
+                            flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        },
+                    ))
+                    .with_children(|list| {
+                        if let Some(error) = session.folder_browser.error.as_deref() {
+                            spawn_folder_empty_state(
+                                list,
+                                font.clone(),
+                                icons.clone(),
+                                theme,
+                                UiIcon::Repair,
+                                theme.destructive,
+                                "This folder could not be read",
+                                localized_message(
+                                    session.config,
+                                    UiMessage::FolderReadFailed,
+                                    &[("{error}", error)],
+                                ),
+                                None,
+                            );
+                        } else if session.folder_browser.current.is_none() {
+                            spawn_folder_empty_state(
+                                list,
+                                font.clone(),
+                                icons.clone(),
+                                theme,
+                                UiIcon::Folder,
+                                theme.primary,
+                                "Choose a library location",
+                                "Select one of the locations above, or add a folder to begin.",
+                                Some((
+                                    "Add folder",
+                                    UiAction::from(LibraryCommand::ChooseFolder),
+                                )),
+                            );
+                        } else {
+                            for entry in &session.folder_browser.entries {
+                                spawn_folder_entry(
+                                    list,
+                                    font.clone(),
+                                    icons.clone(),
+                                    theme,
+                                    entry,
+                                );
                             }
+                            if session.folder_browser.entries.is_empty() {
+                                spawn_folder_empty_state(
+                                    list,
+                                    font.clone(),
+                                    icons.clone(),
+                                    theme,
+                                    UiIcon::Folder,
+                                    theme.muted_foreground,
+                                    "This folder is empty",
+                                    "There are no supported media files or subfolders in this location.",
+                                    None,
+                                );
+                            }
+                        }
+                    });
+
+                browser
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            height: px(36),
+                            flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
+                            padding: UiRect::horizontal(px(14)),
+                            column_gap: px(10),
+                            border: UiRect::top(px(1)),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.14)),
+                        BorderColor::all(theme.border.with_alpha(0.30)),
+                    ))
+                    .with_children(|footer| {
+                        spawn_text(
+                            footer,
+                            font.clone(),
+                            "Source media is read-only",
+                            8.0,
+                            theme.muted_foreground,
+                        );
+                        footer.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
                         });
-                });
+                        spawn_text(
+                            footer,
+                            font.clone(),
+                            "Double-click files to open · Right-click for actions",
+                            8.0,
+                            theme.muted_foreground.with_alpha(0.78),
+                        );
+                    });
             });
 
             if let Some(context) = session.folder_browser.context_menu.as_ref() {
-                spawn_folder_context_menu(page, font.clone(), theme, context);
+                spawn_folder_context_menu(page, font.clone(), icons.clone(), theme, context);
             }
             if let Some(path) = session.folder_browser.pending_remove.as_ref() {
                 spawn_remove_folder_confirmation(page, font.clone(), theme, path);
@@ -460,21 +867,24 @@ pub(crate) fn spawn_folders(
                 page.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: px(14),
-                        right: px(14),
-                        bottom: px(10),
-                        min_height: px(30),
+                        left: px(22),
+                        right: px(22),
+                        bottom: px(16),
+                        min_height: px(40),
                         align_items: AlignItems::Center,
-                        padding: UiRect::horizontal(px(12)),
-                        border_radius: BorderRadius::all(px(5)),
+                        padding: UiRect::horizontal(px(14)),
+                        border: UiRect::all(px(1)),
+                        border_radius: studio_control_radius(),
                         ..default()
                     },
-                    BackgroundColor(theme.muted.with_alpha(0.88)),
+                    BackgroundColor(theme.card.with_alpha(0.96)),
+                    BorderColor::all(theme.primary.with_alpha(0.28)),
+                    studio_popover_shadow(theme),
                     ZIndex(60),
                     children![(
                         Text::new(notice),
                         ui_text_font(font, 9.0),
-                        TextColor(theme.muted_foreground),
+                        TextColor(theme.foreground),
                     )],
                 ));
             }
@@ -489,6 +899,8 @@ pub(crate) fn spawn_folder_entry(
     entry: &LibraryFolderEntry,
 ) {
     let context_entry = entry.clone();
+    let secondary = folder_entry_secondary_copy(entry);
+    let accent = folder_entry_color(&entry.kind, theme);
     parent
         .spawn((
             Button,
@@ -499,54 +911,67 @@ pub(crate) fn spawn_folder_entry(
             ]),
             Node {
                 width: percent(100),
-                min_height: px(38),
+                min_height: px(56),
                 flex_shrink: 0.0,
                 align_items: AlignItems::Center,
                 padding: UiRect::horizontal(px(14)),
+                column_gap: px(11),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
             BackgroundColor(Color::NONE),
+            BorderColor::all(theme.border.with_alpha(0.20)),
         ))
         .with_children(|row| {
+            row.spawn((
+                Node {
+                    width: px(38),
+                    height: px(38),
+                    flex_shrink: 0.0,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(9)),
+                    ..default()
+                },
+                BackgroundColor(accent.with_alpha(0.10)),
+                BorderColor::all(accent.with_alpha(0.24)),
+            ))
+            .with_children(|slot| {
+                spawn_icon(
+                    slot,
+                    icons.clone(),
+                    folder_entry_icon(&entry.kind),
+                    17.0,
+                    accent,
+                );
+            });
             row.spawn(Node {
                 min_width: px(0),
                 flex_grow: 1.0,
-                align_items: AlignItems::Center,
-                column_gap: px(8),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                row_gap: px(2),
+                overflow: Overflow::clip(),
                 ..default()
             })
-            .with_children(|name| {
-                spawn_icon(
-                    name,
-                    icons,
-                    folder_entry_icon(&entry.kind),
-                    14.0,
-                    folder_entry_color(&entry.kind, theme),
-                );
-                spawn_text(
-                    name,
-                    font.clone(),
-                    entry.name.clone(),
-                    10.0,
-                    theme.foreground,
-                );
+            .with_children(|copy| {
+                copy.spawn((
+                    Text::new(entry.name.clone()),
+                    ui_text_font(font.clone(), 11.0),
+                    TextColor(theme.foreground),
+                    TextLayout::no_wrap(),
+                ));
+                copy.spawn((
+                    Text::new(secondary),
+                    ui_text_font(font.clone(), 8.0),
+                    TextColor(theme.muted_foreground),
+                    TextLayout::no_wrap(),
+                ));
             });
             row.spawn(Node {
-                width: px(82),
-                ..default()
-            })
-            .with_children(|kind| {
-                spawn_text(
-                    kind,
-                    font.clone(),
-                    entry.kind.clone(),
-                    9.0,
-                    theme.muted_foreground,
-                );
-            });
-            row.spawn(Node {
-                width: px(68),
+                width: px(78),
+                flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })
@@ -568,6 +993,7 @@ pub(crate) fn spawn_folder_entry(
             move |mut event: On<Pointer<Click>>,
                   mut shell: ResMut<ShellState>,
                   mut library: ResMut<LibraryState>,
+                  windows: Query<&Window, With<PrimaryWindow>>,
                   mut invalidated: ResMut<UiInvalidated>| {
                 event.propagate(false);
                 match event.button {
@@ -584,9 +1010,14 @@ pub(crate) fn spawn_folder_entry(
                         invalidated.invalidate(UiDirtyRegion::Library);
                     }
                     PointerButton::Secondary => {
+                        let viewport_size = windows
+                            .single()
+                            .map(|window| Vec2::new(window.width(), window.height()))
+                            .unwrap_or(Vec2::new(1280.0, 720.0));
                         library.folder_browser.context_menu = Some(FolderContextMenu {
                             entry: context_entry.clone(),
                             position: event.pointer_location.position,
+                            viewport_size,
                         });
                         invalidated.invalidate(UiDirtyRegion::Library);
                     }
@@ -599,6 +1030,7 @@ pub(crate) fn spawn_folder_entry(
 pub(crate) fn spawn_folder_context_menu(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    icons: Handle<Image>,
     theme: &StudioTheme,
     context: &FolderContextMenu,
 ) {
@@ -616,33 +1048,107 @@ pub(crate) fn spawn_folder_context_menu(
         BackgroundColor(Color::NONE),
         ZIndex(40),
     ));
-    let left = (context.position.x - SIDEBAR_WIDTH - 12.0).max(8.0);
-    let top = (context.position.y - 58.0).max(8.0);
+    let position = clamp_folder_context_position(context.position, context.viewport_size);
+    let left = position.x;
+    let top = position.y;
     parent
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: px(left),
                 top: px(top),
-                width: px(220),
+                width: px(FOLDER_CONTEXT_MENU_WIDTH),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(6)),
+                padding: UiRect::all(px(10)),
+                row_gap: px(4),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_popover_radius(),
                 ..default()
             },
             BackgroundColor(theme.card.with_alpha(0.98)),
-            BorderColor::all(theme.border.with_alpha(0.72)),
+            BorderColor::all(theme.border.with_alpha(0.78)),
+            studio_popover_shadow(theme),
             ZIndex(41),
         ))
         .with_children(|menu| {
-            spawn_text(
-                menu,
-                font.clone(),
-                context.entry.name.clone(),
-                9.0,
-                theme.muted_foreground,
-            );
+            menu.spawn(Node {
+                width: percent(100),
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(px(4), px(5)),
+                column_gap: px(10),
+                ..default()
+            })
+            .with_children(|header| {
+                header
+                    .spawn((
+                        Node {
+                            width: px(38),
+                            height: px(38),
+                            flex_shrink: 0.0,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border_radius: BorderRadius::all(px(9)),
+                            ..default()
+                        },
+                        BackgroundColor(
+                            folder_entry_color(&context.entry.kind, theme).with_alpha(0.10),
+                        ),
+                    ))
+                    .with_children(|slot| {
+                        spawn_icon(
+                            slot,
+                            icons,
+                            folder_entry_icon(&context.entry.kind),
+                            18.0,
+                            folder_entry_color(&context.entry.kind, theme),
+                        );
+                    });
+                header
+                    .spawn(Node {
+                        min_width: px(0),
+                        flex_grow: 1.0,
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(2),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    })
+                    .with_children(|copy| {
+                        spawn_text(
+                            copy,
+                            font.clone(),
+                            context.entry.name.clone(),
+                            11.5,
+                            theme.foreground,
+                        );
+                        spawn_text(
+                            copy,
+                            font.clone(),
+                            folder_entry_kind_label(&context.entry.kind),
+                            7.5,
+                            theme.muted_foreground,
+                        );
+                    });
+            });
+            menu.spawn((
+                Node {
+                    width: percent(100),
+                    padding: UiRect::all(px(8)),
+                    margin: UiRect::bottom(px(4)),
+                    overflow: Overflow::clip(),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(7)),
+                    ..default()
+                },
+                BackgroundColor(theme.background.with_alpha(0.28)),
+                BorderColor::all(theme.border.with_alpha(0.36)),
+                children![(
+                    Text::new(context.entry.path.clone()),
+                    ui_text_font(font.clone(), 7.5),
+                    TextColor(theme.muted_foreground),
+                    TextLayout::no_wrap(),
+                )],
+            ));
+            spawn_text(menu, font.clone(), "ACTIONS", 7.0, theme.primary);
             spawn_menu_text_button(
                 menu,
                 font.clone(),
@@ -650,22 +1156,29 @@ pub(crate) fn spawn_folder_context_menu(
                 if context.entry.kind == "folder" {
                     "Open folder"
                 } else {
-                    "Open"
+                    "Open file"
                 },
-                11.0,
+                10.5,
                 UiAction::from(LibraryCommand::OpenFolderEntry(PathBuf::from(
                     &context.entry.path,
                 ))),
             );
             spawn_menu_text_button(
                 menu,
-                font,
+                font.clone(),
                 theme,
-                "Reveal in folder",
-                11.0,
+                "Reveal in system file manager",
+                10.5,
                 UiAction::from(LibraryCommand::RevealFolderEntry(PathBuf::from(
                     &context.entry.path,
                 ))),
+            );
+            spawn_wrapped_text(
+                menu,
+                font,
+                "Source files remain read-only when opened from Uta! Studio.",
+                7.5,
+                theme.muted_foreground.with_alpha(0.78),
             );
         });
 }
@@ -691,16 +1204,17 @@ pub(crate) fn spawn_remove_folder_confirmation(
         ZIndex(70),
         children![(
             Node {
-                width: px(430),
+                width: px(460),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(22)),
-                row_gap: px(10),
+                padding: UiRect::all(px(24)),
+                row_gap: px(12),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
+                border_radius: studio_popover_radius(),
                 ..default()
             },
-            BackgroundColor(theme.card),
-            BorderColor::all(theme.border),
+            BackgroundColor(theme.card.with_alpha(0.98)),
+            BorderColor::all(theme.border.with_alpha(0.82)),
+            studio_popover_shadow(theme),
             children![
                 (
                     Text::new("Stop watching this folder?"),
@@ -728,26 +1242,32 @@ pub(crate) fn spawn_remove_folder_confirmation(
                             Button,
                             UiAction::from(LibraryCommand::CancelRemoveFolder),
                             Node {
+                                min_height: px(STUDIO_CONTROL_HEIGHT),
                                 padding: UiRect::axes(px(13), px(8)),
-                                border_radius: BorderRadius::all(px(5)),
+                                border: UiRect::all(px(1)),
+                                border_radius: studio_control_radius(),
                                 ..default()
                             },
-                            BackgroundColor(Color::NONE),
+                            BackgroundColor(theme.card.with_alpha(0.50)),
+                            BorderColor::all(theme.border.with_alpha(0.54)),
                             children![(
                                 Text::new("Cancel"),
                                 ui_text_font(font.clone(), 10.0),
-                                TextColor(theme.muted_foreground),
+                                TextColor(theme.foreground),
                             )],
                         ),
                         (
                             Button,
                             UiAction::from(LibraryCommand::ConfirmRemoveFolder),
                             Node {
+                                min_height: px(STUDIO_CONTROL_HEIGHT),
                                 padding: UiRect::axes(px(13), px(8)),
-                                border_radius: BorderRadius::all(px(5)),
+                                border: UiRect::all(px(1)),
+                                border_radius: studio_control_radius(),
                                 ..default()
                             },
-                            BackgroundColor(theme.destructive.with_alpha(0.18)),
+                            BackgroundColor(theme.destructive.with_alpha(0.16)),
+                            BorderColor::all(theme.destructive.with_alpha(0.54)),
                             children![(
                                 Text::new("Stop watching"),
                                 ui_text_font(font, 10.0),
@@ -788,31 +1308,61 @@ pub(crate) fn folder_entry_color(kind: &str, theme: &StudioTheme) -> Color {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_folder_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     shell: Res<ShellState>,
-    mut lists: Query<(&ComputedNode, &mut ScrollPosition), With<FolderEntryList>>,
+    mut roots: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        (With<FolderRootList>, Without<FolderEntryList>),
+    >,
+    mut entries: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        (With<FolderEntryList>, Without<FolderRootList>),
+    >,
 ) {
     if shell.route != StudioRoute::Folders {
         return;
     }
-    let Ok((computed, mut position)) = lists.single_mut() else {
+    let Ok(window) = windows.single() else {
         wheel.clear();
         return;
     };
-    let mut delta = 0.0;
-    for event in wheel.read() {
-        let scale = match event.unit {
-            bevy::input::mouse::MouseScrollUnit::Line => 22.0,
-            bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
-        };
-        delta -= event.y * scale;
-    }
+    let Some(pointer) = window.cursor_position() else {
+        wheel.clear();
+        return;
+    };
+    let delta = wheel
+        .read()
+        .map(|event| {
+            let scale = match event.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => 22.0,
+                bevy::input::mouse::MouseScrollUnit::Pixel => 1.0,
+            };
+            -event.y * scale
+        })
+        .sum::<f32>();
     if delta.abs() < f32::EPSILON {
         return;
     }
-    let size = computed.size() * computed.inverse_scale_factor();
-    let content = computed.content_size() * computed.inverse_scale_factor();
-    let max = (content.y - size.y).max(0.0);
-    position.y = (position.y + delta).clamp(0.0, max);
+
+    if let Some((computed, _, mut position)) = roots
+        .iter_mut()
+        .find(|(computed, transform, _)| ui_node_contains_pointer(computed, transform, pointer))
+    {
+        let size = computed.size() * computed.inverse_scale_factor();
+        let content = computed.content_size() * computed.inverse_scale_factor();
+        position.x = (position.x + delta).clamp(0.0, (content.x - size.x).max(0.0));
+        return;
+    }
+
+    if let Some((computed, _, mut position)) = entries
+        .iter_mut()
+        .find(|(computed, transform, _)| ui_node_contains_pointer(computed, transform, pointer))
+    {
+        let size = computed.size() * computed.inverse_scale_factor();
+        let content = computed.content_size() * computed.inverse_scale_factor();
+        position.y = (position.y + delta).clamp(0.0, (content.y - size.y).max(0.0));
+    }
 }

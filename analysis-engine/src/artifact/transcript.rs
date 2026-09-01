@@ -200,6 +200,12 @@ fn valid_qwen_asr_windowing(value: &QwenAsrLongInputV1) -> bool {
     }
     let mut expected_start = 0.0;
     for (index, segment) in value.segments.iter().enumerate() {
+        // A window covering no speech (e.g. a purely instrumental passage)
+        // legitimately carries no language and no transcribed text; require
+        // those two fields to agree on "silent" rather than demanding every
+        // window contain real speech.
+        let silent = segment.detected_language.trim().is_empty() && segment.text_characters == 0;
+        let spoken = !segment.detected_language.trim().is_empty() && segment.text_characters > 0;
         if segment.index != index
             || !segment.audio_start_seconds.is_finite()
             || !segment.audio_end_seconds.is_finite()
@@ -207,8 +213,7 @@ fn valid_qwen_asr_windowing(value: &QwenAsrLongInputV1) -> bool {
             || segment.audio_end_seconds <= segment.audio_start_seconds
             || segment.audio_end_seconds - segment.audio_start_seconds
                 > QWEN_ASR_WINDOW_SECONDS + 0.001
-            || segment.detected_language.trim().is_empty()
-            || segment.text_characters == 0
+            || !(silent || spoken)
         {
             return false;
         }
@@ -286,5 +291,52 @@ mod tests {
             }],
         };
         assert!(!valid_qwen_asr_windowing(&value));
+    }
+
+    #[test]
+    fn silent_instrumental_window_is_valid_qwen_coverage() {
+        // A trailing instrumental outro legitimately produces a window with
+        // no detected language and no transcribed text (confirmed against a
+        // real song); coverage must still accept it as long as it stays
+        // contiguous with its neighbors.
+        let value = QwenAsrLongInputV1 {
+            policy: QWEN_ASR_LONG_INPUT_POLICY.to_string(),
+            max_window_seconds: QWEN_ASR_WINDOW_SECONDS,
+            source_duration_seconds: 100.0,
+            segments: vec![
+                QwenAsrSegmentV1 {
+                    index: 0,
+                    audio_start_seconds: 0.0,
+                    audio_end_seconds: 90.0,
+                    detected_language: "en".to_string(),
+                    text_characters: 4,
+                },
+                QwenAsrSegmentV1 {
+                    index: 1,
+                    audio_start_seconds: 90.0,
+                    audio_end_seconds: 100.0,
+                    detected_language: String::new(),
+                    text_characters: 0,
+                },
+            ],
+        };
+        assert!(valid_qwen_asr_windowing(&value));
+    }
+
+    #[test]
+    fn qwen_segment_language_and_text_must_agree_on_silence() {
+        let inconsistent = QwenAsrLongInputV1 {
+            policy: QWEN_ASR_LONG_INPUT_POLICY.to_string(),
+            max_window_seconds: QWEN_ASR_WINDOW_SECONDS,
+            source_duration_seconds: 90.0,
+            segments: vec![QwenAsrSegmentV1 {
+                index: 0,
+                audio_start_seconds: 0.0,
+                audio_end_seconds: 90.0,
+                detected_language: String::new(),
+                text_characters: 3,
+            }],
+        };
+        assert!(!valid_qwen_asr_windowing(&inconsistent));
     }
 }

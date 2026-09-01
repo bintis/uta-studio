@@ -48,6 +48,13 @@ pub struct EngineLifecycleEventV1 {
     pub worker_task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
+    /// Present only alongside `artifact`, and only for a worker output the
+    /// caller might want to reuse on a future run (a Step 1 audio-chain
+    /// stem) -- not every artifact frame names a real file (some just mark
+    /// an in-memory evidence bundle as ready), so this stays optional even
+    /// when `artifact` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub event_at_ms: i64,
@@ -147,6 +154,20 @@ impl LifecycleNodeGuard {
         if let Some(identity) = self.identity.as_ref() {
             emit(identity, EngineLifecycleKindV1::Artifact, |event| {
                 event.artifact = Some(artifact.into());
+            });
+        }
+    }
+
+    /// Same as `artifact`, but also reports the real file the caller wrote
+    /// it to -- for a Step 1 audio-chain stem, the app can capture this
+    /// file into its own cache as soon as it exists, instead of only ever
+    /// learning about it from a final result manifest that a later,
+    /// unrelated node failure might prevent from ever being produced.
+    pub(crate) fn artifact_with_path(&self, artifact: impl Into<String>, path: impl Into<String>) {
+        if let Some(identity) = self.identity.as_ref() {
+            emit(identity, EngineLifecycleKindV1::Artifact, |event| {
+                event.artifact = Some(artifact.into());
+                event.path = Some(path.into());
             });
         }
     }
@@ -267,6 +288,7 @@ fn emit(
         work_units_total: None,
         worker_task_id: None,
         artifact: None,
+        path: None,
         message: None,
         event_at_ms: now_ms(),
     };

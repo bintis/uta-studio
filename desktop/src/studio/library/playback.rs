@@ -1,11 +1,62 @@
 use super::*;
 use crate::studio::*;
 
+/// A clickable column header that sorts the song list by `column` (one of
+/// "artist"/"album"/"time"/"status", matching `LibraryMenuFilters::sort_column`).
+/// Clicking the already-active column flips direction instead of resetting
+/// it (see `LibraryCommand::SetLibrarySort`'s handler); the arrow only
+/// appears on that active column.
+fn spawn_sortable_column_header(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &'static str,
+    column: &'static str,
+    active: bool,
+    descending: bool,
+) {
+    parent
+        .spawn((
+            Button,
+            UiAction::from(LibraryCommand::SetLibrarySort(column)),
+            Node {
+                align_items: AlignItems::Center,
+                column_gap: px(3.0),
+                ..default()
+            },
+        ))
+        .with_children(|button| {
+            spawn_text(
+                button,
+                font.clone(),
+                label,
+                9.0,
+                if active {
+                    theme.foreground
+                } else {
+                    theme.muted_foreground
+                },
+            );
+            if active {
+                spawn_text(
+                    button,
+                    font,
+                    if descending { "▼" } else { "▲" },
+                    7.0,
+                    theme.foreground,
+                );
+            }
+        });
+}
+
 pub(crate) fn spawn_song_header(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     theme: &StudioTheme,
+    session: &StudioSessionView<'_>,
 ) {
+    let active_column = session.library_sort_column.as_deref();
+    let descending = session.library_sort_descending;
     parent
         .spawn((
             Node {
@@ -33,21 +84,45 @@ pub(crate) fn spawn_song_header(
                 ..default()
             })
             .with_children(|artist| {
-                spawn_text(artist, font.clone(), "ARTIST", 9.0, theme.muted_foreground);
+                spawn_sortable_column_header(
+                    artist,
+                    font.clone(),
+                    theme,
+                    "ARTIST",
+                    "artist",
+                    active_column == Some("artist"),
+                    descending,
+                );
             });
             row.spawn(Node {
                 width: px(180),
                 ..default()
             })
             .with_children(|album| {
-                spawn_text(album, font.clone(), "ALBUM", 9.0, theme.muted_foreground);
+                spawn_sortable_column_header(
+                    album,
+                    font.clone(),
+                    theme,
+                    "ALBUM",
+                    "album",
+                    active_column == Some("album"),
+                    descending,
+                );
             });
             row.spawn(Node {
                 width: px(64),
                 ..default()
             })
             .with_children(|duration| {
-                spawn_text(duration, font.clone(), "TIME", 9.0, theme.muted_foreground);
+                spawn_sortable_column_header(
+                    duration,
+                    font.clone(),
+                    theme,
+                    "TIME",
+                    "time",
+                    active_column == Some("time"),
+                    descending,
+                );
             });
             row.spawn(Node {
                 width: px(150),
@@ -55,7 +130,15 @@ pub(crate) fn spawn_song_header(
                 ..default()
             })
             .with_children(|status| {
-                spawn_text(status, font, "STATUS", 9.0, theme.muted_foreground);
+                spawn_sortable_column_header(
+                    status,
+                    font,
+                    theme,
+                    "STATUS",
+                    "status",
+                    active_column == Some("status"),
+                    descending,
+                );
             });
         });
 }

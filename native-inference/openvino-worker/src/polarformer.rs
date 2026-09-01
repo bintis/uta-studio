@@ -255,6 +255,7 @@ fn apply_mask(
 fn process_audio(
     audio: &[Vec<f32>; CHANNELS],
     model: &mut CompiledModel,
+    vocal_mode: bool,
     mut progress: impl FnMut(f32, &str),
 ) -> Result<[Vec<f32>; CHANNELS], String> {
     let samples = audio[0].len();
@@ -264,6 +265,11 @@ fn process_audio(
     let chunks = samples.div_ceil(CHUNK_STEP);
     let mut vocals = [vec![0.0_f32; samples], vec![0.0_f32; samples]];
     let mut counts = vec![0_u16; samples];
+    let message = if vocal_mode {
+        "Running native PolarFormer vocal separation"
+    } else {
+        "Running native PolarFormer instrumental separation"
+    };
     for chunk_index in 0..chunks {
         let start = chunk_index * CHUNK_STEP;
         let end = (start + CHUNK_SAMPLES).min(samples);
@@ -273,10 +279,7 @@ fn process_audio(
             values[..valid].copy_from_slice(&audio[channel][start..end]);
             values
         });
-        progress(
-            chunk_index as f32 / chunks as f32,
-            "Running native PolarFormer instrumental separation",
-        );
+        progress(chunk_index as f32 / chunks as f32, message);
         let (spectrum, frames) = stft(&chunk)?;
         let mask = infer_mask(model, &spectrum, frames)?;
         let separated = istft(
@@ -291,11 +294,19 @@ fn process_audio(
             counts[start + index] = counts[start + index].saturating_add(1);
         }
     }
+    // The checkpoint's single trained stem is vocals (config.yaml's
+    // `training.target_instrument: vocals`), not instrumental. Instrumental
+    // is therefore mix-minus-vocals; the raw stem itself is a real, clean
+    // vocal estimate in its own right when that role is what was requested.
     Ok(std::array::from_fn(|channel| {
         (0..samples)
             .map(|index| {
                 let vocal = vocals[channel][index] / f32::from(counts[index].max(1));
-                audio[channel][index] - vocal
+                if vocal_mode {
+                    vocal
+                } else {
+                    audio[channel][index] - vocal
+                }
             })
             .collect()
     }))
@@ -307,15 +318,18 @@ pub fn infer(
     config: &serde_json::Value,
     mut progress: impl FnMut(f32, &str),
 ) -> Result<PathBuf, String> {
-    if config
+    let vocal_mode = match config
         .get("semantic_output")
         .and_then(serde_json::Value::as_str)
-        != Some("instrumental")
     {
-        return Err(format!(
-            "{MODEL_ID} PolarFormer requires explicit Instrumental semantics"
-        ));
-    }
+        Some("instrumental") => false,
+        Some("guide_vocals") => true,
+        _ => {
+            return Err(format!(
+                "{MODEL_ID} PolarFormer requires explicit Instrumental or GuideVocals semantics"
+            ));
+        }
+    };
     if interleaved.is_empty() || !interleaved.len().is_multiple_of(CHANNELS) {
         return Err("PolarFormer stereo PCM is empty or malformed".to_string());
     }
@@ -337,26 +351,34 @@ pub fn infer(
     );
     progress(0.01, &compiling);
     let mut model = compile_model(&model_path, device)?;
-    let instrumental = process_audio(&audio, &mut model, |fraction, message| {
+    let separated = process_audio(&audio, &mut model, vocal_mode, |fraction, message| {
         progress(0.03 + fraction * 0.94, message)
     })?;
-    if instrumental
-        .iter()
-        .flatten()
-        .any(|sample| !sample.is_finite())
-    {
-        return Err("PolarFormer returned non-finite Instrumental audio".to_string());
+    if separated.iter().flatten().any(|sample| !sample.is_finite()) {
+        return Err(format!(
+            "PolarFormer returned non-finite {} audio",
+            if vocal_mode {
+                "GuideVocals"
+            } else {
+                "Instrumental"
+            }
+        ));
     }
     let mut output = Vec::with_capacity(interleaved.len());
     for frame in 0..samples {
-        output.push(instrumental[0][frame]);
-        output.push(instrumental[1][frame]);
+        output.push(separated[0][frame]);
+        output.push(separated[1][frame]);
     }
+    let (label, filename) = if vocal_mode {
+        ("GuideVocals", "polarformer-guide-vocals.flac")
+    } else {
+        ("Instrumental", "polarformer-instrumental.flac")
+    };
     progress(
         0.98,
-        "Atomically encoding lossless PolarFormer Instrumental",
+        &format!("Atomically encoding lossless PolarFormer {label}"),
     );
-    crate::audio::encode_stereo_flac(&output, output_dir, "polarformer-instrumental.flac")
+    crate::audio::encode_stereo_flac(&output, output_dir, filename)
 }
 
 #[cfg(test)]
@@ -431,7 +453,7 @@ mod tests {
             |_, _| {},
         )
         .unwrap_err();
-        assert!(error.contains("Instrumental semantics"));
+        assert!(error.contains("Instrumental or GuideVocals semantics"));
         assert_eq!(MODEL_ID, "bs_polarformer_public_instrumental");
         assert_eq!(OVERLAP, 2);
     }

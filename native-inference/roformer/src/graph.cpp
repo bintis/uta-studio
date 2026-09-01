@@ -42,6 +42,84 @@ ggml_tensor* ApplyRopeExtNormalInplace(ggml_context* ctx, ggml_tensor* tensor, g
                                  GGML_ROPE_TYPE_NORMAL, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 }
 
+
+// PoPE (Polar Positional Embedding), as used by BS-PolarFormer in place of
+// RoPE. This is reverse-engineered from the reference bs_polarformer ONNX
+// graph (not just the paper's abstraction) because the actual checkpoint
+// adds a learned per-head/per-channel phase bias on the key side that the
+// paper only describes as optional:
+//
+//   theta_c      = 10000^(-c / dim_head), c = 0..dim_head-1 (checkpoint
+//                  "pope.inv_freqs" weight; the fixed RoPE-style frequency
+//                  formula, confirmed against the real checkpoint values)
+//   mag          = softplus(raw_q_or_k)                      -- elementwise
+//   phase_q[c]   = pos * theta_c
+//   phase_k[c,h] = pos * theta_c + bias[c,h]                  -- bias is the
+//                  checkpoint "pope.{time,freq}_k_phase_bias" weight
+//                  (tied across depth, distinct per time/freq), K-side only
+//   x            = mag * cos(phase), y = mag * sin(phase)
+//   out          = interleave(x, y)  ==  [x0,y0,x1,y1,...]    -- doubles the
+//                  channel count (dim_head -> 2*dim_head)
+//
+// The attention score is then a *plain* dot product of the doubled Q/K
+// vectors (this is the paper's "efficient Cartesian form": summing
+// x_q*x_k + y_q*y_k per channel reduces to cos((s-t)*theta_c) once you
+// expand it), so the existing flash-attention call site needs no change
+// beyond doubling Q/K's head dim (ggml_flash_attn_ext only requires Q and K
+// to share a head dim; V may differ, so V stays dim_head-wide untouched).
+// The attention scale is still the ordinary 1/sqrt(dim_head): the reference
+// (PoPE-pytorch's flash_attn_with_pope) applies dim_head^-0.25 to Q and K
+// individually, which combine to dim_head^-0.5 once multiplied together in
+// the dot product -- do not apply dim_head^-0.25 as if it were already the
+// combined scale (verified against the real bs_polarformer ONNX graph).
+ggml_tensor* ApplyPopeInplace(ggml_context* ctx, ggml_tensor* qk, ggml_tensor* positions,
+                              ggml_tensor* inv_freqs, ggml_tensor* bias, int dim_head, int heads) {
+    const int64_t seq = qk->ne[2];
+    const int64_t batch = qk->ne[3];
+
+    ggml_tensor* magnitude = ggml_softplus(ctx, qk); // [dim_head, heads, seq, batch]
+
+    // Outer product phase[c, pos] = theta_c * pos, built as a k=1
+    // contraction matmul rather than a manual broadcast-repeat.
+    ggml_tensor* pos_f32 = ggml_cast(ctx, positions, GGML_TYPE_F32);
+    ggml_tensor* pos_row = ggml_reshape_2d(ctx, pos_f32, 1, seq);
+    ggml_tensor* theta_row = ggml_reshape_2d(ctx, inv_freqs, 1, dim_head);
+    ggml_tensor* phase = ggml_mul_mat(ctx, theta_row, pos_row); // [dim_head, seq]
+    phase = ggml_reshape_4d(ctx, phase, dim_head, 1, seq, 1);
+
+    ggml_tensor* cos_t;
+    ggml_tensor* sin_t;
+    if (bias) {
+        // `bias` must already be clamped to [-2*pi, 0] by the caller/loader
+        // (the reference module applies `self.bias.clamp(-2*pi, 0.)` in its
+        // forward pass -- the raw learned parameter is not used directly;
+        // most of this checkpoint's raw values are small positive numbers
+        // that clamp to exactly 0).
+        ggml_tensor* bias4 = ggml_reshape_4d(ctx, bias, dim_head, heads, 1, 1);
+        ggml_tensor* target = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, dim_head, heads, seq, 1);
+        ggml_tensor* phase_full = ggml_repeat(ctx, phase, target);
+        ggml_tensor* bias_full = ggml_repeat(ctx, bias4, target);
+        ggml_tensor* phase_biased = ggml_add(ctx, phase_full, bias_full);
+        cos_t = ggml_cos(ctx, phase_biased);
+        sin_t = ggml_sin(ctx, phase_biased);
+    } else {
+        cos_t = ggml_cos(ctx, phase); // [dim_head, 1, seq, 1], broadcasts over heads
+        sin_t = ggml_sin(ctx, phase);
+    }
+
+    ggml_tensor* x = ggml_mul(ctx, magnitude, cos_t); // [dim_head, heads, seq, batch]
+    ggml_tensor* y = ggml_mul(ctx, magnitude, sin_t);
+
+    // Interleave x/y into a doubled channel axis: insert a new fastest-
+    // varying axis of size 2 (x at index 0, y at index 1) then flatten it
+    // into dim_head, which -- because ggml's ne[0] is the contiguous axis --
+    // yields exactly [x0,y0,x1,y1,...,x_{d-1},y_{d-1}] in memory.
+    ggml_tensor* x_lead = ggml_reshape_4d(ctx, x, 1, dim_head, heads, seq * batch);
+    ggml_tensor* y_lead = ggml_reshape_4d(ctx, y, 1, dim_head, heads, seq * batch);
+    ggml_tensor* stacked = ggml_concat(ctx, x_lead, y_lead, 0); // [2, dim_head, heads, seq*batch]
+    return ggml_reshape_4d(ctx, stacked, 2 * dim_head, heads, seq, batch);
+}
+
 ggml_tensor* RestoreDirectRopeFlat(ggml_context* ctx, ggml_tensor* rope_flat,
                                    int dim_head, int heads, int seq, int batch) {
     return ggml_view_4d(ctx, rope_flat, dim_head, heads, seq, batch,
@@ -161,11 +239,12 @@ void UtaRoformerGraph::LoadWeights(const std::string& path) {
     }
 
     std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "mel_band_roformer."
-    public_bs_schema_ = architecture_ == "bs_roformer"
-        && gguf_find_key(ctx_gguf, "bs_roformer.n_bands") >= 0;
+    public_bs_schema_ = (architecture_ == "bs_roformer" || architecture_ == "bs_polarformer")
+        && gguf_find_key(ctx_gguf, (kp + "n_bands").c_str()) >= 0;
+    use_pope_ = architecture_ == "bs_polarformer";
 
     // Set internal flags based on architecture
-    if (architecture_ == "bs_roformer") {
+    if (architecture_ == "bs_roformer" || architecture_ == "bs_polarformer") {
         has_final_norm_ = true;
         transformer_norm_output_ = false;
     } else {
@@ -371,7 +450,7 @@ std::vector<int> UtaRoformerGraph::GetDimInputs() const {
 }
 
 int UtaRoformerGraph::GetTotalDimInput() const {
-    if (architecture_ == "bs_roformer") {
+    if (architecture_ == "bs_roformer" || architecture_ == "bs_polarformer") {
         // BS: All frequencies * stereo * complex
         int n_freq = n_fft_ / 2 + 1;
         return n_freq * 2 * 2;  // freq * stereo * complex
@@ -513,12 +592,46 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
             ggml_tensor* query = qkv_part(0);
             ggml_tensor* key = qkv_part(1);
             ggml_tensor* value = qkv_part(2);
-            query = ggml_rope_ext(
-                ctx, query, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
-                0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-            key = ggml_rope_ext(
-                ctx, key, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
-                0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+            float attn_scale = 1.0f / std::sqrt(static_cast<float>(DIM_HEAD));
+            if (use_pope_) {
+                // The learned key-side phase bias is tied across all 12
+                // depths but NOT between the time and freq transformer
+                // (verified against the checkpoint's raw state_dict:
+                // layers.0.0.*.bias == layers.11.0.*.bias, but
+                // layers.0.0.*.bias != layers.0.1.*.bias). inv_freqs, in
+                // contrast, is tied everywhere.
+                const bool is_time = prefix.size() >= 4
+                    && prefix.compare(prefix.size() - 4, 4, "time") == 0;
+                ggml_tensor* inv_freqs = GetWeight("pope.inv_freqs");
+                ggml_tensor* k_phase_bias = GetWeight(
+                    is_time ? "pope.time_k_phase_bias" : "pope.freq_k_phase_bias");
+                if (!inv_freqs || !k_phase_bias) {
+                    std::cerr << "Missing PoPE weights: pope.inv_freqs / pope."
+                              << (is_time ? "time" : "freq") << "_k_phase_bias\n";
+                    return nullptr;
+                }
+                query = ApplyPopeInplace(ctx, query, positions, inv_freqs, nullptr, DIM_HEAD, HEADS);
+                key = ApplyPopeInplace(ctx, key, positions, inv_freqs, k_phase_bias, DIM_HEAD, HEADS);
+                // The reference (PoPE-pytorch's flash_attn_with_pope) scales
+                // BOTH q and k by dim_head^-0.25 individually before the
+                // matmul, rather than scaling the score once. Since
+                // ggml_flash_attn_ext's `scale` multiplies the QK^T product
+                // by a single scalar, the two applications of dim_head^-0.25
+                // combine into dim_head^-0.5 -- i.e. exactly the default
+                // `attn_scale` already set above. Verified against the real
+                // ONNX graph's val_902 (pre-softmax scores): using the
+                // "obvious" single dim_head^-0.25 scale here (as if it were
+                // already the combined value) reproduced only half the
+                // exponent and was the actual bug behind a much larger
+                // downstream mismatch -- do not reintroduce it.
+            } else {
+                query = ggml_rope_ext(
+                    ctx, query, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
+                    0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+                key = ggml_rope_ext(
+                    ctx, key, positions, nullptr, DIM_HEAD, GGML_ROPE_TYPE_NORMAL,
+                    0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+            }
 
             auto attention_layout = [&](ggml_tensor* tensor) {
                 return ggml_cont(ctx, ggml_permute(ctx, tensor, 0, 2, 1, 3));
@@ -530,8 +643,7 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
             ggml_tensor* key_f16 = ggml_cast(ctx, key, GGML_TYPE_F16);
             ggml_tensor* value_f16 = ggml_cast(ctx, value, GGML_TYPE_F16);
             ggml_tensor* attended = ggml_flash_attn_ext(
-                ctx, query, key_f16, value_f16, nullptr,
-                1.0f / std::sqrt(static_cast<float>(DIM_HEAD)), 0.0f, 0.0f);
+                ctx, query, key_f16, value_f16, nullptr, attn_scale, 0.0f, 0.0f);
             ggml_flash_attn_ext_set_prec(attended, GGML_PREC_F32);
 
             ggml_tensor* gates = ggml_mul_mat(ctx, gate_weight, normalized);
@@ -558,7 +670,7 @@ ggml_tensor* UtaRoformerGraph::BuildTransformersGraph(
             ggml_tensor* hidden = ggml_mul(
                 ctx, ggml_rms_norm(ctx, sequence, 1e-12f), norm);
             hidden = ggml_add(ctx, ggml_mul_mat(ctx, weight_1, hidden), bias_1);
-            hidden = ggml_gelu(ctx, hidden);
+            hidden = ggml_gelu_erf(ctx, hidden);
             hidden = ggml_add(ctx, ggml_mul_mat(ctx, weight_2, hidden), bias_2);
             return ggml_add(ctx, sequence, hidden);
         };

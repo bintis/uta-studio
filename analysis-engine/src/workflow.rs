@@ -684,7 +684,10 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
         node.provider_preferences.primary.as_deref(),
     ) {
         ("audio.source", None) => vec!["audio.decode"],
-        ("audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals")) => {
+        (
+            "audio.separate_vocal_bgm",
+            Some("bs_roformer_leap_xe90_vocals" | "bs_polarformer_public_instrumental"),
+        ) => {
             vec!["audio.extract_vocals"]
         }
         ("audio.lead_isolate", Some("melband_roformer_harmony")) => {
@@ -724,7 +727,7 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
     if node.capability_id == "audio.separate_vocal_bgm"
         && matches!(
             node.provider_preferences.instrumental.as_deref(),
-            Some("bs_polarformer_public_instrumental")
+            Some("bs_polarformer_public_instrumental" | "melband_roformer_inst_v2")
         )
     {
         capabilities.push("audio.extract_instrumental");

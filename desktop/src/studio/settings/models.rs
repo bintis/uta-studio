@@ -345,6 +345,19 @@ fn spawn_model_backend_settings(
     }
 }
 
+/// GGML's Vulkan route resolves GPU/iGPU to the matching physical adapter at
+/// run start; every other route still only records the preference (Runtime
+/// Manager has no per-device resolution for OpenVINO/native-DSP/CPU yet).
+fn device_preference_caption(
+    selected_backend: Option<app_core::RuntimeBackendPresentation>,
+) -> &'static str {
+    if selected_backend == Some(app_core::RuntimeBackendPresentation::Vulkan) {
+        "Device selects the matching physical adapter (GPU = discrete, iGPU = integrated) when this model runs."
+    } else {
+        "Device is a request preference for upcoming multi-device routing; it does not yet force a physical adapter."
+    }
+}
+
 fn selected_device_label(selected: Option<&str>) -> &'static str {
     match selected {
         Some("cpu") => "CPU",
@@ -464,7 +477,7 @@ fn spawn_model_runtime_row(
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
-                    "Device is a request preference for upcoming multi-device routing; it does not yet force a physical adapter.",
+                    device_preference_caption(model.selected_backend),
                     8.0,
                     theme.muted_foreground.with_alpha(0.78),
                 );
