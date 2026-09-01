@@ -12,6 +12,76 @@ pub(crate) struct ContentActionState<'a> {
     pub(crate) invalidated: &'a mut UiInvalidated,
 }
 
+fn sync_lyrics_editor_inputs(editor: &mut NativeLyricsEditor, text_inputs: &EditorTextInputs) {
+    if let Ok(input) = text_inputs.lyrics.single() {
+        editor.initial_text = input.value().to_string();
+    }
+    if let Ok(input) = text_inputs.lyrics_search_title.single() {
+        editor.search_title = input.value().to_string().trim().to_string();
+    }
+}
+
+fn save_lyrics_editor_value(
+    editor: &mut NativeLyricsEditor,
+    value: String,
+    align: bool,
+) -> Result<String, String> {
+    editor.initial_text = value.clone();
+    if let Some(mut draft) = editor.artifact_draft.clone() {
+        match draft.draft_kind {
+            app_core::ArtifactDraftKind::Lyrics => draft.replace_text(value)?,
+            app_core::ArtifactDraftKind::TimedTranscript
+            | app_core::ArtifactDraftKind::StructuredJson => {
+                let value = serde_json::from_str(&value)
+                    .map_err(|error| format!("Invalid JSON: {error}"))?;
+                draft.replace_json(value)?;
+            }
+        }
+        let result = app_core::commit_artifact_edit(
+            &app_core::CacheDir::new(),
+            &draft,
+            app_core::ArtifactSaveOptions {
+                mode: if align {
+                    app_core::ArtifactSaveMode::SaveAndRunDownstream
+                } else {
+                    app_core::ArtifactSaveMode::SaveOnly
+                },
+                set_active: true,
+                fork_from_old_revision: false,
+            },
+        );
+        if let Err(error) = result {
+            editor.artifact_draft = Some(draft);
+            return Err(format!("Could not save artifact: {error}"));
+        }
+        return Ok(if align {
+            "Artifact revision saved; downstream alignment was queued.".to_string()
+        } else {
+            "Artifact revision saved without queueing analysis.".to_string()
+        });
+    }
+
+    let plain_lyrics = editor.mode == LyricsInputMode::Plain;
+    if editor.mode == LyricsInputMode::TimedLrc {
+        app_core::save_timed_lyrics(&editor.file_hash, &value)?;
+    } else {
+        app_core::save_lyrics(
+            &editor.file_hash,
+            value.lines().map(str::to_string).collect(),
+        )?;
+    }
+    if align {
+        app_core::realign(&editor.file_hash, None).map_err(|error| {
+            format!("Lyrics were saved, but alignment could not be queued: {error}")
+        })?;
+        Ok("Lyrics saved; alignment queued.".to_string())
+    } else if plain_lyrics {
+        Ok("Lyrics saved without starting analysis.".to_string())
+    } else {
+        Ok("Timed lyrics saved.".to_string())
+    }
+}
+
 pub(crate) fn apply_content_action(
     action: &UiAction,
     keys: &ButtonInput<KeyCode>,
@@ -210,6 +280,15 @@ pub(crate) fn apply_content_action(
             invalidated.invalidate(action.0.dirty_region());
         }
         UiCommand::Editor(EditorCommand::OpenLyricsEditor(file_hash)) => {
+            studio.jobs.lyrics_search_job.receiver = None;
+            studio.jobs.lyrics_fetch_job.receiver = None;
+            let return_route = studio
+                .dialogs
+                .lyrics_editor
+                .as_ref()
+                .filter(|_| studio.shell.route == StudioRoute::LyricsWorkbench)
+                .map(|editor| editor.return_route)
+                .unwrap_or(studio.shell.route);
             let song = app_core::load_song_by_hash(file_hash).ok().flatten();
             let has_saved_timed_lyrics = app_core::load_lyrics_file(file_hash)
                 .is_some_and(|lyrics| lyrics.timed_lrc.is_some());
@@ -224,28 +303,46 @@ pub(crate) fn apply_content_action(
             } else {
                 LyricsInputMode::Plain
             };
+            let search_title = song
+                .as_ref()
+                .map(|song| song.title.clone())
+                .unwrap_or_default();
+            studio.library.selected_song = Some(file_hash.clone());
             studio.dialogs.lyrics_editor = Some(NativeLyricsEditor {
                 file_hash: file_hash.clone(),
+                return_route,
+                search_title,
                 mode,
                 initial_text: lyrics_text(file_hash, mode),
                 candidates: Vec::new(),
-                candidate_index: 0,
+                candidate_page: 0,
                 searching: false,
+                fetching_candidate: None,
+                provider_errors: Vec::new(),
                 artifact_draft: None,
                 waveform: app_core::ChartWaveform::default(),
             });
+            studio.shell.route = StudioRoute::LyricsWorkbench;
             studio.shell.notice = None;
-            invalidated.invalidate(action.0.dirty_region());
+            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Editor(EditorCommand::CloseLyricsEditor) => {
+            studio.jobs.lyrics_search_job.receiver = None;
+            studio.jobs.lyrics_fetch_job.receiver = None;
+            let return_route = studio
+                .dialogs
+                .lyrics_editor
+                .as_ref()
+                .map(|editor| editor.return_route)
+                .unwrap_or(StudioRoute::SongDetail);
             studio.dialogs.lyrics_editor = None;
-            invalidated.invalidate(action.0.dirty_region());
+            studio.shell.route = return_route;
+            studio.shell.notice = None;
+            invalidated.invalidate(UiDirtyRegion::Chrome);
         }
         UiCommand::Editor(EditorCommand::ToggleLyricsInputMode) => {
             if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
-                }
+                sync_lyrics_editor_inputs(editor, text_inputs);
                 editor.mode = if editor.mode == LyricsInputMode::Plain {
                     LyricsInputMode::TimedLrc
                 } else {
@@ -254,35 +351,40 @@ pub(crate) fn apply_content_action(
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Editor(EditorCommand::SearchLrclibLyrics) => {
+        UiCommand::Editor(EditorCommand::SearchAllLyricsSources) => {
             if studio.jobs.lyrics_search_job.receiver.is_none()
+                && studio.jobs.lyrics_fetch_job.receiver.is_none()
                 && let Some(editor) = studio.dialogs.lyrics_editor.as_mut()
             {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
-                }
+                sync_lyrics_editor_inputs(editor, text_inputs);
                 editor.searching = true;
+                editor.fetching_candidate = None;
                 editor.candidates.clear();
-                editor.candidate_index = 0;
+                editor.provider_errors.clear();
+                editor.candidate_page = 0;
                 let file_hash = editor.file_hash.clone();
+                let title = editor.search_title.clone();
                 let (sender, receiver) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let candidates = app_core::search_lrclib_for_hash(&file_hash);
-                    let _ = sender.send(candidates);
+                    let result = app_core::search_lyrics_for_hash_with_title(&file_hash, &title);
+                    let _ = sender.send((file_hash, result));
                 });
                 studio.jobs.lyrics_search_job.receiver = Some(Mutex::new(receiver));
-                studio.shell.notice = Some("Searching LRCLIB…".to_string());
+                studio.shell.notice =
+                    Some("Searching LRCLIB, QQ Music, Kugou, and NetEase…".to_string());
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
         UiCommand::Editor(EditorCommand::ExtractLyrics) => {
-            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
-                }
-                match app_core::reanalyze_transcript(&editor.file_hash, None) {
+            let request = studio.dialogs.lyrics_editor.as_mut().map(|editor| {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                (editor.file_hash.clone(), editor.return_route)
+            });
+            if let Some((file_hash, return_route)) = request {
+                match app_core::reanalyze_transcript(&file_hash, None) {
                     Ok(()) => {
                         studio.dialogs.lyrics_editor = None;
+                        studio.shell.route = return_route;
                         studio.library.refresh();
                         studio.shell.notice = Some("Lyrics extraction queued.".to_string());
                     }
@@ -290,46 +392,126 @@ pub(crate) fn apply_content_action(
                         studio.shell.notice = Some(format!("Could not queue analysis: {error}"));
                     }
                 }
-                invalidated.invalidate(action.0.dirty_region());
+                invalidated.invalidate(UiDirtyRegion::Chrome);
             }
         }
-        UiCommand::Editor(EditorCommand::PreviousLrclibCandidate) => {
+        UiCommand::Editor(EditorCommand::PreviousLyricsCandidatePage) => {
             if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
-                }
-                editor.candidate_index = editor.candidate_index.saturating_sub(1);
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                editor.candidate_page = editor.candidate_page.saturating_sub(1);
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Editor(EditorCommand::NextLrclibCandidate) => {
+        UiCommand::Editor(EditorCommand::NextLyricsCandidatePage) => {
             if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                if let Ok(input) = text_inputs.lyrics.single() {
-                    editor.initial_text = input.value().to_string();
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                let last_page = editor.candidates.len().saturating_sub(1) / LYRICS_CANDIDATE_SLOTS;
+                editor.candidate_page = (editor.candidate_page + 1).min(last_page);
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Editor(EditorCommand::LoadLyricsCandidate(candidate_index)) => {
+            if studio.jobs.lyrics_fetch_job.receiver.is_none()
+                && let Some(editor) = studio.dialogs.lyrics_editor.as_mut()
+            {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                if editor.fetching_candidate.is_some() {
+                    studio.shell.notice = Some("Another lyric candidate is still loading.".into());
+                } else if let Some(candidate) = editor.candidates.get(*candidate_index).cloned() {
+                    if candidate.loaded {
+                        studio.shell.notice = Some(format!(
+                            "{} candidate is already loaded.",
+                            candidate.provider.display_name()
+                        ));
+                    } else {
+                        let provider = candidate.provider.display_name();
+                        let file_hash = editor.file_hash.clone();
+                        let index = *candidate_index;
+                        let (sender, receiver) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let result = app_core::fetch_lyrics_candidate(&candidate);
+                            let _ = sender.send((file_hash, index, result));
+                        });
+                        editor.fetching_candidate = Some(index);
+                        studio.jobs.lyrics_fetch_job.receiver = Some(Mutex::new(receiver));
+                        studio.shell.notice = Some(format!("Loading {provider} lyrics…"));
+                    }
                 }
-                editor.candidate_index =
-                    (editor.candidate_index + 1).min(editor.candidates.len().saturating_sub(1));
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Editor(EditorCommand::UseLrclibPlain) => {
-            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut()
-                && let Some(candidate) = editor.candidates.get(editor.candidate_index)
-            {
-                editor.initial_text = candidate.lines.join("\n");
-                editor.mode = LyricsInputMode::Plain;
-                studio.shell.notice = Some("LRCLIB plain lyrics loaded for review.".to_string());
+        UiCommand::Editor(EditorCommand::UseLyricsCandidate(candidate_index, use_mode)) => {
+            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                let result = editor
+                    .candidates
+                    .get(*candidate_index)
+                    .ok_or_else(|| {
+                        "The selected lyric candidate is no longer available.".to_string()
+                    })
+                    .and_then(|candidate| {
+                        if !candidate.loaded {
+                            return Err("Load this candidate before using it.".to_string());
+                        }
+                        lyrics_candidate_text(candidate, *use_mode)
+                            .map(|(mode, text)| (candidate.provider.display_name(), mode, text))
+                            .ok_or_else(|| {
+                                "That candidate does not contain the requested lyric form."
+                                    .to_string()
+                            })
+                    });
+                match result {
+                    Ok((provider, mode, text)) => {
+                        editor.mode = mode;
+                        editor.initial_text = text;
+                        let form = match use_mode {
+                            LyricsCandidateUseMode::Plain => "plain lyrics",
+                            LyricsCandidateUseMode::TimedLrc => "timed lyrics",
+                            LyricsCandidateUseMode::Translation => "translation",
+                            LyricsCandidateUseMode::Romanization => "romanization",
+                        };
+                        studio.shell.notice =
+                            Some(format!("{provider} {form} loaded into the editor."));
+                    }
+                    Err(error) => studio.shell.notice = Some(error),
+                }
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
-        UiCommand::Editor(EditorCommand::UseLrclibTimed) => {
-            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut()
-                && let Some(candidate) = editor.candidates.get(editor.candidate_index)
-                && let Some(lrc) = candidate.synced_lyrics.as_ref()
-            {
-                editor.initial_text = lrc.clone();
-                editor.mode = LyricsInputMode::TimedLrc;
-                studio.shell.notice = Some("LRCLIB timed lyrics loaded for review.".to_string());
+        UiCommand::Editor(EditorCommand::NormalizeLyricsEditor) => {
+            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                if editor.mode == LyricsInputMode::StructuredTimedTranscript {
+                    studio.shell.notice = Some(
+                        "Normalize is unavailable for structured transcript JSON.".to_string(),
+                    );
+                } else {
+                    editor.initial_text = app_core::normalize_lyrics_text(&editor.initial_text);
+                    studio.shell.notice = Some("Lyrics normalized.".to_string());
+                }
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Editor(EditorCommand::StripLyricsTiming) => {
+            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                if editor.mode == LyricsInputMode::StructuredTimedTranscript {
+                    studio.shell.notice = Some(
+                        "Strip timing is unavailable for structured transcript JSON.".to_string(),
+                    );
+                } else {
+                    editor.initial_text = app_core::strip_lyrics_timing(&editor.initial_text);
+                    editor.mode = LyricsInputMode::Plain;
+                    studio.shell.notice = Some("Timing tags removed.".to_string());
+                }
+                invalidated.invalidate(action.0.dirty_region());
+            }
+        }
+        UiCommand::Editor(EditorCommand::ClearLyricsEditor) => {
+            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                editor.initial_text.clear();
+                studio.shell.notice = Some("Lyrics editor cleared.".to_string());
                 invalidated.invalidate(action.0.dirty_region());
             }
         }
@@ -395,81 +577,34 @@ pub(crate) fn apply_content_action(
             });
             invalidated.invalidate(action.0.dirty_region());
         }
-        UiCommand::Editor(EditorCommand::SaveLyricsEditor) => {
-            let value = text_inputs
-                .lyrics
-                .single()
-                .map(|input| input.value().to_string())
-                .unwrap_or_default();
-            if let Some(editor) = studio.dialogs.lyrics_editor.as_mut() {
-                editor.initial_text = value.clone();
-                if let Some(mut draft) = editor.artifact_draft.clone() {
-                    let update = match draft.draft_kind {
-                        app_core::ArtifactDraftKind::Lyrics => draft.replace_text(value),
-                        app_core::ArtifactDraftKind::TimedTranscript
-                        | app_core::ArtifactDraftKind::StructuredJson => {
-                            serde_json::from_str(&value)
-                                .map_err(|error| format!("Invalid JSON: {error}"))
-                                .and_then(|value| draft.replace_json(value))
-                        }
-                    };
-                    let result = update.and_then(|()| {
-                        app_core::commit_artifact_edit(
-                            &app_core::CacheDir::new(),
-                            &draft,
-                            app_core::ArtifactSaveOptions {
-                                mode: app_core::ArtifactSaveMode::SaveOnly,
-                                set_active: true,
-                                fork_from_old_revision: false,
-                            },
-                        )
-                    });
-                    match result {
-                        Ok(_commit) => {
-                            studio.dialogs.lyrics_editor = None;
-                            studio.library.refresh();
-                            studio.shell.notice = Some(
-                                "Artifact revision saved without queueing analysis.".to_string(),
-                            );
-                        }
-                        Err(error) => {
-                            editor.artifact_draft = Some(draft);
-                            studio.shell.notice = Some(format!("Could not save artifact: {error}"));
-                        }
-                    }
-                    invalidated.invalidate(action.0.dirty_region());
-                    return;
-                }
-                let plain_lyrics = editor.mode == LyricsInputMode::Plain;
-                let result = if editor.mode == LyricsInputMode::TimedLrc {
-                    // Saving Timed LRC is never permission to analyze. Do not
-                    // route this through provide_lrc/apply_timed_lyrics or add
-                    // queue/reanalysis calls here; save only the lyrics input.
-                    app_core::save_timed_lyrics(&editor.file_hash, &value)
-                } else {
-                    app_core::save_lyrics(
-                        &editor.file_hash,
-                        value.lines().map(str::to_string).collect(),
-                    )
-                };
+        UiCommand::Editor(EditorCommand::SaveLyricsEditor)
+        | UiCommand::Editor(EditorCommand::SaveLyricsEditorAndAlign) => {
+            let align = matches!(
+                &action.0,
+                UiCommand::Editor(EditorCommand::SaveLyricsEditorAndAlign)
+            );
+            let result = studio.dialogs.lyrics_editor.as_mut().map(|editor| {
+                sync_lyrics_editor_inputs(editor, text_inputs);
+                let return_route = editor.return_route;
+                (
+                    return_route,
+                    save_lyrics_editor_value(editor, editor.initial_text.clone(), align),
+                )
+            });
+            if let Some((return_route, result)) = result {
                 match result {
-                    Ok(()) => {
+                    Ok(notice) => {
                         studio.dialogs.lyrics_editor = None;
+                        studio.shell.route = return_route;
                         studio.library.refresh();
-                        studio.shell.notice = Some(
-                            if plain_lyrics {
-                                "Lyrics saved without starting analysis."
-                            } else {
-                                "Timed lyrics saved."
-                            }
-                            .to_string(),
-                        );
+                        studio.shell.notice = Some(notice);
+                        invalidated.invalidate(UiDirtyRegion::Chrome);
                     }
                     Err(error) => {
-                        studio.shell.notice = Some(format!("Could not save lyrics: {error}"))
+                        studio.shell.notice = Some(error);
+                        invalidated.invalidate(action.0.dirty_region());
                     }
                 }
-                invalidated.invalidate(action.0.dirty_region());
             }
         }
         UiCommand::Editor(EditorCommand::OpenLanguageEditor(file_hash)) => {

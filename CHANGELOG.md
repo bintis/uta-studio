@@ -2,6 +2,26 @@
 
 This changelog is generated from git history.
 
+## 0.8.3 — 2026-09-02
+
+### Lyrics Workbench
+
+- Replaced the LRCLIB-only lyric picker with a four-source Lyrics Workbench for LRCLIB, QQ Music, Kugou, and NetEase, including per-provider errors, editable-title search, paged candidates, availability badges, and on-demand loading for metadata-only results.
+- Added native lyric editing tools for normalization, timing-tag removal, clearing, multiline clipboard editing, and explicit **Save** versus **Save + Align** actions; Lyrics Workbench is now a dedicated page with a fixed save footer and a direct chart-editor entry point.
+- Parse provider word/character-timed LRC, including QQ-style inline square-bracket timestamps, as timing evidence and repair legacy cached timed lines so timestamp markup cannot leak into Qwen alignment text.
+
+### Analysis reliability
+
+- Scoped HSMM pair-state and transition work limits to each independent voiced component, preventing normal long songs from failing merely because disconnected regions accumulated one song-wide budget.
+
+### Processing Queue
+
+- Keep completed and failed runs as terminal queue records with **Open song**, **Rerun**, and **Delete** actions; terminal rows are never resumed automatically after restart.
+
+### Lyric and note ownership
+
+- Corrected notes that cross a lyric-line boundary so the opening character of the next line is not attached to the previous line; unpitched placeholders now use unoccupied timing ranges instead of overlapping selected pitch notes.
+
 ## 0.8.2 — 2026-09-01
 
 ### Studio workflow and authoring

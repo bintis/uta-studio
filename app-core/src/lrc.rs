@@ -140,6 +140,73 @@ fn parse_word_tokens(content: &str) -> Vec<(f64, String)> {
     tokens
 }
 
+/// Some providers (notably QQ Music fallbacks) encode per-character timing as
+/// square-bracket timestamps after the line timestamp, for example
+/// `[00:08.86]穢[00:08.94]れ[00:09.02]な`. Treat those inner tags as enhanced
+/// timing instead of leaving them inside the lyric text sent to alignment.
+fn parse_square_word_tokens(content: &str, line_start: f64) -> Vec<(f64, String)> {
+    let mut tokens = Vec::new();
+    let mut current_start = line_start;
+    let mut current_text = String::new();
+    let mut saw_inline_timestamp = false;
+    let mut i = 0;
+
+    while i < content.len() {
+        if content[i..].starts_with('[')
+            && let Some(close_rel) = content[i..].find(']')
+        {
+            let inner = &content[i + 1..i + close_rel];
+            if let Some(timestamp) = parse_timestamp(inner) {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    tokens.push((current_start, text));
+                }
+                current_text.clear();
+                current_start = timestamp;
+                saw_inline_timestamp = true;
+                i += close_rel + 1;
+                continue;
+            }
+        }
+        let ch = content[i..].chars().next().unwrap();
+        current_text.push(ch);
+        i += ch.len_utf8();
+    }
+
+    let text = current_text.trim().to_string();
+    if !text.is_empty() {
+        tokens.push((current_start, text));
+    }
+    if saw_inline_timestamp {
+        tokens
+    } else {
+        Vec::new()
+    }
+}
+
+fn timed_tokens_display_text(tokens: &[(f64, String)]) -> String {
+    let mut output = String::new();
+    for (_, text) in tokens {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let needs_space =
+            output
+                .chars()
+                .last()
+                .zip(text.chars().next())
+                .is_some_and(|(left, right)| {
+                    left.is_ascii_alphanumeric() && right.is_ascii_alphanumeric()
+                });
+        if needs_space {
+            output.push(' ');
+        }
+        output.push_str(text);
+    }
+    output
+}
+
 /// Extract leading `[...]` tags from a line, returning the parsed line-level
 /// timestamps, the remaining content, and any `[offset:...]` in milliseconds.
 fn split_line(line: &str) -> (Vec<f64>, String, Option<f64>) {
@@ -199,32 +266,25 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
             continue;
         }
 
-        let word_tokens = if content.contains('<') {
-            let tokens = parse_word_tokens(&content);
-            if tokens.is_empty() {
-                None
-            } else {
-                Some(tokens)
-            }
-        } else {
-            None
-        };
-
-        // Plain display text (word tags stripped) for the segment label.
-        let display_text = match &word_tokens {
-            Some(tokens) => tokens
-                .iter()
-                .map(|(_, w)| w.as_str())
-                .collect::<Vec<_>>()
-                .join(" "),
-            None => content.trim().to_string(),
-        };
-
         for ts in timestamps {
+            let word_tokens = if content.contains('<') {
+                let tokens = parse_word_tokens(&content);
+                (!tokens.is_empty()).then_some(tokens)
+            } else if content.contains('[') {
+                let tokens = parse_square_word_tokens(&content, ts);
+                (!tokens.is_empty()).then_some(tokens)
+            } else {
+                None
+            };
+            let display_text = word_tokens
+                .as_deref()
+                .map(timed_tokens_display_text)
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| content.trim().to_string());
             entries.push(RawEntry {
                 start: (ts + offset_secs).max(0.0),
-                text: display_text.clone(),
-                word_tokens: word_tokens.clone(),
+                text: display_text,
+                word_tokens,
             });
         }
     }
@@ -309,5 +369,41 @@ mod tests {
         explicit.extend_inferred_final_end(22.0);
         assert_eq!(explicit.segments[0].end, 14.5);
         assert_eq!(explicit.segments[0].words[0].end, 14.5);
+    }
+
+    #[test]
+    fn square_bracket_character_timing_does_not_leak_into_alignment_text() {
+        let parsed =
+            parse_lrc("[00:08.86]穢[00:08.94]れ[00:09.02]な[00:09.10]き\n[00:10.00]次の行")
+                .unwrap();
+        let first = &parsed.segments[0];
+        assert_eq!(first.text, "穢れなき");
+        assert_eq!(
+            first
+                .words
+                .iter()
+                .map(|word| word.word.as_str())
+                .collect::<Vec<_>>(),
+            ["穢", "れ", "な", "き"]
+        );
+        assert!((first.words[0].start - 8.86).abs() < 0.000_001);
+        assert!((first.words[1].start - 8.94).abs() < 0.000_001);
+        assert!(!first.text.contains("[00:"));
+    }
+
+    #[test]
+    fn enhanced_cjk_tokens_render_without_invented_spaces() {
+        let parsed = parse_lrc("[00:01.00]<00:01.00>霞<00:01.25>む\n[00:02.00]景色").unwrap();
+        assert_eq!(parsed.segments[0].text, "霞む");
+        assert_eq!(parsed.segments[0].words.len(), 2);
+    }
+
+    #[test]
+    fn repeated_leading_line_timestamps_remain_duplicate_line_entries() {
+        let parsed = parse_lrc("[00:01.00][00:02.00]chorus\n[00:03.00]next").unwrap();
+        assert_eq!(parsed.segments[0].text, "chorus");
+        assert_eq!(parsed.segments[1].text, "chorus");
+        assert_eq!(parsed.segments[0].words.len(), 1);
+        assert_eq!(parsed.segments[1].words.len(), 1);
     }
 }

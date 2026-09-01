@@ -498,6 +498,9 @@ pub(crate) fn spawn_workspace(
                     session,
                     theme,
                 ),
+                StudioRoute::LyricsWorkbench => {
+                    spawn_lyrics_workbench_page(workspace, font.clone(), session, theme)
+                }
                 StudioRoute::Documentation => {
                     spawn_documentation(workspace, font.clone(), session, theme)
                 }
@@ -593,7 +596,7 @@ fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
             eyebrow: "ANALYSIS".to_string(),
             title: "Processing Queue".to_string(),
             subtitle: format!(
-                "{} item{} · reorder waiting work, edit its workflow, start it, or remove it",
+                "{} record{} · waiting work can be reordered; terminal runs stay until rerun or deleted",
                 session.analysis_tasks.len(),
                 if session.analysis_tasks.len() == 1 { "" } else { "s" }
             ),
@@ -645,6 +648,16 @@ fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
                         }
                     })
                     .unwrap_or_else(|| "Choose a song from the library".to_string()),
+            }
+        }
+        StudioRoute::LyricsWorkbench => {
+            let song = session.selected_song();
+            WorkspaceTitle {
+                eyebrow: "AUTHORING".to_string(),
+                title: "Lyrics Workbench".to_string(),
+                subtitle: song
+                    .map(|song| format!("{} · {}", song.title, song.artist))
+                    .unwrap_or_else(|| "Search, review, edit, save, and align lyrics".to_string()),
             }
         }
         StudioRoute::Folders => WorkspaceTitle {
@@ -718,6 +731,7 @@ fn workspace_toolbar_open(session: &StudioSessionView<'_>) -> bool {
         }
         StudioRoute::Library => true,
         StudioRoute::SongDetail => false,
+        StudioRoute::LyricsWorkbench => false,
         StudioRoute::Folders | StudioRoute::Documentation | StudioRoute::Settings => true,
         StudioRoute::ProcessingStudio => session.workflow.is_some(),
         StudioRoute::AnalysisInspect => current_analysis_file_hash(session).is_some(),
@@ -1212,7 +1226,7 @@ pub(crate) fn spawn_about_dialog(
             ));
             spawn_text(dialog, font.clone(), "ATTRIBUTIONS", 9.0, theme.primary);
             for attribution in [
-                "Lyrics data · LRCLIB",
+                "Lyrics data · LRCLIB / QQ Music / Kugou / NetEase",
                 "Stem separation · native RoFormer",
                 "Stem architecture · audio-separator (MIT)",
                 "Transcript fusion · FireRedASR2-AED / Qwen3-ASR",

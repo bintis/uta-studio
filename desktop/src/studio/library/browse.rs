@@ -692,6 +692,9 @@ pub(crate) fn song_status_copy(
         Some((app_core::QueuedStatus::Analyzing(progress), _)) => {
             (format!("Analyzing · {progress}%"), theme.primary)
         }
+        Some((app_core::QueuedStatus::Completed, _)) => {
+            ("Completed".to_string(), theme.pitch_contour)
+        }
         Some((app_core::QueuedStatus::Failed(_), _)) => ("Failed".to_string(), theme.destructive),
         None if song.authoring_ready => ("Ready to author".to_string(), theme.pitch_contour),
         None if song.is_analyzed => ("Analysis incomplete".to_string(), theme.editor_warning),

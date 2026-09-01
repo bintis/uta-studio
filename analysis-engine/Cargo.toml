@@ -1,6 +1,6 @@
 [package]
 name = "uta-analysis-engine"
-version = "0.8.2"
+version = "0.8.3"
 authors = ["bintis"]
 edition = "2024"
 license = "GPL-3.0-only"

@@ -16,6 +16,8 @@ pub enum QueuedStatus {
     /// Submitted to the worker and waiting for execution.
     Queued,
     Analyzing(usize),
+    /// The run finished successfully and remains visible until the user removes or reruns it.
+    Completed,
     Failed(String),
 }
 
@@ -649,6 +651,7 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
         .map(|(file_hash, status)| {
             let song = library_db::load_song_by_hash(&file_hash).ok().flatten();
             let staged = matches!(status, QueuedStatus::Staged);
+            let pending = matches!(status, QueuedStatus::Staged | QueuedStatus::Queued);
             AnalysisTask {
                 title: song
                     .as_ref()
@@ -659,8 +662,12 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
                     .map(|song| song.artist.clone())
                     .unwrap_or_else(|| "Unknown artist".into()),
                 live: live.get(&file_hash).cloned().or_else(|| {
-                    library_db::analysis_queue_engine_intent(&file_hash)
-                        .ok()
+                    pending
+                        .then(|| {
+                            library_db::analysis_queue_engine_intent(&file_hash)
+                                .ok()
+                                .flatten()
+                        })
                         .flatten()
                         .map(|intent| queued_engine_snapshot(intent, staged))
                 }),
@@ -674,6 +681,7 @@ pub fn load_analysis_tasks() -> Vec<AnalysisTask> {
             QueuedStatus::Analyzing(_) => 0,
             QueuedStatus::Queued | QueuedStatus::Staged => 1,
             QueuedStatus::Failed(_) => 2,
+            QueuedStatus::Completed => 3,
         };
         rank(&left.status)
             .cmp(&rank(&right.status))
@@ -698,6 +706,7 @@ impl AnalysisQueue {
                             "staged" => QueuedStatus::Staged,
                             "queued" => QueuedStatus::Queued,
                             "analyzing" => QueuedStatus::Analyzing(pct.unwrap_or(0) as usize),
+                            "completed" => QueuedStatus::Completed,
                             "failed" => QueuedStatus::Failed(msg.unwrap_or_default()),
                             _ => QueuedStatus::Queued,
                         };
@@ -719,6 +728,7 @@ impl AnalysisQueue {
                 QueuedStatus::Analyzing(p) => {
                     (k.clone(), "analyzing".to_string(), Some(*p as i64), None)
                 }
+                QueuedStatus::Completed => (k.clone(), "completed".to_string(), None, None),
                 QueuedStatus::Failed(s) => (k.clone(), "failed".to_string(), None, Some(s.clone())),
             })
             .collect();

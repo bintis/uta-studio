@@ -1,6 +1,6 @@
 # Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta! Studio 0.8.2
+**Applies to:** Uta! Studio 0.8.3
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,11 +27,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.8.2 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
+Download the package for your system from the project’s GitHub Releases page. Release 0.8.3 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
 
 #### Windows
 
-1. Download `uta-studio-0.8.2-x86_64-windows.zip`.
+1. Download `uta-studio-0.8.3-x86_64-windows.zip`.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,20 +41,20 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.2-1_amd64.deb
+sudo apt install ./uta-studio_0.8.3-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.8.2-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.8.2-x86_64-linux.bin
-./uta-studio-0.8.2-x86_64-linux.bin
+chmod +x uta-studio-0.8.3-x86_64-linux.bin
+./uta-studio-0.8.3-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -179,19 +179,26 @@ Step 1 reuses its lossless vocal/instrumental separation when the source, models
 
 When **Auto-analyze** is enabled, newly scanned, unanalyzed songs are queued automatically. Leave it off when model setup is incomplete or when you want to review files before using compute resources.
 
+#### Processing Queue
+
+Completed and failed runs remain in **Processing Queue** as terminal records instead of disappearing. A terminal row can reopen the song, **Rerun** it with a fresh exact request, or **Delete** only that queue record. Completed rows never resume automatically after restart.
+
 ### 7. Lyrics and language
 
 #### Replace or edit lyrics
 
-From a song, open the lyrics action to:
+From a song, open **Lyrics Workbench**. It is a dedicated authoring page rather than a pop-up, and the chart editor toolbar can open the same page directly. Search results scroll independently from the fixed **Save** / **Save + Align** footer.
 
-- enter plain lyrics;
-- enter timed LRC;
-- search LRCLIB;
-- review a candidate before saving;
-- save without automatically starting analysis; queue alignment later from the song’s Analysis controls when needed.
+- edit the search title, then search LRCLIB, QQ Music, Kugou, and NetEase together;
+- see each provider's candidate count or exact error independently;
+- review `TIMED`, `TRANSLATION`, and `ROMANIZATION` availability before loading a result;
+- load metadata-only non-LRCLIB candidates individually, then place plain, timed, translated, or romanized text in the editor;
+- normalize pasted text, strip LRC timing, or clear the editor;
+- use native multiline selection and `Ctrl+A`, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` copy/paste;
+- choose **Save** to store lyrics without analysis, or **Save + Align** to store them and queue alignment explicitly.
+- provider LRC with word- or character-level timestamps is parsed as timing evidence; timestamp markup is never sent to alignment as lyric text.
 
-Always verify spelling, repeated lines, punctuation, and omitted vocalizations before alignment.
+Always verify spelling, repeated lines, punctuation, line boundaries, and omitted vocalizations before alignment.
 
 #### Set song analysis language
 
@@ -309,7 +316,7 @@ Choose a language manually in **Settings → General → Interface language**. S
 
 ### 13. Privacy and licenses
 
-Analysis runs locally with the configured runtime. LRCLIB search is an explicit network-facing lyrics lookup. Model setup is explicit and may contact model hosts after confirmation.
+Analysis runs locally with the configured runtime. Lyrics Workbench searches LRCLIB, QQ Music, Kugou, and NetEase only after an explicit user action, so those lookups are network-facing. Model setup is explicit and may contact model hosts after confirmation.
 
 Uta! Studio is GPL-3.0. Optional third-party models and tools retain their own licenses. Review the confirmation shown before downloading separately licensed artifacts.
 
@@ -462,11 +469,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.2 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.3 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
 
 #### Windows
 
-1. 下载 `uta-studio-0.8.2-x86_64-windows.zip`。
+1. 下载 `uta-studio-0.8.3-x86_64-windows.zip`。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -476,20 +483,20 @@ Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.2-1_amd64.deb
+sudo apt install ./uta-studio_0.8.3-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.8.2-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.8.2-x86_64-linux.bin
-./uta-studio-0.8.2-x86_64-linux.bin
+chmod +x uta-studio-0.8.3-x86_64-linux.bin
+./uta-studio-0.8.3-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -614,19 +621,26 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 启用**自动分析**后，新扫描到且尚未分析的歌曲会自动加入队列。模型设置尚未完成，或希望先检查文件再占用算力时，建议保持关闭。
 
+#### 处理队列
+
+已完成和失败的运行会继续保留在**处理队列**中作为终态记录，不会在结束后消失。终态记录可以打开歌曲、使用新的精确请求**重新运行**，或只**删除**该队列记录。已完成记录在应用重启后不会自动恢复执行。
+
 ### 7. 歌词与语言
 
 #### 替换或编辑歌词
 
-从歌曲的歌词操作中可以：
+从歌曲页打开 **Lyrics Workbench**。它现在是独立的歌词制作页面，而不是弹窗；谱面编辑器工具栏也可以直接打开同一页面。搜索结果区域独立滚动，底部固定的 **Save** / **Save + Align** 始终可见。
 
-- 输入纯文本歌词；
-- 输入带时间的 LRC；
-- 搜索 LRCLIB；
-- 在保存前检查候选结果；
-- 保存后按需加入对齐队列。
+- 编辑用于搜索的歌名，然后同时搜索 LRCLIB、QQ Music、Kugou 和 NetEase；
+- 分别查看四个来源的候选数量或精确错误；
+- 加载前查看 `TIMED`、`TRANSLATION`、`ROMANIZATION` 标识；
+- 单独加载非 LRCLIB 的元数据候选，再将纯文本、带时间歌词、翻译或罗马音放入编辑器；
+- 对粘贴文本执行 Normalize、Strip timing 或 Clear；
+- 使用原生多行选择，以及 `Ctrl+A`、`Ctrl+C`、`Ctrl+X`、`Ctrl+V` 复制粘贴；
+- 选择 **Save** 仅保存歌词，或选择 **Save + Align** 保存后明确加入对齐队列。
+- 来源提供的字级或词级 LRC 会作为 timing 解析，时间标签不会再作为歌词文本送入对齐器。
 
-对齐前请检查拼写、重复段落、标点和漏掉的吟唱内容。
+对齐前请检查拼写、重复段落、标点、分行边界和漏掉的吟唱内容。
 
 #### 设置歌曲分析语言
 
@@ -744,7 +758,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 ### 13. 隐私与许可证
 
-分析使用已配置的本地运行环境执行。LRCLIB 搜索是明确触发的联网歌词查询。模型设置在确认后可能访问模型托管服务。
+分析使用已配置的本地运行环境执行。Lyrics Workbench 仅在用户明确操作后访问 LRCLIB、QQ Music、Kugou 和 NetEase，因此这些歌词查询会联网。模型设置在确认后可能访问模型托管服务。
 
 Uta! Studio 使用 GPL-3.0。可选第三方模型与工具保留各自许可证；下载单独授权的产物前，请阅读确认信息。
 
@@ -897,11 +911,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.2 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.3 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
 
 #### Windows
 
-1. `uta-studio-0.8.2-x86_64-windows.zip` をダウンロードします。
+1. `uta-studio-0.8.3-x86_64-windows.zip` をダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -911,20 +925,20 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.2-1_amd64.deb
+sudo apt install ./uta-studio_0.8.3-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.8.2-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.8.2-x86_64-linux.bin
-./uta-studio-0.8.2-x86_64-linux.bin
+chmod +x uta-studio-0.8.3-x86_64-linux.bin
+./uta-studio-0.8.3-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -1049,19 +1063,26 @@ NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認�
 
 **自動解析**を有効にすると、新しくスキャンされた未解析楽曲が自動的にキューへ追加されます。モデル設定が未完了の場合や、計算資源を使う前にファイルを確認したい場合は無効のままにします。
 
+#### 処理キュー
+
+完了・失敗した実行は、終了後も終端レコードとして**処理キュー**に残ります。終端行から曲を開く、新しい正確なリクエストで**再実行**する、またはそのキューレコードだけを**削除**できます。完了済みレコードがアプリ再起動後に自動再開することはありません。
+
 ### 7. 歌詞と言語
 
 #### 歌詞の置き換え・編集
 
-楽曲の歌詞操作から次を行えます。
+楽曲ページから **Lyrics Workbench** を開きます。現在はポップアップではなく独立した歌詞制作ページで、譜面エディターのツールバーからも同じページを直接開けます。検索結果だけがスクロールし、下部の **Save** / **Save + Align** は常に表示されます。
 
-- プレーン歌詞を入力する。
-- タイム付き LRC を入力する。
-- LRCLIB を検索する。
-- 保存前に候補を確認する。
-- 保存後、必要に応じてアラインメントをキューへ追加する。
+- 検索用の曲名を編集し、LRCLIB、QQ Music、Kugou、NetEase をまとめて検索する。
+- 4 つの提供元それぞれの候補数または正確なエラーを確認する。
+- 読み込む前に `TIMED`、`TRANSLATION`、`ROMANIZATION` の有無を確認する。
+- LRCLIB 以外のメタデータ候補を個別に Load し、プレーン、タイム付き、翻訳、ローマ字歌詞をエディターへ配置する。
+- 貼り付けたテキストに Normalize、Strip timing、Clear を実行する。
+- ネイティブの複数行選択と `Ctrl+A`、`Ctrl+C`、`Ctrl+X`、`Ctrl+V` のコピー＆ペーストを使う。
+- **Save** で解析せずに保存するか、**Save + Align** で保存後に明示的にアラインメントをキューへ追加する。
+- 提供元の単語・文字単位 LRC は timing として解析され、時刻タグが歌詞本文としてアラインメントへ送られることはありません。
 
-アラインメント前に、綴り、繰り返し、句読点、抜けた発声を確認してください。
+アラインメント前に、綴り、繰り返し、句読点、改行境界、抜けた発声を確認してください。
 
 #### 楽曲の解析言語
 
@@ -1179,7 +1200,7 @@ X11 専用ではなく Wayland セッションであること、グラフィッ�
 
 ### 13. プライバシーとライセンス
 
-解析は設定済みのローカルランタイムで実行されます。LRCLIB 検索は明示的に実行するネットワーク歌詞検索です。モデルセットアップは確認後にモデルホストへ接続する場合があります。
+解析は設定済みのローカルランタイムで実行されます。Lyrics Workbench はユーザーが明示的に操作した場合にだけ LRCLIB、QQ Music、Kugou、NetEase へ接続するため、これらの歌詞検索はネットワーク通信を伴います。モデルセットアップは確認後にモデルホストへ接続する場合があります。
 
 Uta! Studio は GPL-3.0 です。任意の第三者モデル・ツールにはそれぞれのライセンスが適用されます。別ライセンスの成果物をダウンロードする前に確認内容を読んでください。
 

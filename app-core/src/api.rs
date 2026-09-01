@@ -652,7 +652,21 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "search_lrclib_lyrics",
         "external",
         false,
-        "Search LRCLIB"
+        "Search LRCLIB through the compatibility lyrics endpoint"
+    ),
+    capability!(
+        "lyrics",
+        "search_lyrics_sources",
+        "external",
+        false,
+        "Search LRCLIB, QQ Music, Kugou, and NetEase with an optional edited title"
+    ),
+    capability!(
+        "lyrics",
+        "fetch_lyrics_candidate",
+        "external",
+        false,
+        "Load the full lyric document for one provider candidate"
     ),
     capability!(
         "lyrics",

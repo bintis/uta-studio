@@ -112,6 +112,7 @@ pub(crate) enum StudioRoute {
     Queue,
     Folders,
     SongDetail,
+    LyricsWorkbench,
     Settings,
     Documentation,
     Editor,

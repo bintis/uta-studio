@@ -237,10 +237,22 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::Music,
-                        "Edit lyrics",
+                        "Edit line",
                         UiAction::from(EditorCommand::Editor(EditorAction::EditLyricLine)),
                         false,
                     );
+                    if let Some(song) = song.as_ref() {
+                        spawn_toolbar_button(
+                            toolbar,
+                            font.clone(),
+                            icons.clone(),
+                            theme,
+                            UiIcon::Music,
+                            "Lyrics workbench",
+                            UiAction::from(EditorCommand::OpenLyricsEditor(song.file_hash.clone())),
+                            false,
+                        );
+                    }
                     spawn_toolbar_button(
                         toolbar,
                         font.clone(),

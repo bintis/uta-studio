@@ -90,23 +90,29 @@ fn parse_qrc_content(content: &str) -> Result<ProviderLyricDocument, LyricsProvi
         let start_ms = parse_u64(&captures[1])?;
         let duration_ms = parse_u64(&captures[2])?;
         let body = captures.get(3).map_or("", |value| value.as_str());
-        let mut text = if body.trim_start().starts_with('(') {
-            parse_marker_text(body, '(', ')')
+        let timed_words = if body.trim_start().starts_with('(') {
+            parse_prefix_qrc_words(body)?
         } else {
-            String::new()
+            suffix_word_re
+                .captures_iter(body)
+                .filter_map(|word| {
+                    let text = word.get(1)?.as_str();
+                    if text.is_empty() || text == "\r" {
+                        return None;
+                    }
+                    let start = parse_u64(word.get(2)?.as_str()).ok()?;
+                    Some((start, text.to_string()))
+                })
+                .collect::<Vec<_>>()
         };
-        if text.is_empty() {
-            for word in suffix_word_re.captures_iter(body) {
-                let part = word.get(1).map_or("", |value| value.as_str());
-                if part != "\r" {
-                    text.push_str(part);
-                }
-            }
-        }
+        let mut text = timed_words
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<String>();
         if text.is_empty() {
             text = strip_qrc_word_timestamps(body);
         }
-        push_line(&mut lines, start_ms, duration_ms, text);
+        push_line_with_words(&mut lines, start_ms, duration_ms, text, timed_words);
     }
     finish_document(lines, "QRC")
 }
@@ -177,7 +183,52 @@ pub(super) fn parse_krc(text: &str) -> Result<ProviderLyricDocument, LyricsProvi
     Ok(ProviderLyricDocument { lines })
 }
 
-fn push_line(lines: &mut Vec<ProviderLyricLine>, start_ms: u64, duration_ms: u64, text: String) {
+fn parse_prefix_qrc_words(body: &str) -> Result<Vec<(u64, String)>, LyricsProviderError> {
+    let mut words = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < body.len() {
+        let Some(open_rel) = body[cursor..].find('(') else {
+            break;
+        };
+        let marker_start = cursor + open_rel;
+        let marker_content_start = marker_start + 1;
+        let Some(close_rel) = body[marker_content_start..].find(')') else {
+            break;
+        };
+        let marker_end = marker_content_start + close_rel;
+        let mut parts = body[marker_content_start..marker_end].split(',');
+        let Some(start) = parts.next().and_then(|value| value.parse::<u64>().ok()) else {
+            cursor = marker_end + 1;
+            continue;
+        };
+        if parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_none()
+        {
+            cursor = marker_end + 1;
+            continue;
+        }
+        let text_start = marker_end + 1;
+        let text_end = body[text_start..]
+            .find('(')
+            .map_or(body.len(), |next| text_start + next);
+        let text = body[text_start..text_end].trim();
+        if !text.is_empty() && text != "\\r" {
+            words.push((start, text.to_string()));
+        }
+        cursor = text_end;
+    }
+    Ok(words)
+}
+
+fn push_line_with_words(
+    lines: &mut Vec<ProviderLyricLine>,
+    start_ms: u64,
+    duration_ms: u64,
+    text: String,
+    timed_words: Vec<(u64, String)>,
+) {
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
@@ -189,7 +240,15 @@ fn push_line(lines: &mut Vec<ProviderLyricLine>, start_ms: u64, duration_ms: u64
         text,
         translation: None,
         romanization: None,
+        timed_words: timed_words
+            .into_iter()
+            .map(|(start, text)| (Duration::from_millis(start), text))
+            .collect(),
     });
+}
+
+fn push_line(lines: &mut Vec<ProviderLyricLine>, start_ms: u64, duration_ms: u64, text: String) {
+    push_line_with_words(lines, start_ms, duration_ms, text, Vec::new());
 }
 
 fn finish_document(
@@ -298,8 +357,14 @@ fn parse_marker_text(body: &str, open: char, close: char) -> String {
         };
         let marker_end = marker_content_start + close_rel;
         let mut parts = body[marker_content_start..marker_end].split(',');
-        if parts.next().and_then(|value| value.parse::<u64>().ok()).is_none()
-            || parts.next().and_then(|value| value.parse::<u64>().ok()).is_none()
+        if parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_none()
+            || parts
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_none()
         {
             cursor = marker_end + close.len_utf8();
             continue;
@@ -366,7 +431,11 @@ fn decode_xml_entity(entity: &str) -> Option<char> {
             .strip_prefix("#x")
             .or_else(|| entity.strip_prefix("#X"))
             .and_then(|value| u32::from_str_radix(value, 16).ok())
-            .or_else(|| entity.strip_prefix('#').and_then(|value| value.parse().ok()))
+            .or_else(|| {
+                entity
+                    .strip_prefix('#')
+                    .and_then(|value| value.parse().ok())
+            })
             .and_then(char::from_u32),
     }
 }
@@ -389,6 +458,30 @@ mod tests {
         .unwrap();
         assert_eq!(document.lines[0].text, "我不愿再");
         assert!(!document.lines[0].text.contains('('));
+        assert_eq!(
+            document.to_lrc(),
+            "[02:23.04]<02:23.04>我<02:23.25>不<02:23.46>愿<02:23.70>再"
+        );
+    }
+
+    #[test]
+    fn qq_square_bracket_character_lrc_becomes_clean_line_text() {
+        let document = parse_qrc(
+            "[00:08.86]穢[00:08.94]れ[00:09.02]な[00:09.10]き\n[00:10.87]この身が朽ちるとも",
+        )
+        .unwrap();
+        assert_eq!(document.lines[0].text, "穢れなき");
+        assert_eq!(document.lines[1].text, "この身が朽ちるとも");
+        assert!(
+            document
+                .lines
+                .iter()
+                .all(|line| !line.text.contains("[00:"))
+        );
+        assert_eq!(
+            document.to_lrc(),
+            "[00:08.86]<00:08.86>穢<00:08.94>れ<00:09.02>な<00:09.10>き\n[00:10.87]この身が朽ちるとも"
+        );
     }
 
     #[test]

@@ -146,8 +146,9 @@ pub use lyrics::{
     CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsCandidate, LyricsFile,
     LyricsProvider, LyricsProviderFailure, LyricsSearchResult, apply_timed_lyrics,
     canonical_lyrics_status, fetch_lyrics_candidate, load_lyrics_file,
-    lrc_transcript_line_segments, provide_lrc, save_lyrics, save_timed_lyrics,
-    search_lrclib_for_hash, search_lyrics_for_hash,
+    lrc_transcript_line_segments, normalize_lyrics_text, provide_lrc, save_lyrics,
+    save_timed_lyrics, search_lrclib_for_hash, search_lyrics_for_hash,
+    search_lyrics_for_hash_with_title, strip_lyrics_timing,
 };
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
