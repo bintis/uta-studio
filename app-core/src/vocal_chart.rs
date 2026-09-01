@@ -447,50 +447,81 @@ pub fn migrate_analyzer_chart(
         .ok_or_else(|| UtaStudioError::Other("transcript.segments must be an array".into()))?;
     let words = analyzer_words(segments);
     let mut notes = analyzer_notes(pitch_notes)?;
+    let mut lyric_attachments = vec![Vec::<(usize, LyricToken)>::new(); notes.len()];
+    let mut notes_by_word = vec![Vec::<usize>::new(); words.len()];
+    let note_owners = notes
+        .iter()
+        .map(|note| best_analyzer_word_owner(note, &words))
+        .collect::<Vec<_>>();
+    for (note_index, owner) in note_owners.into_iter().enumerate() {
+        let Some(word_index) = owner else {
+            continue;
+        };
+        notes[note_index].phrase = Some(words[word_index].segment);
+        notes_by_word[word_index].push(note_index);
+    }
 
-    for word in words {
-        let overlapping = notes
-            .iter()
-            .enumerate()
-            .filter(|(_, note)| {
-                let start = units_to_seconds(note.note.start);
-                let end = units_to_seconds(note.note.start + note.note.duration);
-                start < word.end && end > word.start
-            })
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        if overlapping.is_empty() {
-            notes.push(MigratedNote {
-                phrase: Some(word.segment),
-                note: VocalNote {
-                    id: format!("note-lyric-{}", word.id),
-                    start: seconds_to_units(word.start),
-                    duration: duration_to_units(word.start, word.end),
-                    pitch: None,
-                    vocal_mode: VocalMode::Spoken,
-                    bonus: NoteBonus::Normal,
-                    scoring: NoteScoring {
-                        mode: ScoringMode::Rhythm,
-                        weight: 1.0,
+    let mut occupied = notes
+        .iter()
+        .map(|note| analyzer_note_range(note))
+        .collect::<Vec<_>>();
+    occupied.sort_unstable();
+
+    for (word_index, word) in words.iter().enumerate() {
+        let mut owned = std::mem::take(&mut notes_by_word[word_index]);
+        owned.sort_by_key(|index| notes[*index].note.start);
+        if owned.is_empty() {
+            let word_range = analyzer_word_range(word);
+            if let Some((start, end)) = largest_unoccupied_range(word_range, &occupied) {
+                let note_index = notes.len();
+                notes.push(MigratedNote {
+                    phrase: Some(word.segment),
+                    note: VocalNote {
+                        id: format!("note-lyric-{}", word.id),
+                        start,
+                        duration: end - start,
+                        pitch: None,
+                        vocal_mode: VocalMode::Spoken,
+                        bonus: NoteBonus::Normal,
+                        scoring: NoteScoring {
+                            mode: ScoringMode::Rhythm,
+                            weight: 1.0,
+                        },
+                        lyrics: Vec::new(),
                     },
-                    lyrics: vec![LyricToken::Text(text_token(&word))],
-                },
-            });
+                });
+                lyric_attachments.push(vec![(word_index, LyricToken::Text(text_token(word)))]);
+                occupied.push((start, end));
+                occupied.sort_unstable();
+                debug_assert_eq!(note_index + 1, notes.len());
+            } else if let Some(note_index) = best_overlapping_analyzer_note(&notes, word) {
+                // A boundary-crossing note can fully cover a very short word. Keep
+                // that word as an ordered token on the single owning note instead
+                // of creating an overlapping placeholder or assigning the note to
+                // both adjacent lyric lines.
+                lyric_attachments[note_index]
+                    .push((word_index, LyricToken::Text(text_token(word))));
+            }
             continue;
         }
 
-        let first = overlapping[0];
-        notes[first].phrase.get_or_insert(word.segment);
-        notes[first]
-            .note
-            .lyrics
-            .push(LyricToken::Text(text_token(&word)));
-        for index in overlapping.into_iter().skip(1) {
-            notes[index].phrase.get_or_insert(word.segment);
-            notes[index].note.lyrics.push(LyricToken::Continuation {
-                continuation_of: word.id.clone(),
-            });
+        let first = owned[0];
+        lyric_attachments[first].push((word_index, LyricToken::Text(text_token(word))));
+        for note_index in owned.into_iter().skip(1) {
+            lyric_attachments[note_index].push((
+                word_index,
+                LyricToken::Continuation {
+                    continuation_of: word.id.clone(),
+                },
+            ));
         }
+    }
+
+    for (note, mut attachments) in notes.iter_mut().zip(lyric_attachments) {
+        attachments.sort_by_key(|(word_index, _)| *word_index);
+        note.note
+            .lyrics
+            .extend(attachments.into_iter().map(|(_, token)| token));
     }
 
     // UTZ 0.3 notes own lyric tokens. Analyzer-only pitch regions that do not
@@ -541,6 +572,73 @@ pub fn migrate_analyzer_chart(
         .validate()
         .map_err(|error| UtaStudioError::Other(error.to_string()))?;
     Ok(chart)
+}
+
+/// A small boundary prior compensates for forced-alignment jitter at the first
+/// syllable of a new lyric line. It only applies when a pitch note physically
+/// crosses that line start; ordinary within-line word ownership remains pure
+/// maximum-overlap assignment.
+const ANALYZER_LINE_START_OWNERSHIP_BIAS: u64 = 20_000;
+
+fn analyzer_note_range(note: &MigratedNote) -> (u64, u64) {
+    (
+        note.note.start,
+        note.note.start.saturating_add(note.note.duration),
+    )
+}
+
+fn analyzer_word_range(word: &AnalyzerWord) -> (u64, u64) {
+    let start = seconds_to_units(word.start);
+    let end = seconds_to_units(word.end).max(start.saturating_add(1));
+    (start, end)
+}
+
+fn analyzer_range_overlap(left: (u64, u64), right: (u64, u64)) -> u64 {
+    left.1.min(right.1).saturating_sub(left.0.max(right.0))
+}
+
+fn best_analyzer_word_owner(note: &MigratedNote, words: &[AnalyzerWord]) -> Option<usize> {
+    let note_range = analyzer_note_range(note);
+    let midpoint = note_range.0 + (note_range.1.saturating_sub(note_range.0) / 2);
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(word_index, word)| {
+            let word_range = analyzer_word_range(word);
+            let overlap = analyzer_range_overlap(note_range, word_range);
+            if overlap == 0 {
+                return None;
+            }
+            let starts_new_line =
+                word_index == 0 || words[word_index.saturating_sub(1)].segment != word.segment;
+            let crosses_line_start =
+                starts_new_line && note_range.0 < word_range.0 && note_range.1 > word_range.0;
+            let adjusted_overlap = overlap.saturating_add(
+                crosses_line_start
+                    .then_some(ANALYZER_LINE_START_OWNERSHIP_BIAS)
+                    .unwrap_or(0),
+            );
+            let owns_midpoint = midpoint >= word_range.0 && midpoint < word_range.1;
+            Some((
+                (adjusted_overlap, overlap, owns_midpoint, word_index),
+                word_index,
+            ))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, word_index)| word_index)
+}
+
+fn best_overlapping_analyzer_note(notes: &[MigratedNote], word: &AnalyzerWord) -> Option<usize> {
+    let word_range = analyzer_word_range(word);
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(note_index, note)| {
+            let overlap = analyzer_range_overlap(analyzer_note_range(note), word_range);
+            (overlap > 0).then_some((overlap, note_index))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
+        .map(|(_, note_index)| note_index)
 }
 
 /// Converts the analyzer's frame-level f0 track into the format's fixed-hop
@@ -805,6 +903,59 @@ mod tests {
         assert!(notes[1].pitch.is_none());
         assert_eq!(notes[1].scoring.mode, ScoringMode::Rhythm);
         chart.validate().unwrap();
+    }
+
+    #[test]
+    fn crossing_note_assigns_the_next_line_onset_to_the_next_phrase() {
+        // Real regression geometry from Ariabl'eyeS — 穢れなき薔薇十字. The
+        // 158.48–158.57 note overlaps the previous-line は by 41 ms and the
+        // next-line 霞 by 49 ms; it must own only the latter lyric onset.
+        let transcript = serde_json::json!({
+            "language": "ja",
+            "segments": [
+                {
+                    "text": "は",
+                    "start": 157.881,
+                    "end": 158.521,
+                    "words": [{"word": "は", "start": 157.881, "end": 158.521}]
+                },
+                {
+                    "text": "霞む",
+                    "start": 158.521,
+                    "end": 159.441,
+                    "words": [
+                        {"word": "霞", "start": 158.521, "end": 158.661},
+                        {"word": "む", "start": 158.661, "end": 159.441}
+                    ]
+                }
+            ]
+        });
+        let notes = serde_json::json!({
+            "notes": [
+                {"id": "last-old-line-note", "start": 157.930, "end": 158.030, "midi": 60},
+                {"id": "crossing-line-note", "start": 158.480, "end": 158.570, "midi": 62},
+                {"id": "next-line-note", "start": 158.690, "end": 159.441, "midi": 64}
+            ]
+        });
+
+        let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
+        chart.validate().unwrap();
+        let phrase_text = |phrase: &utz::VocalPhrase| {
+            phrase
+                .notes
+                .iter()
+                .flat_map(|note| &note.lyrics)
+                .filter_map(|token| match token {
+                    LyricToken::Text(text) => Some(text.text.as_str()),
+                    LyricToken::Continuation { .. } => None,
+                })
+                .collect::<String>()
+        };
+
+        assert_eq!(chart.tracks[0].phrases.len(), 2);
+        assert_eq!(phrase_text(&chart.tracks[0].phrases[0]), "は");
+        assert_eq!(phrase_text(&chart.tracks[0].phrases[1]), "霞む");
+        assert_eq!(chart.tracks[0].phrases[1].notes[0].id, "crossing-line-note");
     }
 
     #[test]

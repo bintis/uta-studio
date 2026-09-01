@@ -883,6 +883,7 @@ pub(crate) fn analysis_status_copy(task: &app_core::AnalysisTask) -> (String, Op
         app_core::QueuedStatus::Analyzing(progress) => {
             (format!("Analyzing · {progress}%"), Some(*progress), false)
         }
+        app_core::QueuedStatus::Completed => ("Completed".to_string(), Some(100), false),
         app_core::QueuedStatus::Failed(_) => ("Failed".to_string(), None, true),
     }
 }

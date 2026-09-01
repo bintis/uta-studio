@@ -11,7 +11,7 @@ use super::{
     ANALYSIS_GRAPH_ZOOM_DEFAULT, AnalysisLogViewerState, AnalysisNodeContextMenu, CacheClearScope,
     DocumentationState, EditorDockSelectKind, FolderBrowser, LibraryFacet, LibraryPlayback,
     LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob, NativeLanguageEditor,
-    NativeLyricsEditor, NativeLyricsSearchJob, NativeLyricsWaveformJob,
+    NativeLyricsEditor, NativeLyricsFetchJob, NativeLyricsSearchJob, NativeLyricsWaveformJob,
     NativeSongSettings, PendingLeave, PlanPreviewDraft, SettingsSelectKind, SettingsTab,
     SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu, load_songs,
 };
@@ -171,6 +171,7 @@ pub(crate) struct AsyncJobs {
     pub(crate) export_job: NativeExportJob,
     pub(crate) editor_load_job: NativeEditorLoadJob,
     pub(crate) lyrics_search_job: NativeLyricsSearchJob,
+    pub(crate) lyrics_fetch_job: NativeLyricsFetchJob,
     pub(crate) lyrics_waveform_job: NativeLyricsWaveformJob,
 }
 

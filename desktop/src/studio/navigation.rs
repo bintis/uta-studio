@@ -112,7 +112,7 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.pending_analysis_history_clear {
         return Some(UiAction::from(AnalysisCommand::CancelClearAnalysisHistory));
     }
-    if session.lyrics_editor.is_some() {
+    if session.route == StudioRoute::LyricsWorkbench && session.lyrics_editor.is_some() {
         return Some(UiAction::from(EditorCommand::CloseLyricsEditor));
     }
     if session.language_editor.is_some() {
@@ -282,7 +282,18 @@ pub(crate) fn handle_accessible_navigation(
 /// queries here costs one slot instead of two.
 #[derive(SystemParam)]
 pub(crate) struct EditorTextInputs<'w, 's> {
-    pub(crate) lyrics: Query<'w, 's, &'static EditableText, With<LyricsEditorInput>>,
+    pub(crate) lyrics: Query<
+        'w,
+        's,
+        &'static EditableText,
+        (With<LyricsEditorInput>, Without<LyricsSearchTitleInput>),
+    >,
+    pub(crate) lyrics_search_title: Query<
+        'w,
+        's,
+        &'static EditableText,
+        (With<LyricsSearchTitleInput>, Without<LyricsEditorInput>),
+    >,
     pub(crate) all_lyrics: Query<
         'w,
         's,

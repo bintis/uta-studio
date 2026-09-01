@@ -144,6 +144,7 @@ pub fn run() {
         .add_systems(Update, poll_export_job)
         .add_systems(Update, poll_editor_load_job)
         .add_systems(Update, poll_lyrics_search_job)
+        .add_systems(Update, poll_lyrics_fetch_job)
         .add_systems(Update, poll_lyrics_waveform_job)
         .add_systems(Update, handle_tap_release)
         .add_systems(Update, sync_editor_word_input.after(rebuild_ui))
@@ -221,6 +222,10 @@ pub fn run() {
         .add_systems(
             Update,
             handle_song_detail_scroll.run_if(analysis_log_viewer_closed),
+        )
+        .add_systems(
+            Update,
+            handle_lyrics_workbench_scroll.run_if(analysis_log_viewer_closed),
         )
         .add_systems(
             Update,

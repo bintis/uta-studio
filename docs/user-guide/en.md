@@ -167,19 +167,26 @@ Step 1 reuses its lossless vocal/instrumental separation when the source, models
 
 When **Auto-analyze** is enabled, newly scanned, unanalyzed songs are queued automatically. Leave it off when model setup is incomplete or when you want to review files before using compute resources.
 
+#### Processing Queue
+
+Completed and failed runs remain in **Processing Queue** as terminal records instead of disappearing. A terminal row can reopen the song, **Rerun** it with a fresh exact request, or **Delete** only that queue record. Completed rows never resume automatically after restart.
+
 ### 7. Lyrics and language
 
 #### Replace or edit lyrics
 
-From a song, open the lyrics action to:
+From a song, open **Lyrics Workbench**. It is a dedicated authoring page rather than a pop-up, and the chart editor toolbar can open the same page directly. Search results scroll independently from the fixed **Save** / **Save + Align** footer.
 
-- enter plain lyrics;
-- enter timed LRC;
-- search LRCLIB;
-- review a candidate before saving;
-- save without automatically starting analysis; queue alignment later from the song’s Analysis controls when needed.
+- edit the search title, then search LRCLIB, QQ Music, Kugou, and NetEase together;
+- see each provider's candidate count or exact error independently;
+- review `TIMED`, `TRANSLATION`, and `ROMANIZATION` availability before loading a result;
+- load metadata-only non-LRCLIB candidates individually, then place plain, timed, translated, or romanized text in the editor;
+- normalize pasted text, strip LRC timing, or clear the editor;
+- use native multiline selection and `Ctrl+A`, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` copy/paste;
+- choose **Save** to store lyrics without analysis, or **Save + Align** to store them and queue alignment explicitly.
+- provider LRC with word- or character-level timestamps is parsed as timing evidence; timestamp markup is never sent to alignment as lyric text.
 
-Always verify spelling, repeated lines, punctuation, and omitted vocalizations before alignment.
+Always verify spelling, repeated lines, punctuation, line boundaries, and omitted vocalizations before alignment.
 
 #### Set song analysis language
 
@@ -297,7 +304,7 @@ Choose a language manually in **Settings → General → Interface language**. S
 
 ### 13. Privacy and licenses
 
-Analysis runs locally with the configured runtime. LRCLIB search is an explicit network-facing lyrics lookup. Model setup is explicit and may contact model hosts after confirmation.
+Analysis runs locally with the configured runtime. Lyrics Workbench searches LRCLIB, QQ Music, Kugou, and NetEase only after an explicit user action, so those lookups are network-facing. Model setup is explicit and may contact model hosts after confirmation.
 
 Uta! Studio is GPL-3.0. Optional third-party models and tools retain their own licenses. Review the confirmation shown before downloading separately licensed artifacts.
 

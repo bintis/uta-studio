@@ -704,19 +704,16 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_components_share_the_pair_state_budget() {
-        let mut at_limit = distinct_shifted_dense_component([256, 128], "first", 0);
-        at_limit.extend(distinct_shifted_dense_component(
+    fn disconnected_components_have_independent_pair_state_budgets() {
+        let mut candidates = distinct_shifted_dense_component([256, 128], "first", 0);
+        candidates.extend(distinct_shifted_dense_component(
             [256, 128],
             "second",
             2_000_000,
         ));
-        decode_candidate_graph(&at_limit).unwrap();
-        at_limit.extend(distinct_shifted_dense_component([1, 1], "over", 4_000_000));
-        assert!(
-            decode_candidate_graph(&at_limit)
-                .unwrap_err()
-                .contains("bounded pair-state limit")
+        candidates.extend(distinct_shifted_dense_component([1, 1], "third", 4_000_000));
+        decode_candidate_graph(&candidates).expect(
+            "independent voiced components must not accumulate into one song-length work budget",
         );
     }
 

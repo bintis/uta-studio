@@ -263,6 +263,7 @@ pub(crate) fn update_queue_status(file_hash: &str, status: QueuedStatus) {
         QueuedStatus::Staged => ("staged", None, None::<String>),
         QueuedStatus::Queued => ("queued", None, None::<String>),
         QueuedStatus::Analyzing(progress) => ("analyzing", Some(*progress as i64), None),
+        QueuedStatus::Completed => ("completed", None, None::<String>),
         QueuedStatus::Failed(message) => ("failed", None, Some(message.clone())),
     };
     let _ = library_db::analysis_queue_upsert_row(file_hash, state, progress, message.as_deref());
@@ -494,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn force_stop_all_removes_pending_rows_but_preserves_failures() {
+    fn force_stop_all_removes_pending_rows_but_preserves_terminal_rows() {
         let root = std::env::temp_dir().join(format!(
             "uta-studio-force-stop-all-test-{}-{}",
             std::process::id(),
@@ -512,6 +513,7 @@ mod tests {
         library_db::analysis_queue_upsert_row("staged", "staged", None, None).unwrap();
         library_db::analysis_queue_upsert_row("failed", "failed", None, Some("diagnostic"))
             .unwrap();
+        library_db::analysis_queue_upsert_row("completed", "completed", None, None).unwrap();
 
         assert_eq!(force_stop_all_analysis().unwrap(), 2);
         assert_eq!(library_db::analysis_queue_status("queued").unwrap(), None);
@@ -521,6 +523,12 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("failed")
+        );
+        assert_eq!(
+            library_db::analysis_queue_status("completed")
+                .unwrap()
+                .as_deref(),
+            Some("completed")
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -577,7 +585,7 @@ fn wait_until_analysis_released(file_hash: &str) -> Result<(), String> {
 }
 
 /// Force-stops the active Engine process tree and removes every not-yet-run
-/// staged/queued analysis. Failed rows remain visible for diagnosis.
+/// staged/queued analysis. Failed and completed terminal rows remain visible for diagnosis, rerun, or explicit removal.
 pub fn force_stop_all_analysis() -> Result<usize, String> {
     let (active, queued) = {
         let mut state = ANALYZER.lock().unwrap();

@@ -202,13 +202,17 @@ const EDITOR_COMMANDS: &[&str] = &[
     "ui.editor.open_lyrics_editor",
     "ui.editor.close_lyrics_editor",
     "ui.editor.toggle_lyrics_input_mode",
-    "ui.editor.search_lrclib_lyrics",
+    "ui.editor.search_all_lyrics_sources",
     "ui.editor.extract_lyrics",
-    "ui.editor.previous_lrclib_candidate",
-    "ui.editor.next_lrclib_candidate",
-    "ui.editor.use_lrclib_plain",
-    "ui.editor.use_lrclib_timed",
+    "ui.editor.previous_lyrics_candidate_page",
+    "ui.editor.next_lyrics_candidate_page",
+    "ui.editor.load_lyrics_candidate",
+    "ui.editor.use_lyrics_candidate",
+    "ui.editor.normalize_lyrics_editor",
+    "ui.editor.strip_lyrics_timing",
+    "ui.editor.clear_lyrics_editor",
     "ui.editor.save_lyrics_editor",
+    "ui.editor.save_lyrics_editor_and_align",
     "ui.editor.adjust_transcript_boundary",
     "ui.editor.preview_transcript_at",
     "ui.editor.open_language_editor",
@@ -311,7 +315,8 @@ fn classified_access(command: &str) -> &'static str {
         || command.contains("reveal_")
         || command.contains("open_source")
         || command.contains("open_log")
-        || command.contains("search_lrclib")
+        || command.contains("search_all_lyrics_sources")
+        || command.contains("load_lyrics_candidate")
         || command.contains("request_setup")
         || command.contains("confirm_setup")
         || command.contains("install_audio_model")
@@ -633,6 +638,7 @@ mod tests {
             include_str!("editor/view/menus.rs"),
             include_str!("editor/view/timeline.rs"),
             include_str!("song_detail/page.rs"),
+            include_str!("song_detail/lyrics_workbench.rs"),
         ]
         .join("\n");
         for command in POINTER_COMMANDS {

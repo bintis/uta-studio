@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub(crate) const SCHEMA_VERSION: i32 = 15;
+pub(crate) const SCHEMA_VERSION: i32 = 16;
 
 pub(super) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -56,7 +56,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE TABLE IF NOT EXISTS analysis_queue (
             file_hash TEXT PRIMARY KEY,
-            status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'failed')),
+            status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'completed', 'failed')),
             analyzing_pct INTEGER,
             failed_message TEXT,
             request_id TEXT,
@@ -274,7 +274,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE analysis_queue RENAME TO analysis_queue_v13;
              CREATE TABLE analysis_queue (
                 file_hash TEXT PRIMARY KEY,
-                status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'failed')),
+                status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'completed', 'failed')),
                 analyzing_pct INTEGER,
                 failed_message TEXT,
                 request_id TEXT,
@@ -312,6 +312,46 @@ pub(super) fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
              SET queue_position = (
                SELECT position FROM ordered WHERE ordered.file_hash = analysis_queue.file_hash
              );",
+        )?;
+    }
+    // SCHEMA_VERSION 15 -> 16: terminal successful runs stay visible in the
+    // queue until the user explicitly reruns or removes them. SQLite cannot
+    // widen a CHECK constraint in place, so preserve every exact request and
+    // user-selected queue position while rebuilding the table once.
+    let analysis_queue_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'analysis_queue'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !analysis_queue_sql.contains("'completed'") {
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE analysis_queue RENAME TO analysis_queue_v15;
+             CREATE TABLE analysis_queue (
+                file_hash TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'completed', 'failed')),
+                analyzing_pct INTEGER,
+                failed_message TEXT,
+                request_id TEXT,
+                engine_request_json TEXT,
+                request_digest TEXT,
+                engine_plan_json TEXT,
+                source_path TEXT,
+                source_sha256 TEXT,
+                queued_at_ms INTEGER,
+                queue_position INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO analysis_queue (
+                file_hash, status, analyzing_pct, failed_message, request_id,
+                engine_request_json, request_digest, engine_plan_json,
+                source_path, source_sha256, queued_at_ms, queue_position
+             )
+             SELECT file_hash, status, analyzing_pct, failed_message, request_id,
+                    engine_request_json, request_digest, engine_plan_json,
+                    source_path, source_sha256, queued_at_ms, queue_position
+             FROM analysis_queue_v15;
+             DROP TABLE analysis_queue_v15;
+             COMMIT;",
         )?;
     }
     conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
@@ -530,6 +570,64 @@ mod tests {
         assert_eq!(
             preserved,
             ("queued".to_string(), "{\"schema\":1}".to_string())
+        );
+    }
+
+    #[test]
+    fn ensure_schema_allows_completed_queue_rows_without_losing_exact_intent_or_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE analysis_queue;
+             CREATE TABLE analysis_queue (
+                file_hash TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('staged', 'queued', 'analyzing', 'failed')),
+                analyzing_pct INTEGER,
+                failed_message TEXT,
+                request_id TEXT,
+                engine_request_json TEXT,
+                request_digest TEXT,
+                engine_plan_json TEXT,
+                source_path TEXT,
+                source_sha256 TEXT,
+                queued_at_ms INTEGER,
+                queue_position INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO analysis_queue (
+                file_hash, status, failed_message, request_id, engine_request_json,
+                request_digest, engine_plan_json, source_path, source_sha256,
+                queued_at_ms, queue_position
+             ) VALUES (
+                'existing', 'failed', 'old failure', 'request-1', '{\"schema\":1}',
+                'digest-1', '{\"plan\":1}', '/music/song.flac', 'source-1', 99, 7
+             );",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO analysis_queue (file_hash, status, queue_position)
+             VALUES ('complete', 'completed', 8)",
+            [],
+        )
+        .unwrap();
+
+        let preserved: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT status, engine_request_json, request_digest, queue_position
+                 FROM analysis_queue WHERE file_hash = 'existing'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "failed".to_string(),
+                "{\"schema\":1}".to_string(),
+                "digest-1".to_string(),
+                7,
+            )
         );
     }
 

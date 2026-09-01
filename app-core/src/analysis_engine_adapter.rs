@@ -348,6 +348,27 @@ fn attach_song_execution_context(
     Ok(())
 }
 
+fn studio_tokens_from_timed_lrc(
+    timed_lrc: &str,
+    source_duration_secs: f64,
+) -> Result<Vec<StudioLyricToken>, String> {
+    let mut parsed = crate::lrc::parse_lrc(timed_lrc)?;
+    parsed.extend_inferred_final_end(source_duration_secs);
+    Ok(parsed
+        .segments
+        .into_iter()
+        .enumerate()
+        .map(|(index, segment)| StudioLyricToken {
+            id: format!("lrc-{index}"),
+            text: segment.text,
+            reading: None,
+            phonemes: None,
+            start: Some((segment.start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+            end: Some((segment.end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+        })
+        .collect())
+}
+
 fn lyrics_context_for_song(
     file_hash: &str,
     requested_outputs: AnalysisOutputSelection,
@@ -357,21 +378,7 @@ fn lyrics_context_for_song(
         .ok_or_else(|| format!("song not found: {file_hash}"))?;
     if let Some(lyrics) = crate::lyrics::load_lyrics_file(file_hash) {
         if let Some(timed_lrc) = lyrics.timed_lrc {
-            let mut parsed = crate::lrc::parse_lrc(&timed_lrc)?;
-            parsed.extend_inferred_final_end(song.duration_secs);
-            let tokens = parsed
-                .segments
-                .into_iter()
-                .enumerate()
-                .map(|(index, segment)| StudioLyricToken {
-                    id: format!("lrc-{index}"),
-                    text: segment.text,
-                    reading: None,
-                    phonemes: None,
-                    start: Some((segment.start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-                    end: Some((segment.end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-                })
-                .collect::<Vec<_>>();
+            let tokens = studio_tokens_from_timed_lrc(&timed_lrc, song.duration_secs)?;
             if !tokens.is_empty() {
                 return Ok(StudioLyricsContext {
                     mode: StudioLyricsMode::Canonical,
@@ -1169,6 +1176,21 @@ mod tests {
     use crate::analysis_experience::{
         AnalysisExperienceSettings, AnalysisQualityProfile, resolve_analysis_experience,
     };
+
+    #[test]
+    fn character_timed_lrc_reaches_alignment_as_clean_line_tokens_with_real_windows() {
+        let tokens = studio_tokens_from_timed_lrc(
+            "[00:08.86]穢[00:08.94]れ[00:09.02]な[00:09.10]き\n[00:10.87]この身が朽ちるとも",
+            20.0,
+        )
+        .unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].text, "穢れなき");
+        assert_eq!(tokens[0].start, Some(8_860_000));
+        assert_eq!(tokens[0].end, Some(10_870_000));
+        assert_eq!(tokens[1].text, "この身が朽ちるとも");
+        assert!(tokens.iter().all(|token| !token.text.contains("[00:")));
+    }
 
     #[test]
     fn identical_plain_and_lrc_lines_recover_the_existing_time_anchors() {

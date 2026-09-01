@@ -2,7 +2,7 @@
 
 use crate::studio::*;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LyricsInputMode {
     Plain,
     TimedLrc,
@@ -99,12 +99,116 @@ pub(crate) enum LyricsCandidateUseMode {
     Romanization,
 }
 
+pub(crate) const LYRICS_CANDIDATE_SLOTS: usize = 6;
+
+pub(crate) fn lyrics_candidate_text(
+    candidate: &app_core::LyricsCandidate,
+    use_mode: LyricsCandidateUseMode,
+) -> Option<(LyricsInputMode, String)> {
+    match use_mode {
+        LyricsCandidateUseMode::Plain => {
+            let text = if candidate.lines.is_empty() {
+                candidate
+                    .synced_lyrics
+                    .as_deref()
+                    .map(app_core::strip_lyrics_timing)?
+            } else {
+                candidate.lines.join("\n")
+            };
+            (!text.trim().is_empty()).then(|| {
+                (
+                    LyricsInputMode::Plain,
+                    app_core::normalize_lyrics_text(&text),
+                )
+            })
+        }
+        LyricsCandidateUseMode::TimedLrc => candidate.synced_lyrics.as_deref().and_then(|text| {
+            let text = app_core::normalize_lyrics_text(text);
+            (!text.trim().is_empty()).then_some((LyricsInputMode::TimedLrc, text))
+        }),
+        LyricsCandidateUseMode::Translation => candidate.translation.as_deref().and_then(|text| {
+            let text = app_core::normalize_lyrics_text(text);
+            (!text.trim().is_empty()).then_some((LyricsInputMode::Plain, text))
+        }),
+        LyricsCandidateUseMode::Romanization => {
+            candidate.romanization.as_deref().and_then(|text| {
+                let text = app_core::normalize_lyrics_text(text);
+                (!text.trim().is_empty()).then_some((LyricsInputMode::Plain, text))
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod lyrics_candidate_text_tests {
+    use super::*;
+
+    fn loaded_candidate() -> app_core::LyricsCandidate {
+        serde_json::from_value(serde_json::json!({
+            "provider": "netease",
+            "provider_id": "42",
+            "track_name": "Song",
+            "artist_name": "Artist",
+            "album_name": "Album",
+            "duration_secs": 180.0,
+            "has_timed_lyrics": true,
+            "has_translation": true,
+            "has_romanization": true,
+            "loaded": true,
+            "lines": ["原文 一", "原文 二"],
+            "synced_lyrics": "[00:01.00]原文 一\n[00:02.00]原文 二",
+            "translation": " translated   one \n translated two ",
+            "romanization": "genbun ichi\ngenbun ni"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn candidate_forms_map_to_the_expected_editor_modes() {
+        let candidate = loaded_candidate();
+        assert_eq!(
+            lyrics_candidate_text(&candidate, LyricsCandidateUseMode::Plain),
+            Some((LyricsInputMode::Plain, "原文 一\n原文 二".to_string()))
+        );
+        assert_eq!(
+            lyrics_candidate_text(&candidate, LyricsCandidateUseMode::TimedLrc),
+            Some((
+                LyricsInputMode::TimedLrc,
+                "[00:01.00]原文 一\n[00:02.00]原文 二".to_string()
+            ))
+        );
+        assert_eq!(
+            lyrics_candidate_text(&candidate, LyricsCandidateUseMode::Translation),
+            Some((
+                LyricsInputMode::Plain,
+                "translated one\ntranslated two".to_string()
+            ))
+        );
+        assert_eq!(
+            lyrics_candidate_text(&candidate, LyricsCandidateUseMode::Romanization),
+            Some((LyricsInputMode::Plain, "genbun ichi\ngenbun ni".to_string()))
+        );
+    }
+
+    #[test]
+    fn plain_form_can_be_derived_from_a_timed_only_candidate() {
+        let mut candidate = loaded_candidate();
+        candidate.lines.clear();
+        assert_eq!(
+            lyrics_candidate_text(&candidate, LyricsCandidateUseMode::Plain),
+            Some((LyricsInputMode::Plain, "原文 一\n原文 二".to_string()))
+        );
+    }
+}
+
 pub(crate) struct NativeLyricsEditor {
     pub(crate) file_hash: String,
+    pub(crate) return_route: StudioRoute,
+    pub(crate) search_title: String,
     pub(crate) mode: LyricsInputMode,
     pub(crate) initial_text: String,
     pub(crate) candidates: Vec<app_core::LyricsCandidate>,
-    pub(crate) candidate_index: usize,
+    pub(crate) candidate_page: usize,
     pub(crate) searching: bool,
     pub(crate) fetching_candidate: Option<usize>,
     pub(crate) provider_errors: Vec<app_core::LyricsProviderFailure>,
@@ -179,7 +283,7 @@ pub(crate) struct NativeAuthoringJob {
 
 #[derive(Default)]
 pub(crate) struct NativeLyricsSearchJob {
-    pub(crate) receiver: Option<Mutex<mpsc::Receiver<app_core::LyricsSearchResult>>>,
+    pub(crate) receiver: Option<Mutex<mpsc::Receiver<(String, app_core::LyricsSearchResult)>>>,
 }
 
 #[derive(Default)]
@@ -187,12 +291,8 @@ pub(crate) struct NativeLyricsFetchJob {
     pub(crate) receiver: Option<Mutex<mpsc::Receiver<LyricsCandidateFetchResult>>>,
 }
 
-pub(crate) type LyricsCandidateFetchResult = (
-    String,
-    usize,
-    LyricsCandidateUseMode,
-    Result<app_core::LyricsCandidate, String>,
-);
+pub(crate) type LyricsCandidateFetchResult =
+    (String, usize, Result<app_core::LyricsCandidate, String>);
 
 #[derive(Default)]
 pub(crate) struct NativeLyricsWaveformJob {
@@ -211,6 +311,12 @@ pub(crate) struct SongDetailContent;
 
 #[derive(Component)]
 pub(crate) struct LyricsEditorInput;
+
+#[derive(Component)]
+pub(crate) struct LyricsSearchTitleInput;
+
+#[derive(Component)]
+pub(crate) struct LyricsWorkbenchContent;
 
 #[derive(Component)]
 pub(crate) struct LanguageEditorInput;

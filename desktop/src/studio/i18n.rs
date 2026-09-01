@@ -833,6 +833,49 @@ mod tests {
     }
 
     #[test]
+    fn lyrics_workbench_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "LYRICS WORKBENCH",
+            "Search four lyric sources, load the needed representation, then review it in the native Unicode editor. Ctrl+A/C/X/V and multiline copy/paste are supported by the focused text field.",
+            "SEARCH TITLE",
+            "Searching…",
+            "Search all sources",
+            "Use plain editor",
+            "Use timed LRC editor",
+            "SEARCH RESULTS · loading",
+            "Loading…",
+            "Load",
+            "Plain",
+            "Translation",
+            "Romanization",
+            "Normalize",
+            "Strip timing",
+            "Save + Align",
+            "Lyrics data · LRCLIB / QQ Music / Kugou / NetEase",
+            "Lyrics Workbench",
+            "Lyrics workbench",
+            "Search, review, edit, save, and align lyrics",
+            "Edit line",
+            "COMPLETED",
+            "Completed",
+            "Open song",
+            "Rerun",
+            "Completed successfully · outputs and run history are retained until you rerun or delete this entry",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+    }
+
+    #[test]
     fn exact_static_copy_is_localized() {
         assert_eq!(
             translate_ui(UiLocale::SimplifiedChinese, "Settings").as_deref(),

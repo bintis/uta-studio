@@ -24,15 +24,211 @@ pub struct LyricsFile {
     pub timed_lrc: Option<String>,
 }
 
+fn repair_legacy_timed_lines(mut lyrics: LyricsFile) -> LyricsFile {
+    if lyrics.timed_lrc.is_some() {
+        return lyrics;
+    }
+    let non_empty = lyrics
+        .lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if non_empty.is_empty()
+        || !non_empty.iter().all(|line| {
+            leading_delimited_tag(line, '[', ']').is_some_and(|(tag, _)| is_lrc_timestamp(tag))
+        })
+    {
+        return lyrics;
+    }
+
+    let timed_lrc = lyrics.lines.join("\n");
+    let Ok(parsed) = lrc::parse_lrc(&timed_lrc) else {
+        return lyrics;
+    };
+    let clean_lines = parsed
+        .segments
+        .into_iter()
+        .map(|segment| segment.text.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if !clean_lines.is_empty() {
+        lyrics.lines = clean_lines;
+        lyrics.timed_lrc = Some(timed_lrc);
+    }
+    lyrics
+}
+
 pub fn search_lyrics_for_hash(file_hash: &str) -> LyricsSearchResult {
-    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
+    search_lyrics_for_hash_with_title(file_hash, "")
+}
+
+pub fn search_lyrics_for_hash_with_title(file_hash: &str, title: &str) -> LyricsSearchResult {
+    let Some(mut song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
         return LyricsSearchResult::default();
     };
+    let title = title.trim();
+    if !title.is_empty() {
+        song.title = title.to_string();
+    }
     crate::lyrics_sources::lyrics_candidates(&song)
 }
 
 pub fn fetch_lyrics_candidate(candidate: &LyricsCandidate) -> Result<LyricsCandidate, String> {
     crate::lyrics_sources::fetch_lyrics_candidate(candidate)
+}
+
+/// Normalizes pasted lyric text without inventing or removing timing tags.
+/// Line endings, invisible separators, repeated horizontal whitespace, and
+/// excess blank lines are made deterministic for editing and provider imports.
+pub fn normalize_lyrics_text(input: &str) -> String {
+    let input = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = Vec::<String>::new();
+    let mut previous_blank = false;
+    for raw in input.lines() {
+        let mut cleaned = String::with_capacity(raw.len());
+        let mut pending_space = false;
+        for character in raw
+            .chars()
+            .filter(|character| !matches!(character, '\u{feff}' | '\u{200b}' | '\u{2060}'))
+        {
+            if character.is_whitespace() {
+                pending_space = !cleaned.is_empty();
+            } else {
+                if pending_space {
+                    cleaned.push(' ');
+                    pending_space = false;
+                }
+                cleaned.push(character);
+            }
+        }
+        let cleaned = cleaned.trim().to_string();
+        if cleaned.is_empty() {
+            if !lines.is_empty() && !previous_blank {
+                lines.push(String::new());
+                previous_blank = true;
+            }
+        } else {
+            lines.push(cleaned);
+            previous_blank = false;
+        }
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// Converts standard or enhanced LRC into plain lyric lines. Leading line
+/// timestamps, metadata tags, and inline enhanced-word timestamps are removed;
+/// the remaining lyric text is normalized for direct editing/alignment.
+pub fn strip_lyrics_timing(input: &str) -> String {
+    let mut lines = Vec::new();
+    for raw in input.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        let mut rest = raw.trim_start();
+        let mut saw_timestamp = false;
+        loop {
+            let Some((tag, after)) = leading_delimited_tag(rest, '[', ']') else {
+                break;
+            };
+            if is_lrc_timestamp(tag) {
+                rest = after.trim_start();
+                saw_timestamp = true;
+                continue;
+            }
+            if !saw_timestamp && is_lrc_metadata_tag(tag) {
+                rest = "";
+            }
+            break;
+        }
+        if rest.is_empty() {
+            continue;
+        }
+        let plain = strip_inline_lyrics_timing(rest);
+        let plain = plain.trim();
+        if !plain.is_empty() {
+            lines.push(plain.to_string());
+        }
+    }
+    normalize_lyrics_text(&lines.join("\n"))
+}
+
+fn leading_delimited_tag(text: &str, open: char, close: char) -> Option<(&str, &str)> {
+    let text = text.strip_prefix(open)?;
+    let close_index = text.find(close)?;
+    Some((
+        &text[..close_index],
+        &text[close_index + close.len_utf8()..],
+    ))
+}
+
+fn strip_inline_lyrics_timing(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        let ch = text[i..].chars().next().unwrap();
+        let close = match ch {
+            '<' => Some('>'),
+            '[' => Some(']'),
+            _ => None,
+        };
+        if let Some(close) = close
+            && let Some(close_rel) = text[i..].find(close)
+        {
+            let inner_start = i + ch.len_utf8();
+            let inner_end = i + close_rel;
+            if inner_end >= inner_start && is_lrc_timestamp(&text[inner_start..inner_end]) {
+                i += close_rel + close.len_utf8();
+                continue;
+            }
+        }
+        output.push(ch);
+        i += ch.len_utf8();
+    }
+    output
+}
+
+fn is_lrc_timestamp(tag: &str) -> bool {
+    let components = tag.trim().split(':').collect::<Vec<_>>();
+    if !(2..=3).contains(&components.len()) {
+        return false;
+    }
+    components.iter().enumerate().all(|(index, component)| {
+        let component = component.trim();
+        if component.is_empty() {
+            return false;
+        }
+        if index + 1 == components.len() {
+            let mut seen_separator = false;
+            component.chars().all(|character| {
+                if character == '.' || character == ',' {
+                    if seen_separator {
+                        return false;
+                    }
+                    seen_separator = true;
+                    true
+                } else {
+                    character.is_ascii_digit()
+                }
+            })
+        } else {
+            component
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        }
+    })
+}
+
+fn is_lrc_metadata_tag(tag: &str) -> bool {
+    let Some((name, _)) = tag.split_once(':') else {
+        return false;
+    };
+    let name = name.trim();
+    !name.is_empty()
+        && name.len() <= 16
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphabetic() || character == '_')
 }
 
 /// Compatibility entry point retained for API clients that explicitly request
@@ -51,7 +247,9 @@ pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {
         return None;
     }
     let bytes = std::fs::read(&path).ok()?;
-    serde_json::from_slice::<LyricsFile>(&bytes).ok()
+    serde_json::from_slice::<LyricsFile>(&bytes)
+        .ok()
+        .map(repair_legacy_timed_lines)
 }
 
 /// Ordered line texts from a song's LRC-derived transcript (the shape
@@ -542,6 +740,47 @@ pub(crate) fn write_lyrics_file(
     let lyrics_json = serde_json::json!({ "lines": lines });
     std::fs::write(&out, serde_json::to_string_pretty(&lyrics_json).unwrap())?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod lyrics_text_tools_tests {
+    use super::{
+        LyricsFile, normalize_lyrics_text, repair_legacy_timed_lines, strip_lyrics_timing,
+    };
+
+    #[test]
+    fn normalizes_pasted_line_endings_spacing_and_blank_runs() {
+        let input = "\u{feff}  first\t  line  \r\n\r\n\r\nsecond\u{200b}   line\r\n";
+        assert_eq!(normalize_lyrics_text(input), "first line\n\nsecond line");
+    }
+
+    #[test]
+    fn strips_standard_and_enhanced_lrc_timing_but_keeps_plain_section_labels() {
+        let input = concat!(
+            "[ar:Ariabl'eyeS]\r\n",
+            "[offset:0]\r\n",
+            "[00:01.20]<00:01.20>霞<00:01.50>む\r\n",
+            "[00:02.00]景[00:02.20]色\r\n",
+            "[00:03.00][00:04.00]repeat\r\n",
+            "[Verse 1]\r\n",
+        );
+        assert_eq!(strip_lyrics_timing(input), "霞む\n景色\nrepeat\n[Verse 1]");
+    }
+
+    #[test]
+    fn legacy_timestamped_lines_are_promoted_to_timed_lrc_without_markup_in_plain_lines() {
+        let raw = vec![
+            "[00:08.86]穢[00:08.94]れ[00:09.02]な[00:09.10]き".to_string(),
+            "[00:10.87]この身が朽ちるとも".to_string(),
+        ];
+        let repaired = repair_legacy_timed_lines(LyricsFile {
+            lines: raw.clone(),
+            timed_lrc: None,
+        });
+        assert_eq!(repaired.timed_lrc.as_deref(), Some(raw.join("\n").as_str()));
+        assert_eq!(repaired.lines, ["穢れなき", "この身が朽ちるとも"]);
+        assert!(repaired.lines.iter().all(|line| !line.contains("[00:")));
+    }
 }
 
 #[cfg(test)]

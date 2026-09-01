@@ -125,10 +125,10 @@ pub(crate) fn poll_lyrics_search_job(
                 .lock()
                 .ok()
                 .and_then(|receiver| match receiver.try_recv() {
-                    Ok(candidates) => Some(Ok(candidates)),
+                    Ok(result) => Some(Ok(result)),
                     Err(mpsc::TryRecvError::Empty) => None,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        Some(Err("LRCLIB search worker exited unexpectedly.".to_string()))
+                        Some(Err("Lyrics search worker exited unexpectedly.".to_string()))
                     }
                 })
         });
@@ -137,27 +137,101 @@ pub(crate) fn poll_lyrics_search_job(
     };
     jobs.lyrics_search_job.receiver = None;
     match result {
-        Ok(candidates) => {
-            let count = candidates.len();
-            if let Some(editor) = dialogs.lyrics_editor.as_mut() {
+        Ok((file_hash, result)) => {
+            let count = result.candidates.len();
+            let error_count = result.provider_errors.len();
+            if let Some(editor) = dialogs
+                .lyrics_editor
+                .as_mut()
+                .filter(|editor| editor.file_hash == file_hash)
+            {
                 editor.searching = false;
-                editor.candidates = candidates;
-                editor.candidate_index = 0;
-                shell.notice = Some(if count == 0 {
-                    "LRCLIB did not return a matching lyric.".to_string()
-                } else {
-                    format!("Found {count} LRCLIB lyric candidate(s). Review before applying.")
+                editor.candidates = result.candidates;
+                editor.provider_errors = result.provider_errors;
+                editor.candidate_page = 0;
+                shell.notice = Some(match (count, error_count) {
+                    (0, 0) => "No lyric source returned a matching candidate.".to_string(),
+                    (0, errors) => {
+                        format!("No lyric candidates found; {errors} source(s) reported an error.")
+                    }
+                    (found, 0) => format!("Found {found} lyric candidate(s) across all sources."),
+                    (found, errors) => format!(
+                        "Found {found} lyric candidate(s); {errors} source(s) reported an error."
+                    ),
                 });
             }
         }
         Err(error) => {
-            if let Some(editor) = dialogs.lyrics_editor.as_mut() {
+            if let Some(editor) = dialogs
+                .lyrics_editor
+                .as_mut()
+                .filter(|editor| editor.searching)
+            {
                 editor.searching = false;
+                shell.notice = Some(error);
             }
-            shell.notice = Some(error);
         }
     }
     invalidated.invalidate(UiDirtyRegion::Library);
+}
+
+pub(crate) fn poll_lyrics_fetch_job(
+    mut shell: ResMut<ShellState>,
+    mut dialogs: ResMut<DialogState>,
+    mut jobs: ResMut<AsyncJobs>,
+    mut invalidated: ResMut<UiInvalidated>,
+) {
+    let result = jobs
+        .lyrics_fetch_job
+        .receiver
+        .as_ref()
+        .and_then(|receiver| {
+            receiver
+                .lock()
+                .ok()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some((
+                        String::new(),
+                        usize::MAX,
+                        Err("Lyrics candidate loader exited unexpectedly.".to_string()),
+                    )),
+                })
+        });
+    let Some((file_hash, candidate_index, result)) = result else {
+        return;
+    };
+    jobs.lyrics_fetch_job.receiver = None;
+    if let Some(editor) = dialogs.lyrics_editor.as_mut().filter(|editor| {
+        if file_hash.is_empty() {
+            editor.fetching_candidate.is_some()
+        } else {
+            editor.file_hash == file_hash
+        }
+    }) {
+        editor.fetching_candidate = None;
+        match result {
+            Ok(candidate) => {
+                let provider = candidate.provider.display_name();
+                if let Some(slot) = editor.candidates.get_mut(candidate_index) {
+                    *slot = candidate;
+                    shell.notice = Some(format!(
+                        "{provider} lyrics loaded. Choose the lyric form to place in the editor."
+                    ));
+                } else {
+                    shell.notice = Some(
+                        "The loaded lyric candidate is no longer in the current result set."
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => {
+                shell.notice = Some(format!("Could not load lyric candidate: {error}"));
+            }
+        }
+        invalidated.invalidate(UiDirtyRegion::Library);
+    }
 }
 
 pub(crate) fn poll_lyrics_waveform_job(
@@ -229,10 +303,9 @@ pub(crate) fn calculate_key_shift(original_key: &str, offset: i32) -> (String, f
 pub(crate) fn handle_song_detail_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     shell: Res<ShellState>,
-    dialogs: Res<DialogState>,
     mut contents: Query<(&ComputedNode, &mut ScrollPosition), With<SongDetailContent>>,
 ) {
-    if shell.route != StudioRoute::SongDetail || dialogs.lyrics_editor.is_some() {
+    if shell.route != StudioRoute::SongDetail {
         return;
     }
     let Ok((computed, mut position)) = contents.single_mut() else {

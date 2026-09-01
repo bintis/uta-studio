@@ -1,8 +1,8 @@
 //! Persistent analyzer queue.
 //!
 //! Backs `analyzer::AnalysisQueue`. Each song hash gets one row carrying its
-//! current status (`staged`, `queued`, `analyzing` with a percentage, or
-//! `failed` with a message). Staged requests require an explicit user start.
+//! current status (`staged`, `queued`, `analyzing`, `completed`, or `failed`).
+//! Staged requests require an explicit user start; terminal rows remain until removed or rerun.
 
 use std::path::PathBuf;
 
@@ -86,7 +86,7 @@ fn analysis_queue_set_engine_intent_with_status(
                 source_sha256 = excluded.source_sha256,
                 queued_at_ms = excluded.queued_at_ms,
                 queue_position = excluded.queue_position
-             WHERE analysis_queue.status = 'failed'",
+             WHERE analysis_queue.status IN ('failed', 'completed')",
             params![
                 intent.file_hash,
                 status,
@@ -341,6 +341,8 @@ mod tests {
         assert!(!queue_status_resumes("staged"));
         assert!(queue_status_resumes("queued"));
         assert!(queue_status_resumes("analyzing"));
+        assert!(!queue_status_resumes("completed"));
+        assert!(!queue_status_resumes("failed"));
     }
 
     #[test]
@@ -370,6 +372,28 @@ mod tests {
                 .unwrap()
                 .request_id,
             "request-three-edited"
+        );
+    }
+
+    #[test]
+    fn completed_row_accepts_a_fresh_exact_rerun_intent() {
+        let root = temp_root("completed-rerun");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        analysis_queue_upsert_row("song", "completed", None, None).unwrap();
+
+        let mut rerun = intent("song", 2);
+        rerun.request_id = "request-song-rerun".to_string();
+        assert!(analysis_queue_set_engine_intent(&rerun).unwrap());
+        assert_eq!(
+            analysis_queue_status("song").unwrap().as_deref(),
+            Some("queued")
+        );
+        assert_eq!(
+            analysis_queue_engine_intent("song")
+                .unwrap()
+                .unwrap()
+                .request_id,
+            "request-song-rerun"
         );
     }
 }

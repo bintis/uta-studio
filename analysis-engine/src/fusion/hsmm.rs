@@ -1120,6 +1120,9 @@ fn prune_redundant_range_duplicates(
 
 #[derive(Default)]
 struct DecodeWorkBudget {
+    /// Defensive work ceilings apply to one connected voiced component. A long
+    /// song may contain hundreds of independent components; accumulating their
+    /// work would reject duration rather than graph complexity.
     examined_pair_states: usize,
     examined_pair_transitions: usize,
 }
@@ -1299,9 +1302,9 @@ pub fn decode_candidate_graph_with_boundaries(
             members_by_component[component_index].push(index);
         }
     }
-    let mut budget = DecodeWorkBudget::default();
     let mut selected = Vec::new();
     for (component, members) in components.into_iter().zip(members_by_component) {
+        let mut budget = DecodeWorkBudget::default();
         selected.extend(decode_component(
             &ordered,
             &emissions,

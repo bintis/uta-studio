@@ -16,6 +16,9 @@ fn queue_status(task: &app_core::AnalysisTask) -> (String, Color, usize) {
             live.map_or(*progress, |snapshot| snapshot.overall_progress)
                 .clamp(0, 100),
         ),
+        (app_core::QueuedStatus::Completed, _) => {
+            ("COMPLETED".to_string(), Color::srgb(0.42, 0.76, 0.58), 100)
+        }
         (app_core::QueuedStatus::Failed(_), _) => {
             ("FAILED".to_string(), Color::srgb(0.86, 0.40, 0.44), 0)
         }
@@ -46,9 +49,22 @@ fn queue_detail(task: &app_core::AnalysisTask) -> String {
         (app_core::QueuedStatus::Analyzing(_), None) => {
             "Engine is processing this song".to_string()
         }
-        (app_core::QueuedStatus::Failed(error), _) => error.clone(),
+        (app_core::QueuedStatus::Completed, _) => {
+            "Completed successfully · outputs and run history are retained until you rerun or delete this entry".to_string()
+        }
+        (app_core::QueuedStatus::Failed(error), _) => compact_queue_error(error),
         (_, None) => "Exact request is stored locally".to_string(),
     }
+}
+
+fn compact_queue_error(error: &str) -> String {
+    const MAX_CHARS: usize = 520;
+    let normalized = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= MAX_CHARS {
+        return normalized;
+    }
+    let excerpt = normalized.chars().take(MAX_CHARS).collect::<String>();
+    format!("{excerpt}… Open the song for the complete diagnostic and run history.")
 }
 
 fn spawn_queue_card(
@@ -64,6 +80,10 @@ fn spawn_queue_card(
         app_core::QueuedStatus::Staged | app_core::QueuedStatus::Queued
     );
     let running = matches!(task.status, app_core::QueuedStatus::Analyzing(_));
+    let terminal = matches!(
+        task.status,
+        app_core::QueuedStatus::Completed | app_core::QueuedStatus::Failed(_)
+    );
     let file_hash = task.file_hash.clone();
     parent
         .spawn((
@@ -165,62 +185,88 @@ fn spawn_queue_card(
                 ..default()
             })
             .with_children(|actions| {
-                if movable {
+                if terminal {
                     spawn_compact_action_button(
                         actions,
                         font.clone(),
                         theme,
-                        "Earlier",
-                        UiAction::from(AnalysisCommand::MoveAnalysisQueueItem(
-                            file_hash.clone(),
-                            true,
-                        )),
+                        "Open song",
+                        UiAction::from(LibraryCommand::OpenSong(file_hash.clone())),
                     );
                     spawn_compact_action_button(
                         actions,
                         font.clone(),
                         theme,
-                        "Later",
-                        UiAction::from(AnalysisCommand::MoveAnalysisQueueItem(
-                            file_hash.clone(),
-                            false,
-                        )),
+                        "Rerun",
+                        UiAction::from(AnalysisCommand::AnalyzeNow(file_hash.clone())),
                     );
-                }
-                if matches!(task.status, app_core::QueuedStatus::Staged) {
                     spawn_compact_action_button(
                         actions,
                         font.clone(),
                         theme,
-                        "Start",
-                        UiAction::from(AnalysisCommand::StartQueuedAnalysis(file_hash.clone())),
-                    );
-                }
-                if matches!(task.status, app_core::QueuedStatus::Staged) {
-                    spawn_compact_action_button(
-                        actions,
-                        font.clone(),
-                        theme,
-                        "Edit",
-                        UiAction::from(AnalysisCommand::OpenProcessingStudio(file_hash.clone())),
-                    );
-                }
-                if !running {
-                    spawn_compact_action_button(
-                        actions,
-                        font.clone(),
-                        theme,
-                        "Remove",
+                        "Delete",
                         UiAction::from(AnalysisCommand::DeleteAnalysisQueueItem(file_hash.clone())),
                     );
                 } else {
-                    spawn_compact_action_button(
-                        actions,
-                        font.clone(),
-                        theme,
-                        "Stop",
-                        UiAction::from(AnalysisCommand::CancelAnalysisRun(file_hash.clone())),
-                    );
+                    if movable {
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Earlier",
+                            UiAction::from(AnalysisCommand::MoveAnalysisQueueItem(
+                                file_hash.clone(),
+                                true,
+                            )),
+                        );
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Later",
+                            UiAction::from(AnalysisCommand::MoveAnalysisQueueItem(
+                                file_hash.clone(),
+                                false,
+                            )),
+                        );
+                    }
+                    if matches!(task.status, app_core::QueuedStatus::Staged) {
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Start",
+                            UiAction::from(AnalysisCommand::StartQueuedAnalysis(file_hash.clone())),
+                        );
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Edit",
+                            UiAction::from(AnalysisCommand::OpenProcessingStudio(
+                                file_hash.clone(),
+                            )),
+                        );
+                    }
+                    if running {
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Stop",
+                            UiAction::from(AnalysisCommand::CancelAnalysisRun(file_hash.clone())),
+                        );
+                    } else {
+                        spawn_compact_action_button(
+                            actions,
+                            font.clone(),
+                            theme,
+                            "Remove",
+                            UiAction::from(AnalysisCommand::DeleteAnalysisQueueItem(
+                                file_hash.clone(),
+                            )),
+                        );
+                    }
                 }
             });
         });

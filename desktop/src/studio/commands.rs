@@ -4,8 +4,9 @@ use bevy::prelude::Component;
 
 use super::{
     ArtifactAuditionSlot, CacheClearScope, EditorAction, EditorDockSelectKind, LibraryFacet,
-    LibraryView, ProblemsFilter, SettingsSelectKind, SettingsTab, TranscriptBoundaryEdge,
-    TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle, WordSelection,
+    LibraryView, LyricsCandidateUseMode, ProblemsFilter, SettingsSelectKind, SettingsTab,
+    TranscriptBoundaryEdge, TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle,
+    WordSelection,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,13 +185,17 @@ pub(crate) enum EditorCommand {
     OpenLyricsEditor(String),
     CloseLyricsEditor,
     ToggleLyricsInputMode,
-    SearchLrclibLyrics,
+    SearchAllLyricsSources,
     ExtractLyrics,
-    PreviousLrclibCandidate,
-    NextLrclibCandidate,
-    UseLrclibPlain,
-    UseLrclibTimed,
+    PreviousLyricsCandidatePage,
+    NextLyricsCandidatePage,
+    LoadLyricsCandidate(usize),
+    UseLyricsCandidate(usize, LyricsCandidateUseMode),
+    NormalizeLyricsEditor,
+    StripLyricsTiming,
+    ClearLyricsEditor,
     SaveLyricsEditor,
+    SaveLyricsEditorAndAlign,
     AdjustTranscriptBoundary(TranscriptBoundaryTarget, TranscriptBoundaryEdge, i32),
     PreviewTranscriptAt(String, i64),
     OpenLanguageEditor(String),
@@ -320,13 +325,17 @@ impl UiCommand {
                 EditorCommand::OpenLyricsEditor(_)
                 | EditorCommand::CloseLyricsEditor
                 | EditorCommand::ToggleLyricsInputMode
-                | EditorCommand::SearchLrclibLyrics
+                | EditorCommand::SearchAllLyricsSources
                 | EditorCommand::ExtractLyrics
-                | EditorCommand::PreviousLrclibCandidate
-                | EditorCommand::NextLrclibCandidate
-                | EditorCommand::UseLrclibPlain
-                | EditorCommand::UseLrclibTimed
+                | EditorCommand::PreviousLyricsCandidatePage
+                | EditorCommand::NextLyricsCandidatePage
+                | EditorCommand::LoadLyricsCandidate(_)
+                | EditorCommand::UseLyricsCandidate(_, _)
+                | EditorCommand::NormalizeLyricsEditor
+                | EditorCommand::StripLyricsTiming
+                | EditorCommand::ClearLyricsEditor
                 | EditorCommand::SaveLyricsEditor
+                | EditorCommand::SaveLyricsEditorAndAlign
                 | EditorCommand::AdjustTranscriptBoundary(_, _, _)
                 | EditorCommand::PreviewTranscriptAt(_, _)
                 | EditorCommand::OpenLanguageEditor(_)

@@ -90,7 +90,7 @@ pub(crate) fn process_engine_queue_intent(
             }
             append_analysis_log_path(log_path.as_deref(), "Engine result validated and published");
             finish_analysis_history(file_hash, "completed", None);
-            remove_from_queue(file_hash);
+            update_queue_status(file_hash, QueuedStatus::Completed);
             remove_engine_progress_plan(file_hash);
             LIVE_ANALYSIS.lock().unwrap().remove(file_hash);
         }

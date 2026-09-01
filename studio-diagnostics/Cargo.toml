@@ -1,6 +1,6 @@
 [package]
 name = "uta-studio-diagnostics"
-version = "0.8.2"
+version = "0.8.3"
 description = "Safe, framework-independent diagnostics for Uta! Studio."
 authors = ["bintis"]
 license = "GPL-3.0"

@@ -118,6 +118,7 @@ struct ProviderLyricLine {
     text: String,
     translation: Option<String>,
     romanization: Option<String>,
+    timed_words: Vec<(Duration, String)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -139,7 +140,21 @@ impl ProviderLyricDocument {
             .iter()
             .filter_map(|line| {
                 let text = line.text.replace(['\r', '\n'], " ").trim().to_string();
-                (!text.is_empty()).then(|| format!("[{}]{text}", format_lrc_timestamp(line.start)))
+                if text.is_empty() {
+                    return None;
+                }
+                let mut rendered = format!("[{}]", format_lrc_timestamp(line.start));
+                if line.timed_words.len() > 1 {
+                    for (start, word) in &line.timed_words {
+                        let word = word.replace(['\r', '\n'], " ");
+                        if !word.is_empty() {
+                            rendered.push_str(&format!("<{}>{word}", format_lrc_timestamp(*start)));
+                        }
+                    }
+                } else {
+                    rendered.push_str(&text);
+                }
+                Some(rendered)
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -184,12 +199,29 @@ fn parse_standard_lrc(text: &str) -> Result<ProviderLyricDocument, LyricsProvide
         lines: parsed
             .segments
             .into_iter()
-            .map(|segment| ProviderLyricLine {
-                start: Duration::from_secs_f64(segment.start.max(0.0)),
-                end: Duration::from_secs_f64(segment.end.max(segment.start)),
-                text: segment.text,
-                translation: None,
-                romanization: None,
+            .map(|segment| {
+                let timed_words = if segment.words.len() > 1 {
+                    segment
+                        .words
+                        .iter()
+                        .map(|word| {
+                            (
+                                Duration::from_secs_f64(word.start.max(0.0)),
+                                word.word.clone(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                ProviderLyricLine {
+                    start: Duration::from_secs_f64(segment.start.max(0.0)),
+                    end: Duration::from_secs_f64(segment.end.max(segment.start)),
+                    text: segment.text,
+                    translation: None,
+                    romanization: None,
+                    timed_words,
+                }
             })
             .collect(),
     })
@@ -210,6 +242,7 @@ fn plain_document(text: &str) -> ProviderLyricDocument {
                     text: text.to_string(),
                     translation: None,
                     romanization: None,
+                    timed_words: Vec::new(),
                 }
             })
             .collect(),
@@ -315,7 +348,12 @@ pub fn lyrics_candidates(song: &Song) -> LyricsSearchResult {
     let results = thread::scope(|scope| {
         LyricsProvider::ALL
             .into_iter()
-            .map(|provider| (provider, scope.spawn(move || search_provider(provider, query))))
+            .map(|provider| {
+                (
+                    provider,
+                    scope.spawn(move || search_provider(provider, query)),
+                )
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .map(|(provider, handle)| {
@@ -424,8 +462,16 @@ fn candidate_score(
         }
         _ => 0.7,
     };
-    let timed_bonus = if candidate.has_timed_lyrics { 0.08 } else { 0.0 };
-    let provider_bonus = candidate.provider_score.unwrap_or_default().clamp(0.0, 100.0) / 1000.0;
+    let timed_bonus = if candidate.has_timed_lyrics {
+        0.08
+    } else {
+        0.0
+    };
+    let provider_bonus = candidate
+        .provider_score
+        .unwrap_or_default()
+        .clamp(0.0, 100.0)
+        / 1000.0;
     title_score * 0.45
         + artist_score * 0.25
         + album_score * 0.12
@@ -541,6 +587,7 @@ mod tests {
                 text: "hello".into(),
                 translation: None,
                 romanization: None,
+                timed_words: Vec::new(),
             }],
         };
         assert_eq!(document.to_lrc(), "[01:01.23]hello");
