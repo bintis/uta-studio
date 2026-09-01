@@ -72,6 +72,14 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         ExecutionPolicy::Disabled,
         880,
     ));
+    // Reusable like separation above: a quality profile that enables this
+    // node (e.g. "maximum") pays for it once and, on an unchanged
+    // source/model/parameters, reuses it on every later run instead of
+    // repeating the GPU work -- confirmed against real production songs
+    // whose downstream stages (ASR, forced alignment) kept failing and
+    // retrying while this and the two cleanup nodes below silently redid
+    // their own already-paid-for output every single attempt.
+    nodes.last_mut().unwrap().skip_if_unchanged = true;
     edges.push(edge("vocal_bgm_split", "vocal", "lead_isolate", "audio"));
     nodes.push(node(
         "vocal_cleanup_1",
@@ -80,6 +88,7 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         ExecutionPolicy::Disabled,
         850,
     ));
+    nodes.last_mut().unwrap().skip_if_unchanged = true;
     edges.push(edge("lead_isolate", "lead", "vocal_cleanup_1", "audio"));
     nodes.push(node(
         "vocal_dereverb_1",
@@ -88,6 +97,7 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         ExecutionPolicy::Disabled,
         840,
     ));
+    nodes.last_mut().unwrap().skip_if_unchanged = true;
     edges.push(edge(
         "vocal_cleanup_1",
         "audio",

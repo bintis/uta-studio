@@ -920,6 +920,7 @@ mod tests {
         workflow.nodes[3].execution_policy = ExecutionPolicy::Always; // denoise
         workflow.nodes[3].skip_if_unchanged = true;
         workflow.nodes[4].execution_policy = ExecutionPolicy::Always; // dereverb, box unchecked
+        workflow.nodes[4].skip_if_unchanged = false;
 
         let separation_fingerprint = plan_chain_cache(file_hash, &workflow)
             .fingerprints

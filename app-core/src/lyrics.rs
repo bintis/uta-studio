@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
 use ts_rs::TS;
 
 use crate::analyzer::{
@@ -11,31 +10,11 @@ use crate::analyzer::{
 use crate::cache::CacheDir;
 use crate::library_db;
 use crate::lrc::{self, ParsedLrc};
-use crate::song::{Song, TranscriptSource, read_transcript_meta};
+use crate::song::{TranscriptSource, read_transcript_meta};
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct LrclibCandidate {
-    #[serde(default, alias = "trackName")]
-    pub track_name: String,
-    #[serde(default, alias = "artistName")]
-    pub artist_name: String,
-    #[serde(default, alias = "albumName")]
-    pub album_name: String,
-    #[serde(default, alias = "duration")]
-    pub duration_secs: f64,
-    #[serde(skip_deserializing, default)]
-    pub lines: Vec<String>,
-    /// Raw LRC (line-level synced lyrics) from LRCLIB, when available. Exposed
-    /// to the frontend so the editor can offer timed lyrics without alignment.
-    /// `alias` (not `rename`) so it deserializes from LRCLIB's `syncedLyrics`
-    /// but still serializes as `synced_lyrics` for the frontend type.
-    #[serde(default, alias = "syncedLyrics")]
-    pub synced_lyrics: Option<String>,
-    #[serde(default, rename = "plainLyrics", skip_serializing)]
-    #[ts(skip)]
-    plain_lyrics: String,
-}
+pub use crate::lyrics_sources::{
+    LrclibCandidate, LyricsCandidate, LyricsProvider, LyricsProviderFailure, LyricsSearchResult,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -45,102 +24,24 @@ pub struct LyricsFile {
     pub timed_lrc: Option<String>,
 }
 
-pub fn lrclib_candidates(song: &Song) -> Vec<LrclibCandidate> {
-    let title = &song.title;
-    let artist = &song.artist;
-
-    if title.is_empty() || artist == "Unknown Artist" {
-        return Vec::new();
-    }
-
-    let agent = ureq::Agent::new_with_defaults();
-
-    info!(
-        "[lrclib] Searching: \"{title}\" by \"{artist}\" ({:.0}s, album=\"{}\")",
-        song.duration_secs, song.album
-    );
-
-    let url = format!(
-        "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        urlencoding::encode(title),
-        urlencoding::encode(artist),
-    );
-    let resp = match agent
-        .get(&url)
-        .header("User-Agent", "Uta! Studio/1.0")
-        .call()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("[lrclib] Search request failed: {e}");
-            return Vec::new();
-        }
+pub fn search_lyrics_for_hash(file_hash: &str) -> LyricsSearchResult {
+    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
+        return LyricsSearchResult::default();
     };
-    let results: Vec<LrclibCandidate> = match resp.into_body().read_json() {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("[lrclib] Failed to parse search results: {e}");
-            return Vec::new();
-        }
-    };
-
-    let mut with_lyrics: Vec<_> = results
-        .into_iter()
-        .filter(|r| {
-            !r.plain_lyrics.is_empty()
-                || r.synced_lyrics
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty())
-        })
-        .collect();
-
-    info!(
-        "[lrclib] Search returned {} results with lyrics",
-        with_lyrics.len()
-    );
-
-    let album_lower = song.album.to_lowercase();
-    with_lyrics.sort_by_key(|r| {
-        let album_bonus: i64 = if r.album_name.to_lowercase() == album_lower {
-            0
-        } else {
-            5_000
-        };
-        let duration_penalty = ((r.duration_secs - song.duration_secs).abs() * 10.0) as i64;
-        album_bonus + duration_penalty
-    });
-
-    with_lyrics
-        .into_iter()
-        .filter_map(|mut r| {
-            r.lines = r
-                .plain_lyrics
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect();
-            // Normalize empty synced payloads to `None` so the frontend can
-            // treat "has LRC" as a simple presence check.
-            if r.synced_lyrics
-                .as_deref()
-                .is_some_and(|s| s.trim().is_empty())
-            {
-                r.synced_lyrics = None;
-            }
-            if r.lines.is_empty() && r.synced_lyrics.is_none() {
-                None
-            } else {
-                Some(r)
-            }
-        })
-        .collect()
+    crate::lyrics_sources::lyrics_candidates(&song)
 }
 
+pub fn fetch_lyrics_candidate(candidate: &LyricsCandidate) -> Result<LyricsCandidate, String> {
+    crate::lyrics_sources::fetch_lyrics_candidate(candidate)
+}
+
+/// Compatibility entry point retained for API clients that explicitly request
+/// LRCLIB-only search. The native lyrics workbench uses [`search_lyrics_for_hash`].
 pub fn search_lrclib_for_hash(file_hash: &str) -> Vec<LrclibCandidate> {
     let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
         return Vec::new();
     };
-    lrclib_candidates(&song)
+    crate::lyrics_sources::lrclib_candidates(&song)
 }
 
 pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {

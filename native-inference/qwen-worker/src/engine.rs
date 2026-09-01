@@ -31,6 +31,7 @@ const ALIGN_TEXT_NORMALIZATION_PROFILE: &str = "qwen-align-text-preserve-v1";
 const ALIGN_LANGUAGE_NORMALIZATION_PROFILE: &str = "qwen-align-language-v1";
 const ALIGN_SEMANTICS_PROFILE: &str = "qwen-align-token-word-80ms-v1";
 const ALIGN_LONG_INPUT_POLICY: &str = "qwen-align-windowed-v1";
+const ALIGN_COARSE_FALLBACK_PROFILE: &str = "qwen-align-coarse-generated-transcript-v1";
 const ALIGN_WINDOW_TARGET_SECONDS: f64 = 110.0;
 const ALIGN_WINDOW_MAX_SECONDS: f64 = 140.0;
 const ALIGN_TIMESTAMP_TICK_SECONDS: f64 = 0.08;
@@ -207,6 +208,12 @@ struct AlignmentLongInputEvidence<'a> {
 }
 
 #[derive(Serialize)]
+struct AlignmentFallbackEvidence<'a> {
+    profile: &'a str,
+    trigger: &'a str,
+}
+
+#[derive(Serialize)]
 struct AlignmentEvidence<'a> {
     schema_version: u32,
     model_id: &'a str,
@@ -219,6 +226,8 @@ struct AlignmentEvidence<'a> {
     transcript: &'a str,
     language: Option<&'a str>,
     runtime_language: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<AlignmentFallbackEvidence<'a>>,
     long_input: AlignmentLongInputEvidence<'a>,
     words: Vec<AlignmentWord>,
 }
@@ -279,6 +288,14 @@ fn normalize_alignment_input(
         language,
         runtime_language,
     })
+}
+
+fn alignment_coarse_fallback_enabled(config: &serde_json::Value) -> Result<bool, String> {
+    match config.get("allow_coarse_fallback") {
+        None => Ok(false),
+        Some(serde_json::Value::Bool(enabled)) => Ok(*enabled),
+        Some(_) => Err("Qwen Forced Aligner allow_coarse_fallback must be a boolean".to_string()),
+    }
 }
 
 fn model_path(kind: WorkerKind, config: &serde_json::Value) -> Result<PathBuf, String> {
@@ -1707,8 +1724,8 @@ fn anchor_margin_seconds(attempt: u32) -> f64 {
     }
 }
 
-/// One bounded fallback attempt, tried only after `run_align_with_retries`
-/// has exhausted every ordinary window plan. This is specifically for a
+/// A bounded fallback, tried only after `run_align_with_retries` has
+/// exhausted every ordinary window plan. This is specifically for a
 /// hallucinated transcribing-worker tail: confirmed against a real
 /// production song whose true singing ends well before the audio does (the
 /// remainder is an instrumental outro), where the upstream transcript
@@ -1724,20 +1741,128 @@ fn anchor_margin_seconds(attempt: u32) -> f64 {
 /// check itself uses) -- a transcript that's merely short, or whose real
 /// failure has nothing to do with its tail, is not touched, and the
 /// original error still surfaces.
-/// Pure half of the trailing-drop fallback: the transcript to retry with,
-/// or `None` when there is nothing worth dropping (no windows at all, or
-/// the final window's own text is smaller than a real collapse-sized
-/// chunk -- see the caller's doc comment for why that threshold matters).
-fn trailing_drop_transcript(text_units: &[String], plans: &[AlignmentSegmentPlan]) -> Option<String> {
-    let last_plan = plans.last()?;
-    let dropped_characters: usize = text_units[last_plan.target_unit_start..]
+/// Pure half of both drop fallbacks below: the transcript with
+/// `[drop_start, drop_end)` excised, or `None` when there is nothing worth
+/// dropping (the excised span is smaller than a real collapse-sized chunk --
+/// see the callers' doc comments for why that threshold matters -- or
+/// nothing would remain once it's gone).
+fn drop_unit_range_transcript(
+    text_units: &[String],
+    drop_start: usize,
+    drop_end: usize,
+) -> Option<String> {
+    if drop_start >= drop_end || drop_end > text_units.len() {
+        return None;
+    }
+    let dropped_characters: usize = text_units[drop_start..drop_end]
         .iter()
         .map(|unit| compact_character_count(unit))
         .sum();
     if dropped_characters < ALIGN_COLLAPSED_WORD_MIN_CHARACTERS {
         return None;
     }
-    Some(text_units[..last_plan.target_unit_start].join(" "))
+    let kept: Vec<&str> = text_units[..drop_start]
+        .iter()
+        .chain(text_units[drop_end..].iter())
+        .map(String::as_str)
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join(" "))
+}
+
+fn trailing_drop_transcript(
+    text_units: &[String],
+    plans: &[AlignmentSegmentPlan],
+) -> Option<String> {
+    let last_plan = plans.last()?;
+    drop_unit_range_transcript(text_units, last_plan.target_unit_start, text_units.len())
+}
+
+/// Shared bounded-retry core for every drop fallback: given an
+/// already-*shortened* transcript, widen the window target across up to
+/// `ALIGN_SEAM_RETRY_ATTEMPTS` attempts until either one succeeds or every
+/// attempt is exhausted.
+///
+/// A single unmodified attempt only ever gets one placement of the window
+/// grid over the shortened transcript; a seam disagreement at whichever
+/// boundary that grid happens to land on (confirmed against a real
+/// production song where two independently-measured windows disagreed
+/// enough to invert an 11-character run against the very next character)
+/// has no chance to route around itself. `finest_target` is already the
+/// narrowest grid the *full* transcript's own retries tried, and going
+/// narrower here would just re-trip the unit-count guard below, so widen
+/// instead: each attempt's coarser target moves every seam to a new
+/// position and shrinks how many seams exist at all, the same
+/// genuinely-different-boundaries principle `run_align_with_retries`
+/// already relies on for the main retry path.
+#[allow(clippy::too_many_arguments)]
+fn run_align_with_adjusted_transcript(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    adjusted_transcript: String,
+    finest_target: f64,
+    source_duration_seconds: f64,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let adjusted_unit_count = alignment_text_units(&adjusted_transcript).len();
+    if adjusted_unit_count == 0 {
+        return Err(
+            "Qwen long-form alignment has no remaining lyric units once the drop is applied"
+                .to_string(),
+        );
+    }
+    // `plan_alignment_segments`'s segment count is duration-driven, not
+    // text-driven, so replanning the *shortened* transcript at the same
+    // fine-grained target the full transcript needed can demand more
+    // windows than the now-smaller transcript has units to fill --
+    // confirmed against a real lyric-sparse production song (long
+    // instrumental/spoken stretches) where dropping the unalignable content
+    // pushed the remaining unit count below the finest target's segment
+    // count, so this fallback's own planning failed closed before ever
+    // attempting a real alignment, silently discarding a drop that would
+    // otherwise have recovered the song. Widen the target only as far as
+    // necessary to keep the segment count within what actually remains.
+    let minimum_safe_target =
+        finest_target.max(source_duration_seconds / adjusted_unit_count as f64);
+    let mut adjusted_config = config.clone();
+    adjusted_config["text"] = serde_json::Value::String(adjusted_transcript);
+
+    let mut last_error = String::new();
+    for attempt in 0..ALIGN_SEAM_RETRY_ATTEMPTS {
+        let target = minimum_safe_target * 1.5f64.powi(attempt as i32);
+        let mut buffered: Vec<(u64, u64, &'static str)> = Vec::new();
+        let mut buffer_progress = |completed: u64, total: u64, message: &'static str| {
+            buffered.push((completed, total, message));
+            Ok(())
+        };
+        match run_align_once(
+            runtime,
+            model,
+            audio,
+            output_dir,
+            &adjusted_config,
+            target,
+            ALIGN_ANCHOR_MARGIN_SECONDS,
+            &mut buffer_progress,
+        ) {
+            Ok(destination) => {
+                for (completed, total, message) in buffered {
+                    progress(completed, total, message)?;
+                }
+                return Ok(destination);
+            }
+            Err(error) if is_retryable_window_measurement_error(&error) => {
+                last_error = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
 }
 
 fn run_align_with_trailing_content_dropped(
@@ -1754,22 +1879,215 @@ fn run_align_with_trailing_content_dropped(
     let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
     let plans = plan_alignment_segments(source_duration_seconds, text_units.len(), finest_target)?;
     let Some(adjusted_transcript) = trailing_drop_transcript(&text_units, &plans) else {
-        return Err(
-            "Qwen long-form alignment's final window is too small to drop".to_string(),
-        );
+        return Err("Qwen long-form alignment's final window is too small to drop".to_string());
     };
-    let mut adjusted_config = config.clone();
-    adjusted_config["text"] = serde_json::Value::String(adjusted_transcript);
-    run_align_once(
+    run_align_with_adjusted_transcript(
         runtime,
         model,
         audio,
         output_dir,
-        &adjusted_config,
+        config,
+        adjusted_transcript,
         finest_target,
-        ALIGN_ANCHOR_MARGIN_SECONDS,
+        source_duration_seconds,
         progress,
     )
+}
+
+/// Parses the `unit_range=[start,end)` suffix `run_align_once`'s per-window
+/// loop embeds specifically on a collapse-resolution failure (the call site
+/// right after `validate_alignment_measurement_resolution`) back into the
+/// text-unit range that collapsed. `None` for every other error shape -- a
+/// seam disagreement, a structural planning error, or any message that
+/// doesn't carry this exact suffix -- so the caller always has a safe
+/// "nothing to parse" fallback rather than a brittle partial match.
+fn parse_collapsed_unit_range(error: &str) -> Option<(usize, usize)> {
+    if !error.starts_with("Qwen alignment output has invalid word timing: collapsed") {
+        return None;
+    }
+    let marker = "unit_range=[";
+    let range_start = error.rfind(marker)? + marker.len();
+    let rest = &error[range_start..];
+    let range_end = rest.find(')')?;
+    let (start_text, end_text) = rest[..range_end].split_once(',')?;
+    Some((
+        start_text.trim().parse().ok()?,
+        end_text.trim().parse().ok()?,
+    ))
+}
+
+/// A bounded fallback for a collapse that isn't at the transcript's own
+/// tail. `run_align_with_trailing_content_dropped` can only ever excise from
+/// the very end, so a genuinely hard-to-measure passage anywhere else --
+/// confirmed against a real production song: a dense sung passage in the
+/// middle of the song, unrelated to that separate hallucinated-tail case --
+/// had no recourse at all once every window-reshaping retry was exhausted.
+/// Drops exactly the collapsed window's own text range, nothing more, and
+/// keeps aligning everything else: the same don't-fabricate philosophy
+/// `trailing_drop_transcript` already established for the tail case, just
+/// no longer limited to the tail.
+#[allow(clippy::too_many_arguments)]
+fn run_align_with_span_dropped(
+    runtime: &ValidatedRuntime,
+    model: &Path,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    drop_start: usize,
+    drop_end: usize,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let input = normalize_alignment_input(config)?;
+    let text_units = alignment_text_units(&input.transcript);
+    let source_duration_seconds = audio::wav_duration_seconds(audio)?;
+    let Some(adjusted_transcript) = drop_unit_range_transcript(&text_units, drop_start, drop_end)
+    else {
+        return Err("Qwen long-form alignment's collapsed span is too small to drop".to_string());
+    };
+    let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    run_align_with_adjusted_transcript(
+        runtime,
+        model,
+        audio,
+        output_dir,
+        config,
+        adjusted_transcript,
+        finest_target,
+        source_duration_seconds,
+        progress,
+    )
+}
+
+fn coarse_alignment_words(
+    text_units: &[String],
+    source_duration_seconds: f64,
+) -> Result<Vec<AlignmentWord>, String> {
+    if text_units.is_empty()
+        || !source_duration_seconds.is_finite()
+        || source_duration_seconds < ALIGN_TIMESTAMP_TICK_SECONDS
+    {
+        return Err(
+            "Qwen coarse alignment fallback requires lyric text and at least one 80 ms audio tick"
+                .to_string(),
+        );
+    }
+    let available_ticks = (source_duration_seconds / ALIGN_TIMESTAMP_TICK_SECONDS).floor();
+    if available_ticks < 1.0 || available_ticks > usize::MAX as f64 {
+        return Err("Qwen coarse alignment fallback audio duration is out of range".to_string());
+    }
+    let available_ticks = available_ticks as usize;
+    let group_count = text_units.len().min(available_ticks);
+    let mut words = Vec::with_capacity(group_count);
+    for group in 0..group_count {
+        let unit_start = group * text_units.len() / group_count;
+        let unit_end = (group + 1) * text_units.len() / group_count;
+        let start_tick = group * available_ticks / group_count;
+        let end_tick = (group + 1) * available_ticks / group_count;
+        if unit_end <= unit_start || end_tick <= start_tick {
+            return Err(
+                "Qwen coarse alignment fallback could not partition the timeline".to_string(),
+            );
+        }
+        words.push(AlignmentWord {
+            word: text_units[unit_start..unit_end].join(" "),
+            start: start_tick as f64 * ALIGN_TIMESTAMP_TICK_SECONDS,
+            end: end_tick as f64 * ALIGN_TIMESTAMP_TICK_SECONDS,
+        });
+    }
+    Ok(words)
+}
+
+fn coarse_alignment_segments(
+    text_unit_count: usize,
+    source_duration_seconds: f64,
+) -> Vec<AlignmentSegmentEvidence> {
+    let desired_count = (source_duration_seconds / ALIGN_WINDOW_MAX_SECONDS)
+        .ceil()
+        .max(1.0) as usize;
+    let segment_count = desired_count.min(text_unit_count).max(1);
+    (0..segment_count)
+        .map(|index| {
+            let target_unit_start = index * text_unit_count / segment_count;
+            let target_unit_end = (index + 1) * text_unit_count / segment_count;
+            let natural_start = source_duration_seconds * index as f64 / segment_count as f64;
+            let natural_end = source_duration_seconds * (index + 1) as f64 / segment_count as f64;
+            let (audio_start_seconds, audio_end_seconds) = if natural_end - natural_start
+                <= ALIGN_WINDOW_MAX_SECONDS
+            {
+                (natural_start, natural_end)
+            } else {
+                let midpoint = (natural_start + natural_end) / 2.0;
+                let latest_start = (source_duration_seconds - ALIGN_WINDOW_MAX_SECONDS).max(0.0);
+                let start = (midpoint - ALIGN_WINDOW_MAX_SECONDS / 2.0)
+                    .max(0.0)
+                    .min(latest_start);
+                (
+                    start,
+                    (start + ALIGN_WINDOW_MAX_SECONDS).min(source_duration_seconds),
+                )
+            };
+            AlignmentSegmentEvidence {
+                index,
+                audio_start_seconds,
+                audio_end_seconds,
+                context_unit_start: target_unit_start,
+                target_unit_start,
+                target_unit_end,
+                measured_units: target_unit_end.saturating_sub(target_unit_start).max(1),
+            }
+        })
+        .collect()
+}
+
+/// Last-resort timing for an ASR-generated transcript when every real Qwen
+/// measurement/re-windowing attempt failed. The caller must opt in explicitly;
+/// caller-canonical lyrics never use this path. It preserves every transcript
+/// character, emits ordered 80 ms-grid soft boundaries, and marks the evidence
+/// so the analysis engine can surface a degraded-result warning instead of
+/// failing the entire song.
+fn write_coarse_alignment_evidence(
+    runtime: &ValidatedRuntime,
+    audio: &Path,
+    output_dir: &Path,
+    config: &serde_json::Value,
+    progress: &mut dyn FnMut(u64, u64, &'static str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let input = normalize_alignment_input(config)?;
+    let source_duration_seconds = audio::wav_duration_seconds(audio)?;
+    let text_units = alignment_text_units(&input.transcript);
+    let words = coarse_alignment_words(&text_units, source_duration_seconds)?;
+    let segment_evidence = coarse_alignment_segments(text_units.len(), source_duration_seconds);
+    let destination = output_dir.join("qwen-alignment-evidence.json");
+    atomic_json(
+        &destination,
+        &AlignmentEvidence {
+            schema_version: 2,
+            model_id: WorkerKind::Align.model_id(),
+            model_sha256: ALIGN_MODEL_SHA256,
+            backend: "vulkan",
+            runtime_manifest_sha256: &runtime.manifest_sha256,
+            text_normalization_profile: ALIGN_TEXT_NORMALIZATION_PROFILE,
+            language_normalization_profile: ALIGN_LANGUAGE_NORMALIZATION_PROFILE,
+            alignment_semantics_profile: ALIGN_SEMANTICS_PROFILE,
+            transcript: &input.transcript,
+            language: input.language,
+            runtime_language: input.runtime_language,
+            fallback: Some(AlignmentFallbackEvidence {
+                profile: ALIGN_COARSE_FALLBACK_PROFILE,
+                trigger: "measurement_retries_exhausted",
+            }),
+            long_input: AlignmentLongInputEvidence {
+                policy: ALIGN_LONG_INPUT_POLICY,
+                max_window_seconds: ALIGN_WINDOW_MAX_SECONDS,
+                source_duration_seconds,
+                text_unit_count: text_units.len(),
+                segments: &segment_evidence,
+            },
+            words,
+        },
+    )?;
+    progress(1, 1, "Using coarse generated-transcript timing")?;
+    Ok(destination)
 }
 
 fn run_align(
@@ -1783,13 +2101,52 @@ fn run_align(
     let anchored = config
         .get("line_anchors")
         .is_some_and(|value| !value.is_null());
-    match run_align_with_retries(runtime, model, audio, output_dir, config, progress) {
+    let allow_coarse_fallback = alignment_coarse_fallback_enabled(config)?;
+    let result = match run_align_with_retries(runtime, model, audio, output_dir, config, progress) {
         Ok(destination) => Ok(destination),
         Err(error) if !anchored && is_retryable_window_measurement_error(&error) => {
-            run_align_with_trailing_content_dropped(
-                runtime, model, audio, output_dir, config, progress,
-            )
-            .map_err(|_| error)
+            // A parseable collapse range is a strictly narrower, more
+            // targeted excision than the whole tail, and it is the only one
+            // of the two that can recover a collapse anywhere but the very
+            // end -- try it first when the failing error names one.
+            if let Some((drop_start, drop_end)) = parse_collapsed_unit_range(&error) {
+                match run_align_with_span_dropped(
+                    runtime, model, audio, output_dir, config, drop_start, drop_end, progress,
+                ) {
+                    Ok(destination) => Ok(destination),
+                    Err(span_error) => match run_align_with_trailing_content_dropped(
+                        runtime, model, audio, output_dir, config, progress,
+                    ) {
+                        Ok(destination) => Ok(destination),
+                        Err(tail_error) => Err(format!(
+                            "{error} (span-drop recovery also failed: {span_error}; \
+                             trailing-content recovery also failed: {tail_error})"
+                        )),
+                    },
+                }
+            } else {
+                match run_align_with_trailing_content_dropped(
+                    runtime, model, audio, output_dir, config, progress,
+                ) {
+                    Ok(destination) => Ok(destination),
+                    // The original measurement error is the more useful primary
+                    // explanation (it names the actual unalignable audio/text),
+                    // but the recovery error explains why truncation did not help.
+                    Err(recovery_error) => Err(format!(
+                        "{error} (trailing-content recovery also failed: {recovery_error})"
+                    )),
+                }
+            }
+        }
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(destination) => Ok(destination),
+        Err(error) if allow_coarse_fallback && is_retryable_window_measurement_error(&error) => {
+            eprintln!(
+                "Qwen alignment measurement retries were exhausted; using explicit coarse generated-transcript fallback: {error}"
+            );
+            write_coarse_alignment_evidence(runtime, audio, output_dir, config, progress)
         }
         Err(error) => Err(error),
     }
@@ -1988,8 +2345,12 @@ fn run_align_once(
         })?;
         validate_alignment_measurement_resolution(&normalized).map_err(|error| {
             format!(
-                "{error} (window {}: audio=[{:.2}s, {:.2}s] target=\"{target_text}\")",
-                plan.index, plan.audio_start_seconds, plan.audio_end_seconds
+                "{error} (window {}: audio=[{:.2}s, {:.2}s] target=\"{target_text}\" unit_range=[{},{}))",
+                plan.index,
+                plan.audio_start_seconds,
+                plan.audio_end_seconds,
+                plan.target_unit_start,
+                plan.target_unit_end
             )
         })?;
         // Anchored planning has already proved a one-to-one mapping between
@@ -2070,6 +2431,7 @@ fn run_align_once(
             transcript: &input.transcript,
             language: input.language,
             runtime_language: input.runtime_language,
+            fallback: None,
             long_input: AlignmentLongInputEvidence {
                 policy: ALIGN_LONG_INPUT_POLICY,
                 max_window_seconds: ALIGN_WINDOW_MAX_SECONDS,

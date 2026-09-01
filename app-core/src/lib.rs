@@ -25,6 +25,7 @@ mod library_menu;
 mod library_model;
 mod lrc;
 mod lyrics;
+mod lyrics_sources;
 mod runtime_presentation;
 mod scanner;
 mod song;
@@ -142,9 +143,11 @@ pub use library_db::{init_library, library_db_path, load_song_by_hash, load_song
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};
 pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsStore};
 pub use lyrics::{
-    CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsFile, apply_timed_lyrics,
-    canonical_lyrics_status, load_lyrics_file, lrc_transcript_line_segments, provide_lrc,
-    save_lyrics, save_timed_lyrics, search_lrclib_for_hash,
+    CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsCandidate, LyricsFile,
+    LyricsProvider, LyricsProviderFailure, LyricsSearchResult, apply_timed_lyrics,
+    canonical_lyrics_status, fetch_lyrics_candidate, load_lyrics_file,
+    lrc_transcript_line_segments, provide_lrc, save_lyrics, save_timed_lyrics,
+    search_lrclib_for_hash, search_lyrics_for_hash,
 };
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,
