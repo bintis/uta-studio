@@ -15,6 +15,7 @@ pub struct StudioTheme {
     pub sidebar: Color,
     pub sidebar_foreground: Color,
     pub sidebar_accent: Color,
+    pub topbar: Color,
     pub destructive: Color,
     pub waveform: Color,
     pub pitch_contour: Color,
@@ -39,6 +40,7 @@ impl StudioTheme {
                 sidebar: Color::srgba(0.068, 0.07, 0.09, 0.88),
                 sidebar_foreground: Color::srgb(0.9, 0.905, 0.94),
                 sidebar_accent: Color::srgb(0.155, 0.15, 0.225),
+                topbar: Color::srgba(0.055, 0.058, 0.075, 0.72),
                 destructive: Color::srgb(0.82, 0.22, 0.22),
                 waveform: Color::srgb(0.48, 0.52, 0.62),
                 pitch_contour: Color::srgb(0.72, 0.75, 1.0),
@@ -60,6 +62,7 @@ impl StudioTheme {
                 sidebar: Color::srgba(0.955, 0.959, 0.975, 0.84),
                 sidebar_foreground: Color::srgb(0.18, 0.185, 0.22),
                 sidebar_accent: Color::srgb(0.9, 0.9, 0.97),
+                topbar: Color::srgba(0.965, 0.969, 0.98, 0.72),
                 destructive: Color::srgb(0.82, 0.22, 0.22),
                 waveform: Color::srgb(0.39, 0.43, 0.51),
                 pitch_contour: Color::srgb(0.2, 0.27, 0.55),
@@ -70,10 +73,24 @@ impl StudioTheme {
         }
     }
 
-    pub fn new_with_transparency(dark: bool, transparent: bool) -> Self {
+    /// `opacity_percent` is the Settings "Window opacity" value (30-100,
+    /// see `AppConfig::window_opacity_percent`). While `transparent` is on,
+    /// it scales `background`, `sidebar`, and `topbar` together by the same
+    /// factor: `sidebar`/`topbar` keep their own baseline translucency
+    /// (they're meant to read as slightly more solid chrome than the
+    /// content canvas even at full opacity) but move with the slider
+    /// instead of staying fixed while `background` becomes near-invisible,
+    /// which otherwise leaves the sidebar/top bar looking like a mismatched
+    /// solid panel over a barely-there window at high transparency.
+    pub fn new_with_transparency(dark: bool, transparent: bool, opacity_percent: u32) -> Self {
         let mut theme = Self::new(dark);
         if transparent {
-            theme.background = theme.background.with_alpha(if dark { 0.86 } else { 0.90 });
+            let factor = opacity_percent.clamp(30, 100) as f32 / 100.0;
+            theme.background = theme.background.with_alpha(factor);
+            theme.sidebar = theme
+                .sidebar
+                .with_alpha(theme.sidebar.alpha() * factor);
+            theme.topbar = theme.topbar.with_alpha(theme.topbar.alpha() * factor);
         }
         theme
     }
@@ -116,9 +133,43 @@ mod tests {
 
     #[test]
     fn transparent_theme_keeps_content_readable_over_a_clear_surface() {
-        let theme = StudioTheme::new_with_transparency(true, true);
+        let theme = StudioTheme::new_with_transparency(true, true, 86);
         assert_srgb(theme.background, [0.055, 0.058, 0.075, 0.86]);
         assert_srgb(window_clear_color(&theme, true), [0.0, 0.0, 0.0, 0.0]);
         assert_srgb(theme.foreground, [0.92, 0.925, 0.95, 1.0]);
+    }
+
+    /// Confirmed against a real report: at high transparency, the sidebar
+    /// and top bar stayed at their fixed baseline alpha while `background`
+    /// dropped toward the slider's low end, so the chrome panels looked
+    /// like solid mismatched slabs over a nearly invisible window. Sidebar
+    /// and top bar must move with the same slider, not sit fixed.
+    #[test]
+    fn sidebar_and_topbar_scale_down_together_with_background_at_high_transparency() {
+        let opaque = StudioTheme::new(true);
+        let transparent = StudioTheme::new_with_transparency(true, true, 30);
+        assert_srgb(transparent.background, [0.055, 0.058, 0.075, 0.30]);
+        assert_srgb(
+            transparent.sidebar,
+            [0.068, 0.07, 0.09, opaque.sidebar.alpha() * 0.30],
+        );
+        assert_srgb(
+            transparent.topbar,
+            [0.055, 0.058, 0.075, opaque.topbar.alpha() * 0.30],
+        );
+        // At full-strength opacity the chrome keeps today's baseline look.
+        let full = StudioTheme::new_with_transparency(true, true, 100);
+        assert_srgb(full.sidebar, [0.068, 0.07, 0.09, opaque.sidebar.alpha()]);
+        assert_srgb(full.topbar, [0.055, 0.058, 0.075, opaque.topbar.alpha()]);
+    }
+
+    #[test]
+    fn transparency_opacity_is_clamped_and_ignored_when_transparency_is_off() {
+        let theme = StudioTheme::new_with_transparency(true, true, 5);
+        assert_srgb(theme.background, [0.055, 0.058, 0.075, 0.30]);
+        let theme = StudioTheme::new_with_transparency(true, true, 250);
+        assert_srgb(theme.background, [0.055, 0.058, 0.075, 1.0]);
+        let theme = StudioTheme::new_with_transparency(true, false, 50);
+        assert_srgb(theme.background, [0.055, 0.058, 0.075, 1.0]);
     }
 }

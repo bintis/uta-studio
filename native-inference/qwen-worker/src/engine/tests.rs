@@ -40,6 +40,21 @@ fn alignment_units_preserve_words_and_segment_unspaced_cjk() {
 }
 
 #[test]
+fn alignment_units_segment_cjk_even_when_latin_words_share_the_transcript() {
+    // A real production transcript mixed unspaced Japanese lyrics with a
+    // stray English phrase (an ASR hallucination); the old whole-transcript
+    // heuristic saw *any* whitespace-separated run anywhere in the document
+    // and stopped segmenting the CJK portion entirely, which the aligner
+    // then measured as one giant "word" and collapsed into a near-zero
+    // span. Each side must keep its own correct grouping regardless of
+    // what else shares the document.
+    assert_eq!(
+        alignment_text_units("春天 in the sky"),
+        vec!["春", "天", "in", "the", "sky"]
+    );
+}
+
+#[test]
 fn engine_output_reader_stops_at_the_combined_capture_limit() {
     let total = Arc::new(AtomicUsize::new(0));
     let oversized = Arc::new(AtomicBool::new(false));
@@ -192,6 +207,17 @@ fn asr_evidence_uses_runtime_detected_language() {
 }
 
 #[test]
+fn asr_silent_window_produces_empty_evidence_without_error() {
+    // A window covering a purely instrumental passage decodes to an empty
+    // transcript and never logs a detected-language line: there is no
+    // speech to report a language for. That's a valid silent window, not a
+    // runtime failure (confirmed against a real song's instrumental outro).
+    let (language, text) = parse_asr_result("", b"", b"").unwrap();
+    assert_eq!(language, "");
+    assert_eq!(text, "");
+}
+
+#[test]
 fn asr_window_plan_is_bounded_contiguous_and_complete() {
     let plan = plan_asr_segments(305.813_333).unwrap();
     assert_eq!(plan.len(), 4);
@@ -326,6 +352,32 @@ fn long_form_plan_is_bounded_complete_and_has_context() {
         segment.audio_end_seconds - segment.audio_start_seconds <= ALIGN_WINDOW_MAX_SECONDS + 0.001
     }));
     assert!((plan[2].audio_start_seconds / ALIGN_TIMESTAMP_TICK_SECONDS - 2072.0).abs() < 0.001);
+}
+
+#[test]
+fn blind_plan_ramps_a_collapsed_leading_run_instead_of_duplicating_windows() {
+    // Real repro: a heavily retried plan (final attempt's 27.5s window
+    // target) packed a 354.88s song into 13 segments, and segments 0-2's
+    // centers all sat within half a window's width of the start, collapsing
+    // every one of their audio windows to the identical [0, 140s] span --
+    // confirmed as the root cause of a production "could not be reconciled
+    // at the window seam" failure (segment 1 measured its own, later target
+    // text starting back at 0.00s, before segment 0's last word even
+    // began).
+    let plan = plan_alignment_segments(354.88, 40, 27.5).unwrap();
+    assert_eq!(plan.len(), 13);
+    let starts = plan
+        .iter()
+        .map(|segment| segment.audio_start_seconds)
+        .collect::<Vec<_>>();
+    assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(starts[0], 0.0);
+    assert!((starts[1] / ALIGN_TIMESTAMP_TICK_SECONDS - 106.0).abs() < 0.001);
+    assert!((starts[2] / ALIGN_TIMESTAMP_TICK_SECONDS - 212.0).abs() < 0.001);
+    // The first segment whose own centering already escaped the clamp
+    // keeps its exact original position -- the ramp only touches the
+    // collapsed prefix in front of it.
+    assert!((starts[3] / ALIGN_TIMESTAMP_TICK_SECONDS - 319.0).abs() < 0.001);
 }
 
 #[test]
@@ -877,20 +929,24 @@ fn run_align_reconciles_a_real_seam_overlap_for_dense_cjk_lyrics() {
         .unwrap(),
     )
     .unwrap();
-    // Window 1 context is chars[2..10]; chars[2..5] are discarded prefix,
-    // chars[5..10] are the owned target. "花" is deliberately timed to
-    // overlap the previous window's "恋" by 2 ticks after offsetting.
+    // Window 1's plan starts at the tail anchor (60.00s), but its own
+    // context includes window 0's real last word "恋" (chars[2..5] are
+    // discarded prefix): chaining raises the actual offset used to
+    // 63.20s (window 0's "恋" ends at 65.20s, minus the chain's 2.00s
+    // back margin). "花" (the owned target, chars[5..10]) is deliberately
+    // timed -- relative to that 63.20s offset -- to still overlap the
+    // previous window's "恋" by 2 ticks after offsetting.
     std::fs::write(
         control.join("response-1"),
         serde_json::to_vec(&serde_json::json!({"words": [
             {"word": "沙", "start": 0.00, "end": 0.08},
             {"word": "蝶", "start": 0.08, "end": 0.16},
             {"word": "恋", "start": 0.16, "end": 0.24},
-            {"word": "花", "start": 5.04, "end": 6.00},
-            {"word": "千", "start": 6.00, "end": 6.08},
-            {"word": "古", "start": 6.08, "end": 6.16},
-            {"word": "佳", "start": 6.16, "end": 6.24},
-            {"word": "话", "start": 6.24, "end": 6.32}
+            {"word": "花", "start": 1.84, "end": 2.80},
+            {"word": "千", "start": 2.80, "end": 2.88},
+            {"word": "古", "start": 2.88, "end": 2.96},
+            {"word": "佳", "start": 2.96, "end": 3.04},
+            {"word": "话", "start": 3.04, "end": 3.12}
         ]}))
         .unwrap(),
     )
@@ -1506,6 +1562,106 @@ fn run_align_fails_closed_after_exhausting_seam_retries() {
     std::fs::remove_dir_all(&test_dir).unwrap();
 }
 
+#[test]
+fn trailing_drop_finds_nothing_worth_dropping_in_a_short_transcript() {
+    let text_units: Vec<String> = "one two three four five six seven eight nine ten"
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let plans = plan_alignment_segments(
+        200.0,
+        text_units.len(),
+        align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1),
+    )
+    .unwrap();
+    assert!(trailing_drop_transcript(&text_units, &plans).is_none());
+}
+
+#[test]
+fn trailing_drop_removes_a_real_collapse_sized_tail() {
+    // 30 "real" words followed by 10 longer "hallucinated" words: with
+    // ALIGN_SEAM_RETRY_ATTEMPTS's finest target and a 200s track, planning
+    // always produces 8 windows regardless of word count (segment count is
+    // duration-driven, not text-driven -- see `plan_alignment_segments`),
+    // so the last window's own slice lands inside the hallucinated tail
+    // and is comfortably over the collapse-size threshold.
+    let mut words: Vec<String> = (0..30).map(|index| format!("real{index}")).collect();
+    words.extend((0..10).map(|index| format!("hallucinated{index}")));
+    let target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let plans = plan_alignment_segments(200.0, words.len(), target).unwrap();
+    let adjusted = trailing_drop_transcript(&words, &plans).unwrap();
+    assert!(!adjusted.contains("hallucinated9"), "{adjusted}");
+    assert!(adjusted.contains("real0"), "{adjusted}");
+    assert!(adjusted.len() < words.join(" ").len());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_with_trailing_content_dropped_recovers_from_a_hallucinated_tail() {
+    // Mirrors the real production repro: a transcript whose true content
+    // ends well before the audio does, with a long fabricated tail a
+    // transcribing worker produced for what was actually a silent
+    // instrumental outro. No window plan can align invented text to audio
+    // it was never spoken over, so this exercises the fallback directly
+    // rather than re-proving `plan_alignment_segments`'s own retry
+    // mechanics (already covered above).
+    let test_dir = fixture_dir("trailing-drop");
+    let control = test_dir.join("control");
+    // Short tokens: `sequential_context_response` gives every unit a flat
+    // one-tick (0.08s) duration regardless of its own character count, so a
+    // unit of 12+ characters would trip the collapse check on that alone --
+    // a fixture artifact unrelated to what this test exercises. Two windows
+    // (a short 50s track against the finest retry target) keeps this
+    // aligned with the other synthetic-fixture seam tests above, which are
+    // already proven reliable at that same window count.
+    let mut words: Vec<String> = (0..5).map(|index| format!("real{index}")).collect();
+    words.extend((0..5).map(|index| format!("fake{index}")));
+    let transcript = words.join(" ");
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(50.0)).unwrap();
+
+    let target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let original_plans = plan_alignment_segments(50.0, words.len(), target).unwrap();
+    let adjusted_transcript = trailing_drop_transcript(&words, &original_plans).unwrap();
+    let adjusted_units = alignment_text_units(&adjusted_transcript);
+    let adjusted_plans = plan_alignment_segments(50.0, adjusted_units.len(), target).unwrap();
+    for plan in &adjusted_plans {
+        std::fs::write(
+            control.join(format!("response-{}", plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({"text": transcript});
+    let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+    let destination = run_align_with_trailing_content_dropped(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let recovered = evidence["transcript"].as_str().unwrap();
+    assert!(
+        !recovered.contains("fake9"),
+        "the fabricated tail must not survive: {recovered}"
+    );
+    assert!(recovered.contains("real0"), "{recovered}");
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn run_align_reconciles_a_seam_overlap_for_whitespace_lyrics_and_is_deterministic() {
@@ -1527,17 +1683,23 @@ fn run_align_reconciles_a_seam_overlap_for_whitespace_lyrics_and_is_deterministi
         .unwrap(),
     )
     .unwrap();
+    // Window 1's plan starts at the tail anchor (60.00s), but chaining
+    // raises the actual offset used to 63.20s (window 0's "five" ends at
+    // 65.20s, minus the chain's 2.00s back margin) once window 0's real
+    // measurement is known. "six" (the owned target) is deliberately
+    // timed -- relative to that 63.20s offset -- to still overlap the
+    // previous window's "five" by 2 ticks after offsetting.
     std::fs::write(
         control.join("response-1"),
         serde_json::to_vec(&serde_json::json!({"words": [
             {"word": "three", "start": 0.00, "end": 0.32},
             {"word": "four", "start": 0.32, "end": 0.64},
             {"word": "five", "start": 0.64, "end": 0.96},
-            {"word": "six", "start": 5.04, "end": 6.00},
-            {"word": "seven", "start": 6.00, "end": 6.32},
-            {"word": "eight", "start": 6.32, "end": 6.64},
-            {"word": "nine", "start": 6.64, "end": 6.96},
-            {"word": "ten", "start": 6.96, "end": 7.28}
+            {"word": "six", "start": 1.84, "end": 2.80},
+            {"word": "seven", "start": 2.80, "end": 3.12},
+            {"word": "eight", "start": 3.12, "end": 3.44},
+            {"word": "nine", "start": 3.44, "end": 3.76},
+            {"word": "ten", "start": 3.76, "end": 4.08}
         ]}))
         .unwrap(),
     )

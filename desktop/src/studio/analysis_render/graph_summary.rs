@@ -51,23 +51,25 @@ pub(crate) struct AnalysisGraphNodeCounts {
     pub(crate) complete: usize,
     pub(crate) running: usize,
     pub(crate) waiting: usize,
+    pub(crate) deferred: usize,
     pub(crate) failed: usize,
     pub(crate) not_requested: usize,
 }
 
 /// Tally of the exact `GraphNodeState` already computed for every rendered
-/// node. `Deferred` groups with Waiting (still pending); `Cancelled` groups
-/// with Failed (did not complete); `Disabled`/`ProfileSkipped` group with
-/// `NotRequested` (not part of this exact run) -- no new status is
-/// invented, only the existing nine real states are bucketed into the five
-/// counts this bar shows.
+/// node. `Deferred` stays distinct from Waiting: a conditional node that was
+/// not triggered in a completed run is not unfinished work. `Cancelled`
+/// groups with Failed (did not complete); `Disabled`/`ProfileSkipped` group
+/// with `NotRequested` (not part of this exact run). No new status is
+/// invented; the bar mirrors the existing real states.
 pub(crate) fn analysis_graph_node_counts(nodes: &[RenderNode]) -> AnalysisGraphNodeCounts {
     let mut counts = AnalysisGraphNodeCounts::default();
     for node in nodes {
         match node.state {
             GraphNodeState::Complete => counts.complete += 1,
             GraphNodeState::Running => counts.running += 1,
-            GraphNodeState::Waiting | GraphNodeState::Deferred => counts.waiting += 1,
+            GraphNodeState::Waiting => counts.waiting += 1,
+            GraphNodeState::Deferred => counts.deferred += 1,
             GraphNodeState::Failed | GraphNodeState::Cancelled => counts.failed += 1,
             GraphNodeState::NotRequested
             | GraphNodeState::Disabled
@@ -118,6 +120,41 @@ fn spawn_context_bar_chip(
         });
 }
 
+fn spawn_context_bar_status_chip(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &str,
+    value: usize,
+    accent: Color,
+) {
+    parent
+        .spawn(Node {
+            align_items: AlignItems::Center,
+            column_gap: px(4.0),
+            ..default()
+        })
+        .with_children(|item| {
+            item.spawn((
+                Node {
+                    width: px(7.0),
+                    height: px(7.0),
+                    flex_shrink: 0.0,
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(accent),
+            ));
+            spawn_text(
+                item,
+                font,
+                format!("{label} {value}"),
+                8.0,
+                theme.muted_foreground,
+            );
+        });
+}
+
 /// The DAG page's own top-of-canvas status strip. Song title and overall
 /// analysis progress remain in the existing page header above this; this
 /// bar only adds mode, current activity, and real per-node counts.
@@ -130,6 +167,9 @@ pub(crate) fn spawn_analysis_graph_context_bar(
     overall_progress: Option<usize>,
     current_label: Option<&str>,
     counts: AnalysisGraphNodeCounts,
+    zoom: f32,
+    follow_active: bool,
+    follow_available: bool,
 ) {
     parent
         .spawn((
@@ -194,29 +234,75 @@ pub(crate) fn spawn_analysis_graph_context_bar(
                         min_width: px(8.0),
                         ..default()
                     });
-                    for (label, value) in [
-                        ("Complete", counts.complete),
-                        ("Running", counts.running),
-                        ("Waiting", counts.waiting),
-                        ("Failed", counts.failed),
-                        ("Not requested", counts.not_requested),
+                });
+            strip
+                .spawn(Node {
+                    width: percent(100),
+                    align_items: AlignItems::Center,
+                    column_gap: px(10.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(4.0),
+                    ..default()
+                })
+                .with_children(|footer| {
+                    footer
+                        .spawn(Node {
+                            flex_grow: 1.0,
+                            min_width: px(0.0),
+                            ..default()
+                        })
+                        .with_children(|slot| {
+                            spawn_text(
+                                slot,
+                                font.clone(),
+                                "Read-only execution graph. Edit the workflow in Processing Studio.",
+                                7.5,
+                                theme.muted_foreground.with_alpha(0.75),
+                            );
+                        });
+                    // Same fixed status colors `spawn_workflow_graph_node`
+                    // assigns to every card regardless of its own category,
+                    // so this key and the canvas always agree. This replaces
+                    // the DAG canvas's old floating color-key overlay: it
+                    // lived on top of the graph itself, which crowded the
+                    // canvas at high transparency. Sharing the footer row
+                    // with Fit/Zoom/Follow (rather than the mode/progress
+                    // row above) keeps that row from wrapping the live
+                    // operation label on top of the counts on a narrow
+                    // window -- confirmed against a real screenshot where
+                    // it did exactly that.
+                    let complete_accent =
+                        analysis_graph_category_accent(GraphNodeCategory::Output, theme);
+                    for (label, value, accent) in [
+                        ("Complete", counts.complete, complete_accent),
+                        ("Running", counts.running, theme.primary),
+                        ("Waiting", counts.waiting, theme.muted_foreground),
+                        ("Deferred", counts.deferred, theme.editor_warning),
+                        ("Failed", counts.failed, theme.destructive),
+                        (
+                            "Not requested",
+                            counts.not_requested,
+                            theme.muted_foreground.with_alpha(0.6),
+                        ),
                     ] {
-                        spawn_text(
-                            row,
+                        spawn_context_bar_status_chip(
+                            footer,
                             font.clone(),
-                            format!("{label} {value}"),
-                            8.0,
-                            theme.muted_foreground,
+                            theme,
+                            label,
+                            value,
+                            accent,
                         );
                     }
+                    spawn_analysis_graph_viewport_controls(
+                        footer,
+                        font,
+                        theme,
+                        zoom,
+                        follow_active,
+                        follow_available,
+                    );
                 });
-            spawn_text(
-                strip,
-                font,
-                "Read-only execution graph. Edit the workflow in Processing Studio.",
-                7.5,
-                theme.muted_foreground.with_alpha(0.75),
-            );
         });
 }
 
@@ -271,13 +357,15 @@ mod tests {
         let counts = analysis_graph_node_counts(&nodes);
         assert_eq!(counts.complete, 2);
         assert_eq!(counts.running, 1);
-        assert_eq!(counts.waiting, 2);
+        assert_eq!(counts.waiting, 1);
+        assert_eq!(counts.deferred, 1);
         assert_eq!(counts.failed, 2);
         assert_eq!(counts.not_requested, 3);
         assert_eq!(
             counts.complete
                 + counts.running
                 + counts.waiting
+                + counts.deferred
                 + counts.failed
                 + counts.not_requested,
             nodes.len()

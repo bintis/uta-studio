@@ -197,25 +197,45 @@ fn analysis_page_is_open(route: StudioRoute, library_view: LibraryView) -> bool 
         || route == StudioRoute::AnalysisInspect
 }
 
+const ANALYSIS_GRAPH_FOLLOW_RESPONSE: f32 = 9.0;
+const ANALYSIS_GRAPH_FOLLOW_SNAP_DISTANCE: f32 = 0.5;
+
+pub(crate) fn animated_analysis_graph_follow_position(
+    current: Vec2,
+    target: Vec2,
+    delta_seconds: f32,
+) -> Vec2 {
+    if current.distance(target) <= ANALYSIS_GRAPH_FOLLOW_SNAP_DISTANCE {
+        return target;
+    }
+    let alpha = 1.0 - (-ANALYSIS_GRAPH_FOLLOW_RESPONSE * delta_seconds.clamp(0.0, 0.1)).exp();
+    current.lerp(target, alpha.clamp(0.0, 1.0))
+}
+
 /// Keeps the live DAG node in the middle of the canvas while a run is
-/// walking the graph. Recenters only when the running `node_id` changes so
-/// a manual pan is not yanked back on every refresh tick.
+/// walking the graph. A node transition sets a camera destination; the real
+/// viewport then eases toward it every frame instead of jumping there during
+/// the next UI rebuild. Manual pan still pauses Follow immediately.
 pub(crate) fn follow_live_analysis_node(
+    time: Res<Time>,
     shell: Res<ShellState>,
     library: Res<LibraryState>,
     mut analysis: ResMut<AnalysisUiState>,
-    mut invalidated: ResMut<UiInvalidated>,
-    viewports: Query<&ComputedNode, With<AnalysisGraphViewport>>,
+    mut viewports: Query<(&ComputedNode, &mut ScrollPosition), With<AnalysisGraphViewport>>,
 ) {
     if !analysis_page_is_open(shell.route, library.library_view) {
-        if analysis.analysis_graph_follow_node.take().is_some() {
-            // Leaving the page drops the follow so reopening recenters.
-        }
+        analysis.analysis_graph_follow_node = None;
+        analysis.analysis_graph_follow_target = None;
         return;
     }
-    if analysis.analysis_graph_needs_fit || !analysis.analysis_graph_follow_enabled {
+    if analysis.analysis_graph_needs_fit
+        || !analysis.analysis_graph_follow_enabled
+        || analysis.selected_analysis_history.is_some()
+    {
+        analysis.analysis_graph_follow_target = None;
         return;
     }
+
     let active_task = analysis.analysis_tasks.iter().find(|task| {
         matches!(task.status, app_core::QueuedStatus::Analyzing(_))
             && library
@@ -228,34 +248,57 @@ pub(crate) fn follow_live_analysis_node(
         .and_then(|live| live.node_id.clone());
     let Some(live_id) = live_id else {
         analysis.analysis_graph_follow_node = None;
+        analysis.analysis_graph_follow_target = None;
         return;
     };
-    if analysis.analysis_graph_follow_node.as_deref() == Some(live_id.as_str()) {
+    let Ok((computed, mut position)) = viewports.single_mut() else {
         return;
+    };
+    let viewport_size = computed.size() * computed.inverse_scale_factor();
+    let content_size = computed.content_size() * computed.inverse_scale_factor();
+
+    if analysis.analysis_graph_follow_node.as_deref() != Some(live_id.as_str())
+        || analysis.analysis_graph_follow_target.is_none()
+        || (analysis.analysis_graph_viewport_width - viewport_size.x).abs() >= 8.0
+        || (analysis.analysis_graph_viewport_height - viewport_size.y).abs() >= 8.0
+    {
+        // Parsing the frozen request is intentionally confined to a node or
+        // viewport transition; the per-frame easing path below only updates
+        // the real ScrollPosition.
+        let workflow = active_task
+            .and_then(|task| task.live.as_ref())
+            .and_then(|live| live.engine.as_ref())
+            .and_then(exact_workflow_plan_from_engine)
+            .map(|(workflow, _)| workflow)
+            .or_else(|| {
+                analysis.workflow_snapshot.as_ref().and_then(|snapshot| {
+                    app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
+                })
+            });
+        let mut target = estimated_analysis_graph_center_target(
+            workflow.as_ref(),
+            &live_id,
+            clamp_analysis_graph_zoom(analysis.analysis_graph_zoom),
+            viewport_size,
+        );
+        target.x = target
+            .x
+            .clamp(0.0, (content_size.x - viewport_size.x).max(0.0));
+        target.y = target
+            .y
+            .clamp(0.0, (content_size.y - viewport_size.y).max(0.0));
+        analysis.analysis_graph_follow_node = Some(live_id);
+        analysis.analysis_graph_follow_target = Some(target);
     }
-    let viewport_width = viewports
-        .iter()
-        .next()
-        .map(|computed| computed.size().x * computed.inverse_scale_factor())
-        .unwrap_or(0.0);
-    let workflow = active_task
-        .and_then(|task| task.live.as_ref())
-        .and_then(|live| live.engine.as_ref())
-        .and_then(exact_workflow_plan_from_engine)
-        .map(|(workflow, _)| workflow)
-        .or_else(|| {
-            analysis.workflow_snapshot.as_ref().and_then(|snapshot| {
-                app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
-            })
-        });
-    analysis.analysis_graph_scroll_offset = estimated_analysis_graph_center_scroll(
-        workflow.as_ref(),
-        &live_id,
-        clamp_analysis_graph_zoom(analysis.analysis_graph_zoom),
-        viewport_width,
-    );
-    analysis.analysis_graph_follow_node = Some(live_id);
-    invalidated.invalidate(UiDirtyRegion::Analysis);
+
+    let Some(target) = analysis.analysis_graph_follow_target else {
+        return;
+    };
+    let next =
+        animated_analysis_graph_follow_position(position.0, target, time.delta().as_secs_f32());
+    position.0 = next;
+    analysis.analysis_graph_scroll_offset = next.x;
+    analysis.analysis_graph_vertical_scroll_offset = next.y;
 }
 
 fn stable_analysis_viewport(value: f32) -> f32 {
@@ -375,5 +418,19 @@ mod tests {
             ))]),
             0
         );
+    }
+
+    #[test]
+    fn graph_follow_eases_without_overshooting_and_eventually_snaps() {
+        let target = Vec2::new(900.0, 240.0);
+        let first = animated_analysis_graph_follow_position(Vec2::ZERO, target, 1.0 / 60.0);
+        assert!(first.x > 0.0 && first.x < target.x);
+        assert!(first.y > 0.0 && first.y < target.y);
+
+        let mut current = first;
+        for _ in 0..180 {
+            current = animated_analysis_graph_follow_position(current, target, 1.0 / 60.0);
+        }
+        assert_eq!(current, target);
     }
 }

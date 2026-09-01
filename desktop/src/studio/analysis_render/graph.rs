@@ -150,16 +150,16 @@ pub(crate) fn analysis_graph_center_target(
     Some((scroll.round() as i32, id.to_string()))
 }
 
-/// Computes a focus offset from exact Workflow topology when a render-frame
+/// Computes a camera offset from exact Workflow topology when a render-frame
 /// layout is not available yet. It never estimates rank from a node id.
-pub(crate) fn estimated_analysis_graph_center_scroll(
+pub(crate) fn estimated_analysis_graph_center_target(
     workflow: Option<&app_core::WorkflowExecutionWireV1>,
     node_id: &str,
     zoom: f32,
-    viewport_width: f32,
-) -> f32 {
+    viewport_size: Vec2,
+) -> Vec2 {
     let Some(workflow) = workflow else {
-        return 0.0;
+        return Vec2::ZERO;
     };
     let render = build_workflow_render_graph(workflow, None, None, false);
     let specs = render
@@ -178,17 +178,25 @@ pub(crate) fn estimated_analysis_graph_center_scroll(
         .collect::<Vec<_>>();
     let edges = render.edge_pairs();
     let Some(layout) = cached_canvas_routed_layout_with_specs(&specs, &edges) else {
-        return 0.0;
+        return Vec2::ZERO;
     };
     let Some(rect) = layout.layout.rect(&app_core::AnalysisNodeId::new(node_id)) else {
-        return 0.0;
+        return Vec2::ZERO;
     };
-    let width = if viewport_width > 1.0 {
-        viewport_width
+    let width = if viewport_size.x > 1.0 {
+        viewport_size.x
     } else {
         960.0
     };
-    ((rect.x + rect.width / 2.0) * zoom - width / 2.0).max(0.0)
+    let height = if viewport_size.y > 1.0 {
+        viewport_size.y
+    } else {
+        720.0
+    };
+    Vec2::new(
+        ((rect.x + rect.width / 2.0) * zoom - width / 2.0).max(0.0),
+        ((rect.y + rect.height / 2.0) * zoom - height / 2.0).max(0.0),
+    )
 }
 
 #[derive(Clone, Copy)]

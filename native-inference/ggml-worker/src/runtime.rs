@@ -6,12 +6,13 @@ use serde::Deserialize;
 pub const RECIPE_DIGEST: &str = "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a";
 const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
 
-const MODEL_IDENTITIES: [(&str, u64); 5] = [
+const MODEL_IDENTITIES: [(&str, u64); 6] = [
     ("bs_roformer_leap_xe90_vocals", 267_433_600),
     ("melband_roformer_denoise_aufr33", 457_008_736),
     ("melband_roformer_dereverb_anvuew", 457_008_736),
     ("melband_roformer_inst_v2", 787_918_656),
     ("melband_roformer_harmony", 457_008_736),
+    ("bs_polarformer_public_instrumental", 204_237_408),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -122,10 +123,10 @@ mod tests {
 
     #[test]
     fn every_supported_model_has_a_full_identity() {
-        assert_eq!(MODEL_IDENTITIES.len(), 5);
+        assert_eq!(MODEL_IDENTITIES.len(), 6);
         for (id, size) in MODEL_IDENTITIES {
             assert!(!id.is_empty());
-            assert!(size > 250_000_000);
+            assert!(size > 200_000_000);
         }
     }
 

@@ -327,6 +327,7 @@ mod tests {
             work_units_total: None,
             worker_task_id: None,
             artifact: None,
+            path: None,
             message: None,
             event_at_ms: 1,
         };

@@ -33,6 +33,7 @@ pub(crate) struct AnalysisNodeContextMenu {
     /// Compiled capability identity shown by the inspector.
     pub(crate) capability_id: String,
     pub(crate) label: String,
+    pub(crate) history_selected: bool,
     pub(crate) run_action: Option<AnalysisNodeMenuAction>,
     /// `None` when no history run is currently selected -- "Compare with
     /// previous attempt" needs a `current_run_id` to diff against, which
@@ -1566,6 +1567,7 @@ pub(crate) fn build_analysis_node_context_menu(
         node_id: node_id.to_string(),
         capability_id: capability_id.to_string(),
         label: label.to_string(),
+        history_selected: selected_run_id.is_some(),
         run_action: selected_run_id
             .is_none()
             .then(|| analysis_node_execution_action(node_id))
@@ -1593,8 +1595,8 @@ pub(crate) struct AnalysisNodeClickTarget<'a> {
 }
 
 pub(crate) fn clamp_analysis_node_context_position(position: Vec2, viewport: Vec2) -> Vec2 {
-    const MENU_WIDTH: f32 = 278.0;
-    const MENU_MAX_HEIGHT: f32 = 620.0;
+    const MENU_WIDTH: f32 = 316.0;
+    const MENU_MAX_HEIGHT: f32 = 660.0;
     const EDGE: f32 = 8.0;
     let available_height = (viewport.y * 0.86).min(MENU_MAX_HEIGHT);
     Vec2::new(
@@ -1645,9 +1647,84 @@ pub(crate) fn open_analysis_node_from_pointer(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn spawn_analysis_context_action(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    icon: UiIcon,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    action: UiAction,
+    emphasized: bool,
+) {
+    let title = title.into();
+    let detail = detail.into();
+    let accent = if emphasized {
+        theme.primary
+    } else {
+        theme.muted_foreground
+    };
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                width: percent(100),
+                min_height: px(56),
+                align_items: AlignItems::Center,
+                padding: UiRect::all(px(8)),
+                column_gap: px(10),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
+                ..default()
+            },
+            BackgroundColor(if emphasized {
+                theme.primary.with_alpha(0.11)
+            } else {
+                theme.background.with_alpha(0.10)
+            }),
+            BorderColor::all(if emphasized {
+                theme.primary.with_alpha(0.34)
+            } else {
+                theme.border.with_alpha(0.30)
+            }),
+        ))
+        .with_children(|button| {
+            button
+                .spawn((
+                    Node {
+                        width: px(34),
+                        height: px(34),
+                        flex_shrink: 0.0,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border_radius: BorderRadius::all(px(8)),
+                        ..default()
+                    },
+                    BackgroundColor(accent.with_alpha(0.10)),
+                ))
+                .with_children(|slot| spawn_icon(slot, icons, icon, 16.0, accent));
+            button
+                .spawn(Node {
+                    min_width: px(0),
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(2),
+                    ..default()
+                })
+                .with_children(|copy| {
+                    spawn_text(copy, font.clone(), title, 9.5, theme.foreground);
+                    spawn_bounded_wrapped_text(copy, font, detail, 7.5, theme.muted_foreground);
+                });
+        });
+}
+
 pub(crate) fn spawn_analysis_node_context_menu(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
+    icons: Handle<Image>,
     theme: &StudioTheme,
     context: &AnalysisNodeContextMenu,
 ) {
@@ -1666,101 +1743,196 @@ pub(crate) fn spawn_analysis_node_context_menu(
         ZIndex(40),
     ));
     // Node context menus live in the window-sized overlay region, so the
-    // raw window position can be used directly without rebuilding the DAG.
+    // clamped raw window position can be used directly without rebuilding the DAG.
     let left = context.position.x.max(8.0);
     let top = context.position.y.max(8.0);
+    let state_label = if context.history_selected {
+        "Historical run"
+    } else {
+        "Current workflow"
+    };
+    let state_color = if context.history_selected {
+        theme.pitch_contour
+    } else {
+        theme.primary
+    };
     parent
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: px(left),
                 top: px(top),
-                width: px(278),
+                width: px(316),
                 max_height: percent(86),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(8)),
-                row_gap: px(2),
+                padding: UiRect::all(px(10)),
+                row_gap: px(7),
                 align_items: AlignItems::Stretch,
                 overflow: Overflow::scroll_y(),
                 border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(6)),
+                border_radius: studio_popover_radius(),
                 ..default()
             },
-            BackgroundColor(theme.card.with_alpha(0.98)),
-            BorderColor::all(theme.border.with_alpha(0.72)),
+            BackgroundColor(theme.card.with_alpha(0.985)),
+            BorderColor::all(theme.border.with_alpha(0.80)),
+            studio_popover_shadow(theme),
             ZIndex(41),
         ))
         .with_children(|menu| {
-            spawn_text(
-                menu,
-                font.clone(),
-                context.label.clone(),
-                11.0,
-                theme.foreground,
-            );
-            spawn_text(
-                menu,
-                font.clone(),
-                format!("{} · Node actions", context.node_id),
-                8.0,
-                theme.muted_foreground,
-            );
-            menu.spawn(Node {
-                height: px(5),
-                ..default()
+            menu.spawn((
+                Node {
+                    width: percent(100),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(px(10)),
+                    row_gap: px(4),
+                    border: UiRect::all(px(1)),
+                    border_radius: studio_control_radius(),
+                    ..default()
+                },
+                BackgroundColor(theme.background.with_alpha(0.22)),
+                BorderColor::all(theme.primary.with_alpha(0.20)),
+            ))
+            .with_children(|header| {
+                header
+                    .spawn(Node {
+                        width: percent(100),
+                        align_items: AlignItems::Center,
+                        column_gap: px(8),
+                        ..default()
+                    })
+                    .with_children(|meta| {
+                        spawn_text(meta, font.clone(), "AUDIT NODE", 7.5, theme.primary);
+                        meta.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        });
+                        spawn_status_pill(meta, font.clone(), state_label, state_color);
+                    });
+                spawn_bounded_wrapped_text(
+                    header,
+                    font.clone(),
+                    context.label.clone(),
+                    13.0,
+                    theme.foreground,
+                );
+                spawn_bounded_wrapped_text(
+                    header,
+                    font.clone(),
+                    capability_product_label(&context.capability_id),
+                    9.0,
+                    theme.muted_foreground,
+                );
+                header.spawn((
+                    Node {
+                        width: percent(100),
+                        padding: UiRect::axes(px(8), px(6)),
+                        overflow: Overflow::clip(),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(7)),
+                        ..default()
+                    },
+                    BackgroundColor(theme.background.with_alpha(0.28)),
+                    BorderColor::all(theme.border.with_alpha(0.32)),
+                    children![(
+                        Text::new(context.node_id.clone()),
+                        ui_text_font(font.clone(), 7.5),
+                        TextColor(theme.muted_foreground),
+                        TextLayout::no_wrap(),
+                    )],
+                ));
             });
-            spawn_menu_text_button(
+
+            spawn_analysis_context_action(
                 menu,
                 font.clone(),
+                icons.clone(),
                 theme,
-                "Inspect view",
-                11.0,
+                UiIcon::PanelRight,
+                "Open audit view",
+                "Review execution route, inputs, outputs, timing, fallbacks, and errors.",
                 UiAction::from(AnalysisCommand::OpenAnalysisInspect(
                     context.node_id.clone(),
                     context.capability_id.clone(),
                 )),
+                true,
             );
+
             if let Some(run) = context.run_action.clone() {
-                menu.spawn(Node {
-                    height: px(5),
-                    ..default()
-                });
-                spawn_text(menu, font.clone(), "EXECUTION", 7.0, theme.muted_foreground);
-                spawn_menu_text_button(menu, font.clone(), theme, run.label, 11.0, run.action);
-            }
-            menu.spawn(Node {
-                height: px(5),
-                ..default()
-            });
-            spawn_text(menu, font.clone(), "EVIDENCE", 7.0, theme.muted_foreground);
-            if let Some(compare_action) = context.compare_node_action.clone() {
-                spawn_menu_text_button(
+                spawn_text(menu, font.clone(), "EXECUTION", 7.0, theme.primary);
+                spawn_analysis_context_action(
                     menu,
                     font.clone(),
+                    icons.clone(),
                     theme,
-                    "Compare with previous attempt",
-                    11.0,
-                    compare_action,
+                    UiIcon::Play,
+                    run.label,
+                    "Compile and execute the current workflow configuration.",
+                    run.action,
+                    false,
                 );
             }
-            spawn_menu_text_button(
+
+            spawn_text(menu, font.clone(), "EVIDENCE", 7.0, theme.primary);
+            if let Some(compare_action) = context.compare_node_action.clone() {
+                spawn_analysis_context_action(
+                    menu,
+                    font.clone(),
+                    icons.clone(),
+                    theme,
+                    UiIcon::Combine,
+                    "Compare with previous attempt",
+                    "Diff this node attempt against the previous completed run.",
+                    compare_action,
+                    false,
+                );
+            } else {
+                menu.spawn((
+                    Node {
+                        width: percent(100),
+                        padding: UiRect::all(px(9)),
+                        border: UiRect::all(px(1)),
+                        border_radius: studio_control_radius(),
+                        ..default()
+                    },
+                    BackgroundColor(theme.background.with_alpha(0.12)),
+                    BorderColor::all(theme.border.with_alpha(0.26)),
+                ))
+                .with_children(|empty| {
+                    spawn_wrapped_text(
+                        empty,
+                        font.clone(),
+                        "Select a completed run in Activity to enable attempt comparison.",
+                        7.5,
+                        theme.muted_foreground,
+                    );
+                });
+            }
+
+            spawn_text(menu, font.clone(), "REFERENCE", 7.0, theme.primary);
+            spawn_analysis_context_action(
                 menu,
                 font.clone(),
+                icons.clone(),
                 theme,
+                UiIcon::List,
                 "Open node documentation",
-                11.0,
+                "Read the capability contract and implementation guidance.",
                 UiAction::from(AppCommand::OpenDocumentation(Some(
                     documentation_anchor_for_node(&context.node_id).to_string(),
                 ))),
+                false,
             );
             if let Some(view_logs_action) = context.view_logs_action.clone() {
-                spawn_menu_text_button(
+                spawn_analysis_context_action(
                     menu,
                     font.clone(),
+                    icons,
                     theme,
-                    "View logs",
-                    11.0,
+                    UiIcon::Database,
+                    "View structured logs",
+                    "Open node-filtered logs for the selected or latest run.",
                     view_logs_action,
+                    false,
                 );
             }
         });

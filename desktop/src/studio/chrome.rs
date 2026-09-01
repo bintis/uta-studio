@@ -456,16 +456,7 @@ pub(crate) fn spawn_workspace(
             BackgroundColor(theme.background),
         ))
         .with_children(|workspace| {
-            spawn_top_bar(
-                workspace,
-                font.clone(),
-                icons.clone(),
-                asset_server,
-                images,
-                local_images,
-                session,
-                theme,
-            );
+            spawn_top_bar(workspace, font.clone(), icons.clone(), session, theme);
             match session.route {
                 StudioRoute::Library
                     if session.config.library_paths().is_empty()
@@ -497,9 +488,16 @@ pub(crate) fn spawn_workspace(
                 StudioRoute::Folders => {
                     spawn_folders(workspace, font.clone(), icons.clone(), session, theme)
                 }
-                StudioRoute::SongDetail => {
-                    spawn_song_detail(workspace, font.clone(), session, theme)
-                }
+                StudioRoute::SongDetail => spawn_song_detail(
+                    workspace,
+                    font.clone(),
+                    icons.clone(),
+                    asset_server,
+                    images,
+                    local_images,
+                    session,
+                    theme,
+                ),
                 StudioRoute::Documentation => {
                     spawn_documentation(workspace, font.clone(), session, theme)
                 }
@@ -685,11 +683,12 @@ fn workspace_title(session: &StudioSessionView<'_>) -> WorkspaceTitle {
                 .as_deref()
                 .unwrap_or("Workflow");
             WorkspaceTitle {
-                eyebrow: "INSPECT VIEW".to_string(),
+                eyebrow: "AUDIT VIEW".to_string(),
                 title: current_analysis_header(session)
                     .map(|(title, _, _)| format!("{title} · {node_label}"))
                     .unwrap_or_else(|| node_label.to_string()),
-                subtitle: "Inspect node inputs, outputs, and evidence.".to_string(),
+                subtitle: "Review node execution, data contracts, fallbacks, and recorded evidence."
+                    .to_string(),
             }
         }
         StudioRoute::Settings => WorkspaceTitle {
@@ -788,7 +787,7 @@ fn spawn_workspace_toolbar(
                 parent,
                 font,
                 theme,
-                "Validate + save",
+                "Save",
                 UiAction::from(AnalysisCommand::SaveWorkflow),
             );
         }
@@ -800,24 +799,14 @@ pub(crate) fn should_show_workspace_eyebrow(subtitle: &str) -> bool {
     subtitle.is_empty()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_top_bar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
     icons: Handle<Image>,
-    asset_server: &AssetServer,
-    images: &mut Assets<Image>,
-    local_images: &mut LocalImages,
     session: &StudioSessionView<'_>,
     theme: &StudioTheme,
 ) {
     let title = workspace_title(session);
-    let selected_song = (session.route == StudioRoute::SongDetail)
-        .then(|| session.selected_song())
-        .flatten();
-    let cover = selected_song
-        .as_ref()
-        .map(|song| album_art_handle(song, asset_server, images, local_images));
     let toolbar_open = workspace_toolbar_open(session);
     parent
         .spawn((
@@ -834,7 +823,7 @@ pub(crate) fn spawn_top_bar(
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(0.72)),
+            BackgroundColor(theme.topbar),
             BorderColor::all(theme.border.with_alpha(0.4)),
         ))
         .with_children(|bar| {
@@ -855,22 +844,6 @@ pub(crate) fn spawn_top_bar(
                 flex_shrink: 0.0,
                 ..default()
             });
-            if let Some(cover) = cover {
-                bar.spawn((
-                    Node {
-                        width: px(46),
-                        height: px(46),
-                        flex_shrink: 0.0,
-                        overflow: Overflow::clip(),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(5)),
-                        margin: UiRect::right(px(12)),
-                        ..default()
-                    },
-                    ImageNode::new(cover),
-                    BorderColor::all(theme.border.with_alpha(0.9)),
-                ));
-            }
             bar.spawn(Node {
                 min_width: px(0),
                 flex_grow: 1.0,

@@ -76,7 +76,14 @@ pub(super) fn task_23_models() -> RuntimeManagerResult<Vec<ModelCatalogEntry>> {
             id: ModelId::new(PUBLIC_POLARFORMER_INSTRUMENTAL_ID)?,
             display_name: "BS-PolarFormer Public Instrumental".to_string(),
             purpose: "44.1 kHz stereo Instrumental extraction".to_string(),
-            capabilities: vec!["audio.extract_instrumental".to_string()],
+            // The checkpoint's single trained stem is vocals
+            // (config.yaml's `training.target_instrument: vocals`);
+            // "instrumental" is a derived mix-minus-vocals residual. Both
+            // are real, selectable product roles for this one model.
+            capabilities: vec![
+                "audio.extract_instrumental".to_string(),
+                "audio.extract_vocals".to_string(),
+            ],
             source: SourceIdentity {
                 repository: Some("bgkb/bs_polarformer".to_string()),
                 revision: Some("9158719ee2173edd480a735764627526506fe4af".to_string()),
@@ -96,13 +103,43 @@ pub(super) fn task_23_models() -> RuntimeManagerResult<Vec<ModelCatalogEntry>> {
                 source_attribution: "bgkb public BS-PolarFormer ONNX model".to_string(),
                 source_page: Some("https://huggingface.co/bgkb/bs_polarformer".to_string()),
             },
-            acquisition: vec![acquisition(
-                AcquisitionMethod::ManagedDownload,
-                "download the public FP16-weight ONNX model",
-            )],
-            dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-            backends: openvino_routes(),
-            pinned_backend: Some(OpenVino),
+            acquisition: vec![
+                acquisition(
+                    AcquisitionMethod::ManagedDownload,
+                    "download the public FP16-weight ONNX model",
+                ),
+                acquisition(
+                    AcquisitionMethod::LocalImport,
+                    "explicit import of the locally-converted PoPE GGUF (no upstream GGUF exists for this checkpoint)",
+                ),
+            ],
+            dependencies: vec![
+                ResourceRef::runtime("openvino_2026_3")?,
+                ResourceRef::runtime("ggml_vulkan_v1")?,
+            ],
+            backends: {
+                let mut routes = openvino_routes();
+                routes.push(BackendCapability {
+                    backend: Vulkan,
+                    validation: ProductionPinned,
+                    // The PoPE (not RoPE) positional embedding required a
+                    // dedicated GGML graph, not a relabel of the existing
+                    // bs_roformer graph. Its output matches the reference
+                    // bs_polarformer FP32 ONNX Runtime evidence closely
+                    // (correlation 0.9999996, max abs diff 3.8e-5 on a
+                    // real mask tensor). It has since been run on real
+                    // Vulkan hardware under this repository's explicit
+                    // authorization policy -- a bounded smoke test and a
+                    // full-song A/B against melband_roformer_inst_v2 --
+                    // with no crashes, and the repository owner confirmed
+                    // by ear that the output quality is good. Promoted to
+                    // ProductionPinned and made the default route on that
+                    // basis.
+                    evidence_id: Some("task23-polarformer-ggml-vulkan-fullsong-ab-2026-09-01".to_string()),
+                });
+                routes
+            },
+            pinned_backend: Some(Vulkan),
             estimated_download_bytes: Some(108_325_429),
             estimated_installed_bytes: Some(108_325_429),
             recipe_digest: catalog_recipe_digest(PUBLIC_POLARFORMER_INSTRUMENTAL_ID),

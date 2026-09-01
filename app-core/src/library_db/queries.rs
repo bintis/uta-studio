@@ -204,6 +204,42 @@ fn build_song_where_clause(
     }
 }
 
+/// Ranks a song's analysis status for the STATUS column header's sort:
+/// not-analyzed, then queued, then analyzing, then analyzed, then failed --
+/// roughly the order a song moves through the pipeline, with failed last so
+/// it doesn't get buried above songs that haven't been touched yet.
+const STATUS_RANK_EXPR: &str = "(CASE \
+    WHEN EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status = 'failed') THEN 4 \
+    WHEN EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status = 'analyzing') THEN 3 \
+    WHEN EXISTS (SELECT 1 FROM analysis_queue aq WHERE aq.file_hash = s.file_hash AND aq.status IN ('staged', 'queued')) THEN 2 \
+    WHEN s.is_analyzed = 1 THEN 1 \
+    ELSE 0 \
+    END)";
+
+/// The user-chosen column-header sort (§ ARTIST/ALBUM/TIME/STATUS), always
+/// with a stable artist/title tiebreaker. This is deliberately separate
+/// from `queue_order`/`playlist_order` above, which stay structural: a
+/// queue or playlist view's own ordering always wins the leading position
+/// in `ORDER BY`, with the user's column sort only breaking ties within it.
+fn user_sort_order_by(filters: &LibraryMenuFilters) -> String {
+    let direction = if filters.sort_descending { "DESC" } else { "ASC" };
+    match filters.sort_column.as_deref() {
+        Some("artist") => {
+            format!("s.artist COLLATE NOCASE {direction}, s.title COLLATE NOCASE {direction}")
+        }
+        Some("album") => format!(
+            "s.album COLLATE NOCASE {direction}, s.artist COLLATE NOCASE, s.title COLLATE NOCASE"
+        ),
+        Some("time") => {
+            format!("s.duration_secs {direction}, s.artist COLLATE NOCASE, s.title COLLATE NOCASE")
+        }
+        Some("status") => format!(
+            "{STATUS_RANK_EXPR} {direction}, s.artist COLLATE NOCASE, s.title COLLATE NOCASE"
+        ),
+        _ => "s.artist COLLATE NOCASE, s.title COLLATE NOCASE".to_string(),
+    }
+}
+
 pub fn load_songs_page(params: &LoadSongsParams) -> rusqlite::Result<SongsStore> {
     let (folder, scan_count) = with_conn(|c| {
         c.query_row(
@@ -233,11 +269,12 @@ pub fn load_songs_page(params: &LoadSongsParams) -> rusqlite::Result<SongsStore>
         ""
     };
 
+    let sort_order = user_sort_order_by(&params.filters);
     let processed = if let Some(ref where_sql) = where_sql {
         let sql = format!(
             "SELECT payload FROM songs s
              WHERE {where_sql}
-             ORDER BY {queue_order}{playlist_order}s.artist COLLATE NOCASE, s.title COLLATE NOCASE
+             ORDER BY {queue_order}{playlist_order}{sort_order}
              LIMIT {} OFFSET {}",
             params.take as i64, params.skip as i64
         );
@@ -250,12 +287,13 @@ pub fn load_songs_page(params: &LoadSongsParams) -> rusqlite::Result<SongsStore>
             rows.collect::<Result<Vec<_>, _>>()
         })?
     } else {
+        let sql = format!(
+            "SELECT payload FROM songs s
+             ORDER BY {sort_order}
+             LIMIT ?1 OFFSET ?2"
+        );
         with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT payload FROM songs
-                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE
-                 LIMIT ?1 OFFSET ?2",
-            )?;
+            let mut stmt = c.prepare(&sql)?;
             let rows = stmt.query_map(
                 params![params.take as i64, params.skip as i64],
                 load_song_from_payload_column,
@@ -646,6 +684,91 @@ mod tests {
 
         let meta = load_meta_sql().unwrap();
         assert_eq!(meta.analyzed_count, 1);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sort_column_reorders_the_page_and_direction_flips_it() {
+        let root = temp_root("sort-time");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+
+        let mut short = analyzed_song(&root, "short-song", "Short");
+        short.duration_secs = 60.0;
+        let mut long = analyzed_song(&root, "long-song", "Long");
+        long.duration_secs = 300.0;
+        super::super::songs::replace_all_songs_sorted(&[short, long]).unwrap();
+
+        let params = |sort_column: &str, sort_descending: bool| LoadSongsParams {
+            search: None,
+            filters: LibraryMenuFilters {
+                sort_column: Some(sort_column.to_string()),
+                sort_descending,
+                ..Default::default()
+            },
+            skip: 0,
+            take: 50,
+        };
+
+        let ascending = load_songs_page(&params("time", false)).unwrap();
+        assert_eq!(
+            ascending
+                .processed
+                .iter()
+                .map(|s| s.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Short", "Long"]
+        );
+
+        let descending = load_songs_page(&params("time", true)).unwrap();
+        assert_eq!(
+            descending
+                .processed
+                .iter()
+                .map(|s| s.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Long", "Short"]
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sorting_by_status_ranks_not_analyzed_before_failed() {
+        let root = temp_root("sort-status");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+
+        let mut untouched = analyzed_song(&root, "untouched-song", "Untouched");
+        untouched.is_analyzed = false;
+        let failed = analyzed_song(&root, "failed-status-song", "FailedStatus");
+        super::super::songs::replace_all_songs_sorted(&[untouched, failed]).unwrap();
+        super::super::analysis_queue_upsert_row(
+            "failed-status-song",
+            "failed",
+            None,
+            Some("worker_failed: example"),
+        )
+        .unwrap();
+
+        let params = LoadSongsParams {
+            search: None,
+            filters: LibraryMenuFilters {
+                sort_column: Some("status".to_string()),
+                sort_descending: false,
+                ..Default::default()
+            },
+            skip: 0,
+            take: 50,
+        };
+        let store = load_songs_page(&params).unwrap();
+        assert_eq!(
+            store
+                .processed
+                .iter()
+                .map(|s| s.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Untouched", "FailedStatus"]
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

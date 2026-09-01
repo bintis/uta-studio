@@ -406,7 +406,6 @@ pub(super) fn spawn_workflow_sidebar(
                 width: px(WORKFLOW_SIDEBAR_WIDTH),
                 min_width: px(252),
                 min_height: vh(60.0),
-                height: percent(100),
                 flex_shrink: 0.0,
                 align_self: AlignSelf::Stretch,
                 flex_direction: FlexDirection::Column,

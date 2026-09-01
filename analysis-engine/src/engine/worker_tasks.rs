@@ -24,11 +24,17 @@ pub(super) fn run_openvino_cleanup(
             model_id: spec.model_id.to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
-            config: serde_json::json!({
-                "model_path": task.model_path,
-                "backend": task.backend,
-                "semantic_output": spec.semantic_output
-            }),
+            config: {
+                let mut config = serde_json::json!({
+                    "model_path": task.model_path,
+                    "backend": task.backend,
+                    "semantic_output": spec.semantic_output
+                });
+                if let Some(device_class) = task.device_class {
+                    config["device_class"] = serde_json::Value::from(device_class);
+                }
+                config
+            },
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,

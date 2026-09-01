@@ -125,8 +125,8 @@ fn audio_model_status_from_details(
         .to_string(),
         operation: operation.to_string(),
         runner: match model_id {
-            "bs_roformer_leap_xe90_vocals" => "native_ggml",
-            "bs_polarformer_public_instrumental" | "jbm555_cectc_80" => "native_openvino",
+            "bs_roformer_leap_xe90_vocals" | "bs_polarformer_public_instrumental" => "native_ggml",
+            "jbm555_cectc_80" => "native_openvino",
             _ => "native_roformer",
         }
         .to_string(),

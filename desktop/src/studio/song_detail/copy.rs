@@ -44,26 +44,31 @@ pub(crate) fn spawn_detail_heading_with_action(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(56),
-                padding: UiRect::axes(px(16), px(10)),
+                min_height: px(60),
+                padding: UiRect::axes(px(16), px(11)),
                 align_items: AlignItems::Center,
+                flex_wrap: FlexWrap::Wrap,
                 column_gap: px(12),
+                row_gap: px(8),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
-            BorderColor::all(theme.border.with_alpha(0.5)),
+            BackgroundColor(theme.background.with_alpha(0.18)),
+            BorderColor::all(theme.border.with_alpha(0.46)),
         ))
         .with_children(|header| {
             header
                 .spawn(Node {
-                    min_width: px(0),
+                    min_width: px(180),
+                    flex_basis: px(240),
                     flex_grow: 1.0,
                     flex_direction: FlexDirection::Column,
+                    row_gap: px(2),
                     ..default()
                 })
                 .with_children(|copy| {
-                    spawn_text(copy, font.clone(), eyebrow, 8.0, theme.primary);
-                    spawn_text(copy, font.clone(), title, 13.0, theme.foreground);
+                    spawn_text(copy, font.clone(), eyebrow, 7.5, theme.primary);
+                    spawn_text(copy, font.clone(), title, 14.0, theme.foreground);
                 });
             if let Some((label, action)) = action {
                 spawn_compact_action_button(header, font, theme, label, action);
@@ -90,15 +95,18 @@ pub(crate) fn spawn_song_detail_section_card(
         .spawn((
             Node {
                 min_width: px(min_width),
+                max_width: percent(100),
                 flex_basis: px(min_width),
                 flex_grow: 1.0,
+                flex_shrink: 1.0,
                 flex_direction: FlexDirection::Column,
+                overflow: Overflow::clip(),
                 border: UiRect::all(px(1)),
                 border_radius: studio_card_radius(),
                 ..default()
             },
-            studio_card_background(theme),
-            studio_card_border(theme),
+            BackgroundColor(theme.card.with_alpha(0.30)),
+            BorderColor::all(theme.border.with_alpha(0.44)),
         ))
         .with_children(build);
 }
@@ -113,17 +121,177 @@ pub(crate) fn spawn_detail_value(
     parent
         .spawn((
             Node {
-                min_height: px(48),
-                padding: UiRect::axes(px(14), px(10)),
-                flex_direction: FlexDirection::Column,
+                width: percent(100),
+                min_height: px(44),
+                align_items: AlignItems::Center,
+                flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::axes(px(14), px(9)),
+                column_gap: px(12),
+                row_gap: px(4),
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
-            BorderColor::all(theme.border.with_alpha(0.3)),
+            BorderColor::all(theme.border.with_alpha(0.28)),
         ))
         .with_children(|row| {
-            spawn_text(row, font.clone(), label, 9.0, theme.muted_foreground);
-            spawn_wrapped_text(row, font, value, 11.0, theme.foreground);
+            row.spawn(Node {
+                width: px(118),
+                flex_shrink: 0.0,
+                ..default()
+            })
+            .with_children(|label_node| {
+                spawn_text(label_node, font.clone(), label, 7.8, theme.muted_foreground);
+            });
+            row.spawn(Node {
+                min_width: px(150),
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|value_node| {
+                spawn_bounded_wrapped_text(value_node, font, value, 10.5, theme.foreground);
+            });
+        });
+}
+
+pub(crate) fn spawn_song_detail_action_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    action: Option<(impl Into<String>, UiAction)>,
+) {
+    let label = label.into();
+    let description = description.into();
+    let action = action.map(|(label, action)| (label.into(), action));
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(66),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::axes(px(14), px(10)),
+                column_gap: px(14),
+                row_gap: px(8),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.32)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(170),
+                flex_basis: px(220),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(3),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(copy, font.clone(), label, 10.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 8.6, theme.muted_foreground);
+            });
+            if let Some((label, action)) = action {
+                row.spawn(Node {
+                    min_width: px(124),
+                    max_width: px(184),
+                    flex_basis: px(148),
+                    flex_grow: 0.0,
+                    margin: UiRect::top(px(1)),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                })
+                .with_children(|control| {
+                    spawn_compact_action_button(control, font, theme, label, action);
+                });
+            }
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_song_detail_shift_row(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    value: impl Into<String>,
+    decrement: UiAction,
+    increment: UiAction,
+) {
+    let label = label.into();
+    let description = description.into();
+    let value = value.into();
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                min_height: px(66),
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexStart,
+                flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::axes(px(14), px(10)),
+                column_gap: px(14),
+                row_gap: px(8),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(theme.border.with_alpha(0.32)),
+        ))
+        .with_children(|row| {
+            row.spawn(Node {
+                min_width: px(170),
+                flex_basis: px(220),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(3),
+                ..default()
+            })
+            .with_children(|copy| {
+                spawn_text(copy, font.clone(), label, 10.5, theme.foreground);
+                spawn_wrapped_text(copy, font.clone(), description, 8.6, theme.muted_foreground);
+            });
+            row.spawn(Node {
+                min_width: px(142),
+                flex_basis: px(142),
+                flex_grow: 0.0,
+                margin: UiRect::top(px(1)),
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            })
+            .with_children(|control_column| {
+                control_column
+                    .spawn((
+                        Node {
+                            width: px(142),
+                            height: px(34),
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(px(1)),
+                            border_radius: studio_control_radius(),
+                            ..default()
+                        },
+                        BackgroundColor(theme.background.with_alpha(0.34)),
+                        BorderColor::all(theme.border.with_alpha(0.42)),
+                    ))
+                    .with_children(|control| {
+                        spawn_text_button(control, font.clone(), theme, "−", 15.0, decrement);
+                        control
+                            .spawn(Node {
+                                min_width: px(68),
+                                flex_grow: 1.0,
+                                height: percent(100),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                ..default()
+                            })
+                            .with_children(|value_node| {
+                                spawn_text(value_node, font.clone(), value, 10.0, theme.foreground);
+                            });
+                        spawn_text_button(control, font, theme, "+", 15.0, increment);
+                    });
+            });
         });
 }
 

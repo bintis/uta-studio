@@ -269,10 +269,11 @@ impl SupervisedWorker {
                     if artifact.trim().is_empty() || media_type.trim().is_empty() {
                         return Err(protocol_error("worker output declaration is invalid"));
                     }
-                    lifecycle.artifact(&artifact);
+                    let confined_path = confined_output(&output_root, &path)?;
+                    lifecycle.artifact_with_path(&artifact, confined_path.to_string_lossy());
                     outputs.push(NativeTaskOutput {
                         artifact,
-                        path: confined_output(&output_root, &path)?,
+                        path: confined_path,
                         media_type,
                     });
                 }

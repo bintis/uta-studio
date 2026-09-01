@@ -187,13 +187,11 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
             .parameters
             .get("instrumental_model_id")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|model| {
-                matches!(
-                    model,
-                    "bs_roformer_vocals_ep317" | "melband_roformer_inst_v2"
-                )
-            })
+            == Some("bs_roformer_vocals_ep317")
         {
+            // EP317 was retired as a Catalog resource outright (never a
+            // valid instrumental role); there is no strategy to preserve it
+            // under, so it collapses to the current PolarFormer default.
             separation.parameters.insert(
                 "instrumental_model_id".to_string(),
                 serde_json::Value::String("bs_polarformer_public_instrumental".to_string()),
@@ -209,6 +207,14 @@ pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String
                     Some("bs_roformer_leap_xe90_vocals"),
                     Some("bs_polarformer_public_instrumental") | None,
                 ) => Some(super::SeparationStrategyV1::IndependentSpecialists),
+                // Inst V2 remains a real, selectable instrumental route (Task
+                // 23 policy: PolarFormer is not chosen as instrumental truth
+                // solely by qualification), so a legacy workflow that had it
+                // explicitly selected keeps that choice rather than being
+                // silently switched to PolarFormer.
+                (Some("bs_roformer_leap_xe90_vocals"), Some("melband_roformer_inst_v2")) => {
+                    Some(super::SeparationStrategyV1::IndependentSpecialistsInstV2)
+                }
                 _ => {
                     return Err(
                         "legacy Vocal/BGM providers do not map to an executable typed strategy"

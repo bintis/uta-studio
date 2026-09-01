@@ -150,7 +150,7 @@ fn step_four_is_selector_only_and_keeps_saved_unavailable_ai_visible() {
 #[test]
 fn separation_picker_exposes_only_typed_executable_strategies() {
     let options = app_core::separation_strategy_options();
-    assert_eq!(options.len(), 1);
+    assert_eq!(options.len(), 3);
     let option = &options[0];
     assert_eq!(
         option.strategy,
@@ -163,6 +163,34 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     );
     assert_eq!(
         option.executions[1].provider_id,
+        "bs_polarformer_public_instrumental"
+    );
+    let inst_v2_option = &options[1];
+    assert_eq!(
+        inst_v2_option.strategy,
+        app_core::SeparationStrategyV1::IndependentSpecialistsInstV2
+    );
+    assert_eq!(inst_v2_option.executions.len(), 2);
+    assert_eq!(
+        inst_v2_option.executions[0].provider_id,
+        "bs_roformer_leap_xe90_vocals"
+    );
+    assert_eq!(
+        inst_v2_option.executions[1].provider_id,
+        "melband_roformer_inst_v2"
+    );
+    let polarformer_both_option = &options[2];
+    assert_eq!(
+        polarformer_both_option.strategy,
+        app_core::SeparationStrategyV1::PolarformerBoth
+    );
+    assert_eq!(polarformer_both_option.executions.len(), 2);
+    assert_eq!(
+        polarformer_both_option.executions[0].provider_id,
+        "bs_polarformer_public_instrumental"
+    );
+    assert_eq!(
+        polarformer_both_option.executions[1].provider_id,
         "bs_polarformer_public_instrumental"
     );
     let mod_source = include_str!("mod.rs");

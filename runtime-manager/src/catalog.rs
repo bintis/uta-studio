@@ -465,6 +465,7 @@ impl ResourceCatalog {
                 "melband_roformer_harmony",
                 "melband_roformer_denoise_aufr33",
                 "melband_roformer_dereverb_anvuew",
+                "bs_polarformer_public_instrumental",
             ]
             .into_iter()
             .map(str::to_string)

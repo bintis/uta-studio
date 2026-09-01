@@ -11,7 +11,7 @@ pub(crate) fn update_navigation_focus_visuals(
     }
     for (entity, mut outline) in &mut buttons {
         outline.color = if focus_visible.0 && focus.get() == Some(entity) {
-            theme.primary.with_alpha(0.58)
+            theme.primary.with_alpha(0.88)
         } else {
             Color::NONE
         };

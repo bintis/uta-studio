@@ -1,12 +1,20 @@
 #include "uta_studio/roformer_runtime.h"
 #include "uta_studio/audio.h"
 #include "uta_studio/diagnostics.h"
+#include <vulkan/vulkan.h>
 #include <iostream>
 #include <string>
 #include <chrono>
 #include <cstdlib>
 #include <sstream>
 #include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace {
 
@@ -93,6 +101,125 @@ std::string SecondsSince(std::chrono::steady_clock::time_point start) {
     return stream.str();
 }
 
+std::string JsonEscape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (char c : value) {
+        if (c == '"' || c == '\\') {
+            escaped += '\\';
+        }
+        escaped += c;
+    }
+    return escaped;
+}
+
+const char* VulkanDeviceKind(VkPhysicalDeviceType type) {
+    switch (type) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "gpu";
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrated_gpu";
+        case VK_PHYSICAL_DEVICE_TYPE_CPU: return "cpu";
+        default: return "other";
+    }
+}
+
+#if defined(_WIN32)
+using LibraryHandle = HMODULE;
+LibraryHandle LoadVulkanLoader() { return ::LoadLibraryA("vulkan-1.dll"); }
+void* LoadSymbol(LibraryHandle handle, const char* name) {
+    return reinterpret_cast<void*>(::GetProcAddress(handle, name));
+}
+void UnloadVulkanLoader(LibraryHandle handle) { ::FreeLibrary(handle); }
+#else
+using LibraryHandle = void*;
+// libggml-vulkan.so.0 already depends on this exact soname, so it is either
+// already resident in this process (the common case: ggml-vulkan is always
+// required by this CLI) or resolvable through the loader's normal search --
+// this command never assumes or requires a specific installed path.
+LibraryHandle LoadVulkanLoader() { return ::dlopen("libvulkan.so.1", RTLD_NOW); }
+void* LoadSymbol(LibraryHandle handle, const char* name) { return ::dlsym(handle, name); }
+void UnloadVulkanLoader(LibraryHandle handle) { ::dlclose(handle); }
+#endif
+
+// Enumerates physical devices through our own minimal Vulkan instance rather
+// than ggml's, since ggml-vulkan.h only exposes a device count and a name
+// string -- no VkPhysicalDeviceType. This relies on vkEnumeratePhysicalDevices
+// returning the same ICD-defined order every call in this process, which is
+// also what lets ggml_backend_vk_init(index) address the same physical device
+// this command lists at that index. The loader is resolved dynamically
+// (rather than linked) so this executable carries no build-time Vulkan
+// library dependency beyond what ggml-vulkan already requires.
+int ListVulkanDevices() {
+    using PFN_vkCreateInstance = VkResult (VKAPI_PTR *)(
+        const VkInstanceCreateInfo*, const VkAllocationCallbacks*, VkInstance*);
+    using PFN_vkDestroyInstance = void (VKAPI_PTR *)(VkInstance, const VkAllocationCallbacks*);
+    using PFN_vkEnumeratePhysicalDevices = VkResult (VKAPI_PTR *)(
+        VkInstance, uint32_t*, VkPhysicalDevice*);
+    using PFN_vkGetPhysicalDeviceProperties = void (VKAPI_PTR *)(
+        VkPhysicalDevice, VkPhysicalDeviceProperties*);
+
+    LibraryHandle loader = LoadVulkanLoader();
+    if (!loader) {
+        std::cerr << "Error: could not load the Vulkan loader for device enumeration" << std::endl;
+        return 1;
+    }
+    auto create_instance = reinterpret_cast<PFN_vkCreateInstance>(
+        LoadSymbol(loader, "vkCreateInstance"));
+    auto destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(
+        LoadSymbol(loader, "vkDestroyInstance"));
+    auto enumerate_physical_devices = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        LoadSymbol(loader, "vkEnumeratePhysicalDevices"));
+    auto get_physical_device_properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+        LoadSymbol(loader, "vkGetPhysicalDeviceProperties"));
+    if (!create_instance || !destroy_instance || !enumerate_physical_devices
+        || !get_physical_device_properties) {
+        std::cerr << "Error: the Vulkan loader is missing a required entry point" << std::endl;
+        UnloadVulkanLoader(loader);
+        return 1;
+    }
+
+    VkApplicationInfo app_info{};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "uta-roformer-runtime";
+    app_info.apiVersion = VK_API_VERSION_1_1;
+
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app_info;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
+        std::cerr << "Error: failed to create a Vulkan instance for device enumeration" << std::endl;
+        UnloadVulkanLoader(loader);
+        return 1;
+    }
+
+    uint32_t device_count = 0;
+    enumerate_physical_devices(instance, &device_count, nullptr);
+    std::vector<VkPhysicalDevice> devices(device_count);
+    if (device_count > 0) {
+        enumerate_physical_devices(instance, &device_count, devices.data());
+    }
+
+    std::ostringstream out;
+    out << "[";
+    for (uint32_t i = 0; i < device_count; ++i) {
+        VkPhysicalDeviceProperties properties{};
+        get_physical_device_properties(devices[i], &properties);
+        if (i > 0) {
+            out << ",";
+        }
+        out << "{\"index\":" << i
+            << ",\"name\":\"" << JsonEscape(properties.deviceName) << "\""
+            << ",\"kind\":\"" << VulkanDeviceKind(properties.deviceType) << "\"}";
+    }
+    out << "]";
+    std::cout << out.str() << std::endl;
+
+    destroy_instance(instance, nullptr);
+    UnloadVulkanLoader(loader);
+    return 0;
+}
+
 } // namespace
 
 void print_usage(const char* program_name) {
@@ -110,6 +237,7 @@ void print_usage(const char* program_name) {
     std::cerr << "  --vulkan-fast                 Restore async Vulkan and keep durable stage logs" << std::endl;
     std::cerr << "  --serial-pipeline             Run CPU preprocess, GPU compute, and CPU postprocess in order" << std::endl;
     std::cerr << "  --machine-progress            Emit exact completed/total overlap-add chunk records" << std::endl;
+    std::cerr << "  --list-vulkan-devices         Print JSON [{index,name,kind}] and exit; no model needed" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
 }
 
@@ -129,12 +257,15 @@ int main(int argc, char* argv[]) {
     bool machine_progress = false;
     std::string diagnostic_log_path;
 
-    // Check for help flag first
+    // Check for flags that need no model/input/output positional args first.
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
+        }
+        if (arg == "--list-vulkan-devices") {
+            return ListVulkanDevices();
         }
     }
 

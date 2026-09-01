@@ -266,7 +266,17 @@ fn run_task(
             "melband_roformer_denoise_aufr33" => "clean_lead_vocal",
             "melband_roformer_dereverb_anvuew" => "dereverbed_vocal",
             "melband_roformer_inst_v2" => "instrumental",
-            "bs_polarformer_public_instrumental" => "instrumental",
+            "bs_polarformer_public_instrumental" => {
+                if config
+                    .get("semantic_output")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("guide_vocals")
+                {
+                    "guide_vocals"
+                } else {
+                    "instrumental"
+                }
+            }
             _ => "pitch_evidence",
         },
         path: &output,

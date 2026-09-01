@@ -51,6 +51,11 @@ pub struct AnalysisLifecycleFrameWireV1 {
     pub worker_task_id: Option<String>,
     #[serde(default)]
     pub artifact: Option<String>,
+    /// Present only alongside `artifact`, and only when the Engine
+    /// considered it a real file the caller might reuse on a future run
+    /// (see `analysis-engine`'s `LifecycleNodeGuard::artifact_with_path`).
+    #[serde(default)]
+    pub path: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
     pub event_at_ms: i64,

@@ -175,8 +175,22 @@ pub enum SeparationStrategyV1 {
     /// Legacy serialized value. Loading maps it onto the current independent
     /// Leap XE90 + public PolarFormer strategy.
     Ep317VocalResidual,
-    /// Independent role-specialized native invocations.
+    /// Independent role-specialized native invocations: Leap XE90 vocals +
+    /// public PolarFormer instrumental (GGML/Vulkan; mix-minus-vocals, since
+    /// the checkpoint's single trained stem is vocals, not instrumental).
     IndependentSpecialists,
+    /// Independent role-specialized native invocations: Leap XE90 vocals +
+    /// MelBand-RoFormer Inst V2 instrumental. Retained as a selectable
+    /// alternative per Task 23 policy: PolarFormer is not chosen as
+    /// instrumental truth solely by qualification -- Inst V2 stays a real,
+    /// user-selectable option pending broader A/B evidence.
+    IndependentSpecialistsInstV2,
+    /// PolarFormer serves both roles from its own single trained stem:
+    /// the checkpoint's raw vocal output is published as GuideVocals, and
+    /// the mix-minus-vocals residual is published as Instrumental. Two
+    /// independent native invocations of the same model (not one dual-
+    /// output execution), matching the existing per-role dispatch shape.
+    PolarformerBoth,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

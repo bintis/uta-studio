@@ -324,10 +324,10 @@ pub(crate) fn spawn_source_file_row(
         .spawn((
             Node {
                 width: percent(100),
-                min_height: px(82),
+                min_height: px(64),
                 flex_shrink: 0.0,
-                align_items: AlignItems::FlexStart,
-                padding: UiRect::axes(px(20), px(16)),
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(px(14), px(10)),
                 column_gap: px(12),
                 border: UiRect::bottom(px(1)),
                 ..default()
@@ -344,23 +344,23 @@ pub(crate) fn spawn_source_file_row(
                 ..default()
             })
             .with_children(|copy| {
-                spawn_text(copy, font.clone(), "Source file", 12.0, theme.foreground);
+                spawn_text(copy, font.clone(), "Source file", 10.5, theme.foreground);
                 copy.spawn((
                     Text::new(path.to_string_lossy().into_owned()),
-                    ui_text_font(font.clone(), 9.0),
+                    ui_text_font(font.clone(), 8.0),
                     TextColor(theme.muted_foreground),
                     TextLayout::no_wrap(),
                 ));
             });
             row.spawn(Node {
-                width: px(112),
+                width: px(96),
                 margin: UiRect::top(px(2)),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::FlexEnd,
                 ..default()
             })
             .with_children(|action| {
-                spawn_action_button(
+                spawn_compact_action_button(
                     action,
                     font,
                     theme,

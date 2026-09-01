@@ -1,7 +1,8 @@
-//! Discoverable canvas chrome for the Advanced Graph viewport: the
-//! Fit/Zoom/Follow control cluster, a compact status legend, and the
-//! pan/zoom hint. All three are absolutely-positioned overlays inside the
-//! viewport so the canvas itself keeps the full available height (§12).
+//! Discoverable canvas chrome for the Advanced Graph viewport. The pan/zoom
+//! hint is an absolutely-positioned overlay inside the viewport so the
+//! canvas itself keeps the full available height (§12). The Fit/Zoom/Follow
+//! control cluster instead renders inline in the context bar above the
+//! canvas, next to the read-only disclaimer.
 
 use super::*;
 use crate::studio::*;
@@ -26,7 +27,7 @@ fn spawn_viewport_control_button(
                 border_radius: BorderRadius::all(px(4.0)),
                 ..default()
             },
-            BackgroundColor(theme.background.with_alpha(0.32)),
+            BackgroundColor(theme.background.with_alpha(theme.background.alpha() * 0.32)),
         ))
         .with_children(|button| {
             spawn_text(button, font, label, 9.0, theme.foreground);
@@ -53,7 +54,7 @@ fn spawn_follow_toggle(
         BackgroundColor(if active {
             theme.primary.with_alpha(0.16)
         } else {
-            theme.background.with_alpha(0.32)
+            theme.background.with_alpha(theme.background.alpha() * 0.32)
         }),
         BorderColor::all(if active {
             theme.primary.with_alpha(0.6)
@@ -86,7 +87,11 @@ fn spawn_follow_toggle(
     });
 }
 
-/// Bottom-right cluster: `[Fit] [-] [zoom%] [+] [Follow]`. Zoom buttons and
+/// `[Fit] [-] [zoom%] [+] [Follow]`, inline in the context bar next to the
+/// read-only disclaimer (it used to float over the canvas as its own
+/// pill, which kept a fixed, near-opaque background regardless of the
+/// window's transparency setting -- moving it into the already-themed bar
+/// removes the need for that separate surface entirely). Zoom buttons and
 /// Fit dispatch the exact existing commands/systems
 /// (`AdjustAnalysisGraphZoom`, the `fit_analysis_graph_to_viewport` system
 /// via `FitAnalysisGraph`) rather than a second implementation.
@@ -99,22 +104,12 @@ pub(crate) fn spawn_analysis_graph_viewport_controls(
     follow_available: bool,
 ) {
     parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                right: px(10.0),
-                bottom: px(10.0),
-                align_items: AlignItems::Center,
-                column_gap: px(5.0),
-                padding: UiRect::axes(px(6.0), px(4.0)),
-                border: UiRect::all(px(1.0)),
-                border_radius: BorderRadius::MAX,
-                ..default()
-            },
-            BackgroundColor(theme.card.with_alpha(0.88)),
-            BorderColor::all(theme.border.with_alpha(0.5)),
-            ZIndex(20),
-        ))
+        .spawn(Node {
+            flex_shrink: 0.0,
+            align_items: AlignItems::Center,
+            column_gap: px(5.0),
+            ..default()
+        })
         .with_children(|controls| {
             spawn_viewport_control_button(
                 controls,
@@ -178,78 +173,7 @@ pub(crate) fn spawn_analysis_graph_pan_hint(
     ));
 }
 
-fn spawn_analysis_graph_legend_item(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-    label: &str,
-    accent: Color,
-) {
-    parent
-        .spawn(Node {
-            align_items: AlignItems::Center,
-            column_gap: px(4.0),
-            ..default()
-        })
-        .with_children(|item| {
-            item.spawn((
-                Node {
-                    width: px(7.0),
-                    height: px(7.0),
-                    flex_shrink: 0.0,
-                    border_radius: BorderRadius::MAX,
-                    ..default()
-                },
-                BackgroundColor(accent),
-            ));
-            spawn_text(item, font, label, 7.0, theme.muted_foreground);
-        });
-}
-
-/// Compact status-only overlay (§11). Category color already appears on
-/// every card's top accent strip/glyph/model text, so this legend does not
-/// repeat it -- repeating the same color for both category and status was
-/// the exact confusion the previous full-width legend caused.
-pub(crate) fn spawn_analysis_graph_legend(
-    parent: &mut ChildSpawnerCommands,
-    font: Handle<Font>,
-    theme: &StudioTheme,
-) {
-    parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                right: px(10.0),
-                top: px(10.0),
-                align_items: AlignItems::Center,
-                column_gap: px(9.0),
-                flex_wrap: FlexWrap::Wrap,
-                row_gap: px(4.0),
-                padding: UiRect::axes(px(8.0), px(5.0)),
-                border: UiRect::all(px(1.0)),
-                border_radius: BorderRadius::all(px(5.0)),
-                max_width: px(320.0),
-                ..default()
-            },
-            BackgroundColor(theme.card.with_alpha(0.82)),
-            BorderColor::all(theme.border.with_alpha(0.42)),
-            ZIndex(20),
-            Pickable::IGNORE,
-        ))
-        .with_children(|legend| {
-            // Same fixed status colors `spawn_workflow_graph_node` assigns
-            // to every card regardless of its own category, so the legend
-            // and the canvas always agree.
-            let complete = analysis_graph_category_accent(GraphNodeCategory::Output, theme);
-            for (label, accent) in [
-                ("Complete", complete),
-                ("Running", theme.primary),
-                ("Waiting", theme.muted_foreground),
-                ("Failed", theme.destructive),
-                ("Deferred", theme.editor_warning),
-                ("Not requested", theme.muted_foreground.with_alpha(0.6)),
-            ] {
-                spawn_analysis_graph_legend_item(legend, font.clone(), theme, label, accent);
-            }
-        });
-}
+// The status color key used to live here as a floating overlay on top of
+// the canvas; it now renders inline in the context bar above the canvas
+// (`spawn_context_bar_status_chip` in graph_summary.rs), next to the counts
+// it already shared status categories with -- see that module for why.

@@ -832,6 +832,7 @@ mod progress_tests {
             work_units_total: Some(total),
             worker_task_id: Some("rmvpe-task-7".to_string()),
             artifact: None,
+            path: None,
             message: Some("window inference".to_string()),
             event_at_ms: 1,
         }

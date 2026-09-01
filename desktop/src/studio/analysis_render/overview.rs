@@ -296,6 +296,115 @@ pub(crate) fn spawn_analysis_inspect_surface(
     spawn_analysis_session_surface(parent, font, session, theme, true);
 }
 
+fn analysis_audit_status_color(status: &str, theme: &StudioTheme) -> Color {
+    match status {
+        "COMPLETE" => theme.pitch_contour,
+        "RUNNING" => theme.primary,
+        "FAILED" | "CANCELLED" => theme.destructive,
+        "BYPASSED" => theme.editor_warning,
+        _ => theme.muted_foreground,
+    }
+}
+
+fn spawn_analysis_audit_section(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    eyebrow: &'static str,
+    title: &'static str,
+    detail: &'static str,
+    build: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(16)),
+                row_gap: px(10),
+                border: UiRect::all(px(1)),
+                border_radius: studio_card_radius(),
+                ..default()
+            },
+            studio_card_background(theme),
+            studio_card_border(theme),
+            studio_card_shadow(theme),
+        ))
+        .with_children(|card| {
+            spawn_text(card, font.clone(), eyebrow, 7.5, theme.primary);
+            spawn_text(card, font.clone(), title, 14.0, theme.foreground);
+            spawn_wrapped_text(card, font, detail, 8.5, theme.muted_foreground);
+            card.spawn((
+                Node {
+                    width: percent(100),
+                    height: px(1),
+                    ..default()
+                },
+                BackgroundColor(theme.border.with_alpha(0.32)),
+            ));
+            build(card);
+        });
+}
+
+fn spawn_analysis_audit_fact(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &'static str,
+    value: impl Into<String>,
+    accent: Color,
+    min_width: f32,
+) {
+    parent
+        .spawn((
+            Node {
+                min_width: px(min_width),
+                flex_basis: px(min_width + 34.0),
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(11)),
+                row_gap: px(4),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
+                ..default()
+            },
+            BackgroundColor(theme.background.with_alpha(0.26)),
+            BorderColor::all(theme.border.with_alpha(0.38)),
+        ))
+        .with_children(|fact| {
+            spawn_text(fact, font.clone(), label, 7.5, theme.muted_foreground);
+            spawn_bounded_wrapped_text(fact, font, value, 10.0, accent);
+        });
+}
+
+fn spawn_analysis_audit_callout(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    label: &'static str,
+    detail: impl Into<String>,
+    accent: Color,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(px(12), px(10)),
+                row_gap: px(3),
+                border: UiRect::all(px(1)),
+                border_radius: studio_control_radius(),
+                ..default()
+            },
+            BackgroundColor(accent.with_alpha(0.08)),
+            BorderColor::all(accent.with_alpha(0.28)),
+        ))
+        .with_children(|callout| {
+            spawn_text(callout, font.clone(), label, 7.5, accent);
+            spawn_bounded_wrapped_text(callout, font, detail, 9.0, theme.foreground);
+        });
+}
+
 fn spawn_analysis_session_surface(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -677,6 +786,8 @@ fn spawn_analysis_session_surface(
                         .map(|live| live.overall_progress.clamp(0, 100))
                 };
                 let current_label = (mode == AnalysisGraphMode::Live).then_some(operation);
+                let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
+                let follow_available = analysis_graph_follow_available(mode);
                 spawn_analysis_graph_context_bar(
                     session_card,
                     font.clone(),
@@ -685,6 +796,9 @@ fn spawn_analysis_session_surface(
                     overall_progress,
                     current_label,
                     counts,
+                    zoom,
+                    follow_available && session.analysis_graph_follow_enabled,
+                    follow_available,
                 );
 
                 let mut steps = std::collections::BTreeMap::new();
@@ -719,7 +833,6 @@ fn spawn_analysis_session_surface(
                     })
                     .collect::<Vec<_>>();
                 let edge_pairs = render_graph.edge_pairs();
-                let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
                 let routed = cached_canvas_routed_layout_with_specs(&specs, &edge_pairs);
                 let canvas_width = routed
                     .as_ref()
@@ -757,7 +870,6 @@ fn spawn_analysis_session_surface(
                         .node(&node_id)
                         .map(|_| compute_analysis_lineage(&edge_pairs, &node_id))
                 });
-                let follow_available = analysis_graph_follow_available(mode);
                 // Center the actual DAG in a full-page workspace and keep the
                 // legend attached. Run history stays in the Activity panel so
                 // this surface remains one fitted 1080p composition.
@@ -807,12 +919,15 @@ fn spawn_analysis_session_surface(
                                     justify_content: JustifyContent::FlexStart,
                                     align_items: AlignItems::FlexStart,
                                     overflow: Overflow::scroll(),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: studio_card_radius(),
                                     ..default()
                                 },
-                                studio_card_background(theme),
-                                studio_card_border(theme),
+                                // No card frame here (unlike other panels):
+                                // the DAG canvas fills the workspace and
+                                // should read as part of the app background,
+                                // not a boxed panel floating on top of it --
+                                // a bordered card looked mismatched against
+                                // the app chrome at high window transparency.
+                                BackgroundColor(Color::NONE),
                             ))
                             .with_children(|viewport| {
                                 viewport
@@ -1038,101 +1153,210 @@ fn spawn_analysis_session_surface(
                                     analysis.analysis_graph_follow_enabled = false;
                                 },
                             );
-                        // Overlays live outside the scrolling viewport so they
-                        // stay fixed in the frame instead of scrolling away
-                        // with the canvas content.
+                        // The pan hint stays a fixed overlay outside the
+                        // scrolling viewport so it never scrolls away with
+                        // the canvas content; the Fit/Zoom/Follow cluster
+                        // now lives in the context bar above the canvas
+                        // instead (§ its own doc comment).
                         spawn_analysis_graph_pan_hint(frame, font.clone(), theme);
-                        spawn_analysis_graph_viewport_controls(
-                            frame,
-                            font.clone(),
-                            theme,
-                            zoom,
-                            follow_available && session.analysis_graph_follow_enabled,
-                            follow_available,
-                        );
-                        spawn_analysis_graph_legend(frame, font.clone(), theme);
                     });
             }
 
             if inspect_only {
+                let status_color = analysis_audit_status_color(selected_status, theme);
+                let source_color = if viewing_history {
+                    theme.pitch_contour
+                } else {
+                    theme.primary
+                };
+                let (source_label, source_copy) = if viewing_history {
+                    (
+                        "Historical evidence",
+                        "This record is frozen from the selected analysis run. Current settings cannot rewrite it.",
+                    )
+                } else if task.live.is_some() {
+                    (
+                        "Live execution",
+                        "Runtime evidence updates as the selected node advances through this analysis run.",
+                    )
+                } else {
+                    (
+                        "Compiled plan",
+                        "This is the declared node contract. Runtime evidence will appear after execution starts.",
+                    )
+                };
+                let selected_capability = selected_node
+                    .and_then(|node| node.capability_id.as_deref())
+                    .unwrap_or("workflow");
+                let progress_copy = if selected_progress_is_reported {
+                    format!("{selected_progress}%")
+                } else {
+                    "Not reported".to_string()
+                };
+                let selected_input_copy = if selected_input.trim().is_empty() {
+                    "No declared input artifacts".to_string()
+                } else {
+                    selected_input.clone()
+                };
+                let selected_output_copy = if selected_output.trim().is_empty() {
+                    "No declared output artifacts".to_string()
+                } else {
+                    selected_output.clone()
+                };
+                let has_fallback =
+                    selected_device_fallback.is_some() || selected_backend_fallback.is_some();
+                let has_error = history_error.is_some();
+
                 session_card
                     .spawn((
                         Node {
                             width: percent(100),
                             flex_direction: FlexDirection::Column,
-                            padding: UiRect::all(px(16)),
-                            row_gap: px(12),
+                            padding: UiRect::all(px(18)),
+                            row_gap: px(11),
                             border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(7)),
+                            border_radius: studio_card_radius(),
                             ..default()
                         },
-                        BackgroundColor(theme.background.with_alpha(0.34)),
-                        BorderColor::all(theme.primary.with_alpha(0.38)),
+                        BackgroundColor(theme.card.with_alpha(0.58)),
+                        BorderColor::all(theme.primary.with_alpha(0.28)),
+                        studio_card_shadow(theme),
                     ))
-                    .with_children(|inspector| {
-                        inspector
-                            .spawn(Node {
-                                width: percent(100),
-                                align_items: AlignItems::Center,
-                                column_gap: px(10),
-                                flex_wrap: FlexWrap::Wrap,
-                                row_gap: px(5),
+                    .with_children(|hero| {
+                        hero.spawn(Node {
+                            width: percent(100),
+                            align_items: AlignItems::Center,
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: px(7),
+                            row_gap: px(6),
+                            ..default()
+                        })
+                        .with_children(|meta| {
+                            spawn_text(
+                                meta,
+                                font.clone(),
+                                "NODE AUDIT RECORD",
+                                7.5,
+                                theme.primary,
+                            );
+                            meta.spawn(Node {
+                                flex_grow: 1.0,
                                 ..default()
-                            })
-                            .with_children(|header| {
-                                spawn_text(
-                                    header,
-                                    font.clone(),
-                                    format!(
-                                        "STEP {:02} · {}",
-                                        selected_step,
-                                        selected_label.to_ascii_uppercase()
-                                    ),
-                                    9.0,
-                                    theme.primary,
-                                );
-                                header.spawn(Node {
-                                    flex_grow: 1.0,
-                                    ..default()
-                                });
-                                spawn_text(
-                                    header,
-                                    font.clone(),
-                                    if selected_progress_is_reported {
-                                        format!("{selected_status} · {selected_progress}%")
-                                    } else {
-                                        format!("{selected_status} · progress unavailable")
-                                    },
-                                    9.0,
-                                    if selected_status == "WAITING" {
-                                        theme.muted_foreground
-                                    } else {
-                                        theme.pitch_contour
-                                    },
-                                );
                             });
-                        spawn_wrapped_text(
-                            inspector,
+                            spawn_status_pill(
+                                meta,
+                                font.clone(),
+                                source_label,
+                                source_color,
+                            );
+                            spawn_status_pill(
+                                meta,
+                                font.clone(),
+                                selected_status,
+                                status_color,
+                            );
+                        });
+                        spawn_bounded_wrapped_text(
+                            hero,
                             font.clone(),
-                            selected_purpose,
+                            format!("Step {selected_step:02} · {selected_label}"),
+                            20.0,
+                            theme.foreground,
+                        );
+                        spawn_bounded_wrapped_text(
+                            hero,
+                            font.clone(),
+                            capability_product_label(selected_capability),
                             10.0,
                             theme.muted_foreground,
                         );
+                        hero.spawn((
+                            Node {
+                                width: percent(100),
+                                padding: UiRect::axes(px(9), px(7)),
+                                overflow: Overflow::clip(),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(7)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.background.with_alpha(0.28)),
+                            BorderColor::all(theme.border.with_alpha(0.34)),
+                            children![(
+                                Text::new(selected_node_id.to_string()),
+                                ui_text_font(font.clone(), 8.0),
+                                TextColor(theme.muted_foreground),
+                                TextLayout::no_wrap(),
+                            )],
+                        ));
                         spawn_wrapped_text(
-                            inspector,
+                            hero,
                             font.clone(),
+                            selected_purpose,
+                            9.5,
+                            theme.muted_foreground,
+                        );
+                        hero.spawn(Node {
+                            width: percent(100),
+                            align_items: AlignItems::Center,
+                            column_gap: px(8),
+                            ..default()
+                        })
+                        .with_children(|progress| {
+                            spawn_text(
+                                progress,
+                                font.clone(),
+                                "EXECUTION PROGRESS",
+                                7.5,
+                                theme.muted_foreground,
+                            );
+                            progress.spawn(Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            });
+                            spawn_text(
+                                progress,
+                                font.clone(),
+                                progress_copy,
+                                9.0,
+                                status_color,
+                            );
+                        });
+                        spawn_progress_bar(
+                            hero,
+                            theme,
+                            if selected_progress_is_reported {
+                                selected_progress
+                            } else {
+                                0
+                            },
+                            status_color,
+                        );
+                        spawn_analysis_audit_callout(
+                            hero,
+                            font.clone(),
+                            theme,
+                            "CURRENT OPERATION",
                             selected_operation,
-                            13.0,
-                            theme.foreground,
+                            status_color,
                         );
-                        spawn_text(
-                            inspector,
+                        spawn_wrapped_text(
+                            hero,
                             font.clone(),
-                            "RUNTIME DETAILS",
+                            source_copy,
                             8.0,
-                            theme.primary,
+                            theme.muted_foreground.with_alpha(0.78),
                         );
-                        inspector
+                    });
+
+                spawn_analysis_audit_section(
+                    session_card,
+                    font.clone(),
+                    theme,
+                    "01 · EXECUTION ROUTE",
+                    "How this node was resolved",
+                    "The actual implementation and compute route used for this attempt.",
+                    |section| {
+                        section
                             .spawn(Node {
                                 width: percent(100),
                                 flex_wrap: FlexWrap::Wrap,
@@ -1141,69 +1365,137 @@ fn spawn_analysis_session_surface(
                                 ..default()
                             })
                             .with_children(|facts| {
-                                // §7.4 lists 14 facts; ALGORITHM VERSION / CACHE
-                                // SIGNATURE / LAST ATTEMPT come from the active
-                                // artifact revision, FALLBACK from the same
-                                // route data the "current operation" banner
-                                // above already uses, ERROR from the selected
-                                // history run, DURATION from the same route's
-                                // real `started_at_ms`/`finished_at_ms`
-                                // (native worker progress frames, Phase 7's
-                                // "Duration 检查器字段" gap closed).
-                                let fact_rows: Vec<(&str, String)> = vec![
-                                    ("IMPLEMENTATION", selected_implementation.to_string()),
-                                    ("MODEL", selected_model.to_string()),
-                                    ("DEVICE", selected_actual_device.to_string()),
-                                    ("WORKER TASK", selected_worker_task_text.clone()),
-                                    ("INPUT", selected_input.to_string()),
-                                    ("OUTPUT", selected_output.to_string()),
-                                    ("DURATION", selected_duration_text.clone()),
-                                    ("FALLBACK", selected_fallback_text.clone()),
-                                    ("ERROR", selected_error_text.clone()),
-                                ];
-                                for (label, value) in fact_rows {
-                                    let value_color =
-                                        if label == "ERROR" && value != "None recorded" {
-                                            theme.destructive
-                                        } else if label == "FALLBACK" && value != "None" {
-                                            theme.editor_warning
-                                        } else {
-                                            theme.foreground
-                                        };
-                                    facts
-                                        .spawn((
-                                            Node {
-                                                min_width: px(205),
-                                                flex_basis: px(240),
-                                                flex_grow: 1.0,
-                                                flex_direction: FlexDirection::Column,
-                                                padding: UiRect::all(px(10)),
-                                                row_gap: px(3),
-                                                overflow: Overflow::clip(),
-                                                border: UiRect::all(px(1)),
-                                                border_radius: BorderRadius::all(px(4)),
-                                                ..default()
-                                            },
-                                            BackgroundColor(theme.card.with_alpha(0.34)),
-                                            BorderColor::all(theme.border.with_alpha(0.4)),
-                                        ))
-                                        .with_children(|fact| {
-                                            spawn_text(
-                                                fact,
-                                                font.clone(),
-                                                label,
-                                                7.0,
-                                                theme.muted_foreground,
-                                            );
-                                            spawn_bounded_wrapped_text(
-                                                fact,
-                                                font.clone(),
-                                                value,
-                                                9.0,
-                                                value_color,
-                                            );
-                                        });
-                                }
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "IMPLEMENTATION",
+                                    selected_implementation,
+                                    theme.foreground,
+                                    190.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "MODEL / ALGORITHM",
+                                    selected_model,
+                                    theme.primary,
+                                    190.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "ACTUAL COMPUTE",
+                                    selected_actual_device,
+                                    theme.pitch_contour,
+                                    170.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "WORKER TASK",
+                                    selected_worker_task_text.clone(),
+                                    theme.foreground,
+                                    210.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "DURATION",
+                                    selected_duration_text.clone(),
+                                    theme.foreground,
+                                    150.0,
+                                );
+                            });
+                    },
+                );
+
+                spawn_analysis_audit_section(
+                    session_card,
+                    font.clone(),
+                    theme,
+                    "02 · DATA CONTRACT",
+                    "Declared inputs and outputs",
+                    "Artifacts are shown by semantic type so the node can be audited independently of file paths.",
+                    |section| {
+                        section
+                            .spawn(Node {
+                                width: percent(100),
+                                flex_wrap: FlexWrap::Wrap,
+                                column_gap: px(9),
+                                row_gap: px(9),
+                                ..default()
+                            })
+                            .with_children(|facts| {
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "INPUT ARTIFACTS",
+                                    selected_input_copy,
+                                    theme.primary,
+                                    300.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "OUTPUT ARTIFACTS",
+                                    selected_output_copy,
+                                    theme.pitch_contour,
+                                    300.0,
+                                );
+                            });
+                    },
+                );
+
+                spawn_analysis_audit_section(
+                    session_card,
+                    font.clone(),
+                    theme,
+                    "03 · AUDIT TRAIL",
+                    "Fallbacks and failures",
+                    "Only recorded runtime evidence appears here; absence of evidence is never inferred as success.",
+                    |section| {
+                        section
+                            .spawn(Node {
+                                width: percent(100),
+                                flex_wrap: FlexWrap::Wrap,
+                                column_gap: px(9),
+                                row_gap: px(9),
+                                ..default()
+                            })
+                            .with_children(|facts| {
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "FALLBACK",
+                                    selected_fallback_text.clone(),
+                                    if has_fallback {
+                                        theme.editor_warning
+                                    } else {
+                                        theme.muted_foreground
+                                    },
+                                    260.0,
+                                );
+                                spawn_analysis_audit_fact(
+                                    facts,
+                                    font.clone(),
+                                    theme,
+                                    "SESSION ERROR",
+                                    selected_error_text.clone(),
+                                    if has_error {
+                                        theme.destructive
+                                    } else {
+                                        theme.muted_foreground
+                                    },
+                                    260.0,
+                                );
                             });
                         for (label, from, to, reason) in selected_device_fallback
                             .map(|(from, reason)| {
@@ -1214,90 +1506,45 @@ fn spawn_analysis_session_surface(
                                 ("MODEL FALLBACK", from, selected_implementation, reason)
                             }))
                         {
-                            spawn_wrapped_text(
-                                inspector,
+                            spawn_analysis_audit_callout(
+                                section,
                                 font.clone(),
+                                theme,
+                                label,
                                 format!(
-                                    "{label} · {} > {} · {reason}",
+                                    "{} → {} · {reason}",
                                     from.to_ascii_uppercase(),
                                     to.to_ascii_uppercase()
                                 ),
-                                9.0,
                                 theme.editor_warning,
                             );
                         }
                         if let Some(error) = history_error.as_deref() {
-                            spawn_wrapped_text(
-                                inspector,
+                            spawn_analysis_audit_callout(
+                                section,
                                 font.clone(),
-                                format!("SESSION ERROR · {error}"),
-                                9.0,
+                                theme,
+                                "RECORDED SESSION ERROR",
+                                error,
                                 theme.destructive,
                             );
                         }
-                    });
-
-                if let Some(live) = task.live.as_ref() {
-                    session_card
-                        .spawn(Node {
-                            width: percent(100),
-                            flex_wrap: FlexWrap::Wrap,
-                            column_gap: px(10),
-                            row_gap: px(10),
-                            ..default()
-                        })
-                        .with_children(|details| {
-                            let device_route = live
-                                .fallback_from
-                                .as_ref()
-                                .map(|from| {
-                                    format!(
-                                        "{} > {}",
-                                        from.to_ascii_uppercase(),
-                                        live.device.to_ascii_uppercase()
-                                    )
-                                })
-                                .unwrap_or_else(|| live.device.to_ascii_uppercase());
-                            for (label, value) in [
-                                ("IMPLEMENTATION", live.implementation.clone()),
-                                ("MODEL / ALGORITHM", live.model.clone()),
-                                ("ACTUAL COMPUTE ROUTE", device_route),
-                            ] {
-                                details
-                                    .spawn((
-                                        Node {
-                                            min_width: px(230),
-                                            flex_grow: 1.0,
-                                            flex_direction: FlexDirection::Column,
-                                            padding: UiRect::all(px(12)),
-                                            row_gap: px(3),
-                                            overflow: Overflow::clip(),
-                                            border: UiRect::all(px(1)),
-                                            border_radius: BorderRadius::all(px(4)),
-                                            ..default()
-                                        },
-                                        BackgroundColor(theme.background.with_alpha(0.26)),
-                                        BorderColor::all(theme.border.with_alpha(0.45)),
-                                    ))
-                                    .with_children(|item| {
-                                        spawn_text(
-                                            item,
-                                            font.clone(),
-                                            label,
-                                            8.0,
-                                            theme.muted_foreground,
-                                        );
-                                        spawn_bounded_wrapped_text(
-                                            item,
-                                            font.clone(),
-                                            value,
-                                            10.0,
-                                            theme.foreground,
-                                        );
-                                    });
-                            }
-                        });
-                }
+                        if !has_fallback && !has_error {
+                            spawn_analysis_audit_callout(
+                                section,
+                                font.clone(),
+                                theme,
+                                "NO EXCEPTION RECORDED",
+                                if matches!(selected_status, "WAITING" | "RUNNING") {
+                                    "No fallback or session error has been recorded yet."
+                                } else {
+                                    "This node has no recorded fallback or session error for the selected run."
+                                },
+                                theme.pitch_contour,
+                            );
+                        }
+                    },
+                );
             }
         });
 }

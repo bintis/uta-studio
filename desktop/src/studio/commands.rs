@@ -4,9 +4,8 @@ use bevy::prelude::Component;
 
 use super::{
     ArtifactAuditionSlot, CacheClearScope, EditorAction, EditorDockSelectKind, LibraryFacet,
-    LibrarySelectKind, LibraryView, ProblemsFilter, SettingsSelectKind, SettingsTab,
-    TranscriptBoundaryEdge, TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle,
-    WordSelection,
+    LibraryView, ProblemsFilter, SettingsSelectKind, SettingsTab, TranscriptBoundaryEdge,
+    TranscriptBoundaryTarget, UiDirtyRegion, WaveformSource, WaveformStyle, WordSelection,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +34,9 @@ pub(crate) enum AppCommand {
 pub(crate) enum LibraryCommand {
     SetLibraryView(LibraryView),
     SetLibraryFacet(LibraryFacet),
+    /// One of "artist", "album", "time", "status". Clicking the
+    /// already-active column flips direction instead of resetting it.
+    SetLibrarySort(&'static str),
     LoadMoreSongs,
     ApplyLibrarySearch,
     ClearLibrarySearch,
@@ -42,8 +44,6 @@ pub(crate) enum LibraryCommand {
     ToggleExportAllMenu,
     ExportAllUtz,
     ExportAllUltraStar,
-    OpenLibrarySelect(LibrarySelectKind),
-    SelectLibraryValue(LibrarySelectKind, String),
     AnalyzeAll,
     RescanLibrary,
     ChooseFolder,
@@ -101,6 +101,7 @@ pub(crate) enum SettingsCommand {
     ConfirmSetup,
     ToggleTheme,
     ToggleWindowTransparency,
+    AdjustWindowOpacity(i8),
     AdjustUiFontScale(i8),
     ToggleAutoAnalyze,
     RestoreAnalysisDefaults,
@@ -261,7 +262,9 @@ impl UiCommand {
             ) => UiDirtyRegion::Chrome,
             Self::Library(_) => UiDirtyRegion::Library,
             Self::Settings(
-                SettingsCommand::ToggleTheme | SettingsCommand::ToggleWindowTransparency,
+                SettingsCommand::ToggleTheme
+                | SettingsCommand::ToggleWindowTransparency
+                | SettingsCommand::AdjustWindowOpacity(_),
             ) => UiDirtyRegion::Chrome,
             Self::Settings(_) => UiDirtyRegion::Settings,
             // This command changes the top-level route.  Rebuilding only the
@@ -390,6 +393,7 @@ mod tests {
         for command in [
             SettingsCommand::ToggleTheme,
             SettingsCommand::ToggleWindowTransparency,
+            SettingsCommand::AdjustWindowOpacity(1),
         ] {
             assert_eq!(
                 UiCommand::Settings(command).dirty_region(),

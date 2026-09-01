@@ -53,3 +53,13 @@ add_executable(uta-roformer-runtime
 )
 target_include_directories(uta-roformer-runtime PRIVATE src third_party)
 target_link_libraries(uta-roformer-runtime PRIVATE uta_roformer_runtime)
+
+# --list-vulkan-devices enumerates physical devices directly (ggml-vulkan.h
+# exposes a device count and name but not VkPhysicalDeviceType). It resolves
+# the loader with dlopen/LoadLibrary at runtime rather than linking it, so
+# this only needs the Vulkan headers at build time -- not a library to link,
+# and not a dependency on ggml-vulkan's internal, unexported find_package
+# target.
+find_package(Vulkan REQUIRED)
+target_include_directories(uta-roformer-runtime PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_link_libraries(uta-roformer-runtime PRIVATE ${CMAKE_DL_LIBS})

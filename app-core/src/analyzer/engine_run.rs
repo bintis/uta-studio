@@ -373,6 +373,19 @@ fn apply_engine_lifecycle_event(
     event: AnalysisLifecycleFrameWireV1,
 ) {
     append_analysis_lifecycle_log(log_path, &event);
+    // Cache a Step 1 audio-chain stem the instant its own worker succeeds,
+    // before the lock below and independent of whether this run's later
+    // stages ultimately fail -- see `persist_cacheable_stem`'s doc comment
+    // for why that independence is the entire point. Never touch the live
+    // `LIVE_ANALYSIS` lock for this: capturing/hashing a stem file is real
+    // I/O and must not block every other snapshot read/write on its
+    // duration.
+    if event.frame_type == "artifact"
+        && let (Some(artifact), Some(path)) = (event.artifact.as_deref(), event.path.as_deref())
+        && let Some(cache) = CacheDir::try_new()
+    {
+        crate::chain_cache::persist_cacheable_stem(&cache.path, file_hash, artifact, Path::new(path));
+    }
     let weighted_overall = update_engine_overall_progress(file_hash, &event);
     let presentation_node_id = event
         .presentation_node_id
@@ -1930,6 +1943,7 @@ mod tests {
                 work_units_total: work_units.map(|(_, total)| total),
                 worker_task_id: work_units.map(|_| "rmvpe-task-7".to_string()),
                 artifact: artifact.map(str::to_string),
+                path: None,
                 message: None,
                 event_at_ms: 1,
             }

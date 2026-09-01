@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_separation_fields_migrate_to_the_independent_strategy() {
+    fn legacy_separation_fields_preserve_an_explicit_inst_v2_choice() {
         let mut stored = StoredWorkflow {
             definition: default_workflow("legacy-song"),
             layout: WorkflowLayout::default(),
@@ -413,6 +413,34 @@ mod tests {
             "instrumental_model_id".to_string(),
             serde_json::json!("melband_roformer_inst_v2"),
         );
+        migrate_stored_workflow(&mut stored).unwrap();
+        let separation = stored
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.instance_id.as_str() == "vocal_bgm_split")
+            .unwrap();
+        assert_eq!(
+            separation.separation_strategy,
+            Some(SeparationStrategyV1::IndependentSpecialistsInstV2)
+        );
+        assert!(!separation.parameters.contains_key("instrumental_model_id"));
+    }
+
+    #[test]
+    fn legacy_separation_fields_without_an_explicit_choice_migrate_to_polarformer() {
+        let mut stored = StoredWorkflow {
+            definition: default_workflow("legacy-song"),
+            layout: WorkflowLayout::default(),
+            updated_at_ms: 0,
+        };
+        let separation = stored
+            .definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.instance_id.as_str() == "vocal_bgm_split")
+            .unwrap();
+        separation.separation_strategy = None;
         migrate_stored_workflow(&mut stored).unwrap();
         let separation = stored
             .definition
