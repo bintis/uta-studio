@@ -21,7 +21,9 @@ pub use advanced_notes::{
     AdvancedRawTechniqueV1, DependencyIdentity, DependencyKind, GlobalStyleIntervalV1,
     TechniqueEvidenceV1, TechniqueIntervalV1, parse_advanced_note_evidence,
 };
-pub use alignment::{AlignmentArtifactV1, AlignmentItemV1, parse_qwen_alignment};
+pub use alignment::{
+    AlignmentArtifactV1, AlignmentItemV1, parse_qwen_alignment, qwen_alignment_uses_coarse_fallback,
+};
 pub use basic_pitch::{BasicPitchEvidenceV3, BasicPitchFrameV3, parse_basic_pitch_evidence};
 pub use firered::parse_firered_transcript;
 pub use game::{GameEvidenceV1, GameNoteEvidenceV1, parse_game_evidence};

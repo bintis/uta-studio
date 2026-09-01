@@ -1595,6 +1595,160 @@ fn trailing_drop_removes_a_real_collapse_sized_tail() {
     assert!(adjusted.len() < words.join(" ").len());
 }
 
+#[test]
+fn drop_unit_range_transcript_excises_a_middle_span_and_splices_the_remainder() {
+    let words: Vec<String> = (0..10)
+        .map(|index| format!("keepA{index}"))
+        .chain(std::iter::once("collapsedwordabc".to_string()))
+        .chain((0..10).map(|index| format!("keepB{index}")))
+        .collect();
+    let adjusted = drop_unit_range_transcript(&words, 10, 11).unwrap();
+    assert!(!adjusted.contains("collapsedwordabc"), "{adjusted}");
+    assert!(adjusted.contains("keepA0"), "{adjusted}");
+    assert!(adjusted.contains("keepB9"), "{adjusted}");
+    // The two surviving halves are joined directly together, not left with
+    // a gap in their place.
+    assert!(adjusted.contains("keepA9 keepB0"), "{adjusted}");
+}
+
+#[test]
+fn drop_unit_range_transcript_rejects_an_undersized_or_empty_result() {
+    let short_span = vec!["a".to_string(), "short".to_string(), "b".to_string()];
+    assert!(
+        drop_unit_range_transcript(&short_span, 0, 2).is_none(),
+        "a dropped span under the collapse-size floor must not be excised"
+    );
+    let whole_transcript = vec!["twelvecharword".to_string()];
+    assert!(
+        drop_unit_range_transcript(&whole_transcript, 0, 1).is_none(),
+        "dropping the entire transcript must not leave an empty result"
+    );
+    assert!(drop_unit_range_transcript(&whole_transcript, 0, 0).is_none());
+    assert!(drop_unit_range_transcript(&whole_transcript, 1, 5).is_none());
+}
+
+#[test]
+fn parse_collapsed_unit_range_reads_the_embedded_range_and_rejects_other_errors() {
+    let error = "Qwen alignment output has invalid word timing: collapsed 19 characters into \
+                  0.08 seconds (window 2: audio=[177.28s, 317.28s] target=\"...\" unit_range=[12,14))";
+    assert_eq!(parse_collapsed_unit_range(error), Some((12, 14)));
+
+    assert_eq!(
+        parse_collapsed_unit_range(
+            "Qwen long-form alignment windows produced overlapping timing that could not be \
+             reconciled at the window seam (seam 0->1, previous=\"a\" [0.0s, 0.1s], next=\"b\" \
+             [0.0s, 0.1s], next_anchor=None)"
+        ),
+        None,
+        "a seam error must never be mistaken for a collapse error"
+    );
+    assert_eq!(
+        parse_collapsed_unit_range(
+            "Qwen alignment output has invalid word timing: one measured boundary merged multiple lyric units"
+        ),
+        None,
+        "a collapse-prefixed error with no embedded range must not panic or fabricate one"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_with_span_dropped_recovers_from_a_collapse_in_the_middle_of_the_song() {
+    // Unlike the hallucinated-tail case, this excises from the *middle*:
+    // the collapsed span sits between two groups of otherwise-alignable
+    // content, so recovery must splice the surviving halves together
+    // rather than merely truncate -- confirmed against a real production
+    // song where the collapse was nowhere near the transcript's own end.
+    let test_dir = fixture_dir("span-drop-recover");
+    let control = test_dir.join("control");
+    let words: Vec<String> = (0..10)
+        .map(|index| format!("keepA{index}"))
+        .chain(std::iter::once("collapsedwordabc".to_string()))
+        .chain((0..10).map(|index| format!("keepB{index}")))
+        .collect();
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+    let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let adjusted_transcript = drop_unit_range_transcript(&words, 10, 11).unwrap();
+    let adjusted_units = alignment_text_units(&adjusted_transcript);
+    let minimum_safe_target = finest_target.max(200.0 / adjusted_units.len() as f64);
+    assert_eq!(
+        minimum_safe_target, finest_target,
+        "test fixture assumes the drop alone already satisfies the finest target"
+    );
+    let attempt0 =
+        plan_alignment_segments(200.0, adjusted_units.len(), minimum_safe_target).unwrap();
+    for plan in &attempt0 {
+        std::fs::write(
+            control.join(format!("response-{}", plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+    // Attempt 0's own blind plan happens to land its last two windows only
+    // one tick apart (a real, frequently-hit case of blind planning's own
+    // tail-anchor-vs-centered collision -- see `plan_alignment_segments`'s
+    // doc comment), so even this "clean" fixture measures a genuine
+    // inversion there; attempt 1's widened, differently-shaped grid is
+    // given real sequential data too and recovers cleanly.
+    let attempt1_target = minimum_safe_target * 1.5;
+    let attempt1 = plan_alignment_segments(200.0, adjusted_units.len(), attempt1_target).unwrap();
+    for plan in &attempt1 {
+        std::fs::write(
+            control.join(format!("response-{}", attempt0.len() + plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+    // Attempt 1 hits the same tail-collision case one window count down;
+    // attempt 2's coarser grid finally puts real margin between every
+    // window and recovers cleanly.
+    let attempt2_target = minimum_safe_target * 1.5 * 1.5;
+    let attempt2 = plan_alignment_segments(200.0, adjusted_units.len(), attempt2_target).unwrap();
+    for plan in &attempt2 {
+        std::fs::write(
+            control.join(format!(
+                "response-{}",
+                attempt0.len() + attempt1.len() + plan.index
+            )),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({"text": words.join(" ")});
+    let mut progress = |_: u64, _: u64, _: &'static str| Ok(());
+    let destination = run_align_with_span_dropped(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        10,
+        11,
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let recovered = evidence["transcript"].as_str().unwrap();
+    assert!(
+        !recovered.contains("collapsedwordabc"),
+        "the collapsed middle span must not survive: {recovered}"
+    );
+    assert!(recovered.contains("keepA0"), "{recovered}");
+    assert!(recovered.contains("keepB9"), "{recovered}");
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn run_align_with_trailing_content_dropped_recovers_from_a_hallucinated_tail() {
@@ -1658,6 +1812,220 @@ fn run_align_with_trailing_content_dropped_recovers_from_a_hallucinated_tail() {
         "the fabricated tail must not survive: {recovered}"
     );
     assert!(recovered.contains("real0"), "{recovered}");
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_with_trailing_content_dropped_widens_target_when_the_drop_underflows_the_finest_plan()
+{
+    // Real production repro: a lyric-sparse song (long instrumental/spoken
+    // stretches) whose total unit count sits right at the finest retry
+    // target's own segment count. Dropping the collapsed tail removes one
+    // unit too many for that *same* fine-grained target to replan against --
+    // `plan_alignment_segments`'s segment count is duration-driven, not
+    // text-driven, so the shrunken transcript alone can't satisfy it. The
+    // fallback must widen its own target rather than fail closed on an
+    // arithmetic artifact of the drop it just made, silently discarding a
+    // drop that would otherwise have recovered the song.
+    let test_dir = fixture_dir("trailing-drop-underflow");
+    let control = test_dir.join("control");
+    let mut words: Vec<String> = (0..7).map(|index| format!("real{index}")).collect();
+    words.push("abcdefghijkl".to_string()); // 12 characters: exactly the collapse-size floor.
+    let transcript = words.join(" ");
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+    let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let original_plans = plan_alignment_segments(200.0, words.len(), finest_target).unwrap();
+    assert_eq!(
+        original_plans.len(),
+        8,
+        "test fixture assumes 8 windows at the finest target"
+    );
+    let adjusted_transcript = trailing_drop_transcript(&words, &original_plans).unwrap();
+    let adjusted_units = alignment_text_units(&adjusted_transcript);
+    assert_eq!(adjusted_units.len(), 7);
+    assert!(
+        plan_alignment_segments(200.0, adjusted_units.len(), finest_target).is_err(),
+        "test fixture assumes the finest target alone can't replan the shortened transcript"
+    );
+
+    let retry_target = finest_target.max(200.0 / adjusted_units.len() as f64);
+    let adjusted_plans =
+        plan_alignment_segments(200.0, adjusted_units.len(), retry_target).unwrap();
+    for plan in &adjusted_plans {
+        std::fs::write(
+            control.join(format!("response-{}", plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({"text": transcript});
+    let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+    let destination = run_align_with_trailing_content_dropped(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let recovered = evidence["transcript"].as_str().unwrap();
+    assert!(
+        !recovered.contains("abcdefghijkl"),
+        "the collapsed tail must not survive: {recovered}"
+    );
+    assert!(recovered.contains("real0"), "{recovered}");
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_with_trailing_content_dropped_retries_a_transient_unresolvable_seam() {
+    // Real production repro: after dropping the tail, the fallback's own
+    // single alignment attempt hit an unresolvable seam between two windows
+    // (independent measurements disagreed enough to invert a multi-character
+    // run against the very next character) with no further recourse -- one
+    // shot, no retry, so a transient disagreement anywhere in the *kept*
+    // transcript killed the whole recovery. Mirrors
+    // `run_align_retries_a_real_measurement_after_a_transient_unresolvable_seam`'s
+    // technique (pin window 0's last target word far into its own window) to
+    // force exactly that failure on the fallback's first attempt, then
+    // proves its own retry (a widened, differently-shaped window grid)
+    // recovers cleanly.
+    let test_dir = fixture_dir("trailing-drop-retry-seam");
+    let control = test_dir.join("control");
+    // Short tokens throughout, unlike `trailing_drop_removes_a_real_collapse_sized_tail`'s
+    // "hallucinated{index}": `sequential_context_response` gives every unit a
+    // flat one-tick (0.08s) duration regardless of its own character count,
+    // so any *retained* (post-drop) unit of 12+ characters would trip the
+    // collapse check on that alone -- a fixture artifact unrelated to what
+    // this test exercises (see the hallucinated-tail recovery test's own
+    // note on the same constraint). `trailing_drop_transcript` only needs
+    // the *summed* dropped tail at or above that threshold, not any single
+    // word, so short "dropN" tokens still trigger a real drop.
+    let mut words: Vec<String> = (0..30).map(|index| format!("real{index}")).collect();
+    words.extend((0..10).map(|index| format!("drop{index}")));
+    let transcript = words.join(" ");
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(200.0)).unwrap();
+
+    let finest_target = align_window_target_seconds(ALIGN_SEAM_RETRY_ATTEMPTS - 1);
+    let original_plans = plan_alignment_segments(200.0, words.len(), finest_target).unwrap();
+    let adjusted_transcript = trailing_drop_transcript(&words, &original_plans).unwrap();
+    let adjusted_units = alignment_text_units(&adjusted_transcript);
+    let minimum_safe_target = finest_target.max(200.0 / adjusted_units.len() as f64);
+    assert_eq!(
+        minimum_safe_target, finest_target,
+        "test fixture assumes the drop alone already satisfies the finest target"
+    );
+
+    // Attempt 0 (the fallback's own first try, at `minimum_safe_target`):
+    // force an unresolvable seam between windows 0 and 1.
+    let attempt0 =
+        plan_alignment_segments(200.0, adjusted_units.len(), minimum_safe_target).unwrap();
+    assert!(
+        attempt0.len() >= 2,
+        "test fixture assumes attempt 0 has at least 2 windows"
+    );
+    for (position, plan) in attempt0.iter().take(2).enumerate() {
+        let mut response = sequential_context_response(&adjusted_units, plan);
+        if position == 0 {
+            let mut value: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            let response_words = value["words"].as_array_mut().unwrap();
+            let last = response_words.len() - 1;
+            response_words[last]["start"] = serde_json::json!(ALIGN_WINDOW_MAX_SECONDS - 0.5);
+            response_words[last]["end"] = serde_json::json!(ALIGN_WINDOW_MAX_SECONDS - 0.42);
+            response = serde_json::to_vec(&value).unwrap();
+        }
+        std::fs::write(control.join(format!("response-{position}")), response).unwrap();
+    }
+
+    // Attempt 1 (widened target -> a different window grid): every window is
+    // measured with plain sequential, non-conflicting *local* timestamps --
+    // but `sequential_context_response`'s flat one-tick-per-unit model still
+    // accumulates real seconds as a window's own target grows, and this
+    // grid's last two windows sit only one tick apart (a real,
+    // frequently-hit case of blind planning's own tail-anchor-vs-centered
+    // collision -- see `plan_alignment_segments`'s doc comment), so even
+    // wholly "clean" data still measures a genuine inversion here. This
+    // attempt is expected to fail too, on its own honest merits.
+    let attempt1_target = minimum_safe_target * 1.5;
+    let attempt1 = plan_alignment_segments(200.0, adjusted_units.len(), attempt1_target).unwrap();
+    assert_ne!(
+        attempt1.len(),
+        attempt0.len(),
+        "the retry must actually replan with a different window grid"
+    );
+    for plan in &attempt1 {
+        std::fs::write(
+            control.join(format!("response-{}", 2 + plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+
+    // Attempt 2 (widened again): a coarser, 4-window grid with real margin
+    // between every window puts each window's own flat-tick accumulation
+    // safely inside its neighbor's gap, so this attempt succeeds cleanly.
+    let attempt2_target = minimum_safe_target * 1.5 * 1.5;
+    let attempt2 = plan_alignment_segments(200.0, adjusted_units.len(), attempt2_target).unwrap();
+    assert_ne!(
+        attempt2.len(),
+        attempt1.len(),
+        "the second retry must actually replan with yet another window grid"
+    );
+    for plan in &attempt2 {
+        std::fs::write(
+            control.join(format!("response-{}", 2 + attempt1.len() + plan.index)),
+            sequential_context_response(&adjusted_units, plan),
+        )
+        .unwrap();
+    }
+
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({"text": transcript});
+    let mut progress_calls = Vec::new();
+    let mut progress = |completed: u64, total: u64, _message: &'static str| {
+        progress_calls.push((completed, total));
+        Ok(())
+    };
+    let destination = run_align_with_trailing_content_dropped(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let words_out = evidence["words"].as_array().unwrap();
+    assert_eq!(words_out.len(), adjusted_units.len());
+    assert_words_are_ordered_and_non_overlapping(words_out);
+    // Only the successful attempt's progress reaches the real callback --
+    // attempt 0 and attempt 1's own buffered progress must never leak
+    // through and appear to regress once attempt 2's real sequence begins.
+    assert_eq!(progress_calls.len(), attempt2.len());
 
     std::fs::remove_dir_all(&test_dir).unwrap();
 }

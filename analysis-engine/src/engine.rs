@@ -9,7 +9,8 @@ use crate::artifact::{
     Jbm555ExpectedInputsV1, PitchEvidenceV03, SingingAnalysisV1, TechniqueEvidenceV1,
     TimedNoteExpertEvidenceV1, artifact_ref_for_existing, finalize_candidate_vocal_chart,
     parse_advanced_note_evidence, parse_game_evidence, parse_jbm555_evidence, parse_qwen_alignment,
-    parse_qwen_transcript, parse_rmvpe_pitch, write_json_artifact,
+    parse_qwen_transcript, parse_rmvpe_pitch, qwen_alignment_uses_coarse_fallback,
+    write_json_artifact,
 };
 use crate::audio::{
     CleanupComparison, QualityEvaluationInput, analyze_acoustic_evidence, decode_audio,
@@ -58,9 +59,9 @@ mod worker_tasks;
 mod workflow_execution;
 use output_guard::OutputRunGuard;
 use runtime_route::{
-    caller_transcript, cancelled, execution_device, fingerprint_request,
-    ggml_vulkan_device_class, line_anchors_for_lyrics, openvino_backend, request_lyrics_text,
-    resource_provenance, roformer_backend, roformer_component,
+    caller_transcript, cancelled, execution_device, fingerprint_request, ggml_vulkan_device_class,
+    line_anchors_for_lyrics, openvino_backend, request_lyrics_text, resource_provenance,
+    roformer_backend, roformer_component,
 };
 use worker_tasks::{run_native_task, typed_worker_output};
 use workflow_execution::*;
@@ -396,7 +397,9 @@ impl AnalysisEngine {
                 backend,
                 device_class: ggml_vulkan_device_class(
                     backend,
-                    request.execution_policy.requested_device_for(&model.model_id),
+                    request
+                        .execution_policy
+                        .requested_device_for(&model.model_id),
                 ),
                 ffmpeg: &ffmpeg,
                 input: &primary.path,
@@ -443,7 +446,9 @@ impl AnalysisEngine {
                     backend,
                     device_class: ggml_vulkan_device_class(
                         backend,
-                        request.execution_policy.requested_device_for(&model.model_id),
+                        request
+                            .execution_policy
+                            .requested_device_for(&model.model_id),
                     ),
                     ffmpeg: &ffmpeg,
                     input: &analysis_input,
@@ -502,7 +507,9 @@ impl AnalysisEngine {
                 backend,
                 device_class: ggml_vulkan_device_class(
                     backend,
-                    request.execution_policy.requested_device_for(&model.model_id),
+                    request
+                        .execution_policy
+                        .requested_device_for(&model.model_id),
                 ),
                 ffmpeg: &ffmpeg,
                 input: &primary.path,
@@ -565,7 +572,9 @@ impl AnalysisEngine {
                 backend,
                 device_class: ggml_vulkan_device_class(
                     backend,
-                    request.execution_policy.requested_device_for(&model.model_id),
+                    request
+                        .execution_policy
+                        .requested_device_for(&model.model_id),
                 ),
                 ffmpeg: &ffmpeg,
                 input: &step_input,
@@ -892,7 +901,11 @@ impl AnalysisEngine {
             let mut align_config = serde_json::json!({
                 "model_path": model.model_path,
                 "text": transcript.text,
-                "language": transcript.language
+                "language": transcript.language,
+                // Only an ASR-generated transcript may degrade to deterministic
+                // coarse timing. Caller-supplied reference/canonical lyrics must
+                // continue to fail closed rather than fabricate their alignment.
+                "allow_coarse_fallback": request.lyrics.mode == LyricsMode::None
             });
             if let Some(anchors) = line_anchors_for_lyrics(&request.lyrics) {
                 align_config["line_anchors"] = anchors;
@@ -907,8 +920,15 @@ impl AnalysisEngine {
                 align_config,
                 cancellation,
             )?;
+            let alignment_path = typed_worker_output(&outputs, "alignment_evidence")?;
+            if qwen_alignment_uses_coarse_fallback(alignment_path)? {
+                degraded_reasons.push(
+                    "speech.align used deterministic coarse timing after every real Qwen measurement retry failed; download or enter lyrics and align again for review-grade word timing"
+                        .to_string(),
+                );
+            }
             Some(parse_qwen_alignment(
-                typed_worker_output(&outputs, "alignment_evidence")?,
+                alignment_path,
                 source_start,
                 source_duration,
             )?)

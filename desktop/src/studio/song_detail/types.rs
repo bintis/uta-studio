@@ -91,13 +91,23 @@ pub(crate) fn adjust_transcript_boundary_value(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LyricsCandidateUseMode {
+    Plain,
+    TimedLrc,
+    Translation,
+    Romanization,
+}
+
 pub(crate) struct NativeLyricsEditor {
     pub(crate) file_hash: String,
     pub(crate) mode: LyricsInputMode,
     pub(crate) initial_text: String,
-    pub(crate) candidates: Vec<app_core::LrclibCandidate>,
+    pub(crate) candidates: Vec<app_core::LyricsCandidate>,
     pub(crate) candidate_index: usize,
     pub(crate) searching: bool,
+    pub(crate) fetching_candidate: Option<usize>,
+    pub(crate) provider_errors: Vec<app_core::LyricsProviderFailure>,
     pub(crate) artifact_draft: Option<app_core::ArtifactEditDraft>,
     pub(crate) waveform: app_core::ChartWaveform,
 }
@@ -169,8 +179,20 @@ pub(crate) struct NativeAuthoringJob {
 
 #[derive(Default)]
 pub(crate) struct NativeLyricsSearchJob {
-    pub(crate) receiver: Option<Mutex<mpsc::Receiver<Vec<app_core::LrclibCandidate>>>>,
+    pub(crate) receiver: Option<Mutex<mpsc::Receiver<app_core::LyricsSearchResult>>>,
 }
+
+#[derive(Default)]
+pub(crate) struct NativeLyricsFetchJob {
+    pub(crate) receiver: Option<Mutex<mpsc::Receiver<LyricsCandidateFetchResult>>>,
+}
+
+pub(crate) type LyricsCandidateFetchResult = (
+    String,
+    usize,
+    LyricsCandidateUseMode,
+    Result<app_core::LyricsCandidate, String>,
+);
 
 #[derive(Default)]
 pub(crate) struct NativeLyricsWaveformJob {
