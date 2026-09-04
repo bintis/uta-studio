@@ -463,10 +463,9 @@ impl ResourceCatalog {
     /// including a real FP16-precision bug this validation caught and
     /// reverted (weights are F32, not FP16).
     fn add_firered_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self
-            .models
-            .get_mut("firered_asr2_aed")
-            .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing firered_asr2_aed model"))?;
+        let model = self.models.get_mut("firered_asr2_aed").ok_or_else(|| {
+            RuntimeManagerError::invalid_catalog("missing firered_asr2_aed model")
+        })?;
         model.backends.push(BackendCapability {
             backend: NativeBackend::NativeDsp,
             validation: ValidationState::ProductionPinned,
@@ -511,7 +510,9 @@ impl ResourceCatalog {
         model.backends.push(BackendCapability {
             backend: NativeBackend::NativeDsp,
             validation: ValidationState::BenchmarkCandidate,
-            evidence_id: Some("validation:stars-native-ggml-synthetic-smoke-2026-09-04".to_string()),
+            evidence_id: Some(
+                "validation:stars-native-ggml-synthetic-smoke-2026-09-04".to_string(),
+            ),
         });
         model
             .dependencies
@@ -544,7 +545,9 @@ impl ResourceCatalog {
         model.backends.push(BackendCapability {
             backend: NativeBackend::NativeDsp,
             validation: ValidationState::BenchmarkCandidate,
-            evidence_id: Some("validation:rosvot-native-ggml-synthetic-smoke-2026-09-04".to_string()),
+            evidence_id: Some(
+                "validation:rosvot-native-ggml-synthetic-smoke-2026-09-04".to_string(),
+            ),
         });
         model
             .dependencies
@@ -700,7 +703,8 @@ impl ResourceCatalog {
         self.insert_runtime(RuntimeCatalogEntry {
             id: "jbm555_native_v1".to_string(),
             display_name: "JBM555 Native Runtime".to_string(),
-            purpose: "Native worker runtime for JBM555 Japanese note expert GGUF inference".to_string(),
+            purpose: "Native worker runtime for JBM555 Japanese note expert GGUF inference"
+                .to_string(),
             backends: vec![
                 BackendCapability {
                     // `native-inference/jbm555` (`uta-jbm-worker`) is a
@@ -741,9 +745,7 @@ impl ResourceCatalog {
                 // 35,489 finite, in-range F0 frames with no crash.
                 backend: NativeDsp,
                 validation: ProductionPinned,
-                evidence_id: Some(
-                    "validation:fcpe-native-ggml-fullsong-2026-09-03".to_string(),
-                ),
+                evidence_id: Some("validation:fcpe-native-ggml-fullsong-2026-09-03".to_string()),
             }],
             acquisition: vec![acquisition(
                 AcquisitionMethod::Bundled,
@@ -803,9 +805,7 @@ impl ResourceCatalog {
                 // on the canonical fixture; weights are F32.
                 backend: NativeDsp,
                 validation: ProductionPinned,
-                evidence_id: Some(
-                    "validation:firered-native-ggml-fullsong-2026-09-03".to_string(),
-                ),
+                evidence_id: Some("validation:firered-native-ggml-fullsong-2026-09-03".to_string()),
             }],
             acquisition: vec![acquisition(
                 AcquisitionMethod::Bundled,

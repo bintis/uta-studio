@@ -60,9 +60,7 @@ impl GpuDevice {
         });
         let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
         if adapters.is_empty() {
-            return Err(Error::message(
-                "no Vulkan-capable GPU adapter is available",
-            ));
+            return Err(Error::message("no Vulkan-capable GPU adapter is available"));
         }
 
         let chosen = if let Some(name) = selector.and_then(|s| s.name_contains.as_deref()) {
@@ -262,7 +260,12 @@ fn precompute_inv_freqs(dims: usize, theta: f32) -> Vec<f32> {
         .collect()
 }
 
-fn normalize_rope_dims(head_dim: usize, rope_dims: usize, op_name: &str, mixed: bool) -> Result<usize> {
+fn normalize_rope_dims(
+    head_dim: usize,
+    rope_dims: usize,
+    op_name: &str,
+    mixed: bool,
+) -> Result<usize> {
     if head_dim == 0 {
         return Err(invalid_arg(format!("{op_name} requires head_dim > 0")));
     }
@@ -1038,23 +1041,10 @@ impl Tensor for GpuTensor {
         let inv_freqs = precompute_inv_freqs(half, theta);
         let global_f: Vec<f32> = global_pos.iter().map(|&p| p as f32).collect();
         let region_f: Vec<f32> = region_ids.iter().map(|&p| p as f32).collect();
+        contiguous
+            .dispatch_rope_range(&inv_freqs, &global_f, num_heads, seq_len, head_dim, 0, half)?;
         contiguous.dispatch_rope_range(
-            &inv_freqs,
-            &global_f,
-            num_heads,
-            seq_len,
-            head_dim,
-            0,
-            half,
-        )?;
-        contiguous.dispatch_rope_range(
-            &inv_freqs,
-            &region_f,
-            num_heads,
-            seq_len,
-            head_dim,
-            half,
-            half,
+            &inv_freqs, &region_f, num_heads, seq_len, head_dim, half, half,
         )?;
         Ok(contiguous)
     }
@@ -1104,7 +1094,11 @@ impl Tensor for GpuTensor {
         }
 
         let padded = time
-            .checked_add(padding.checked_mul(2).ok_or_else(|| invalid_arg("conv1d_dw padding overflow"))?)
+            .checked_add(
+                padding
+                    .checked_mul(2)
+                    .ok_or_else(|| invalid_arg("conv1d_dw padding overflow"))?,
+            )
             .ok_or_else(|| invalid_arg("conv1d_dw padded size overflow"))?;
         let out_time = if padded < kernel_size {
             0

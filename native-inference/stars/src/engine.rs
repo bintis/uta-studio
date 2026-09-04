@@ -77,7 +77,16 @@ pub const TECHNIQUE_TAXONOMY: [&str; TECHNIQUE_CLASSES] = [
     "strong",
 ];
 pub const STYLE_TECHNIQUE_GROUP: [&str; 10] = [
-    "control", "mixed", "falsetto", "pharyngeal", "glissando", "vibrato", "breathy", "weak", "strong", "bubble",
+    "control",
+    "mixed",
+    "falsetto",
+    "pharyngeal",
+    "glissando",
+    "vibrato",
+    "breathy",
+    "weak",
+    "strong",
+    "bubble",
 ];
 pub const STYLE_LANGUAGE: [&str; 9] = [
     "Chinese", "English", "Italian", "French", "Japanese", "Spanish", "German", "Korean", "Russian",
@@ -103,7 +112,13 @@ fn take_layer_norm(file: &GGUFFile, prefix: &str) -> Result<LayerNormWeights> {
     })
 }
 
-fn take_linear(file: &GGUFFile, prefix: &str, out_dim: usize, in_dim: usize, has_bias: bool) -> Result<LinearWeights> {
+fn take_linear(
+    file: &GGUFFile,
+    prefix: &str,
+    out_dim: usize,
+    in_dim: usize,
+    has_bias: bool,
+) -> Result<LinearWeights> {
     let weight = take(file, &format!("{prefix}.weight"))?;
     if weight.len() != out_dim * in_dim {
         return Err(Error::message(format!(
@@ -125,7 +140,13 @@ fn take_linear(file: &GGUFFile, prefix: &str, out_dim: usize, in_dim: usize, has
     })
 }
 
-fn take_residual_sub_block(file: &GGUFFile, prefix: &str, channels: usize, c_multiple: usize, kernel: usize) -> Result<ResidualSubBlock> {
+fn take_residual_sub_block(
+    file: &GGUFFile,
+    prefix: &str,
+    channels: usize,
+    c_multiple: usize,
+    kernel: usize,
+) -> Result<ResidualSubBlock> {
     let expand_weight = take(file, &format!("{prefix}.1.weight"))?;
     if expand_weight.len() != c_multiple * channels * channels * kernel {
         return Err(Error::message(format!(
@@ -207,7 +228,11 @@ fn take_conv_blocks(
     })
 }
 
-fn take_conformer_layer(file: &GGUFFile, prefix: &str, heads: usize) -> Result<ConformerEncoderLayerWeights> {
+fn take_conformer_layer(
+    file: &GGUFFile,
+    prefix: &str,
+    heads: usize,
+) -> Result<ConformerEncoderLayerWeights> {
     let take_moe = |sub: &str| -> Result<FeedForwardMoeWeights> {
         let mut experts = Vec::with_capacity(4);
         // `FeedForwardMOE(input_dim=HIDDEN, hidden_dim=HIDDEN*4, num_freq_experts=4)`
@@ -227,11 +252,41 @@ fn take_conformer_layer(file: &GGUFFile, prefix: &str, heads: usize) -> Result<C
     };
     Ok(ConformerEncoderLayerWeights {
         self_attn: RelPosMhsaWeights {
-            w_q: take_linear(file, &format!("{prefix}.self_attn.linear_q"), HIDDEN, HIDDEN, true)?,
-            w_k: take_linear(file, &format!("{prefix}.self_attn.linear_k"), HIDDEN, HIDDEN, true)?,
-            w_v: take_linear(file, &format!("{prefix}.self_attn.linear_v"), HIDDEN, HIDDEN, true)?,
-            w_out: take_linear(file, &format!("{prefix}.self_attn.linear_out"), HIDDEN, HIDDEN, true)?,
-            linear_pos: take_linear(file, &format!("{prefix}.self_attn.linear_pos"), HIDDEN, HIDDEN, false)?,
+            w_q: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_q"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_k: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_k"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_v: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_v"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_out: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_out"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            linear_pos: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_pos"),
+                HIDDEN,
+                HIDDEN,
+                false,
+            )?,
             pos_bias_u: take(file, &format!("{prefix}.self_attn.pos_bias_u"))?,
             pos_bias_v: take(file, &format!("{prefix}.self_attn.pos_bias_v"))?,
             heads,
@@ -239,7 +294,10 @@ fn take_conformer_layer(file: &GGUFFile, prefix: &str, heads: usize) -> Result<C
         feed_forward: take_moe("feed_forward")?,
         feed_forward_macaron: take_moe("feed_forward_macaron")?,
         conv_module: ConvolutionModuleWeights {
-            pointwise1_weight: take(file, &format!("{prefix}.conv_module.pointwise_conv1.weight"))?,
+            pointwise1_weight: take(
+                file,
+                &format!("{prefix}.conv_module.pointwise_conv1.weight"),
+            )?,
             pointwise1_bias: take(file, &format!("{prefix}.conv_module.pointwise_conv1.bias"))?,
             depthwise_weight: take(file, &format!("{prefix}.conv_module.depthwise_conv.weight"))?,
             depthwise_bias: take(file, &format!("{prefix}.conv_module.depthwise_conv.bias"))?,
@@ -249,7 +307,10 @@ fn take_conformer_layer(file: &GGUFFile, prefix: &str, heads: usize) -> Result<C
                 running_mean: take(file, &format!("{prefix}.conv_module.norm.running_mean"))?,
                 running_var: take(file, &format!("{prefix}.conv_module.norm.running_var"))?,
             },
-            pointwise2_weight: take(file, &format!("{prefix}.conv_module.pointwise_conv2.weight"))?,
+            pointwise2_weight: take(
+                file,
+                &format!("{prefix}.conv_module.pointwise_conv2.weight"),
+            )?,
             pointwise2_bias: take(file, &format!("{prefix}.conv_module.pointwise_conv2.bias"))?,
             kernel_size: 9,
         },
@@ -261,10 +322,18 @@ fn take_conformer_layer(file: &GGUFFile, prefix: &str, heads: usize) -> Result<C
     })
 }
 
-fn take_conformer_layers_moe(file: &GGUFFile, prefix: &str, num_layers: usize) -> Result<ConformerLayersMoeWeights> {
+fn take_conformer_layers_moe(
+    file: &GGUFFile,
+    prefix: &str,
+    num_layers: usize,
+) -> Result<ConformerLayersMoeWeights> {
     let mut layers = Vec::with_capacity(num_layers);
     for i in 0..num_layers {
-        layers.push(take_conformer_layer(file, &format!("{prefix}.encoder_layers.{i}"), 4)?);
+        layers.push(take_conformer_layer(
+            file,
+            &format!("{prefix}.encoder_layers.{i}"),
+            4,
+        )?);
     }
     Ok(ConformerLayersMoeWeights {
         layers,
@@ -293,7 +362,15 @@ fn take_unet(file: &GGUFFile, prefix: &str, mid_layers: usize) -> Result<UnetWei
             up_norm: take_layer_norm(file, &format!("{p}.ups.{stage}.1"))?,
             merge_weight: take(file, &format!("{p}.layers.{stage}.0.weight"))?,
             merge_bias: take(file, &format!("{p}.layers.{stage}.0.bias"))?,
-            merge_block: take_residual_block(file, &format!("{p}.layers.{stage}.1"), 1, 3, HIDDEN, 1, false)?,
+            merge_block: take_residual_block(
+                file,
+                &format!("{p}.layers.{stage}.1"),
+                1,
+                3,
+                HIDDEN,
+                1,
+                false,
+            )?,
             kernel_size: 3,
         });
     }
@@ -323,7 +400,11 @@ fn take_unet(file: &GGUFFile, prefix: &str, mid_layers: usize) -> Result<UnetWei
     })
 }
 
-fn take_local_style_adaptor(file: &GGUFFile, prefix: &str, mid_layers: usize) -> Result<LocalStyleAdaptorWeights> {
+fn take_local_style_adaptor(
+    file: &GGUFFile,
+    prefix: &str,
+    mid_layers: usize,
+) -> Result<LocalStyleAdaptorWeights> {
     Ok(LocalStyleAdaptorWeights {
         cmuencoder: take_unet(file, &format!("{prefix}.cmuencoder.net"), mid_layers)?,
         encoder: take_conv_blocks(file, &format!("{prefix}.encoder"), 1, 3, 3, false)?,
@@ -405,13 +486,31 @@ impl StarsWeights {
             l1_word: take_linear(&file, "l1_word", HIDDEN, 2 * HIDDEN, true)?,
             prosody_ph: take_local_style_adaptor(&file, "prosody_extractor_ph", 2)?,
             l1_ph: take_linear(&file, "l1_ph", HIDDEN, 2 * HIDDEN, true)?,
-            note_frame_head: take_linear(&file, "note_frame_predictor.note_head", 90, HIDDEN, true)?,
+            note_frame_head: take_linear(
+                &file,
+                "note_frame_predictor.note_head",
+                90,
+                HIDDEN,
+                true,
+            )?,
 
             prosody_note: take_local_style_adaptor(&file, "prosody_extractor_note", 2)?,
             l1_note: take_linear(&file, "l1_note", HIDDEN, 2 * HIDDEN, true)?,
-            pitch_decoder_attn: take_linear(&file, "pitch_decoder.multihead_dot_attn", 4, HIDDEN, true)?,
+            pitch_decoder_attn: take_linear(
+                &file,
+                "pitch_decoder.multihead_dot_attn",
+                4,
+                HIDDEN,
+                true,
+            )?,
             pitch_decoder_post: take_conv_blocks(&file, "pitch_decoder.post", 1, 3, 3, false)?,
-            pitch_decoder_out: take_linear(&file, "pitch_decoder.pitch_out", PITCH_CLASSES, HIDDEN, true)?,
+            pitch_decoder_out: take_linear(
+                &file,
+                "pitch_decoder.pitch_out",
+                PITCH_CLASSES,
+                HIDDEN,
+                true,
+            )?,
 
             prosody_sentence: take_local_style_adaptor(&file, "prosody_extractor_sentence", 1)?,
             cls_tokens: take(&file, "cls_tokens")?,
@@ -428,18 +527,66 @@ impl StarsWeights {
                 meth_norm: take_layer_norm(&file, "style_predict.meth_norm")?,
                 pace_norm: take_layer_norm(&file, "style_predict.pace_norm")?,
                 range_norm: take_layer_norm(&file, "style_predict.range_norm")?,
-                tech_head: take_linear(&file, "style_predict.tech_head", STYLE_TECHNIQUE_GROUP.len(), HIDDEN, true)?,
-                lan_head: take_linear(&file, "style_predict.lan_head", STYLE_LANGUAGE.len(), HIDDEN, true)?,
-                gen_head: take_linear(&file, "style_predict.gen_head", STYLE_GENDER.len(), HIDDEN, true)?,
-                emo_head: take_linear(&file, "style_predict.emo_head", STYLE_EMOTION.len(), HIDDEN, true)?,
-                meth_head: take_linear(&file, "style_predict.meth_head", STYLE_METHOD.len(), HIDDEN, true)?,
-                pace_head: take_linear(&file, "style_predict.pace_head", STYLE_PACE.len(), HIDDEN, true)?,
-                range_head: take_linear(&file, "style_predict.range_head", STYLE_RANGE.len(), HIDDEN, true)?,
+                tech_head: take_linear(
+                    &file,
+                    "style_predict.tech_head",
+                    STYLE_TECHNIQUE_GROUP.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                lan_head: take_linear(
+                    &file,
+                    "style_predict.lan_head",
+                    STYLE_LANGUAGE.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                gen_head: take_linear(
+                    &file,
+                    "style_predict.gen_head",
+                    STYLE_GENDER.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                emo_head: take_linear(
+                    &file,
+                    "style_predict.emo_head",
+                    STYLE_EMOTION.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                meth_head: take_linear(
+                    &file,
+                    "style_predict.meth_head",
+                    STYLE_METHOD.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                pace_head: take_linear(
+                    &file,
+                    "style_predict.pace_head",
+                    STYLE_PACE.len(),
+                    HIDDEN,
+                    true,
+                )?,
+                range_head: take_linear(
+                    &file,
+                    "style_predict.range_head",
+                    STYLE_RANGE.len(),
+                    HIDDEN,
+                    true,
+                )?,
             },
 
             tech_attn: take_linear(&file, "tech_predictor.multihead_tech_attn", 4, HIDDEN, true)?,
             tech_post: take_conv_blocks(&file, "tech_predictor.tech_post", 1, 3, 3, true)?,
-            tech_out: take_linear(&file, "tech_predictor.binary_tech_out", TECHNIQUE_CLASSES, HIDDEN, true)?,
+            tech_out: take_linear(
+                &file,
+                "tech_predictor.binary_tech_out",
+                TECHNIQUE_CLASSES,
+                HIDDEN,
+                true,
+            )?,
         })
     }
 }
@@ -448,7 +595,13 @@ fn take_cross_attn_layer(file: &GGUFFile, prefix: &str) -> Result<CrossAttnLayer
     Ok(CrossAttnLayerWeights {
         in_proj_weight: take(file, &format!("{prefix}.multihead_attn.in_proj_weight"))?,
         in_proj_bias: take(file, &format!("{prefix}.multihead_attn.in_proj_bias"))?,
-        out_proj: take_linear(file, &format!("{prefix}.multihead_attn.out_proj"), HIDDEN, HIDDEN, true)?,
+        out_proj: take_linear(
+            file,
+            &format!("{prefix}.multihead_attn.out_proj"),
+            HIDDEN,
+            HIDDEN,
+            true,
+        )?,
         linear1: take_linear(file, &format!("{prefix}.linear1"), 2048, HIDDEN, true)?,
         linear2: take_linear(file, &format!("{prefix}.linear2"), HIDDEN, 2048, true)?,
         norm1: take_layer_norm(file, &format!("{prefix}.norm1"))?,
@@ -465,7 +618,8 @@ fn embedding_lookup(table: &[f32], ids: &[i64]) -> Vec<f32> {
     let mut out = vec![0.0_f32; ids.len() * HIDDEN];
     for (row, id) in ids.iter().enumerate() {
         let id = (*id).max(0) as usize;
-        out[row * HIDDEN..(row + 1) * HIDDEN].copy_from_slice(&table[id * HIDDEN..(id + 1) * HIDDEN]);
+        out[row * HIDDEN..(row + 1) * HIDDEN]
+            .copy_from_slice(&table[id * HIDDEN..(id + 1) * HIDDEN]);
     }
     out
 }
@@ -491,12 +645,14 @@ fn get_prosody_grouped(
     adaptor: &LocalStyleAdaptorWeights,
     l1: &LinearWeights,
 ) -> Vec<f32> {
-    let (pooled, rows) = local_style_adaptor(mel_embed, t, Some((seg_ids, num_segments)), false, adaptor);
+    let (pooled, rows) =
+        local_style_adaptor(mel_embed, t, Some((seg_ids, num_segments)), false, adaptor);
     debug_assert_eq!(rows, num_segments);
     let positions = sinusoidal_position_embedding(rows, rows);
     let mut cat = vec![0.0_f32; rows * 2 * HIDDEN];
     for row in 0..rows {
-        cat[row * 2 * HIDDEN..row * 2 * HIDDEN + HIDDEN].copy_from_slice(&pooled[row * HIDDEN..(row + 1) * HIDDEN]);
+        cat[row * 2 * HIDDEN..row * 2 * HIDDEN + HIDDEN]
+            .copy_from_slice(&pooled[row * HIDDEN..(row + 1) * HIDDEN]);
         cat[row * 2 * HIDDEN + HIDDEN..row * 2 * HIDDEN + 2 * HIDDEN]
             .copy_from_slice(&positions[row * HIDDEN..(row + 1) * HIDDEN]);
     }
@@ -509,14 +665,31 @@ fn get_prosody_grouped(
 // ---------------------------------------------------------------------
 
 pub struct StageAOutput {
-    pub mel_embed: Vec<f32>,      // a[0], [T,HIDDEN]
-    pub feat: Vec<f32>,           // a[1], [T,HIDDEN]
-    pub ph_bd_sigmoid: Vec<f32>,  // a[2], [T]  (single sigmoid, see stars_viterbi doc)
+    pub mel_embed: Vec<f32>,       // a[0], [T,HIDDEN]
+    pub feat: Vec<f32>,            // a[1], [T,HIDDEN]
+    pub ph_bd_sigmoid: Vec<f32>,   // a[2], [T]  (single sigmoid, see stars_viterbi doc)
     pub ph_frame_logits: Vec<f32>, // a[3], [T,61]
 }
 
-pub fn stage_a(w: &StarsWeights, mel: &[f32], pitch: &[i64], uv: &[i64], nonpadding: &[bool], t: usize) -> StageAOutput {
-    let mut mel_embed = conv1d_same(mel, t, singing_frontend::MEL_BINS, &w.mel_proj_weight, Some(&w.mel_proj_bias), HIDDEN, 3, 1, 1);
+pub fn stage_a(
+    w: &StarsWeights,
+    mel: &[f32],
+    pitch: &[i64],
+    uv: &[i64],
+    nonpadding: &[bool],
+    t: usize,
+) -> StageAOutput {
+    let mut mel_embed = conv1d_same(
+        mel,
+        t,
+        singing_frontend::MEL_BINS,
+        &w.mel_proj_weight,
+        Some(&w.mel_proj_bias),
+        HIDDEN,
+        3,
+        1,
+        1,
+    );
     mel_embed = conv_blocks(&mel_embed, t, &w.mel_encoder);
     mul_mask_inplace(&mut mel_embed, t, HIDDEN, nonpadding);
 
@@ -532,7 +705,8 @@ pub fn stage_a(w: &StarsWeights, mel: &[f32], pitch: &[i64], uv: &[i64], nonpadd
     let positions = sinusoidal_position_embedding(nonpadding.iter().filter(|v| **v).count(), t);
     let mut cat = vec![0.0_f32; t * 2 * HIDDEN];
     for row in 0..t {
-        cat[row * 2 * HIDDEN..row * 2 * HIDDEN + HIDDEN].copy_from_slice(&utter_prosody[row * HIDDEN..(row + 1) * HIDDEN]);
+        cat[row * 2 * HIDDEN..row * 2 * HIDDEN + HIDDEN]
+            .copy_from_slice(&utter_prosody[row * HIDDEN..(row + 1) * HIDDEN]);
         cat[row * 2 * HIDDEN + HIDDEN..row * 2 * HIDDEN + 2 * HIDDEN]
             .copy_from_slice(&positions[row * HIDDEN..(row + 1) * HIDDEN]);
     }
@@ -544,7 +718,8 @@ pub fn stage_a(w: &StarsWeights, mel: &[f32], pitch: &[i64], uv: &[i64], nonpadd
     for time in 0..t {
         let bd = frame_logits[time * 62].clamp(-16.0, 16.0);
         ph_bd_sigmoid[time] = sigmoid_scalar(bd);
-        ph_frame_logits[time * 61..(time + 1) * 61].copy_from_slice(&frame_logits[time * 62 + 1..(time + 1) * 62]);
+        ph_frame_logits[time * 61..(time + 1) * 61]
+            .copy_from_slice(&frame_logits[time * 62 + 1..(time + 1) * 62]);
     }
 
     StageAOutput {
@@ -560,7 +735,7 @@ pub fn stage_a(w: &StarsWeights, mel: &[f32], pitch: &[i64], uv: &[i64], nonpadd
 // ---------------------------------------------------------------------
 
 pub struct StageBOutput {
-    pub feat: Vec<f32>,          // b[0], [T,HIDDEN]
+    pub feat: Vec<f32>,           // b[0], [T,HIDDEN]
     pub note_bd_logits: Vec<f32>, // b[1], [T] (raw, clamped, NOT sigmoided)
 }
 
@@ -575,7 +750,14 @@ pub fn stage_b(
     num_word: usize,
 ) -> StageBOutput {
     let prosody_ph = get_prosody_grouped(mel_embed, t, mel2ph, num_ph, &w.prosody_ph, &w.l1_ph);
-    let prosody_word = get_prosody_grouped(mel_embed, t, mel2word, num_word, &w.prosody_word, &w.l1_word);
+    let prosody_word = get_prosody_grouped(
+        mel_embed,
+        t,
+        mel2word,
+        num_word,
+        &w.prosody_word,
+        &w.l1_word,
+    );
     let mut feat = feat_a.to_vec();
     add_inplace(&mut feat, &prosody_ph);
     add_inplace(&mut feat, &prosody_word);
@@ -587,7 +769,10 @@ pub fn stage_b(
         note_bd_logits[time] = (frame_logits[time * 90] / NOTE_BD_TEMPERATURE).clamp(-16.0, 16.0);
     }
 
-    StageBOutput { feat, note_bd_logits }
+    StageBOutput {
+        feat,
+        note_bd_logits,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -595,7 +780,7 @@ pub fn stage_b(
 // ---------------------------------------------------------------------
 
 pub struct StageCOutput {
-    pub feat: Vec<f32>,       // c[0], [T,HIDDEN]
+    pub feat: Vec<f32>,        // c[0], [T,HIDDEN]
     pub note_logits: Vec<f32>, // c[3], [num_notes, PITCH_CLASSES]
 }
 
@@ -617,7 +802,14 @@ pub fn stage_c(
     // a genuine PyTorch forward pass), since `STARS.forward` passes this
     // identical 0-indexed array straight into `get_prosody_note` with no
     // reindexing.
-    let prosody_note = get_prosody_grouped(mel_embed, t, mel2note, num_notes, &w.prosody_note, &w.l1_note);
+    let prosody_note = get_prosody_grouped(
+        mel_embed,
+        t,
+        mel2note,
+        num_notes,
+        &w.prosody_note,
+        &w.l1_note,
+    );
     let mut feat = feat_b.to_vec();
     add_inplace(&mut feat, &prosody_note);
 
@@ -673,14 +865,21 @@ pub fn stage_c(
 // ---------------------------------------------------------------------
 
 pub struct StageDOutput {
-    pub output: Vec<f32>,   // d[0], [T,HIDDEN]
-    pub weighted: Vec<f32>, // d[1], [T,HIDDEN]
-    pub attention: Vec<f32>, // d[2], [T]
+    pub output: Vec<f32>,      // d[0], [T,HIDDEN]
+    pub weighted: Vec<f32>,    // d[1], [T,HIDDEN]
+    pub attention: Vec<f32>,   // d[2], [T]
     pub styles: [Vec<f32>; 7], // technique_group, language, gender, emotion, method, pace, range
 }
 
-pub fn stage_d(w: &StarsWeights, mel_embed: &[f32], feat_c: &[f32], t: usize, nonpadding: &[bool]) -> StageDOutput {
-    let (sentence_prosody, rows) = local_style_adaptor(mel_embed, t, None, true, &w.prosody_sentence);
+pub fn stage_d(
+    w: &StarsWeights,
+    mel_embed: &[f32],
+    feat_c: &[f32],
+    t: usize,
+    nonpadding: &[bool],
+) -> StageDOutput {
+    let (sentence_prosody, rows) =
+        local_style_adaptor(mel_embed, t, None, true, &w.prosody_sentence);
     debug_assert_eq!(rows, t);
     // `prosody_embedding.mean(dim=1)`: a *plain* mean over all T rows,
     // including zero-padded ones (not a masked mean) -- replicated exactly.
@@ -700,7 +899,14 @@ pub fn stage_d(w: &StarsWeights, mel_embed: &[f32], feat_c: &[f32], t: usize, no
         }
     }
 
-    let style_features = prosody_aligner(&w.cls_tokens, NUM_CLS_TOKENS, &output, t, nonpadding, &w.align_sentence);
+    let style_features = prosody_aligner(
+        &w.cls_tokens,
+        NUM_CLS_TOKENS,
+        &output,
+        t,
+        nonpadding,
+        &w.align_sentence,
+    );
     let styles = style_predict(&w.style_predict, &style_features);
 
     let attn_logits = linear(&output, t, &w.tech_attn); // [T,4]
@@ -727,11 +933,13 @@ pub fn stage_d(w: &StarsWeights, mel_embed: &[f32], feat_c: &[f32], t: usize, no
 }
 
 fn style_predict(w: &StylePredictWeights, features: &[f32]) -> [Vec<f32>; 7] {
-    let row = |index: usize| -> Vec<f32> { features[index * HIDDEN..(index + 1) * HIDDEN].to_vec() };
-    let head = |mut token: Vec<f32>, norm: &LayerNormWeights, linear_w: &LinearWeights| -> Vec<f32> {
-        layer_norm(&mut token, 1, HIDDEN, norm, 1.0e-5);
-        linear(&token, 1, linear_w)
-    };
+    let row =
+        |index: usize| -> Vec<f32> { features[index * HIDDEN..(index + 1) * HIDDEN].to_vec() };
+    let head =
+        |mut token: Vec<f32>, norm: &LayerNormWeights, linear_w: &LinearWeights| -> Vec<f32> {
+            layer_norm(&mut token, 1, HIDDEN, norm, 1.0e-5);
+            linear(&token, 1, linear_w)
+        };
     [
         head(row(0), &w.tech_norm, &w.tech_head),
         head(row(1), &w.lan_norm, &w.lan_head),
@@ -750,7 +958,11 @@ fn style_predict(w: &StylePredictWeights, features: &[f32]) -> [Vec<f32>; 7] {
 /// `TechniquePredictor`'s scatter-mean-by-phoneme-segment aggregation,
 /// mirroring `advanced_notes.rs::aggregate_phoneme_technique` exactly
 /// (weighted-sum divided by attention-sum per interval).
-pub fn aggregate_phoneme_technique(weighted: &[f32], attention: &[f32], intervals: &[stars_viterbi::Interval]) -> Vec<f32> {
+pub fn aggregate_phoneme_technique(
+    weighted: &[f32],
+    attention: &[f32],
+    intervals: &[stars_viterbi::Interval],
+) -> Vec<f32> {
     let mut result = vec![0.0_f32; intervals.len() * HIDDEN];
     for (phoneme, interval) in intervals.iter().enumerate() {
         let denom = attention[interval.start..interval.end].iter().sum::<f32>() + 1.0e-5;
@@ -794,7 +1006,8 @@ struct Segment {
 }
 
 fn frame_to_micros(frame: usize) -> u64 {
-    (frame as u128 * singing_frontend::HOP_SIZE as u128 * 1_000_000 / singing_frontend::SAMPLE_RATE as u128) as u64
+    (frame as u128 * singing_frontend::HOP_SIZE as u128 * 1_000_000
+        / singing_frontend::SAMPLE_RATE as u128) as u64
 }
 
 fn conditioned_segments(words: &[ConfigWord], source_start: u64, frames: usize) -> Vec<Segment> {
@@ -849,7 +1062,12 @@ fn padded_i64(values: &[i64], start: usize) -> Vec<i64> {
 fn note_ranges(boundaries: &[usize], valid: usize) -> Vec<(usize, usize)> {
     let mut starts = Vec::with_capacity(boundaries.len() + 1);
     starts.push(0);
-    starts.extend(boundaries.iter().copied().filter(|value| *value > 0 && *value < valid));
+    starts.extend(
+        boundaries
+            .iter()
+            .copied()
+            .filter(|value| *value > 0 && *value < valid),
+    );
     starts.sort_unstable();
     starts.dedup();
     starts
@@ -887,14 +1105,23 @@ pub struct RawNote {
     pub midi: Option<u8>,
 }
 
-fn append_notes(notes: &mut Vec<RawNote>, segment_start: usize, ranges: &[(usize, usize)], logits: &[f32]) {
+fn append_notes(
+    notes: &mut Vec<RawNote>,
+    segment_start: usize,
+    ranges: &[(usize, usize)],
+    logits: &[f32],
+) {
     for (index, (start, end)) in ranges.iter().copied().enumerate() {
         let row = logits[index * PITCH_CLASSES..(index + 1) * PITCH_CLASSES].to_vec();
         let midi = row
             .iter()
             .enumerate()
             .max_by(|left, right| left.1.total_cmp(right.1))
-            .and_then(|(class, _)| (NOTE_START..=NOTE_NUM).contains(&class).then_some(class as u8));
+            .and_then(|(class, _)| {
+                (NOTE_START..=NOTE_NUM)
+                    .contains(&class)
+                    .then_some(class as u8)
+            });
         notes.push(RawNote {
             start_frame: segment_start + start,
             end_frame: segment_start + end,
@@ -963,7 +1190,8 @@ const STARS_CONFIG: &str = "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d1
 /// its `shared_frontend` and `annotation_rmvpe` dependency entries -- this
 /// crate's `singing_frontend`/`mel16`/RMVPE-annotation code is a direct,
 /// unmodified port of that exact profile.
-const SHARED_MANIFEST_SHA256: &str = "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c";
+const SHARED_MANIFEST_SHA256: &str =
+    "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c";
 /// This worker's own identity for the `runtime_manifest_sha256` evidence
 /// field (unlike the OpenVINO route, there is no separately-packaged
 /// runtime to hash -- the worker binary itself IS the runtime).
@@ -1024,24 +1252,34 @@ pub fn resolve_model_files(config: &serde_json::Value) -> Result<(PathBuf, PathB
         .map(PathBuf::from)
         .filter(|p| p.is_file())
         .or_else(|| {
-            std::env::var_os("HOME").map(PathBuf::from).and_then(|home| {
-                let candidate = home.join(".local/share/uta-studio/runtime/ggml-models/stars/stars-f32.gguf");
-                candidate.is_file().then_some(candidate)
-            })
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .and_then(|home| {
+                    let candidate = home
+                        .join(".local/share/uta-studio/runtime/ggml-models/stars/stars-f32.gguf");
+                    candidate.is_file().then_some(candidate)
+                })
         })
-        .ok_or_else(|| Error::message("STARS GGUF model path not found in config or runtime store"))?;
+        .ok_or_else(|| {
+            Error::message("STARS GGUF model path not found in config or runtime store")
+        })?;
     let rmvpe_path = config
         .get("rmvpe_model_path")
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from)
         .filter(|p| p.is_file())
         .or_else(|| {
-            std::env::var_os("HOME").map(PathBuf::from).and_then(|home| {
-                let candidate = home.join(".local/share/uta-studio/runtime/ggml-models/rmvpe/rmvpe-f32.gguf");
-                candidate.is_file().then_some(candidate)
-            })
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .and_then(|home| {
+                    let candidate = home
+                        .join(".local/share/uta-studio/runtime/ggml-models/rmvpe/rmvpe-f32.gguf");
+                    candidate.is_file().then_some(candidate)
+                })
         })
-        .ok_or_else(|| Error::message("RMVPE GGUF model path not found in config or runtime store"))?;
+        .ok_or_else(|| {
+            Error::message("RMVPE GGUF model path not found in config or runtime store")
+        })?;
     Ok((stars_path, rmvpe_path))
 }
 
@@ -1050,7 +1288,11 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
     const WINDOW: usize = 256;
     const OVERLAP: usize = 64;
     const STRIDE: usize = WINDOW - OVERLAP;
-    let windows = if frames <= WINDOW { 1 } else { (frames - WINDOW).div_ceil(STRIDE) + 1 };
+    let windows = if frames <= WINDOW {
+        1
+    } else {
+        (frames - WINDOW).div_ceil(STRIDE) + 1
+    };
     let mut raw = Vec::with_capacity(frames);
     let mut start = 0;
     for window in 0..windows {
@@ -1059,9 +1301,15 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
         let values = mel16::to_channel_major_window(&mel, frames, start, WINDOW);
         let salience = rmvpe::forward(weights, &values, WINDOW);
         let keep_start = if window == 0 { 0 } else { OVERLAP / 2 };
-        let keep_end = if final_window { remaining } else { WINDOW - OVERLAP / 2 };
+        let keep_end = if final_window {
+            remaining
+        } else {
+            WINDOW - OVERLAP / 2
+        };
         for frame in keep_start..keep_end {
-            raw.push(decode_rmvpe_frame(&salience[frame * rmvpe::PITCH_CLASSES..(frame + 1) * rmvpe::PITCH_CLASSES]));
+            raw.push(decode_rmvpe_frame(
+                &salience[frame * rmvpe::PITCH_CLASSES..(frame + 1) * rmvpe::PITCH_CLASSES],
+            ));
         }
         if final_window {
             break;
@@ -1069,7 +1317,9 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
         start += STRIDE;
     }
     if raw.len() != frames {
-        return Err(Error::message("annotation RMVPE window stitching lost frames"));
+        return Err(Error::message(
+            "annotation RMVPE window stitching lost frames",
+        ));
     }
     Ok(raw)
 }
@@ -1093,7 +1343,11 @@ fn decode_rmvpe_frame(values: &[f32]) -> f32 {
         weighted += salience * (20.0 * class as f32 + CENTS_OFFSET);
         weight += salience;
     }
-    let cents = if weight > f32::EPSILON { weighted / weight } else { 20.0 * center as f32 + CENTS_OFFSET };
+    let cents = if weight > f32::EPSILON {
+        weighted / weight
+    } else {
+        20.0 * center as f32 + CENTS_OFFSET
+    };
     10.0 * 2.0_f32.powf(cents / 1_200.0)
 }
 
@@ -1104,7 +1358,11 @@ pub struct SharedInputs {
     pub uv: Vec<i64>,
 }
 
-pub fn shared_inputs(audio_24k: &[f32], audio_16k: &[f32], rmvpe_weights: &RmvpeWeights) -> Result<SharedInputs> {
+pub fn shared_inputs(
+    audio_24k: &[f32],
+    audio_16k: &[f32],
+    rmvpe_weights: &RmvpeWeights,
+) -> Result<SharedInputs> {
     let (mel, frames) = singing_frontend::mel_80(audio_24k).map_err(Error::message)?;
     let raw_f0 = run_annotation_rmvpe(rmvpe_weights, audio_16k)?;
     let pitch = singing_frontend::annotation_pitch(&raw_f0, frames).map_err(Error::message)?;
@@ -1135,7 +1393,9 @@ pub fn run_stars(
     let g2p = ChineseG2pAsset::load_embedded().map_err(Error::message)?;
     let segments = conditioned_segments(words, source_start, shared.frames);
     if segments.is_empty() {
-        return Err(Error::message("STARS has no TimedTranscript-conditioned frames"));
+        return Err(Error::message(
+            "STARS has no TimedTranscript-conditioned frames",
+        ));
     }
     let mut all_logits = vec![0.0; shared.frames];
     let mut all_boundaries = Vec::new();
@@ -1152,7 +1412,12 @@ pub fn run_stars(
         };
         progress(index as f32 / total as f32, message);
 
-        let mel = padded_rows(&shared.mel, shared.frames, singing_frontend::MEL_BINS, segment.start);
+        let mel = padded_rows(
+            &shared.mel,
+            shared.frames,
+            singing_frontend::MEL_BINS,
+            segment.start,
+        );
         let pitch = padded_i64(&shared.pitch_coarse, segment.start);
         let uv = padded_i64(&shared.uv, segment.start);
         let mut nonpadding = vec![false; FRAME_BUCKET];
@@ -1161,7 +1426,13 @@ pub fn run_stars(
         let a = stage_a(weights, &mel, &pitch, &uv, &nonpadding, FRAME_BUCKET);
 
         let phonemes = g2p
-            .phonemize_words(&segment.words.iter().map(|w| w.text.clone()).collect::<Vec<_>>())
+            .phonemize_words(
+                &segment
+                    .words
+                    .iter()
+                    .map(|w| w.text.clone())
+                    .collect::<Vec<_>>(),
+            )
             .map_err(Error::message)?;
         let alignment = stars_viterbi::align(
             &a.ph_frame_logits[..segment.valid * 61],
@@ -1178,45 +1449,83 @@ pub fn run_stars(
         let num_ph = alignment.phoneme_intervals.len();
         let num_word = alignment.word_intervals.len();
 
-        let b = stage_b(weights, &a.mel_embed, &a.feat, FRAME_BUCKET, &mel2ph, num_ph, &mel2word, num_word);
-        all_logits[segment.start..segment.start + segment.valid].copy_from_slice(&b.note_bd_logits[..segment.valid]);
-        let regulated = stars_viterbi::regulate_boundaries(&b.note_bd_logits, 0.8, 17, segment.valid).map_err(Error::message)?;
+        let b = stage_b(
+            weights,
+            &a.mel_embed,
+            &a.feat,
+            FRAME_BUCKET,
+            &mel2ph,
+            num_ph,
+            &mel2word,
+            num_word,
+        );
+        all_logits[segment.start..segment.start + segment.valid]
+            .copy_from_slice(&b.note_bd_logits[..segment.valid]);
+        let regulated =
+            stars_viterbi::regulate_boundaries(&b.note_bd_logits, 0.8, 17, segment.valid)
+                .map_err(Error::message)?;
         let local_boundaries = boundary_indices(&regulated, segment.valid);
         let ranges = note_ranges(&local_boundaries, segment.valid);
         if ranges.len() > NOTE_BUCKET {
-            return Err(Error::message("STARS segment exceeds the pinned note bucket"));
+            return Err(Error::message(
+                "STARS segment exceeds the pinned note bucket",
+            ));
         }
         let mel2note = mapping_from_boundaries(&regulated, segment.valid);
 
-        let c = stage_c(weights, &a.mel_embed, &b.feat, FRAME_BUCKET, &mel2note, ranges.len().max(1), &regulated);
+        let c = stage_c(
+            weights,
+            &a.mel_embed,
+            &b.feat,
+            FRAME_BUCKET,
+            &mel2note,
+            ranges.len().max(1),
+            &regulated,
+        );
         append_notes(&mut all_notes, segment.start, &ranges, &c.note_logits);
 
         if include_technique {
             let d = stage_d(weights, &a.mel_embed, &c.feat, FRAME_BUCKET, &nonpadding);
-            if alignment.phoneme_intervals.is_empty() || alignment.phoneme_intervals.len() > PHONEME_BUCKET {
-                return Err(Error::message("STARS phoneme intervals exceed the technique bucket"));
+            if alignment.phoneme_intervals.is_empty()
+                || alignment.phoneme_intervals.len() > PHONEME_BUCKET
+            {
+                return Err(Error::message(
+                    "STARS phoneme intervals exceed the technique bucket",
+                ));
             }
-            let aggregated = aggregate_phoneme_technique(&d.weighted, &d.attention, &alignment.phoneme_intervals);
+            let aggregated = aggregate_phoneme_technique(
+                &d.weighted,
+                &d.attention,
+                &alignment.phoneme_intervals,
+            );
             let e = stage_e(weights, &aggregated, alignment.phoneme_intervals.len());
             append_techniques(
-                all_techniques.as_mut().expect("technique collection is available"),
+                all_techniques
+                    .as_mut()
+                    .expect("technique collection is available"),
                 segment.start,
                 &alignment.phoneme_intervals,
                 &e,
             );
-            all_styles.as_mut().expect("style collection is available").push(RawGlobalStyle {
-                start_frame: segment.start,
-                end_frame: segment.start + segment.valid,
-                heads: std::collections::BTreeMap::from([
-                    ("technique_group", style_head(&STYLE_TECHNIQUE_GROUP, &d.styles[0])),
-                    ("language", style_head(&STYLE_LANGUAGE, &d.styles[1])),
-                    ("gender", style_head(&STYLE_GENDER, &d.styles[2])),
-                    ("emotion", style_head(&STYLE_EMOTION, &d.styles[3])),
-                    ("method", style_head(&STYLE_METHOD, &d.styles[4])),
-                    ("pace", style_head(&STYLE_PACE, &d.styles[5])),
-                    ("range", style_head(&STYLE_RANGE, &d.styles[6])),
-                ]),
-            });
+            all_styles
+                .as_mut()
+                .expect("style collection is available")
+                .push(RawGlobalStyle {
+                    start_frame: segment.start,
+                    end_frame: segment.start + segment.valid,
+                    heads: std::collections::BTreeMap::from([
+                        (
+                            "technique_group",
+                            style_head(&STYLE_TECHNIQUE_GROUP, &d.styles[0]),
+                        ),
+                        ("language", style_head(&STYLE_LANGUAGE, &d.styles[1])),
+                        ("gender", style_head(&STYLE_GENDER, &d.styles[2])),
+                        ("emotion", style_head(&STYLE_EMOTION, &d.styles[3])),
+                        ("method", style_head(&STYLE_METHOD, &d.styles[4])),
+                        ("pace", style_head(&STYLE_PACE, &d.styles[5])),
+                        ("range", style_head(&STYLE_RANGE, &d.styles[6])),
+                    ]),
+                });
         }
 
         for boundary in ranges.iter().skip(1).map(|range| segment.start + range.0) {
@@ -1234,9 +1543,15 @@ pub fn run_stars(
     })
 }
 
-fn append_techniques(target: &mut Vec<RawTechnique>, segment_start: usize, intervals: &[stars_viterbi::Interval], logits: &[f32]) {
+fn append_techniques(
+    target: &mut Vec<RawTechnique>,
+    segment_start: usize,
+    intervals: &[stars_viterbi::Interval],
+    logits: &[f32],
+) {
     for (phoneme, interval) in intervals.iter().enumerate() {
-        let raw_logits = logits[phoneme * TECHNIQUE_CLASSES..(phoneme + 1) * TECHNIQUE_CLASSES].to_vec();
+        let raw_logits =
+            logits[phoneme * TECHNIQUE_CLASSES..(phoneme + 1) * TECHNIQUE_CLASSES].to_vec();
         let source_local_scores = raw_logits.iter().map(|v| sigmoid_scalar(*v)).collect();
         target.push(RawTechnique {
             start_frame: segment_start + interval.start,
@@ -1279,9 +1594,16 @@ pub fn infer(
     progress(0.05, "Computing shared mel and pitch annotation", None);
     let shared = shared_inputs(audio_24k, audio_16k, &rmvpe_weights)?;
 
-    let result = run_stars(&stars_weights, &shared, words, source_start, include_technique, |fraction, message| {
-        progress(0.1 + fraction * 0.85, message, None);
-    })?;
+    let result = run_stars(
+        &stars_weights,
+        &shared,
+        words,
+        source_start,
+        include_technique,
+        |fraction, message| {
+            progress(0.1 + fraction * 0.85, message, None);
+        },
+    )?;
 
     let mut capabilities = vec!["notes.stars"];
     if include_technique {
@@ -1329,8 +1651,14 @@ pub fn infer(
         note_boundary_logits: result.boundary_logits,
         regulated_note_boundaries: result.boundaries,
         notes: result.notes,
-        technique_taxonomy: result.techniques.as_ref().map(|_| TECHNIQUE_TAXONOMY.to_vec()),
-        technique_calibration: result.techniques.as_ref().map(|_| "source_local_sigmoid_uncalibrated"),
+        technique_taxonomy: result
+            .techniques
+            .as_ref()
+            .map(|_| TECHNIQUE_TAXONOMY.to_vec()),
+        technique_calibration: result
+            .techniques
+            .as_ref()
+            .map(|_| "source_local_sigmoid_uncalibrated"),
         techniques: result.techniques,
         style_scope: result.styles.as_ref().map(|_| "segment_global"),
         styles: result.styles,
@@ -1385,7 +1713,9 @@ mod tests {
         // exercise every stage without needing a real audio fixture yet.
         let make_tone = |sample_rate: usize| -> Vec<f32> {
             (0..sample_rate * 3)
-                .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sample_rate as f32).sin() * 0.2)
+                .map(|i| {
+                    (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sample_rate as f32).sin() * 0.2
+                })
                 .collect()
         };
         let audio_24k = make_tone(singing_frontend::SAMPLE_RATE);
@@ -1478,10 +1808,14 @@ mod pytorch_reference {
         };
         let weights = StarsWeights::load(std::path::Path::new(&stars_path)).unwrap();
 
-        let frontend: FrontendFixture =
-            serde_json::from_str(include_str!("../fixtures/shared-singing-frontend-upstream.json")).unwrap();
-        let reference: StageADebug =
-            serde_json::from_str(include_str!("../fixtures/pytorch-reference-stars-stage-a-debug.json")).unwrap();
+        let frontend: FrontendFixture = serde_json::from_str(include_str!(
+            "../fixtures/shared-singing-frontend-upstream.json"
+        ))
+        .unwrap();
+        let reference: StageADebug = serde_json::from_str(include_str!(
+            "../fixtures/pytorch-reference-stars-stage-a-debug.json"
+        ))
+        .unwrap();
         let valid = frontend.mel_frames;
         const T: usize = 256;
 
@@ -1536,6 +1870,9 @@ mod pytorch_reference {
 
         let logits_diff = max_diff_2d(&a.ph_frame_logits, &reference.a3_ph_frame_logits, valid, 61);
         println!("ph_frame_logits (a3) diff: {logits_diff}");
-        assert!(logits_diff < 5.0e-2, "a[3] ph_frame_logits diverged: {logits_diff}");
+        assert!(
+            logits_diff < 5.0e-2,
+            "a[3] ph_frame_logits diverged: {logits_diff}"
+        );
     }
 }

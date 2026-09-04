@@ -65,7 +65,7 @@ pub fn append_stitched_note(
                 let previous_owned_end = previous_end.min(seam);
                 if previous_owned_end <= previous.start {
                     return Err(
-                        "GAME chunk stitching produced an empty left seam interval".to_string(),
+                        "GAME chunk stitching produced an empty left seam interval".to_string()
                     );
                 }
                 previous.duration = previous_owned_end - previous.start;

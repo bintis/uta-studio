@@ -206,7 +206,10 @@ fn cqt_magnitude(window: &[f32], weights: &Weights) -> (Vec<f32>, usize) {
         if octave == 0 {
             n_frames = frames;
         }
-        debug_assert_eq!(frames, n_frames, "every CQT octave must share the same frame grid");
+        debug_assert_eq!(
+            frames, n_frames,
+            "every CQT octave must share the same frame grid"
+        );
         octave_real.push(real);
         octave_imag.push(imag);
     }
@@ -288,7 +291,8 @@ fn harmonic_stack(log_cqt: &[f32], n_frames: usize) -> Vec<f32> {
             ..(channel + 1) * n_frames * N_FREQ_BINS_CONTOURS];
         for t in 0..n_frames {
             let src_row = &log_cqt[t * CQT_N_BINS..(t + 1) * CQT_N_BINS];
-            let dst_row = &mut channel_out[t * N_FREQ_BINS_CONTOURS..(t + 1) * N_FREQ_BINS_CONTOURS];
+            let dst_row =
+                &mut channel_out[t * N_FREQ_BINS_CONTOURS..(t + 1) * N_FREQ_BINS_CONTOURS];
             for (bin, slot) in dst_row.iter_mut().enumerate() {
                 let source_bin = bin as isize + shift;
                 *slot = if source_bin >= 0 && (source_bin as usize) < CQT_N_BINS {
@@ -372,10 +376,17 @@ fn relu_inplace(data: &mut [f32]) {
 }
 
 fn sigmoid_inplace(data: &mut [f32]) {
-    data.par_iter_mut().for_each(|v| *v = 1.0 / (1.0 + (-*v).exp()));
+    data.par_iter_mut()
+        .for_each(|v| *v = 1.0 / (1.0 + (-*v).exp()));
 }
 
-fn concat_channels(a: &[f32], a_channels: usize, b: &[f32], b_channels: usize, plane: usize) -> Vec<f32> {
+fn concat_channels(
+    a: &[f32],
+    a_channels: usize,
+    b: &[f32],
+    b_channels: usize,
+    plane: usize,
+) -> Vec<f32> {
     let mut out = vec![0.0_f32; (a_channels + b_channels) * plane];
     out[..a_channels * plane].copy_from_slice(a);
     out[a_channels * plane..].copy_from_slice(b);
@@ -492,7 +503,9 @@ fn run_window(window: &[f32], weights: &Weights) -> Result<WindowActivations> {
     );
     sigmoid_inplace(&mut onset_final); // [1, n_frames, 88] -- the onset output
 
-    if !magnitude_is_finite(&contour_final) || !magnitude_is_finite(&note_final) || !magnitude_is_finite(&onset_final)
+    if !magnitude_is_finite(&contour_final)
+        || !magnitude_is_finite(&note_final)
+        || !magnitude_is_finite(&onset_final)
     {
         return Err(Error::message(
             "Basic Pitch produced non-finite activation evidence".to_string(),
@@ -576,7 +589,8 @@ fn append_window_frames(
             break;
         }
         let source_sample = source_frame * FFT_HOP_SAMPLES;
-        let contour = &activations.contours[frame * N_FREQ_BINS_CONTOURS..(frame + 1) * N_FREQ_BINS_CONTOURS];
+        let contour =
+            &activations.contours[frame * N_FREQ_BINS_CONTOURS..(frame + 1) * N_FREQ_BINS_CONTOURS];
         let (contour_class, contour_score) = contour
             .iter()
             .copied()
@@ -621,7 +635,9 @@ pub fn infer(
     mut progress: impl FnMut(f32, &'static str, Option<(u64, u64)>),
 ) -> Result<PathBuf> {
     if audio.is_empty() {
-        return Err(Error::message("Basic Pitch requires non-empty decoded audio".to_string()));
+        return Err(Error::message(
+            "Basic Pitch requires non-empty decoded audio".to_string(),
+        ));
     }
     let weights = Weights::load(model_path)?;
     let count = window_count(audio.len());
@@ -680,7 +696,10 @@ mod tests {
         // round(36 * log2(h)) for h in [0.5, 1, 2, 3, 4, 5, 6, 7]
         let expected = [-36_isize, 0, 36, 57, 72, 84, 93, 101];
         const HARMONICS: [f64; 8] = [0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        let shifts: Vec<isize> = HARMONICS.iter().map(|h| (36.0 * h.log2()).round() as isize).collect();
+        let shifts: Vec<isize> = HARMONICS
+            .iter()
+            .map(|h| (36.0 * h.log2()).round() as isize)
+            .collect();
         assert_eq!(shifts, expected);
     }
 
@@ -759,7 +778,10 @@ mod tests {
         let activations = run_window(&window, &weights).unwrap();
 
         let max_diff = |a: &[f32], b: &[f32]| -> f32 {
-            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f32::max)
         };
         eprintln!(
             "note max_diff={} onset max_diff={} contour max_diff={}",
@@ -767,8 +789,14 @@ mod tests {
             max_diff(&activations.onsets, &expected_onsets),
             max_diff(&activations.contours, &expected_contours),
         );
-        assert!(max_diff(&activations.notes, &expected_notes) < 1e-3, "note mismatch");
-        assert!(max_diff(&activations.onsets, &expected_onsets) < 1e-3, "onset mismatch");
+        assert!(
+            max_diff(&activations.notes, &expected_notes) < 1e-3,
+            "note mismatch"
+        );
+        assert!(
+            max_diff(&activations.onsets, &expected_onsets) < 1e-3,
+            "onset mismatch"
+        );
         assert!(
             max_diff(&activations.contours, &expected_contours) < 1e-3,
             "contour mismatch"
@@ -789,7 +817,8 @@ mod tests {
         let freq = 440.0_f64;
         let mut window = vec![0.0_f32; INPUT_SAMPLES];
         for (i, sample) in window.iter_mut().enumerate() {
-            *sample = (2.0 * std::f64::consts::PI * freq * i as f64 / SAMPLE_RATE as f64).sin() as f32;
+            *sample =
+                (2.0 * std::f64::consts::PI * freq * i as f64 / SAMPLE_RATE as f64).sin() as f32;
         }
         let (magnitude, n_frames) = cqt_magnitude(&window, &weights);
         // Use a frame comfortably inside the window, away from edge effects.

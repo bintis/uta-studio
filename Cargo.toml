@@ -11,6 +11,7 @@ members = [
   "native-inference/openvino-worker",
   "native-inference/qwen-worker",
   "native-inference/game",
+  "native-inference/wgpu-runtime",
   "native-inference/jbm555",
   "native-inference/fcpe",
   "native-inference/basic-pitch",

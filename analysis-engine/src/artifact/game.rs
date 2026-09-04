@@ -92,7 +92,10 @@ pub fn parse_game_evidence(
         || raw.model_id != "game"
         || raw.variant != "GAME-1.0.3-medium-onnx"
         || raw.source_commit != GAME_SOURCE_COMMIT
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu" | "game_native")
+        || !matches!(
+            raw.backend.as_str(),
+            "openvino_gpu" | "openvino_cpu" | "game_native"
+        )
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10
         || raw.d3pm_steps != 8
@@ -217,7 +220,8 @@ mod tests {
 
     #[test]
     fn parses_game_native_evidence() {
-        let path = std::env::temp_dir().join(format!("uta-game-native-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("uta-game-native-{}.json", std::process::id()));
         std::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({

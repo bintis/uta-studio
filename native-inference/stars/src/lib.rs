@@ -56,7 +56,9 @@ pub fn run_task(
     config: &serde_json::Value,
 ) -> Result<()> {
     if input_artifacts.is_empty() {
-        return Err(Error::message("STARS requires at least one input audio artifact"));
+        return Err(Error::message(
+            "STARS requires at least one input audio artifact",
+        ));
     }
     if !output_dir.is_dir() {
         return Err(Error::message("Output directory does not exist"));
@@ -64,7 +66,9 @@ pub fn run_task(
     let task_config: StarsTaskConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::message(format!("STARS task config is invalid: {e}")))?;
     if task_config.words.is_empty() {
-        return Err(Error::message("STARS requires a non-empty timed-transcript word list"));
+        return Err(Error::message(
+            "STARS requires a non-empty timed-transcript word list",
+        ));
     }
     let words = task_config
         .words
@@ -84,8 +88,12 @@ pub fn run_task(
         work_units_completed: None,
         work_units_total: None,
     });
-    let audio_24k = audio::decode_mono(&input_artifacts[0], output_dir, singing_frontend::SAMPLE_RATE)
-        .map_err(|e| Error::message(format!("could not decode audio at 24 kHz: {e}")))?;
+    let audio_24k = audio::decode_mono(
+        &input_artifacts[0],
+        output_dir,
+        singing_frontend::SAMPLE_RATE,
+    )
+    .map_err(|e| Error::message(format!("could not decode audio at 24 kHz: {e}")))?;
     let audio_16k = audio::decode_mono(&input_artifacts[0], output_dir, mel16::SAMPLE_RATE)
         .map_err(|e| Error::message(format!("could not decode audio at 16 kHz: {e}")))?;
 
@@ -181,7 +189,9 @@ pub fn run_stdio() -> std::process::ExitCode {
                 config,
                 ..
             } => {
-                if let Err(err) = run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config) {
+                if let Err(err) =
+                    run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config)
+                {
                     emit(&WorkerFrame::Error {
                         task_id: Some(&task_id),
                         code: "stars_execution_error",

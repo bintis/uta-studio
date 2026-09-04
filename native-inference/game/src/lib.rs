@@ -3,9 +3,9 @@ pub mod core;
 pub mod engine;
 pub mod protocol;
 
-pub use core::*;
 pub use core::profiler;
-pub use engine::{SAMPLE_RATE, HOP_SIZE, infer_game_gguf};
+pub use core::*;
+pub use engine::{HOP_SIZE, SAMPLE_RATE, infer_game_gguf};
 pub use protocol::{PROTOCOL_VERSION, WorkerCommand, WorkerFrame, emit};
 
 use std::io::BufRead;
@@ -110,18 +110,19 @@ pub fn run_stdio() {
                     work_units_total: None,
                 });
 
-                let audio_samples = match audio::decode_mono(input_path, &output_dir, engine::SAMPLE_RATE) {
-                    Ok(samples) => samples,
-                    Err(e) => {
-                        emit(&WorkerFrame::Error {
-                            task_id: Some(&task_id),
-                            code: "decode_failed",
-                            message: &format!("failed to decode input audio: {e}"),
-                            retryable: false,
-                        });
-                        continue;
-                    }
-                };
+                let audio_samples =
+                    match audio::decode_mono(input_path, &output_dir, engine::SAMPLE_RATE) {
+                        Ok(samples) => samples,
+                        Err(e) => {
+                            emit(&WorkerFrame::Error {
+                                task_id: Some(&task_id),
+                                code: "decode_failed",
+                                message: &format!("failed to decode input audio: {e}"),
+                                retryable: false,
+                            });
+                            continue;
+                        }
+                    };
 
                 let task_id_clone = task_id.clone();
                 let result = engine::infer_game_gguf(
@@ -163,7 +164,10 @@ pub fn run_stdio() {
                     }
                 }
             }
-            WorkerCommand::Cancel { protocol: _, task_id } => {
+            WorkerCommand::Cancel {
+                protocol: _,
+                task_id,
+            } => {
                 emit(&WorkerFrame::Done {
                     task_id: &task_id,
                     status: "cancelled",

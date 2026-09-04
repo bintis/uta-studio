@@ -1071,7 +1071,11 @@ fn advanced_note_helper_dispatches_native_stars_backend_to_the_stars_worker() {
     let payload_sha = format!("{:x}", Sha256::digest(payload));
     let rmvpe_payload = b"fixture rmvpe weights";
     let rmvpe_payload_sha = format!("{:x}", Sha256::digest(rmvpe_payload));
-    let stars_catalog_model = ResourceCatalog::default_catalog().unwrap().model("stars").unwrap().clone();
+    let stars_catalog_model = ResourceCatalog::default_catalog()
+        .unwrap()
+        .model("stars")
+        .unwrap()
+        .clone();
     let manifest = InstallManifest {
         schema: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA.to_string(),
         schema_version: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA_VERSION,
@@ -1102,7 +1106,11 @@ fn advanced_note_helper_dispatches_native_stars_backend_to_the_stars_worker() {
     fs::create_dir_all(&generation_dir).unwrap();
     fs::write(generation_dir.join("model.bin"), payload).unwrap();
     fs::write(generation_dir.join("rmvpe-f32.gguf"), rmvpe_payload).unwrap();
-    fs::write(generation_dir.join("install-manifest.json"), &manifest_bytes).unwrap();
+    fs::write(
+        generation_dir.join("install-manifest.json"),
+        &manifest_bytes,
+    )
+    .unwrap();
     fs::write(
         store.join("models/stars/current.json"),
         format!(r#"{{"generation":"{generation}"}}"#),
@@ -1253,7 +1261,11 @@ fn advanced_note_helper_dispatches_native_rosvot_backend_to_the_rosvot_worker() 
     let payload_sha = format!("{:x}", Sha256::digest(payload));
     let rmvpe_payload = b"fixture rmvpe weights";
     let rmvpe_payload_sha = format!("{:x}", Sha256::digest(rmvpe_payload));
-    let rosvot_catalog_model = ResourceCatalog::default_catalog().unwrap().model("rosvot").unwrap().clone();
+    let rosvot_catalog_model = ResourceCatalog::default_catalog()
+        .unwrap()
+        .model("rosvot")
+        .unwrap()
+        .clone();
     let manifest = InstallManifest {
         schema: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA.to_string(),
         schema_version: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA_VERSION,
@@ -1284,7 +1296,11 @@ fn advanced_note_helper_dispatches_native_rosvot_backend_to_the_rosvot_worker() 
     fs::create_dir_all(&generation_dir).unwrap();
     fs::write(generation_dir.join("model.bin"), payload).unwrap();
     fs::write(generation_dir.join("rmvpe-f32.gguf"), rmvpe_payload).unwrap();
-    fs::write(generation_dir.join("install-manifest.json"), &manifest_bytes).unwrap();
+    fs::write(
+        generation_dir.join("install-manifest.json"),
+        &manifest_bytes,
+    )
+    .unwrap();
     fs::write(
         store.join("models/rosvot/current.json"),
         format!(r#"{{"generation":"{generation}"}}"#),

@@ -92,7 +92,11 @@ impl Pipelines {
             device,
             "game.gpu.unary",
             include_str!("shaders/unary.wgsl"),
-            &[uniform_entry(0), storage_entry(1, true), storage_entry(2, false)],
+            &[
+                uniform_entry(0),
+                storage_entry(1, true),
+                storage_entry(2, false),
+            ],
         );
         let softmax = build_kernel(
             device,
@@ -165,10 +169,13 @@ pub(super) fn uniform_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -
     })
 }
 
-pub(super) fn storage_buffer_init(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
-    let usage = wgpu::BufferUsages::STORAGE
-        | wgpu::BufferUsages::COPY_DST
-        | wgpu::BufferUsages::COPY_SRC;
+pub(super) fn storage_buffer_init(
+    device: &wgpu::Device,
+    label: &str,
+    bytes: &[u8],
+) -> wgpu::Buffer {
+    let usage =
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
     if bytes.is_empty() {
         return device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
@@ -184,7 +191,11 @@ pub(super) fn storage_buffer_init(device: &wgpu::Device, label: &str, bytes: &[u
     })
 }
 
-pub(super) fn storage_buffer_zeroed(device: &wgpu::Device, label: &str, len_bytes: u64) -> wgpu::Buffer {
+pub(super) fn storage_buffer_zeroed(
+    device: &wgpu::Device,
+    label: &str,
+    len_bytes: u64,
+) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: len_bytes.max(4),

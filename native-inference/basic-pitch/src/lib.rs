@@ -27,8 +27,8 @@ fn resolve_model_path(config: &serde_json::Value) -> Result<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let candidate =
-            home.join(".local/share/uta-studio/runtime/ggml-models/basic_pitch/basic-pitch-f32.gguf");
+        let candidate = home
+            .join(".local/share/uta-studio/runtime/ggml-models/basic_pitch/basic-pitch-f32.gguf");
         if candidate.is_file() {
             return Ok(candidate);
         }
@@ -66,15 +66,20 @@ pub fn run_task(
 
     let model_path = resolve_model_path(config)?;
 
-    let output = engine::infer(&audio, &model_path, output_dir, |fraction, message, work_units| {
-        emit(&WorkerFrame::Progress {
-            task_id,
-            fraction: 0.05 + fraction * 0.90,
-            message,
-            work_units_completed: work_units.map(|(c, _)| c),
-            work_units_total: work_units.map(|(_, t)| t),
-        });
-    })
+    let output = engine::infer(
+        &audio,
+        &model_path,
+        output_dir,
+        |fraction, message, work_units| {
+            emit(&WorkerFrame::Progress {
+                task_id,
+                fraction: 0.05 + fraction * 0.90,
+                message,
+                work_units_completed: work_units.map(|(c, _)| c),
+                work_units_total: work_units.map(|(_, t)| t),
+            });
+        },
+    )
     .map_err(|e| Error::message(e.to_string()))?;
 
     emit(&WorkerFrame::Output {
@@ -139,7 +144,9 @@ pub fn run_stdio() -> std::process::ExitCode {
                 config,
                 ..
             } => {
-                if let Err(err) = run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config) {
+                if let Err(err) =
+                    run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config)
+                {
                     emit(&WorkerFrame::Error {
                         task_id: Some(&task_id),
                         code: "basic_pitch_execution_error",
