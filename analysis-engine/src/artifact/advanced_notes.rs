@@ -399,7 +399,7 @@ pub fn parse_advanced_note_evidence(
         || evidence.upstream_commit != commit
         || !matches!(
             evidence.backend.as_str(),
-            "openvino_gpu" | "openvino_cpu" | "openvino_gpu_cpu_staged"
+            "openvino_gpu" | "openvino_cpu" | "openvino_gpu_cpu_staged" | "ggml_native"
         )
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
         || evidence.word_boundary_source != "timed_transcript"

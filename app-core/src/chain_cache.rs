@@ -390,7 +390,10 @@ pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str
             let (kind, node_id) = if artifact == "guide_vocals" {
                 (ArtifactKind::VocalStem, "vocal_bgm_split")
             } else {
-                (ArtifactKind::InstrumentalStem, "vocal_bgm_split_instrumental")
+                (
+                    ArtifactKind::InstrumentalStem,
+                    "vocal_bgm_split_instrumental",
+                )
             };
             let fingerprint = compute_native_config_hash(
                 &AnalysisNodeId::new(node_id),

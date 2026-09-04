@@ -8,14 +8,14 @@ pub(super) const JBM555_CECTC_80_ID: &str = "jbm555_cectc_80";
 /// descriptive; acquisition and execution do not depend on certificate,
 /// license-acceptance, or artifact-hash gates.
 pub(super) fn task_23_models() -> RuntimeManagerResult<Vec<ModelCatalogEntry>> {
-    use NativeBackend::{CpuReference, OpenVino, Vulkan};
+    use NativeBackend::{CpuReference, NativeDsp, OpenVino, Vulkan};
     use ValidationState::{Experimental, ProductionPinned};
 
     let openvino_routes = || {
         vec![
             BackendCapability {
                 backend: OpenVino,
-                validation: ProductionPinned,
+                validation: Experimental,
                 evidence_id: Some("task23-native-openvino-execution".to_string()),
             },
             BackendCapability {
@@ -67,10 +67,7 @@ pub(super) fn task_23_models() -> RuntimeManagerResult<Vec<ModelCatalogEntry>> {
             estimated_download_bytes: Some(267_433_600),
             estimated_installed_bytes: Some(267_433_600),
             recipe_digest: catalog_recipe_digest(LEAP_XE90_VOCALS_ID),
-            runtime_recipe_digest: Some(
-                "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a"
-                    .to_string(),
-            ),
+            runtime_recipe_digest: Some(GGML_RUNTIME_RECIPE_SHA256.to_string()),
         },
         ModelCatalogEntry {
             id: ModelId::new(PUBLIC_POLARFORMER_INSTRUMENTAL_ID)?,
@@ -175,9 +172,34 @@ pub(super) fn task_23_models() -> RuntimeManagerResult<Vec<ModelCatalogEntry>> {
                 AcquisitionMethod::LocalImport,
                 "import an ONNX export of the published CE-CTC 80 checkpoint",
             )],
-            dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-            backends: openvino_routes(),
-            pinned_backend: Some(OpenVino),
+            dependencies: vec![
+                ResourceRef::runtime("openvino_2026_3")?,
+                ResourceRef::runtime("jbm555_native_v1")?,
+            ],
+            backends: vec![
+                BackendCapability {
+                    backend: OpenVino,
+                    validation: Experimental,
+                    evidence_id: Some("validation:jbm555-openvino-2026".to_string()),
+                },
+                BackendCapability {
+                    // `uta-jbm-worker` is a hand-written CPU engine
+                    // (gemm/rayon, no wgpu/Vulkan dependency) -- relabeled
+                    // from the prior `Vulkan` mislabel to `NativeDsp` to
+                    // match what actually runs. Made the default route: it
+                    // is CPU-only, so it carries none of the OpenVINO GPU
+                    // route's crash risk on this host.
+                    backend: NativeDsp,
+                    validation: ProductionPinned,
+                    evidence_id: Some("validation:jbm555-native-gguf-2026-09-03".to_string()),
+                },
+                BackendCapability {
+                    backend: CpuReference,
+                    validation: ValidationState::Experimental,
+                    evidence_id: Some("validation:jbm555-native-gguf-cpu-2026-09-03".to_string()),
+                },
+            ],
+            pinned_backend: Some(NativeDsp),
             estimated_download_bytes: Some(3_990_463),
             estimated_installed_bytes: Some(3_990_463),
             recipe_digest: catalog_recipe_digest(JBM555_CECTC_80_ID),

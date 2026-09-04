@@ -81,18 +81,18 @@ fn preview_and_execution_degrade_when_optional_cleanup_resources_are_missing() {
     let ffmpeg = root.join("ffmpeg");
     executable(&ffmpeg, &non_silent_pcm_script(48_000));
     let pitch_output = output.join("worker/fcpe/pitch.json");
-    let worker = root.join("openvino-worker");
+    // fcpe now defaults to its own native worker (`uta-fcpe-worker`), not
+    // OpenVINO; emit the exact wire shape that worker produces.
+    let worker = root.join("fcpe-worker");
     executable(
         &worker,
         &format!(
-            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\nmkdir -p '{}'\nprintf '%s\\n' '{{\"schema_version\":3,\"model_id\":\"fcpe\",\"source_model_sha256\":\"{}\",\"model_manifest_sha256\":\"{}\",\"model_xml_sha256\":\"{}\",\"model_bin_sha256\":\"{}\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"window_samples\":32000,\"window_hop_samples\":32000,\"frames\":[{{\"time\":0.0,\"hz\":440.0}},{{\"time\":0.01,\"hz\":440.0}}]}}' > '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-fcpe\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-fcpe\",\"status\":\"ok\"}}'\nread quit",
-            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-fcpe-worker\",\"runtime_recipe_digest\":\"fcpe-native-recipe-v1\"}}'\nread run\nmkdir -p '{}'\nprintf '%s\\n' '{{\"schema_version\":3,\"model_id\":\"fcpe\",\"source_model_sha256\":\"{}\",\"model_manifest_sha256\":\"{}\",\"model_xml_sha256\":\"{}\",\"model_bin_sha256\":\"{}\",\"runtime_manifest_sha256\":\"fcpe-native-recipe-v1\",\"backend\":\"ggml_native\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"window_samples\":32000,\"window_hop_samples\":32000,\"frames\":[{{\"time\":0.0,\"hz\":440.0}},{{\"time\":0.01,\"hz\":440.0}}]}}' > '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-fcpe\",\"artifact\":\"fcpe_pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-fcpe\",\"status\":\"ok\"}}'\nread quit",
             pitch_output.parent().unwrap().display(),
             "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0",
             "bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6",
             "9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237",
             "6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824",
-            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
             pitch_output.display(),
             pitch_output.display(),
         ),
@@ -104,7 +104,7 @@ fn preview_and_execution_degrade_when_optional_cleanup_resources_are_missing() {
         StorePaths::default()
             .with_store_root(&store)
             .with_tool_override("ffmpeg", &ffmpeg)
-            .with_runtime_override("openvino_2026_3", &worker),
+            .with_runtime_override("fcpe_native_v1", &worker),
     ));
     let mut request = valid_request(AudioRole::CleanLeadVocal);
     request.request_id = "missing-optional-cleanup".to_string();

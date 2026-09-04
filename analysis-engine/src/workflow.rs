@@ -1207,7 +1207,7 @@ mod tests {
                 node("source", "audio.source", None, "always", 1000, "native_dsp"),
                 node("split", "audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals"), "always", 900, "vulkan"),
                 node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), "always", 800, "vulkan"),
-                node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 680, "openvino")
+                node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 680, "ggml_vulkan")
             ],
             "bindings": [
                 binding("source", "mix", "split", "audio", "source_mix", false),

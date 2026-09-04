@@ -38,7 +38,13 @@ impl Drop for OpenVinoLease {
 fn uses_non_qwen_accelerator_worker(expectation: &WorkerExpectation) -> bool {
     matches!(
         expectation.component.as_str(),
-        "uta-openvino-worker" | "uta-ggml-worker"
+        "uta-openvino-worker"
+            | "uta-ggml-worker"
+            | "uta-game-worker"
+            | "uta-jbm-worker"
+            | "uta-fcpe-worker"
+            | "uta-basic-pitch-worker"
+            | "uta-firered-worker"
     )
 }
 
@@ -685,7 +691,7 @@ mod tests {
 
     #[test]
     fn non_qwen_accelerator_workers_use_the_process_quiescence_gate() {
-        for component in ["uta-openvino-worker", "uta-ggml-worker"] {
+        for component in ["uta-openvino-worker", "uta-ggml-worker", "uta-game-worker"] {
             assert!(uses_non_qwen_accelerator_worker(&WorkerExpectation {
                 component: component.to_string(),
                 runtime_recipe_digest: None,

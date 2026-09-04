@@ -55,6 +55,21 @@ fn alignment_units_segment_cjk_even_when_latin_words_share_the_transcript() {
 }
 
 #[test]
+fn alignment_units_by_line_maps_each_caller_line_to_its_own_unit_range() {
+    // Real repro: a Timed LRC import's caller lines are whole lyric lines,
+    // not single characters -- a multi-character CJK line (or a multi-word
+    // English one) must still map to exactly one line-index entry, just
+    // covering several units, instead of desyncing the global unit array
+    // from the per-line anchor index.
+    let (units, ranges) = alignment_text_units_by_line("春天在哪里\none two\n三");
+    assert_eq!(
+        units,
+        vec!["春", "天", "在", "哪", "里", "one", "two", "三"]
+    );
+    assert_eq!(ranges, vec![(0, 5), (5, 7), (7, 8)]);
+}
+
+#[test]
 fn engine_output_reader_stops_at_the_combined_capture_limit() {
     let total = Arc::new(AtomicUsize::new(0));
     let oversized = Arc::new(AtomicBool::new(false));
@@ -323,17 +338,41 @@ fn asphodelos_style_paragraph_collapsed_into_two_ticks_fails_closed() {
 
 #[test]
 fn measured_boundary_cannot_merge_two_caller_lyric_lines() {
-    let units = ["一行目".to_string(), "二行目".to_string()];
+    // "一行目" is 3 characters, so the line-1/line-2 seam sits at offset 3.
     assert!(
         validate_alignment_unit_boundaries(
             &[word("一行目", 1.0, 2.0), word("二行目", 2.0, 3.0)],
-            &units,
+            &[3],
         )
         .is_ok()
     );
     let error =
-        validate_alignment_unit_boundaries(&[word("一行目二行目", 1.0, 3.0)], &units).unwrap_err();
-    assert!(error.contains("merged multiple lyric units"));
+        validate_alignment_unit_boundaries(&[word("一行目二行目", 1.0, 3.0)], &[3]).unwrap_err();
+    assert!(error.contains("merged multiple lyric lines"));
+}
+
+#[test]
+fn measured_boundary_may_merge_characters_within_one_line() {
+    // Real repro: a single-line window's target is "穢れなき薔薇十字" (8
+    // characters, each its own `alignment_text_units` unit); the model
+    // reasonably measured "薔薇" and "十字" as single two-character words.
+    // With no *line* boundary inside a one-line window, that must not be
+    // rejected -- only a boundary between two different caller lines may
+    // never be straddled by one measured word.
+    assert!(
+        validate_alignment_unit_boundaries(
+            &[
+                word("穢", 0.0, 0.5),
+                word("れ", 0.5, 1.0),
+                word("な", 1.0, 1.5),
+                word("き", 1.5, 2.0),
+                word("薔薇", 2.0, 3.0),
+                word("十字", 3.0, 4.0),
+            ],
+            &[],
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -400,19 +439,16 @@ fn anchored_plan_windows_each_line_near_its_own_claimed_time_not_its_index_posit
     // below covers the (default-sized) grouped case.
     let plans = plan_alignment_segments_from_anchors(
         &anchors,
-        3,
+        &[(0, 1), (1, 2), (2, 3)],
         305.813,
         20.0,
         ALIGN_ANCHOR_MARGIN_SECONDS,
     )
     .unwrap();
     assert_eq!(plans.len(), 3);
-    // Real repro bug: computing each line's own unit count separately
-    // (via `alignment_text_units` on that line's bare text) falls back
-    // to a per-*character* split for whitespace-free CJK text, desyncing
-    // from the global transcript's line-level unit index -- so a later
-    // window's "one line" target silently grew to include a dozen
-    // unrelated lines. Each anchor must map to exactly one global unit.
+    // Each line here happens to be exactly one global unit wide, so target
+    // ranges line up with line indices; `anchored_plan_allows_a_line_wider_than_one_alignment_unit`
+    // below covers real multi-character/multi-word lines.
     assert_eq!(
         plans
             .iter()
@@ -420,6 +456,9 @@ fn anchored_plan_windows_each_line_near_its_own_claimed_time_not_its_index_posit
             .collect::<Vec<_>>(),
         [(0, 1), (1, 2), (2, 3)]
     );
+    // A small window target keeps every group here down to one line, so
+    // there is no interior line seam to protect.
+    assert!(plans.iter().all(|plan| plan.line_boundary_units.is_empty()));
     // The mistimed line's own window is capped, not left to balloon to
     // its full 34-second claim.
     let mistimed = &plans[1];
@@ -449,9 +488,10 @@ fn anchored_plan_excludes_a_preceding_line_when_only_its_audio_tail_remains() {
         (163.81, 167.18),
         (167.18, 201.57),
     ];
+    let line_unit_ranges: Vec<(usize, usize)> = (0..anchors.len()).map(|i| (i, i + 1)).collect();
     let plans = plan_alignment_segments_from_anchors(
         &anchors,
-        anchors.len(),
+        &line_unit_ranges,
         305.813,
         12.5,
         ALIGN_ANCHOR_MARGIN_SECONDS,
@@ -486,7 +526,7 @@ fn anchored_plan_groups_several_lines_per_window_like_blind_planning() {
     ];
     let plans = plan_alignment_segments_from_anchors(
         &anchors,
-        4,
+        &[(0, 1), (1, 2), (2, 3), (3, 4)],
         305.813,
         110.0,
         ALIGN_ANCHOR_MARGIN_SECONDS,
@@ -499,7 +539,16 @@ fn anchored_plan_groups_several_lines_per_window_like_blind_planning() {
             .collect::<Vec<_>>(),
         [(0, 3), (3, 4)]
     );
-    assert_eq!(plans[0].audio_end_seconds, anchors[2].1);
+    // The first window groups 3 lines, each exactly one unit wide here, so
+    // its interior seams sit right after units 1 and 2; the second window
+    // owns only its one line, with no interior seam to protect.
+    assert_eq!(plans[0].line_boundary_units, vec![1, 2]);
+    assert!(plans[1].line_boundary_units.is_empty());
+    // A window with a successor ends on the tick grid (its last frame is
+    // then whole, so it cannot spill into the successor's first frame);
+    // the final window keeps its exact margin-extended end.
+    assert_eq!(plans[0].audio_end_seconds, tick_floor(anchors[2].1));
+    assert!(plans[0].audio_end_seconds <= anchors[2].1);
     assert_eq!(
         plans[1].audio_end_seconds,
         anchors[3].1 + ALIGN_ANCHOR_MARGIN_SECONDS
@@ -508,14 +557,80 @@ fn anchored_plan_groups_several_lines_per_window_like_blind_planning() {
 }
 
 #[test]
-fn anchored_plan_rejects_a_mismatched_anchor_and_unit_count() {
-    assert!(plan_alignment_segments_from_anchors(&[(0.0, 1.0)], 2, 10.0, 110.0, 5.0).is_err());
+fn anchored_zero_margin_windows_never_share_a_frame_at_a_line_seam() {
+    // Real repro: the final zero-margin retry (one line per window) cut the
+    // window for "さよなら愛するこの国よ" at its successor's 287.59s line
+    // time -- off the 80 ms grid -- so that window's last frame was
+    // [287.52s, 287.60s), the very frame its successor started on
+    // (tick_floor(287.59) = 287.52). Both windows pinned their edge word to
+    // it ("よ" and "ずっ" both at [287.52s, 287.60s]), an unsplittable tie.
+    let anchors = [(283.90, 287.59), (287.59, 291.71), (291.71, 295.15)];
+    let plans = plan_alignment_segments_from_anchors(
+        &anchors,
+        &[(0, 11), (11, 24), (24, 36)],
+        354.88,
+        anchor_window_target_seconds(2),
+        anchor_margin_seconds(2),
+    )
+    .unwrap();
+    assert_eq!(plans.len(), 3);
+    for pair in plans.windows(2) {
+        let (earlier, later) = (&pair[0], &pair[1]);
+        // The earlier window ends exactly where the later one starts, and
+        // that point is on the grid, so no frame belongs to both.
+        assert_eq!(earlier.audio_end_seconds, later.audio_start_seconds);
+        let ticks = earlier.audio_end_seconds / ALIGN_TIMESTAMP_TICK_SECONDS;
+        assert!((ticks - ticks.round()).abs() < 1e-6);
+    }
+    assert_eq!(plans[0].audio_end_seconds, tick_floor(287.59));
+    // The last window has nothing after it and keeps its real end.
+    assert_eq!(plans[2].audio_end_seconds, 295.15);
+}
+
+#[test]
+fn anchored_plan_rejects_a_mismatched_anchor_and_line_count() {
+    assert!(
+        plan_alignment_segments_from_anchors(&[(0.0, 1.0)], &[(0, 1), (1, 2)], 10.0, 110.0, 5.0)
+            .is_err()
+    );
+}
+
+#[test]
+fn anchored_plan_allows_a_line_wider_than_one_alignment_unit() {
+    // A real lyric line is almost never exactly one `alignment_text_units`
+    // unit -- a multi-word English line, or any CJK line longer than one
+    // character, both split into several units. Anchors map to their own
+    // line's *range* of units instead of assuming a 1:1 index match.
+    let plans = plan_alignment_segments_from_anchors(
+        &[(0.0, 5.0), (5.0, 10.0)],
+        &[(0, 6), (6, 9)],
+        10.0,
+        110.0,
+        5.0,
+    )
+    .unwrap();
+    assert_eq!(
+        plans
+            .iter()
+            .map(|plan| (plan.target_unit_start, plan.target_unit_end))
+            .collect::<Vec<_>>(),
+        [(0, 9)]
+    );
+    // The seam between the two lines sits after unit 6, where line 0's own
+    // range ends -- this is the only boundary a measured word may never
+    // straddle; nothing inside either line's own 6- or 3-unit span is one.
+    assert_eq!(plans[0].line_boundary_units, vec![6]);
 }
 
 #[test]
 fn anchored_plan_rejects_an_inverted_or_non_finite_anchor() {
-    assert!(plan_alignment_segments_from_anchors(&[(5.0, 5.0)], 1, 10.0, 110.0, 5.0).is_err());
-    assert!(plan_alignment_segments_from_anchors(&[(f64::NAN, 5.0)], 1, 10.0, 110.0, 5.0).is_err());
+    assert!(
+        plan_alignment_segments_from_anchors(&[(5.0, 5.0)], &[(0, 1)], 10.0, 110.0, 5.0).is_err()
+    );
+    assert!(
+        plan_alignment_segments_from_anchors(&[(f64::NAN, 5.0)], &[(0, 1)], 10.0, 110.0, 5.0)
+            .is_err()
+    );
 }
 
 #[test]
@@ -566,6 +681,7 @@ fn seam_plan(index: usize, audio_start: f64, audio_end: f64) -> AlignmentSegment
         context_unit_start: 0,
         target_unit_start: 0,
         target_unit_end: 1,
+        line_boundary_units: Vec::new(),
         anchor_start: None,
     }
 }
@@ -701,6 +817,75 @@ fn seam_reconciliation_is_deterministic_across_repeated_calls() {
 }
 
 #[test]
+fn exact_tick_seam_tie_break_favors_whichever_line_the_anchor_claims_more_of() {
+    // Real repro: two adjacent lines' own independent windows both placed a
+    // word at [287.52s, 287.60s], one 80 ms tick wide -- no seam exists that
+    // leaves both sides positive duration. The next line's own real anchor
+    // (287.59s) sits 0.07s into that tick and only 0.01s from its end, so
+    // the *previous* line claims the overwhelming majority of it.
+    let previous = word("よ", 287.52, 287.60);
+    let next = word("すっ", 287.52, 287.60);
+    assert_eq!(
+        exact_tick_seam_tie_break(&previous, &next, Some(287.59)),
+        Some(true)
+    );
+    // Flip which line's anchor sits closer to which edge: now the *next*
+    // line claims the majority of the same tied tick.
+    assert_eq!(
+        exact_tick_seam_tie_break(&previous, &next, Some(287.53)),
+        Some(false)
+    );
+    // The two windows reach the same frame through different tick-aligned
+    // offsets (588 ticks + 3006 ticks versus 3594 ticks), which differ by
+    // an ulp -- far more than `f64::EPSILON`, and exactly how the first
+    // version of this check missed the real production seam.
+    let noisy_start = 588.0 * ALIGN_TIMESTAMP_TICK_SECONDS + 3006.0 * ALIGN_TIMESTAMP_TICK_SECONDS;
+    let exact_start = 3594.0 * ALIGN_TIMESTAMP_TICK_SECONDS;
+    assert_ne!(noisy_start, exact_start);
+    assert!((noisy_start - exact_start).abs() > f64::EPSILON);
+    let noisy_previous = word(
+        "よ",
+        noisy_start,
+        noisy_start + ALIGN_TIMESTAMP_TICK_SECONDS,
+    );
+    let exact_next = word(
+        "ずっ",
+        exact_start,
+        exact_start + ALIGN_TIMESTAMP_TICK_SECONDS,
+    );
+    assert_eq!(
+        exact_tick_seam_tie_break(&noisy_previous, &exact_next, Some(287.59)),
+        Some(true)
+    );
+}
+
+#[test]
+fn exact_tick_seam_tie_break_only_fires_on_a_true_unsplittable_tie() {
+    let previous = word("よ", 287.52, 287.60);
+    let next = word("すっ", 287.52, 287.60);
+    // Blind planning carries no anchor at all.
+    assert_eq!(exact_tick_seam_tie_break(&previous, &next, None), None);
+    // A genuine partial overlap (not an exact tie) has real room for
+    // `reconcile_alignment_seam`'s own split logic; this helper must not
+    // intercept it.
+    let partial_next = word("すっ", 287.56, 287.68);
+    assert_eq!(
+        exact_tick_seam_tie_break(&previous, &partial_next, Some(287.59)),
+        None
+    );
+    // Two identical spans *wider* than one frame still have an interior
+    // tick for `reconcile_alignment_seam` to split on (the next line's own
+    // anchor tick, here 287.60s), which keeps both lines' text separate;
+    // merging them would throw that away.
+    let wide_previous = word("よ", 287.52, 287.68);
+    let wide_next = word("すっ", 287.52, 287.68);
+    assert_eq!(
+        exact_tick_seam_tie_break(&wide_previous, &wide_next, Some(287.59)),
+        None
+    );
+}
+
+#[test]
 fn asr_truncation_marker_matches_the_captured_production_failure() {
     let real = "pinned Qwen engine failed with exit status: 1: [debug] ggml_vulkan: \
             Found 1 Vulkan devices:\n[warn] qwen3_asr run: output truncated at 1024 tokens \
@@ -829,11 +1014,7 @@ fn execute_alignment_window_retries_an_unmodified_call_after_corrupt_output() {
     // trying to parse harder.
     let test_dir = fixture_dir("align-window-corrupt-retry");
     let control = test_dir.join("control");
-    std::fs::write(
-        control.join("response-0"),
-        b"{\"words\": [{\"word\": \"a\"".to_vec(),
-    )
-    .unwrap();
+    std::fs::write(control.join("response-0"), b"{\"words\": [{\"word\": \"a\"").unwrap();
     std::fs::write(
         control.join("response-1"),
         serde_json::to_vec(&serde_json::json!({
@@ -870,15 +1051,53 @@ fn execute_alignment_window_retries_an_unmodified_call_after_corrupt_output() {
 
 #[cfg(unix)]
 #[test]
+fn execute_alignment_window_snaps_raw_engine_output_to_the_tick_grid() {
+    // Real GPU repro: the pinned aligner measured "も" as [105.28s, 105.33s]
+    // -- 105.33s is not a multiple of the promised 80 ms tick, which the
+    // analysis engine's own downstream contract check rejects outright. The
+    // raw engine is the only source of that drift; snap it here so every
+    // later consumer can trust the "qwen-align-token-word-80ms-v1" profile
+    // without needing its own tolerance.
+    let test_dir = fixture_dir("align-window-tick-snap");
+    let control = test_dir.join("control");
+    std::fs::write(
+        control.join("response-0"),
+        serde_json::to_vec(&serde_json::json!({
+            "words": [{"word": "も", "start": 105.28, "end": 105.33}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(1.0)).unwrap();
+    let raw_path = test_dir.join("raw.json");
+    let words = execute_alignment_window(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &raw_path,
+        "も",
+        None,
+    )
+    .unwrap();
+    assert_eq!(words.len(), 1);
+    assert_eq!(words[0].start, 105.28);
+    assert_eq!(words[0].end, 105.36);
+}
+
+#[cfg(unix)]
+#[test]
 fn execute_alignment_window_fails_closed_after_exhausting_corrupt_output_retries() {
     let test_dir = fixture_dir("align-window-corrupt-exhausted");
     let control = test_dir.join("control");
     for attempt in 0..ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
-        std::fs::write(
-            control.join(format!("response-{attempt}")),
-            b"not json".to_vec(),
-        )
-        .unwrap();
+        std::fs::write(control.join(format!("response-{attempt}")), b"not json").unwrap();
     }
     let script_path = test_dir.join("engine.sh");
     write_fake_engine(&script_path, &control);
@@ -982,6 +1201,164 @@ fn run_align_reconciles_a_real_seam_overlap_for_dense_cjk_lyrics() {
     // to the deterministic midpoint tick, 65.12s.
     assert!((words[4]["end"].as_f64().unwrap() - 65.12).abs() < 1e-9);
     assert!((words[5]["start"].as_f64().unwrap() - 65.12).abs() < 1e-9);
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_merges_an_exact_tick_tie_instead_of_failing_the_seam() {
+    // Real repro, reproduced at a small scale: two adjacent anchored lines'
+    // own independent windows both measure a word at the exact same single
+    // tick. Line 1's own real anchor sits 0.07s into that shared tick and
+    // only 0.01s from its end, so line 0 ("よ") claims the overwhelming
+    // majority of it; line 1's window independently measures its own first
+    // character ("す") at that identical tick. Before the seam-tie fix,
+    // `run_align_once` failed the whole song here; now "す" folds into "よ"
+    // instead, and line 1's remaining word ("あ") keeps its own timing.
+    let test_dir = fixture_dir("anchored-exact-tick-tie");
+    let control = test_dir.join("control");
+    let transcript = "よ\nすあ";
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(12.0)).unwrap();
+
+    // Window 0: line 0's own window is [0.0s, 5.12s] (its 5.19s line seam
+    // ends on the grid, see `plan_alignment_segments_from_anchors`). A real
+    // engine can no longer produce a frame past that end, but this fake
+    // one still answers with "よ" at [5.12s, 5.20s] to exercise the
+    // fold path on exactly the production tie it was written for.
+    std::fs::write(
+        control.join("response-0"),
+        serde_json::to_vec(&serde_json::json!({"words": [
+            {"word": "よ", "start": 5.12, "end": 5.20}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    // Window 1 starts at 5.12s (line 1's raw 5.19s anchor, tick-floored
+    // down): local time is measured relative to that offset, so "す"'s
+    // local [0.00s, 0.08s] is the same absolute [5.12s, 5.20s] tick window 0
+    // already claimed; "あ" measures the next tick over, uncontested.
+    std::fs::write(
+        control.join("response-1"),
+        serde_json::to_vec(&serde_json::json!({"words": [
+            {"word": "す", "start": 0.00, "end": 0.08},
+            {"word": "あ", "start": 0.08, "end": 0.16}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({
+        "text": transcript,
+        "line_anchors": [
+            {"start": 0.0, "end": 5.19},
+            {"start": 5.19, "end": 10.19},
+        ],
+    });
+    let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+    let destination = run_align_once(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        anchor_window_target_seconds(2),
+        anchor_margin_seconds(2),
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let words = evidence["words"].as_array().unwrap();
+    // "す" merged into "よ" instead of the seam failing; "あ" keeps its own
+    // uncontested timing.
+    assert_eq!(words.len(), 2);
+    assert_eq!(words[0]["word"].as_str().unwrap(), "よす");
+    assert_eq!(words[0]["start"].as_f64().unwrap(), 5.12);
+    assert_eq!(words[0]["end"].as_f64().unwrap(), 5.20);
+    assert_eq!(words[1]["word"].as_str().unwrap(), "あ");
+    assert_eq!(words[1]["start"].as_f64().unwrap(), 5.20);
+    assert_eq!(words[1]["end"].as_f64().unwrap(), 5.28);
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn run_align_folds_a_tick_tie_the_other_way_when_the_favored_window_cannot_yield() {
+    // Same tie as above, but line 1 is a single character: its window
+    // measures exactly one word, and a window must keep at least one
+    // measured word of its own. The anchor still favors line 0 for the
+    // tick, yet line 1 cannot give its only word up, so the fold runs the
+    // other way -- line 0's "よ" joins line 1's "す" -- and line 0's window
+    // keeps "あ" as its own (now single) measured word.
+    let test_dir = fixture_dir("anchored-tick-tie-fallback");
+    let control = test_dir.join("control");
+    let transcript = "あよ\nす";
+    let audio_path = test_dir.join("source.wav");
+    std::fs::write(&audio_path, synthetic_silent_wav(12.0)).unwrap();
+    std::fs::write(
+        control.join("response-0"),
+        serde_json::to_vec(&serde_json::json!({"words": [
+            {"word": "あ", "start": 5.04, "end": 5.12},
+            {"word": "よ", "start": 5.12, "end": 5.20}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        control.join("response-1"),
+        serde_json::to_vec(&serde_json::json!({"words": [
+            {"word": "す", "start": 0.00, "end": 0.08}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let script_path = test_dir.join("engine.sh");
+    write_fake_engine(&script_path, &control);
+    let runtime = crate::runtime::ValidatedRuntime {
+        engine: script_path,
+        manifest_sha256: "0".repeat(64),
+    };
+    let config = serde_json::json!({
+        "text": transcript,
+        "line_anchors": [
+            {"start": 0.0, "end": 5.19},
+            {"start": 5.19, "end": 10.19},
+        ],
+    });
+    let mut progress = |_completed: u64, _total: u64, _message: &'static str| Ok(());
+    let destination = run_align_once(
+        &runtime,
+        Path::new("/fake-model.gguf"),
+        &audio_path,
+        &test_dir,
+        &config,
+        anchor_window_target_seconds(2),
+        anchor_margin_seconds(2),
+        &mut progress,
+    )
+    .unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    let words = evidence["words"].as_array().unwrap();
+    assert_eq!(words.len(), 2);
+    assert_eq!(words[0]["word"].as_str().unwrap(), "あ");
+    assert_eq!(words[0]["start"].as_f64().unwrap(), 5.04);
+    assert_eq!(words[0]["end"].as_f64().unwrap(), 5.12);
+    assert_eq!(words[1]["word"].as_str().unwrap(), "よす");
+    assert_eq!(words[1]["start"].as_f64().unwrap(), 5.12);
+    assert_eq!(words[1]["end"].as_f64().unwrap(), 5.20);
+    // Each window's evidence still owns exactly the words it kept.
+    let segments = evidence["long_input"]["segments"].as_array().unwrap();
+    assert_eq!(segments[0]["measured_units"], 1);
+    assert_eq!(segments[1]["measured_units"], 1);
 
     std::fs::remove_dir_all(&test_dir).unwrap();
 }
@@ -1423,11 +1800,7 @@ fn run_align_retries_a_persistent_output_corruption_with_a_reshaped_window() {
     // `ALIGNMENT_WINDOW_PARSE_ATTEMPTS` real calls. Window 1 is never
     // called: `run_align_once`'s per-window loop bails on window 0 first.
     for index in 0..ALIGNMENT_WINDOW_PARSE_ATTEMPTS {
-        std::fs::write(
-            control.join(format!("response-{index}")),
-            b"not json".to_vec(),
-        )
-        .unwrap();
+        std::fs::write(control.join(format!("response-{index}")), b"not json").unwrap();
     }
 
     // Attempt 1 (re-planned, shorter target -> more/different windows):

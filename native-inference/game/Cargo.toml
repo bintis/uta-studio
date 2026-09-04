@@ -1,0 +1,48 @@
+[package]
+name = "uta-game-worker"
+version = "0.8.3"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "uta-game-worker"
+path = "src/main.rs"
+
+[features]
+default = []
+gpu = ["dep:wgpu", "dep:pollster"]
+cpu-attention-gemm-gemm = []
+cpu-attention-gemm-matrixmultiply = []
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+gemm = { version = "0.19" }
+getrandom = "0.4"
+log = "0.4"
+matrixmultiply = "0.3"
+num_cpus = "1"
+rand_mt = { version = "6", default-features = false }
+rayon = "1"
+realfft = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+wgpu = { version = "=29.0.4", optional = true }
+pollster = { version = "=0.4.0", optional = true }
+
+[dev-dependencies]
+naga = { version = "=29.0.4", features = ["wgsl-in"] }
+env_logger = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

@@ -384,7 +384,12 @@ fn apply_engine_lifecycle_event(
         && let (Some(artifact), Some(path)) = (event.artifact.as_deref(), event.path.as_deref())
         && let Some(cache) = CacheDir::try_new()
     {
-        crate::chain_cache::persist_cacheable_stem(&cache.path, file_hash, artifact, Path::new(path));
+        crate::chain_cache::persist_cacheable_stem(
+            &cache.path,
+            file_hash,
+            artifact,
+            Path::new(path),
+        );
     }
     let weighted_overall = update_engine_overall_progress(file_hash, &event);
     let presentation_node_id = event

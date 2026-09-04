@@ -1077,9 +1077,9 @@ For each relevant node:
 ```text
 Capability: pitch.track
 Provider: RMVPE
-Backend: OpenVINO
-Validation: ProductionPinned
-Status: Ready
+Backend: GGML/Vulkan
+Validation: BenchmarkCandidate
+Status: Blocked under Production · available under Benchmark
 ```
 
 A future blocked route is rendered from the exact Runtime Manager fact, for example:
@@ -1131,7 +1131,7 @@ A resolved Automatic row should show both intent and result:
 ```text
 Primary pitch
 Automatic
-Resolved: RMVPE · OpenVINO
+Resolved: RMVPE · GGML/Vulkan
 ```
 
 Before resolution:

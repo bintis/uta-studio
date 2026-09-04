@@ -87,9 +87,7 @@ impl StudioTheme {
         if transparent {
             let factor = opacity_percent.clamp(30, 100) as f32 / 100.0;
             theme.background = theme.background.with_alpha(factor);
-            theme.sidebar = theme
-                .sidebar
-                .with_alpha(theme.sidebar.alpha() * factor);
+            theme.sidebar = theme.sidebar.with_alpha(theme.sidebar.alpha() * factor);
             theme.topbar = theme.topbar.with_alpha(theme.topbar.alpha() * factor);
         }
         theme

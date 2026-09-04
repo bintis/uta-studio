@@ -669,9 +669,11 @@ fn independently_pinned_vulkan_model(model_id: &str) -> bool {
         "qwen3_asr_1_7b"
             | "qwen3_forced_aligner_0_6b"
             | "bs_roformer_leap_xe90_vocals"
+            | "melband_roformer_inst_v2"
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
+            | "rmvpe"
     )
 }
 
@@ -765,25 +767,32 @@ pub(crate) mod tests {
             policy.requested_backend_for("fcpe"),
             Some(uta_runtime_manager::NativeBackend::CpuReference)
         );
-        assert_eq!(
-            policy.requested_backend_for("rmvpe"),
-            Some(uta_runtime_manager::NativeBackend::OpenVino)
-        );
         for model_id in [
             "qwen3_asr_1_7b",
             "bs_roformer_leap_xe90_vocals",
+            "melband_roformer_inst_v2",
             "melband_roformer_denoise_aufr33",
             "melband_roformer_dereverb_anvuew",
+            "rmvpe",
         ] {
             assert_eq!(policy.requested_backend_for(model_id), None);
         }
     }
 
     #[test]
-    fn roformer_openvino_override_is_rejected() {
+    fn independently_pinned_openvino_override_is_rejected() {
         let mut request = valid_request(AudioRole::OriginalMix);
         request.execution_policy.model_backend_overrides.insert(
             "melband_roformer_denoise_aufr33".to_string(),
+            uta_runtime_manager::NativeBackend::OpenVino,
+        );
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            EngineErrorCode::InvalidContract
+        );
+        request.execution_policy.model_backend_overrides.clear();
+        request.execution_policy.model_backend_overrides.insert(
+            "rmvpe".to_string(),
             uta_runtime_manager::NativeBackend::OpenVino,
         );
         assert_eq!(

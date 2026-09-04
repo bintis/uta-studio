@@ -5,12 +5,9 @@ Uta! Studio keeps audio transformations, analysis experts, and runtime recipes s
 - Audio transformation models are listed by `app-core/src/audio_model.rs`.
 - Speech, pitch, boundary, and technique experts are represented by the workflow capability and native runtime registries.
 - Exact Qwen runtime identities are locked in `native-inference/runtime-lock.json`.
-- Generic production models are converted during explicit installation to pinned
-  OpenVINO IR; production workers do not parse source ONNX/checkpoint formats.
-  Qwen keeps its locked GGML/Vulkan recipes. Exact legacy RoFormer GGUFs are a
-  separate native exception: all five RoFormer resources—BS-RoFormer, Inst V2,
-  Harmony, Denoise and Dereverb—expose only the user-selected GGML/Vulkan
-  `ProductionPinned` route and must never launch OpenVINO.
+- Runtime formats are model-specific. Most generic models use explicitly
+  installed OpenVINO IR, while Qwen, RMVPE, and the selected RoFormer family use
+  locked GGML/Vulkan recipes. These native GGUF routes never launch OpenVINO.
 
 A catalog entry is not production support. Every `(model revision, backend, runtime recipe)` is classified independently as production-pinned, benchmark candidate, experimental, or unsupported. The router uses only production-pinned combinations and fails closed when no validated backend is available.
 
@@ -18,35 +15,29 @@ Models and runtime components are installed only after confirmation in **Setting
 
 Workflow nodes store catalog model IDs, never arbitrary checkpoint paths. Model file hashes, runtime recipe digests, exact input revisions, normalized parameters, and algorithm versions participate only in artifact identity, provenance, and cache identity; hashes are not acceptance gates.
 
-## RMVPE OpenVINO worker
+## RMVPE GGML/Vulkan worker
 
-`uta-openvino-worker` implements the RMVPE continuous-F0 contract with a native
-Rust log-mel frontend and OpenVINO `GPU` inference. It rejects CPU fallback.
-Explicit installation records the source RMVPE ONNX identity
-`5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`
-as provenance metadata and writes a new, atomic OpenVINO IR v11 installation
-without moving, replacing, or loading the source ONNX in production. The Worker
-validates safe paths, declared files, byte sizes, schemas, and model/runtime
-semantics, then emits 10 ms pitch evidence without rounding frames directly to
+`uta-ggml-worker` implements RMVPE continuous-F0 inference through the dedicated
+`uta-rmvpe-runtime` engine. The engine runs the 16 kHz/128-bin log-mel frontend,
+CNN/U-Net, chunked bidirectional GRU, output head, and continuous pitch decoder
+natively. It emits ordered 10 ms pitch frames and does not quantize evidence to
 MIDI notes.
 
-The generic OpenVINO Worker/runtime recipe identity is
-`bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093`.
-RMVPE's independently pinned bucket-conversion recipe remains
-`ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876`.
-It pins source-built OpenVINO 2026.3.0 commit
-`8a17657b995fd3b4a52f8484acfcf2bb61214623`; CPU and GPU plugins are enabled,
-while NPU, Python bindings, automatic device plugins, and unused frontends are
-disabled. CPU execution is allowed only for model-manifest-pinned islands and is
-never an automatic fallback. OpenVINO 2026.3 requires static IR shapes
-plus `GPU_ENABLE_LOOP_UNROLLING=NO` for RMVPE's GRU graph. The installer creates
-32–1024-frame IR buckets sharing one immutable weights file; inference uses
-128-frame overlap so song tails do not receive long artificial padding.
-A synthetic 440 Hz real-decode/OpenVINO Arc smoke produced a 440.72 Hz mean F0.
-The current 305.813333-second real full-song GPU run completed in about 37 s and
-published 30,582 ordered 10 ms frames with 93.09% voiced coverage and finite
-pitch/confidence. RMVPE is Catalog `ProductionPinned`; aggregate workflow
-acceptance remains separate from this model qualification.
+Explicit local conversion records the source RMVPE ONNX identity
+`5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`,
+the F32 GGUF identity
+`1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2`,
+and conversion recipe
+`07856e413b0f141b7e0354f6edc52ffcfd853f8b33f4641d15e930aa1b888776`
+as separate provenance. The multi-engine GGML runtime recipe is
+`dd364845b256b8adc04c291e9c79a3426fe960ca1a7beab3990fdbcdc9e7bfd2`.
+The worker validates runtime structure, model size and RMVPE GGUF metadata,
+selects the requested Vulkan device class, and removes inherited diagnostic CPU
+controls before execution. There is no automatic CPU or OpenVINO fallback.
+
+RMVPE currently remains a `BenchmarkCandidate`. Prior OpenVINO measurements do
+not qualify this new backend; promotion requires accepted real-audio Vulkan
+output and stability evidence.
 
 ## RoFormer backend selection
 

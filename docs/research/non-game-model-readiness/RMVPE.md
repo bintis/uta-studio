@@ -1,5 +1,10 @@
 # RMVPE provenance and OpenVINO import research
 
+> Historical backend snapshot. The current RMVPE product route is the
+> `BenchmarkCandidate` GGML/Vulkan implementation documented in
+> `docs/AUDIO_MODELS.md` and `tasks/remaining-models/STATE.md`; this file does
+> not describe current routing or production qualification.
+
 This documents the existing source-model → OpenVINO IR → LocalImport chain
 without running or converting it. Source IDs refer to `SOURCE_LEDGER.md`.
 
@@ -108,7 +113,10 @@ external exact ONNX artifact and explicit conversion action.
 
 ## Current validation conclusion
 
-The raw validation journal has been removed. The durable conclusion is now in `docs/KEY_CONCLUSIONS.md`: RMVPE's exact source/converted identities, bucketed OpenVINO worker path, LocalImport lifecycle and ProductionPinned routing are established in current source. Current acceptance must be judged from current source/tests rather than this 2026-08-22 research snapshot.
+The raw validation journal has been removed. Current acceptance must be judged
+from current source/tests and `docs/KEY_CONCLUSIONS.md`; this 2026-08-22
+OpenVINO research snapshot is retained only as backend-specific historical
+context and does not qualify the replacement GGML/Vulkan route.
 
 ## Repository discrepancy audit
 

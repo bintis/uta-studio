@@ -45,10 +45,10 @@ pub use resolver::{
     ResolvedModel, ResolvedTool, ResourceDetails, ResourceMetadata, RuntimeManager,
 };
 pub use resource::{ModelId, ResourceKind, ResourceRef};
-pub use runtime_lock::OPENVINO_WORKER_RECIPE_SHA256;
+pub use runtime_lock::{GGML_RUNTIME_RECIPE_SHA256, OPENVINO_WORKER_RECIPE_SHA256};
 pub use runtime_lock::{
     GenericRuntimePolicyLock, NativeRuntimeLock, OpenVinoLock, QwenAlignLock, QwenAsrLock,
-    RMVPE_CONVERSION_RECIPE_SHA256, RMVPE_IR_MANIFEST_SHA256, RMVPE_IR_RELATIVE_DIR,
+    RMVPE_GGUF_CONVERSION_RECIPE_SHA256, RMVPE_GGUF_SHA256, RMVPE_GGUF_SIZE_BYTES,
     RMVPE_SOURCE_SHA256, RUNTIME_LOCK_JSON, RuntimeComponents, RuntimePolicyLock,
     native_runtime_lock, runtime_recipe_digest,
 };

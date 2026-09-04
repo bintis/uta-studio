@@ -36,7 +36,7 @@ download model weights, benchmark, build, or test code.
 - `P0_REQUIRED_MODELS.md` — compact P0 route/resource matrix.
 - `ROFORMER.md` — separator/cleanup provenance and contracts.
 - `QWEN.md` — ASR and Forced Aligner provenance/contracts.
-- `RMVPE.md` — source ONNX and OpenVINO import contract research.
+- `RMVPE.md` — historical source ONNX/OpenVINO research; superseded for current routing by the GGML/Vulkan candidate.
 - `OPTIONAL_EXPERTS.md` — FireRed, FCPE, Basic Pitch, cleanup, STARS and ROSVOT research.
 - `SOURCE_LEDGER.md` — primary/secondary external source ledger.
 

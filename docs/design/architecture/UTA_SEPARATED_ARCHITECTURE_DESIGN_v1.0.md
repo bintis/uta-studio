@@ -590,11 +590,12 @@ Studio 永远不准备模型 tensor。
 
 ```text
 Uta Analysis Engine
-├── RoFormer Runtime (C++/GGML/Vulkan)
+├── GGML/Vulkan Worker
+│   ├── RoFormer Runtime (C++)
+│   └── RMVPE Runtime (C++)
 ├── Qwen ASR Worker
 ├── Qwen Align Worker
 ├── OpenVINO Worker
-│   ├── RMVPE
 │   ├── GAME
 │   ├── FCPE
 │   ├── Basic Pitch

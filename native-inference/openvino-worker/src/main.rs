@@ -13,7 +13,6 @@ mod melband_roformer_harmony_split;
 mod melband_roformer_inst_v2;
 mod polarformer;
 mod protocol;
-mod rmvpe;
 mod rosvot_host;
 mod runtime;
 mod singing_frontend;
@@ -32,7 +31,7 @@ fn run_task(
     output_dir: &Path,
     config: &serde_json::Value,
 ) -> Result<(), String> {
-    if roformer_is_ggml_only(model_id) {
+    if model_is_ggml_only(model_id) {
         return Err(format!(
             "{model_id} is pinned to the GGML/Vulkan Worker and cannot run through OpenVINO"
         ));
@@ -155,20 +154,6 @@ fn run_task(
         });
     }
     let output = match model_id {
-        "rmvpe" => rmvpe::infer(
-            &audio,
-            output_dir,
-            config,
-            |fraction, message, work_units| {
-                let _ = emit(WorkerFrame::Progress {
-                    task_id,
-                    fraction: 0.02 + fraction * 0.97,
-                    message,
-                    work_units_completed: work_units.map(|(completed, _)| completed),
-                    work_units_total: work_units.map(|(_, total)| total),
-                });
-            },
-        )?,
         "fcpe" => fcpe::infer(
             &audio,
             output_dir,
@@ -299,13 +284,15 @@ fn run_task(
     })
 }
 
-fn roformer_is_ggml_only(model_id: &str) -> bool {
+fn model_is_ggml_only(model_id: &str) -> bool {
     matches!(
         model_id,
-        "melband_roformer_inst_v2"
+        "bs_roformer_leap_xe90_vocals"
+            | "melband_roformer_inst_v2"
             | "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
+            | "rmvpe"
     )
 }
 
@@ -400,15 +387,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_roformer_is_rejected_by_the_openvino_worker() {
+    fn every_ggml_only_model_is_rejected_by_the_openvino_worker() {
         for model_id in [
+            "bs_roformer_leap_xe90_vocals",
             "melband_roformer_inst_v2",
             "melband_roformer_harmony",
             "melband_roformer_denoise_aufr33",
             "melband_roformer_dereverb_anvuew",
+            "rmvpe",
         ] {
-            assert!(roformer_is_ggml_only(model_id));
+            assert!(model_is_ggml_only(model_id));
         }
-        assert!(!roformer_is_ggml_only("rmvpe"));
+        assert!(!model_is_ggml_only("fcpe"));
     }
 }

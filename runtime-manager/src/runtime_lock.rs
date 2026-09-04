@@ -4,13 +4,15 @@ pub const RUNTIME_LOCK_JSON: &str = include_str!("../../native-inference/runtime
 
 pub const OPENVINO_WORKER_RECIPE_SHA256: &str =
     "bdeac2a4e1299e4bf82cb2d4edf64c7bdbc613fa40f58727c58793cf7f1a4093";
-pub const RMVPE_IR_RELATIVE_DIR: &str = "pitch/rmvpe/openvino-ir-2026.3.0-bucketed";
+pub const GGML_RUNTIME_RECIPE_SHA256: &str =
+    "dd364845b256b8adc04c291e9c79a3426fe960ca1a7beab3990fdbcdc9e7bfd2";
 pub const RMVPE_SOURCE_SHA256: &str =
     "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd";
-pub const RMVPE_IR_MANIFEST_SHA256: &str =
-    "cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb";
-pub const RMVPE_CONVERSION_RECIPE_SHA256: &str =
-    "ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876";
+pub const RMVPE_GGUF_SHA256: &str =
+    "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2";
+pub const RMVPE_GGUF_SIZE_BYTES: u64 = 361_625_344;
+pub const RMVPE_GGUF_CONVERSION_RECIPE_SHA256: &str =
+    "07856e413b0f141b7e0354f6edc52ffcfd853f8b33f4641d15e930aa1b888776";
 pub const ROFORMER_INST_V2_SOURCE_SHA256: &str =
     "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2";
 pub const ROFORMER_INST_V2_CONFIG_SHA256: &str =

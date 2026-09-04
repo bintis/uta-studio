@@ -222,7 +222,11 @@ const STATUS_RANK_EXPR: &str = "(CASE \
 /// queue or playlist view's own ordering always wins the leading position
 /// in `ORDER BY`, with the user's column sort only breaking ties within it.
 fn user_sort_order_by(filters: &LibraryMenuFilters) -> String {
-    let direction = if filters.sort_descending { "DESC" } else { "ASC" };
+    let direction = if filters.sort_descending {
+        "DESC"
+    } else {
+        "ASC"
+    };
     match filters.sort_column.as_deref() {
         Some("artist") => {
             format!("s.artist COLLATE NOCASE {direction}, s.title COLLATE NOCASE {direction}")

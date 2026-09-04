@@ -43,7 +43,7 @@ fn run_task(
             task_id,
             artifact: output.artifact,
             path: &output.path,
-            media_type: "audio/flac",
+            media_type: output.media_type,
         })?;
     }
     emit(WorkerFrame::Done {

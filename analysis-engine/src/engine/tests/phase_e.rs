@@ -109,7 +109,14 @@ fn firered_worker_failure_degrades_and_preserves_qwen_baseline() {
     request.request_id = "firered-failure".to_string();
     request.audio_sources[0].path = source;
     request.analysis.profile = crate::contract::AnalysisProfile::Balanced;
-    request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
+    // This fixture specifically exercises OpenVINO worker failure handling;
+    // firered_asr2_aed now defaults to its own native route, so request
+    // OpenVINO explicitly. OpenVINO is Experimental-only in this catalog now.
+    request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Experimental;
+    request.execution_policy.model_backend_overrides.insert(
+        "firered_asr2_aed".to_string(),
+        uta_runtime_manager::NativeBackend::OpenVino,
+    );
     request.requested_artifacts.vocal_chart = false;
     request.requested_artifacts.pitch_evidence = false;
     request.requested_artifacts.singing_analysis = false;

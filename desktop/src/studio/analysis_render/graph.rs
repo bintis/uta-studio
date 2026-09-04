@@ -152,15 +152,21 @@ pub(crate) fn analysis_graph_center_target(
 
 /// Computes a camera offset from exact Workflow topology when a render-frame
 /// layout is not available yet. It never estimates rank from a node id.
+///
+/// Returns `None` -- never a `(0, 0)` guess -- when the topology or this
+/// node's own rect is not resolvable yet (e.g. right after a run starts,
+/// before the exact plan or its layout has caught up with a node the live
+/// engine already reports as running). The caller must not latch that as a
+/// real target: a real repro chased a `(0, 0)` fallback for a node's entire
+/// running duration because the caller recorded it as if centering had
+/// succeeded, then only ever re-tried on the *next* node transition.
 pub(crate) fn estimated_analysis_graph_center_target(
     workflow: Option<&app_core::WorkflowExecutionWireV1>,
     node_id: &str,
     zoom: f32,
     viewport_size: Vec2,
-) -> Vec2 {
-    let Some(workflow) = workflow else {
-        return Vec2::ZERO;
-    };
+) -> Option<Vec2> {
+    let workflow = workflow?;
     let render = build_workflow_render_graph(workflow, None, None, false);
     let specs = render
         .nodes
@@ -177,12 +183,10 @@ pub(crate) fn estimated_analysis_graph_center_target(
         })
         .collect::<Vec<_>>();
     let edges = render.edge_pairs();
-    let Some(layout) = cached_canvas_routed_layout_with_specs(&specs, &edges) else {
-        return Vec2::ZERO;
-    };
-    let Some(rect) = layout.layout.rect(&app_core::AnalysisNodeId::new(node_id)) else {
-        return Vec2::ZERO;
-    };
+    let layout = cached_canvas_routed_layout_with_specs(&specs, &edges)?;
+    let rect = layout
+        .layout
+        .rect(&app_core::AnalysisNodeId::new(node_id))?;
     let width = if viewport_size.x > 1.0 {
         viewport_size.x
     } else {
@@ -193,10 +197,10 @@ pub(crate) fn estimated_analysis_graph_center_target(
     } else {
         720.0
     };
-    Vec2::new(
+    Some(Vec2::new(
         ((rect.x + rect.width / 2.0) * zoom - width / 2.0).max(0.0),
         ((rect.y + rect.height / 2.0) * zoom - height / 2.0).max(0.0),
-    )
+    ))
 }
 
 #[derive(Clone, Copy)]

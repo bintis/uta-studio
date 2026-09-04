@@ -7,7 +7,7 @@
       "on_no_validated_backend": "fail_closed",
       "cpu": "reference_diagnostics_only",
       "python": "forbidden_production_fallback",
-      "notes": "Every model has one manifest-pinned Production backend: Vulkan for GGUF RoFormer and Qwen components, OpenVINO for current IR components. CPU routes are explicit diagnostics only and are never an automatic Production fallback."
+      "notes": "Accepted models have one manifest-pinned Production backend. RMVPE is independently pinned to GGML/Vulkan but remains a BenchmarkCandidate pending native evidence. CPU routes are explicit diagnostics only and are never an automatic Production fallback."
     },
     "pinned_exceptions": [
       "qwen3_asr_1_7b",
@@ -30,7 +30,7 @@
       "runtime_repository": "ggerganov/ggml",
       "runtime_commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
       "build_recipe": "native-inference/ggml-worker/runtime-recipe.json",
-      "build_recipe_sha256": "4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a",
+      "build_recipe_sha256": "dd364845b256b8adc04c291e9c79a3426fe960ca1a7beab3990fdbcdc9e7bfd2",
       "backend": "vulkan",
       "model_format": "gguf",
       "validation": "production_pinned",

@@ -322,7 +322,7 @@ mod tests {
             Vec::new(),
             Arc::new(move |event| target.lock().unwrap().push(event)),
             || {
-                let node = begin_node("pitch", "pitch.track", Some("rmvpe"), "openvino");
+                let node = begin_node("pitch", "pitch.track", Some("rmvpe"), "ggml_vulkan");
                 node.worker_progress(0.2, "rmvpe-task-7", "preparing windows");
                 node.measured_progress(0.25, 2, 8, "rmvpe-task-7", "frame batch");
                 node.artifact("pitch_evidence");
