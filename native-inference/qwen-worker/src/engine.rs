@@ -777,7 +777,8 @@ fn execute_asr_window(
         .args(ASR_RUNTIME_ARGS)
         .arg(raw)
         .arg(audio)
-        .env("GGML_VK_VISIBLE_DEVICES", "0");
+        .env("GGML_VK_VISIBLE_DEVICES", "0")
+        .env("GGML_VK_DISABLE_ASYNC", "1");
     let result = (|| {
         let output = run_engine(&mut command)?;
         let raw_text = std::fs::read_to_string(raw).map_err(|error| error.to_string())?;
@@ -1009,6 +1010,15 @@ struct AlignmentSegmentPlan {
     context_unit_start: usize,
     target_unit_start: usize,
     target_unit_end: usize,
+    /// Global `text_units` indices where one grouped lyric line ends and the
+    /// next begins, for every line boundary strictly inside this plan's
+    /// target range (empty when the plan's window owns only one line, or
+    /// for blind planning, which has no line concept at all). A boundary
+    /// *within* one line -- e.g. between two kanji the model reasonably
+    /// merged into one measured word, like "薔薇" -- is not a failure and
+    /// must not be checked; only a line-to-line seam must never be crossed
+    /// by a single measured word. See `validate_alignment_unit_boundaries`.
+    line_boundary_units: Vec<usize>,
     /// This plan's own claimed line start (seconds, before margin/capping),
     /// for anchored plans only. The LRC's own stated line boundary is a more
     /// trustworthy seam point than a tick-split of two independently
@@ -1063,6 +1073,30 @@ fn alignment_text_units(transcript: &str) -> Vec<String> {
         units.push(word);
     }
     units
+}
+
+/// Splits `transcript` into alignment units exactly like `alignment_text_units`,
+/// while also recording each `\n`-separated caller line's own contiguous span
+/// within the flattened result. `\n` already behaves as plain whitespace to
+/// `alignment_text_units` -- it only ever flushes a pending word, same as any
+/// other whitespace -- so splitting each line in isolation and concatenating
+/// the results can never disagree with splitting the whole transcript in one
+/// pass. That equivalence is what actually matters here: an earlier design
+/// computed each line's own unit count through a separate code path (falling
+/// back to a per-character split for whitespace-free CJK lines) that could
+/// desync from the global transcript's own split, silently growing a later
+/// window's "one line" target to swell across unrelated lines. Deriving both
+/// views from the exact same per-line call instead makes that desync
+/// impossible rather than merely rare.
+fn alignment_text_units_by_line(transcript: &str) -> (Vec<String>, Vec<(usize, usize)>) {
+    let mut units = Vec::new();
+    let mut line_ranges = Vec::new();
+    for line in transcript.split('\n') {
+        let start = units.len();
+        units.extend(alignment_text_units(line));
+        line_ranges.push((start, units.len()));
+    }
+    (units, line_ranges)
 }
 
 fn tick_floor(seconds: f64) -> f64 {
@@ -1162,6 +1196,7 @@ fn plan_alignment_segments(
             context_unit_start: target_unit_start.saturating_sub(ALIGN_CONTEXT_UNITS),
             target_unit_start,
             target_unit_end,
+            line_boundary_units: Vec::new(),
             anchor_start: None,
         });
     }
@@ -1190,7 +1225,7 @@ fn plan_alignment_segments(
 /// of an even split, which is what actually fixes the original bug.
 fn plan_alignment_segments_from_anchors(
     line_anchors: &[(f64, f64)],
-    text_unit_count: usize,
+    line_unit_ranges: &[(usize, usize)],
     source_duration_seconds: f64,
     window_target_seconds: f64,
     margin_seconds: f64,
@@ -1207,21 +1242,20 @@ fn plan_alignment_segments_from_anchors(
     if line_anchors.is_empty() {
         return Err("Qwen alignment requires at least one anchored line".to_string());
     }
-    // `alignment_text_units` splits the *whole* joined transcript on any
-    // whitespace, including the `\n` between lines, so one caller line
-    // becomes exactly one global unit -- but only when that holds; a line
-    // containing its own internal whitespace (e.g. multi-word English)
-    // would silently desync anchor index from unit index. Fail closed
-    // instead of guessing: confirmed against a real bug where computing
-    // each line's own unit count separately (falling back to a
-    // per-*character* split for whitespace-free CJK lines) desynced from
-    // the global line-level index, making a later window's "one line"
-    // target swell to include a dozen unrelated lines.
-    if text_unit_count != line_anchors.len() {
+    // A real lyric line is almost never exactly one `alignment_text_units`
+    // unit (a multi-word English line, or any CJK line longer than one
+    // character, both split into several units) -- so anchors are matched to
+    // their own line's *range* of units (`line_unit_ranges`, built by
+    // `alignment_text_units_by_line`) rather than assumed to sit at the same
+    // index. What still must hold is one range per anchored line; a mismatch
+    // here means the transcript handed to this function was not the same
+    // `\n`-joined, one-line-per-anchor text `line_anchors_for_lyrics`
+    // produces.
+    if line_unit_ranges.len() != line_anchors.len() {
         return Err(format!(
-            "Qwen alignment line_anchors count ({}) does not match transcript unit count ({}); anchored windowing requires exactly one lyric unit per anchored line",
+            "Qwen alignment line_anchors count ({}) does not match transcript line count ({}); anchored windowing requires exactly one transcript line per anchored line",
             line_anchors.len(),
-            text_unit_count
+            line_unit_ranges.len()
         ));
     }
     for (index, &(start, end)) in line_anchors.iter().enumerate() {
@@ -1257,15 +1291,34 @@ fn plan_alignment_segments_from_anchors(
     for (plan_index, &(first, last)) in groups.iter().enumerate() {
         let raw_start = line_anchors[first].0;
         let audio_start_seconds = tick_floor((raw_start - margin_seconds).max(0.0));
-        let trailing_margin = if last + 1 == line_anchors.len() {
-            margin_seconds
-        } else {
+        let has_following_group = last + 1 < line_anchors.len();
+        let trailing_margin = if has_following_group {
             0.0
+        } else {
+            margin_seconds
         };
-        let audio_end_seconds = (capped_ends[last] + trailing_margin)
+        let mut audio_end_seconds = (capped_ends[last] + trailing_margin)
             .min(source_duration_seconds)
-            .min(audio_start_seconds + ALIGN_WINDOW_MAX_SECONDS)
-            .max(audio_start_seconds + ALIGN_TIMESTAMP_TICK_SECONDS);
+            .min(audio_start_seconds + ALIGN_WINDOW_MAX_SECONDS);
+        // The aligner measures on an 80 ms frame grid anchored at this
+        // window's (tick-aligned) start, and a window whose audio stops
+        // part-way through a frame still yields that whole frame -- its last
+        // word is routinely pinned to a frame spilling past the window's own
+        // end. The following group's window starts at the tick *floor* of
+        // its first line's time, i.e. at the start of that very frame, and
+        // pins its first word there. With the final zero-margin retry
+        // cutting windows exactly at contiguous LRC line times, every seam
+        // whose line time sits off the grid therefore let both windows claim
+        // the identical single frame: an unsplittable tie that
+        // `reconcile_alignment_seam` can only fail (real repro: "よ" and
+        // "ずっ" both measured at [287.52s, 287.60s] around a 287.59s line
+        // time). Ending a window on the grid keeps every frame whole, so two
+        // adjacent windows never measure the same frame.
+        if has_following_group {
+            audio_end_seconds = tick_floor(audio_end_seconds);
+        }
+        let audio_end_seconds =
+            audio_end_seconds.max(audio_start_seconds + ALIGN_TIMESTAMP_TICK_SECONDS);
         // A preceding line only belongs in the *searched text* when most of
         // its claimed content is still inside this window's sliced audio. A
         // fixed "3 units back", or merely checking that the line's final
@@ -1279,7 +1332,7 @@ fn plan_alignment_segments_from_anchors(
         // retained 6.08s of a 12.28s preceding line; excluding that useful
         // context made the aligner pin the owned line to the window start
         // instead of finding its 6-second-later anchor.
-        let mut context_unit_start = first;
+        let mut context_line_start = first;
         for back in 1..=ALIGN_CONTEXT_UNITS {
             let Some(candidate) = first.checked_sub(back) else {
                 break;
@@ -1290,15 +1343,19 @@ fn plan_alignment_segments_from_anchors(
             if included_span * 4.0 < candidate_span {
                 break;
             }
-            context_unit_start = candidate;
+            context_line_start = candidate;
         }
+        let line_boundary_units = (first..last)
+            .map(|line_index| line_unit_ranges[line_index].1)
+            .collect();
         plans.push(AlignmentSegmentPlan {
             index: plan_index,
             audio_start_seconds,
             audio_end_seconds,
-            context_unit_start,
-            target_unit_start: first,
-            target_unit_end: last + 1,
+            context_unit_start: line_unit_ranges[context_line_start].0,
+            target_unit_start: line_unit_ranges[first].0,
+            target_unit_end: line_unit_ranges[last].1,
+            line_boundary_units,
             anchor_start: Some(raw_start),
         });
     }
@@ -1362,18 +1419,16 @@ fn validate_alignment_measurement_resolution(words: &[AlignmentWord]) -> Result<
     Ok(())
 }
 
+/// `boundaries` are character offsets, measured from the start of `words`
+/// joined together, of every point where one grouped lyric *line* ends and
+/// the next begins -- not every alignment unit. A single measured word is
+/// free to span several characters or whitespace-delimited words within one
+/// line (the model reasonably merging kanji like "薔薇" into one word is not
+/// a failure); it must never span a line-to-line seam.
 fn validate_alignment_unit_boundaries(
     words: &[AlignmentWord],
-    target_units: &[String],
+    boundaries: &[usize],
 ) -> Result<(), String> {
-    let boundaries = target_units
-        .iter()
-        .take(target_units.len().saturating_sub(1))
-        .scan(0_usize, |cursor, unit| {
-            *cursor += compact_character_count(unit);
-            Some(*cursor)
-        })
-        .collect::<Vec<_>>();
     let mut cursor = 0_usize;
     for word in words {
         let end = cursor
@@ -1384,7 +1439,7 @@ fn validate_alignment_unit_boundaries(
             .any(|boundary| cursor < *boundary && *boundary < end)
         {
             return Err(
-                "Qwen alignment output has invalid word timing: one measured boundary merged multiple lyric units"
+                "Qwen alignment output has invalid word timing: one measured boundary merged multiple lyric lines"
                     .to_string(),
             );
         }
@@ -1452,7 +1507,13 @@ fn reconcile_alignment_seam(
     next_word: &mut AlignmentWord,
 ) -> Result<(), String> {
     const EPSILON: f64 = 1e-6;
-    if next_word.start >= previous_word.end {
+    if next_word.start >= previous_word.end - EPSILON {
+        // An abutment that only floating-point noise pulled a hair short
+        // of exact is not an overlap; make it exact so no later consumer
+        // has to carry its own tolerance.
+        if next_word.start < previous_word.end {
+            next_word.start = previous_word.end;
+        }
         return Ok(());
     }
     let window_lower = previous_plan
@@ -1522,6 +1583,53 @@ fn reconcile_alignment_seam(
     )
 }
 
+/// `reconcile_alignment_seam` above can only ever move the shared boundary
+/// somewhere strictly between the two words -- it has no room to do that
+/// when both windows measured the *exact same* span (a real repro: two
+/// adjacent lines' own independent windows both placed a word at
+/// [287.52s, 287.60s], one 80 ms tick wide, with nothing left to split). A
+/// single tick is this pipeline's finest unit of time; there is no boundary
+/// inside it, on or off the tick grid, that leaves both sides positive
+/// duration. That is a real acoustic ambiguity (the sung transition between
+/// the two words left no measurable gap), not a bug in either window's own
+/// measurement, so treat it as a merge instead of a failure: the tick goes
+/// to whichever line's real anchor claims more of it, and the other line's
+/// text folds into that same tick rather than getting its own timestamp.
+///
+/// Returns `None` when the two words are not this exact, un-splittable tie
+/// (the caller should fall back to `reconcile_alignment_seam`); otherwise
+/// `Some(true)` when the earlier line keeps the tick and `Some(false)` when
+/// the later one does. Whether the losing window can actually give its word
+/// up is the caller's decision (see `run_align_once`).
+fn exact_tick_seam_tie_break(
+    previous_word: &AlignmentWord,
+    next_word: &AlignmentWord,
+    next_anchor: Option<f64>,
+) -> Option<bool> {
+    // Absolute timestamps are tick-snapped, so two words on the same frame
+    // are bit-identical in practice; the tolerance only guards against a
+    // stray ulp of offset arithmetic. `f64::EPSILON` (2e-16) is far too
+    // tight for that at song magnitudes -- one ulp of 287s is 6e-14 -- and
+    // is exactly why the first version of this check never fired on the
+    // real seam it was written for.
+    const EPSILON: f64 = 1e-6;
+    let next_anchor = next_anchor?;
+    if (previous_word.start - next_word.start).abs() > EPSILON
+        || (previous_word.end - next_word.end).abs() > EPSILON
+        || next_word.end <= next_word.start
+        // Two identical spans wider than one frame still have an interior
+        // tick to split on; `reconcile_alignment_seam` handles those (the
+        // next line's own anchor tick first), and does so far better than
+        // merging two lines' text would.
+        || (next_word.end - next_word.start - ALIGN_TIMESTAMP_TICK_SECONDS).abs() > EPSILON
+    {
+        return None;
+    }
+    let previous_share = (next_anchor - previous_word.start).max(0.0);
+    let next_share = (previous_word.end - next_anchor).max(0.0);
+    Some(previous_share >= next_share)
+}
+
 /// A parse failure here means the pinned aligner's JSON *write* was
 /// corrupted, not that its measurement was wrong -- two different real
 /// repros so far ("control character ... at line 4 column 0" and "key must
@@ -1560,6 +1668,7 @@ fn execute_alignment_window(
             .arg(raw)
             .args(["--align", "--text", text, "--no-timing"])
             .env("GGML_VK_VISIBLE_DEVICES", "0")
+            .env("GGML_VK_DISABLE_ASYNC", "1")
             .env("QWEN_USE_VRAM", "1")
             .env("QWEN_REQUIRE_GPU", "1");
         if let Some(language) = runtime_language {
@@ -1578,7 +1687,27 @@ fn execute_alignment_window(
         {
             Ok(raw_alignment) => {
                 let _ = std::fs::remove_file(raw);
-                return Ok(raw_alignment.words);
+                // The pinned aligner's own "qwen-align-token-word-80ms-v1"
+                // semantics profile promises every boundary sits on the
+                // 80 ms tick grid, but the raw engine has been observed
+                // emitting a boundary a few dozen milliseconds off that grid
+                // (a real GPU run measured "も" as [105.28s, 105.33s] --
+                // 105.33s is not a multiple of 0.08s). Snapping here, right
+                // where the raw measurement enters this codebase, is what
+                // actually makes that promise hold: every later consumer
+                // (seam reconciliation, the analysis engine's own strict
+                // tick-alignment check) can then trust every timestamp it
+                // sees, instead of each needing its own tolerance for engine
+                // noise.
+                return Ok(raw_alignment
+                    .words
+                    .into_iter()
+                    .map(|word| AlignmentWord {
+                        word: word.word,
+                        start: tick_round(word.start),
+                        end: tick_round(word.end),
+                    })
+                    .collect());
             }
             Err(error) => {
                 last_error = format!("Qwen alignment output is invalid: {error}");
@@ -2201,6 +2330,18 @@ fn run_align_with_retries(
                 return Ok(destination);
             }
             Err(error) if is_retryable_window_measurement_error(&error) => {
+                // Only the final attempt's error ever reaches the Engine, so
+                // leave every discarded attempt's own reason on stderr for
+                // diagnosis of the retry chain.
+                eprintln!(
+                    "[uta-qwen-worker engine] alignment attempt {}/{ALIGN_SEAM_RETRY_ATTEMPTS} failed a window measurement{}: {error}",
+                    attempt + 1,
+                    if attempt + 1 < ALIGN_SEAM_RETRY_ATTEMPTS {
+                        ", re-planning windows for the next attempt"
+                    } else {
+                        ""
+                    }
+                );
                 last_error = error;
                 if attempt + 1 < ALIGN_SEAM_RETRY_ATTEMPTS {
                     continue;
@@ -2242,22 +2383,25 @@ fn run_align_once(
     let input = normalize_alignment_input(config)?;
     let destination = output_dir.join("qwen-alignment-evidence.json");
     let source_duration_seconds = audio::wav_duration_seconds(audio)?;
-    let text_units = alignment_text_units(&input.transcript);
     let line_anchors = parsed_line_anchors(config)?;
-    let mut plans = if let Some(anchors) = line_anchors.as_ref() {
-        plan_alignment_segments_from_anchors(
+    let (text_units, mut plans) = if let Some(anchors) = line_anchors.as_ref() {
+        let (text_units, line_unit_ranges) = alignment_text_units_by_line(&input.transcript);
+        let plans = plan_alignment_segments_from_anchors(
             anchors,
-            text_units.len(),
+            &line_unit_ranges,
             source_duration_seconds,
             window_target_seconds,
             anchor_margin_seconds,
-        )?
+        )?;
+        (text_units, plans)
     } else {
-        plan_alignment_segments(
+        let text_units = alignment_text_units(&input.transcript);
+        let plans = plan_alignment_segments(
             source_duration_seconds,
             text_units.len(),
             window_target_seconds,
-        )?
+        )?;
+        (text_units, plans)
     };
     let mut words: Vec<AlignmentWord> = Vec::new();
     let mut segment_evidence = Vec::with_capacity(plans.len());
@@ -2298,7 +2442,14 @@ fn run_align_once(
         let context_text = text_units[plan.context_unit_start..plan.target_unit_end].join(" ");
         let prefix_text = text_units[plan.context_unit_start..plan.target_unit_start].join(" ");
         let target_text = text_units[plan.target_unit_start..plan.target_unit_end].join(" ");
-        let window = if plans.len() == 1 {
+        // A single blind plan spans the whole source, but a single *anchored*
+        // plan starts at its first line's own time minus the margin -- its
+        // words are offset by that start below, so it must be measured
+        // against the same slice every multi-window plan gets, not the
+        // whole file.
+        let covers_whole_source =
+            plan.audio_start_seconds <= 0.0 && plan.audio_end_seconds >= source_duration_seconds;
+        let window = if covers_whole_source {
             audio.to_path_buf()
         } else {
             audio::slice_wav(
@@ -2318,7 +2469,7 @@ fn run_align_once(
             &context_text,
             input.runtime_language,
         );
-        if plans.len() > 1 {
+        if !covers_whole_source {
             let _ = std::fs::remove_file(&window);
         }
         let result = result?;
@@ -2333,9 +2484,17 @@ fn run_align_once(
             compact_character_count(&prefix_text),
             compact_character_count(&target_text),
         )?;
+        // Every window offset is tick-aligned and every local timestamp was
+        // already snapped in `execute_alignment_window`, so re-snapping the
+        // absolute time changes nothing but floating-point noise -- and that
+        // noise matters: the same frame reached through two windows'
+        // different offsets (588 ticks + 3006 ticks versus 3594 ticks) can
+        // differ by an ulp, enough to make two identical seam words compare
+        // unequal and to turn an exact abutment into a phantom overlap.
+        // Snapping makes equal frames bit-identical across windows.
         for word in &mut target_words {
-            word.start += plan.audio_start_seconds;
-            word.end += plan.audio_start_seconds;
+            word.start = tick_round(word.start + plan.audio_start_seconds);
+            word.end = tick_round(word.end + plan.audio_start_seconds);
         }
         let mut normalized = normalize_alignment_words(target_words).map_err(|error| {
             format!(
@@ -2353,42 +2512,99 @@ fn run_align_once(
                 plan.target_unit_end
             )
         })?;
-        // Anchored planning has already proved a one-to-one mapping between
-        // text units and caller lyric lines. Blind English planning instead
-        // uses whitespace-delimited words as units, where a runtime boundary
-        // spanning two ordinary words is not necessarily a line-assignment
-        // failure and must not be rejected by this line-specific check.
+        // Anchored planning already knows each grouped line's own unit range
+        // via `plan.line_boundary_units`, so this checks that no single
+        // measured word straddles a *line* seam -- a word merging characters
+        // or words that share one line (e.g. kanji the model reasonably
+        // read as one word) is not a failure. Blind English planning instead
+        // uses whitespace-delimited words as units with no line concept at
+        // all, where a runtime boundary spanning two ordinary words is not
+        // necessarily a line-assignment failure and must not be rejected by
+        // this check.
         if line_anchors.is_some() {
-            validate_alignment_unit_boundaries(
-                &normalized,
-                &text_units[plan.target_unit_start..plan.target_unit_end],
-            )
-            .map_err(|error| {
+            let line_boundaries: Vec<usize> = plan
+                .line_boundary_units
+                .iter()
+                .map(|&unit_index| {
+                    text_units[plan.target_unit_start..unit_index]
+                        .iter()
+                        .map(|unit| compact_character_count(unit))
+                        .sum()
+                })
+                .collect();
+            validate_alignment_unit_boundaries(&normalized, &line_boundaries).map_err(|error| {
                 format!(
                     "{error} (window {}: audio=[{:.2}s, {:.2}s] target=\"{target_text}\")",
                     plan.index, plan.audio_start_seconds, plan.audio_end_seconds
                 )
             })?;
         }
-        if plan.index > 0
-            && let Some(next_word) = normalized.first_mut()
-            && let Some(previous_word) = words.last_mut()
-        {
-            if let Err(error) =
-                reconcile_alignment_seam(&plans[plan.index - 1], plan, previous_word, next_word)
-            {
-                return Err(format!(
-                    "{error} (seam {}->{}, previous=\"{}\" [{:.2}s, {:.2}s], next=\"{}\" [{:.2}s, {:.2}s], next_anchor={:?})",
-                    plan.index - 1,
-                    plan.index,
-                    previous_word.word,
-                    previous_word.start,
-                    previous_word.end,
-                    next_word.word,
-                    next_word.start,
-                    next_word.end,
-                    plan.anchor_start,
-                ));
+        if plan.index > 0 {
+            let tie_break = match (normalized.first(), words.last()) {
+                (Some(next_word), Some(previous_word)) => {
+                    exact_tick_seam_tie_break(previous_word, next_word, plan.anchor_start)
+                }
+                _ => None,
+            };
+            // A fold removes one measured word from the window that loses
+            // the tick, and every window must keep at least one measured
+            // word of its own (the Engine rejects long-input evidence whose
+            // segment measured zero units). When the side the anchor favors
+            // cannot give a word up, fold the other way rather than fail:
+            // the frame is real acoustic ambiguity either way, and which
+            // line's text carries it matters less than losing the song.
+            let next_window_can_yield = normalized.len() > 1;
+            let previous_window_can_yield = segment_evidence
+                .last()
+                .is_some_and(|segment: &AlignmentSegmentEvidence| segment.measured_units > 1);
+            let fold = match tie_break {
+                Some(true) if next_window_can_yield => Some(true),
+                Some(false) if previous_window_can_yield => Some(false),
+                Some(_) if next_window_can_yield => Some(true),
+                Some(_) if previous_window_can_yield => Some(false),
+                _ => None,
+            };
+            match fold {
+                // The tick goes to the earlier line; the later line's word
+                // has nothing left of its own to measure, so its text folds
+                // onto the word that already owns the tick instead of
+                // getting a first entry of its own.
+                Some(true) => {
+                    let dropped = normalized.remove(0);
+                    words.last_mut().unwrap().word.push_str(&dropped.word);
+                }
+                // The tick goes to the later line; symmetric fold in the
+                // other direction, with the previous window's own evidence
+                // entry kept honest about how many words it still owns.
+                Some(false) => {
+                    let dropped = words.pop().unwrap();
+                    normalized[0].word.insert_str(0, &dropped.word);
+                    segment_evidence.last_mut().unwrap().measured_units -= 1;
+                }
+                None => {
+                    if let (Some(next_word), Some(previous_word)) =
+                        (normalized.first_mut(), words.last_mut())
+                        && let Err(error) = reconcile_alignment_seam(
+                            &plans[plan.index - 1],
+                            plan,
+                            previous_word,
+                            next_word,
+                        )
+                    {
+                        return Err(format!(
+                            "{error} (seam {}->{}, previous=\"{}\" [{:.2}s, {:.2}s], next=\"{}\" [{:.2}s, {:.2}s], next_anchor={:?})",
+                            plan.index - 1,
+                            plan.index,
+                            previous_word.word,
+                            previous_word.start,
+                            previous_word.end,
+                            next_word.word,
+                            next_word.start,
+                            next_word.end,
+                            plan.anchor_start,
+                        ));
+                    }
+                }
             }
         }
         segment_evidence.push(AlignmentSegmentEvidence {

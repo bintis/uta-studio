@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -15,6 +15,7 @@ const MAX_ENGINE_STDERR_BYTES: usize = 64 * 1024;
 pub struct PublishedOutput {
     pub artifact: &'static str,
     pub path: PathBuf,
+    pub media_type: &'static str,
 }
 
 fn model_path(config: &serde_json::Value) -> Result<PathBuf, String> {
@@ -65,7 +66,11 @@ fn resolve_device_class(devices: &[VulkanDeviceEntry], device_class: &str) -> Re
                 .join(", ");
             format!(
                 "no Vulkan {device_class} device is available; found: {}",
-                if available.is_empty() { "none" } else { &available }
+                if available.is_empty() {
+                    "none"
+                } else {
+                    &available
+                }
             )
         })
 }
@@ -75,13 +80,18 @@ fn resolve_device_class(devices: &[VulkanDeviceEntry], device_class: &str) -> Re
 /// device-class preference) resolves to the first physical device of that
 /// class; with neither key, device 0 is unchanged prior behavior.
 fn vulkan_device(config: &serde_json::Value, engine: &Path) -> Result<u32, String> {
-    if let Some(device) = config.get("vulkan_device").and_then(serde_json::Value::as_u64) {
+    if let Some(device) = config
+        .get("vulkan_device")
+        .and_then(serde_json::Value::as_u64)
+    {
         return u32::try_from(device)
             .ok()
             .filter(|device| *device <= 255)
             .ok_or_else(|| "GGML Vulkan device index is invalid".to_string());
     }
-    let Some(device_class) = config.get("device_class").and_then(serde_json::Value::as_str)
+    let Some(device_class) = config
+        .get("device_class")
+        .and_then(serde_json::Value::as_str)
     else {
         return Ok(0);
     };
@@ -110,6 +120,7 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
         };
     }
     let expected = match model_id {
+        "rmvpe" => "pitch",
         "bs_roformer_leap_xe90_vocals" => "guide_vocals",
         "melband_roformer_inst_v2" => "instrumental",
         "melband_roformer_denoise_aufr33" => "dry",
@@ -199,7 +210,12 @@ fn ggml_vulkan_command(
     device: u32,
 ) -> Command {
     let mut command = Command::new(engine);
+    // Production worker requests are Vulkan-only. Diagnostic CPU controls are
+    // accepted by the standalone engines, but must never leak in from the
+    // worker's inherited environment as an implicit fallback.
     command
+        .env_remove("UTA_STUDIO_RMVPE_FORCE_CPU")
+        .env_remove("UTA_STUDIO_ROFORMER_FORCE_CPU")
         .arg(model)
         .arg(input)
         .arg(output)
@@ -212,6 +228,109 @@ fn ggml_vulkan_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
+}
+
+const MAX_RMVPE_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_RMVPE_FRAMES: usize = 4 * 60 * 60 * 100;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawRmvpeEvidence {
+    frames: Vec<RawRmvpeFrame>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawRmvpeFrame {
+    time: f64,
+    hz: f32,
+    confidence: f32,
+    voiced: bool,
+}
+
+#[derive(serde::Serialize)]
+struct RmvpeEvidence<'a> {
+    schema_version: u32,
+    model_id: &'a str,
+    source_model_sha256: &'a str,
+    model_gguf_sha256: &'a str,
+    runtime_manifest_sha256: &'a str,
+    backend: &'a str,
+    timeline_step_ms: u32,
+    sample_rate: u32,
+    frames: Vec<RawRmvpeFrame>,
+}
+
+fn publish_rmvpe_evidence(
+    engine_output: &Path,
+    destination: &Path,
+    runtime_manifest_digest: &str,
+) -> Result<(), String> {
+    if destination.exists() {
+        return Err("RMVPE evidence target already exists".to_string());
+    }
+    let metadata = engine_output
+        .metadata()
+        .map_err(|error| format!("RMVPE engine evidence is unavailable: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_RMVPE_EVIDENCE_BYTES {
+        return Err("RMVPE engine evidence size is invalid".to_string());
+    }
+    let raw: RawRmvpeEvidence = serde_json::from_slice(
+        &std::fs::read(engine_output)
+            .map_err(|error| format!("could not read RMVPE engine evidence: {error}"))?,
+    )
+    .map_err(|error| format!("RMVPE engine evidence is invalid: {error}"))?;
+    if raw.frames.is_empty() || raw.frames.len() > MAX_RMVPE_FRAMES {
+        return Err("RMVPE engine frame count is invalid".to_string());
+    }
+    for (index, frame) in raw.frames.iter().enumerate() {
+        let expected_time = index as f64 * 0.01;
+        if !frame.time.is_finite()
+            || (frame.time - expected_time).abs() > 1.0e-6
+            || !frame.hz.is_finite()
+            || frame.hz <= 0.0
+            || !frame.confidence.is_finite()
+            || !(0.0..=1.0).contains(&frame.confidence)
+            || frame.voiced != (frame.confidence >= 0.03)
+        {
+            return Err("RMVPE engine frames are invalid or off the 10 ms grid".to_string());
+        }
+    }
+    let evidence = RmvpeEvidence {
+        schema_version: 2,
+        model_id: "rmvpe",
+        source_model_sha256: runtime::RMVPE_SOURCE_SHA256,
+        model_gguf_sha256: runtime::RMVPE_GGUF_SHA256,
+        runtime_manifest_sha256: runtime_manifest_digest,
+        backend: "ggml_vulkan",
+        timeline_step_ms: 10,
+        sample_rate: 16_000,
+        frames: raw.frames,
+    };
+    let temporary = destination.with_extension("json.tmp");
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("could not create RMVPE evidence: {error}"))?;
+        serde_json::to_writer(&mut file, &evidence)
+            .map_err(|error| format!("could not encode RMVPE evidence: {error}"))?;
+        file.write_all(b"\n")
+            .map_err(|error| format!("could not finish RMVPE evidence: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("could not sync RMVPE evidence: {error}"))?;
+        drop(file);
+        std::fs::hard_link(&temporary, destination).map_err(|error| {
+            format!("could not atomically publish RMVPE evidence without overwrite: {error}")
+        })?;
+        std::fs::remove_file(&temporary)
+            .map_err(|error| format!("could not remove RMVPE temporary evidence: {error}"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn read_engine_stderr_tail(mut stderr: impl Read) -> Result<Vec<u8>, String> {
@@ -250,11 +369,19 @@ pub fn run(
 ) -> Result<Vec<PublishedOutput>, String> {
     validate_semantics(model_id, config)?;
     progress(0.02, "Validating pinned GGML Vulkan runtime", None);
-    let validated_runtime = runtime::validate_runtime()?;
+    let validated_runtime = runtime::validate_runtime(model_id)?;
     progress(0.05, "Validating GGUF model structure", None);
     let model = runtime::validate_model(model_id, &model_path(config)?)?;
-    let input = audio::decode_stereo_wav(source, output_dir, task_id)?;
-    let engine_output = output_dir.join(format!("{task_id}-ggml-engine.wav"));
+    let pitch_mode = model_id == "rmvpe";
+    let input = if pitch_mode {
+        audio::decode_mono_wav(source, output_dir, task_id)?
+    } else {
+        audio::decode_stereo_wav(source, output_dir, task_id)?
+    };
+    let engine_output = output_dir.join(format!(
+        "{task_id}-ggml-engine.{}",
+        if pitch_mode { "json" } else { "wav" }
+    ));
     if engine_output.exists() {
         let _ = std::fs::remove_file(&input);
         return Err("GGML engine output target already exists".to_string());
@@ -279,15 +406,15 @@ pub fn run(
     prepend_library_path(&mut command, "PATH", &validated_runtime.library_dir)?;
     let mut child = command
         .spawn()
-        .map_err(|error| format!("could not start GGML RoFormer engine: {error}"))?;
+        .map_err(|error| format!("could not start GGML native engine: {error}"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "GGML RoFormer machine-progress stdout is unavailable".to_string())?;
+        .ok_or_else(|| "GGML machine-progress stdout is unavailable".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "GGML RoFormer diagnostics stderr is unavailable".to_string())?;
+        .ok_or_else(|| "GGML diagnostics stderr is unavailable".to_string())?;
     let stderr_reader = std::thread::spawn(move || read_engine_stderr_tail(stderr));
     let mut last_units = None;
     for line in BufReader::new(stdout).lines() {
@@ -300,7 +427,7 @@ pub fn run(
         }) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("GGML RoFormer work units changed identity or regressed".to_string());
+            return Err("GGML work units changed identity or regressed".to_string());
         }
         last_units = Some((completed, total));
         progress(
@@ -311,25 +438,49 @@ pub fn run(
     }
     let status = child
         .wait()
-        .map_err(|error| format!("could not wait for GGML RoFormer engine: {error}"))?;
+        .map_err(|error| format!("could not wait for GGML native engine: {error}"))?;
     let diagnostics = stderr_reader
         .join()
-        .map_err(|_| "GGML RoFormer diagnostics reader panicked".to_string())??;
+        .map_err(|_| "GGML diagnostics reader panicked".to_string())??;
     if !status.success() || !engine_output.is_file() {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&engine_output);
         let diagnostics = String::from_utf8_lossy(&diagnostics);
         let diagnostics = diagnostics.trim();
         return Err(if diagnostics.is_empty() {
-            format!("GGML RoFormer engine failed with {status}")
+            format!("GGML native engine failed with {status}")
         } else {
-            format!("GGML RoFormer engine failed with {status}: {diagnostics}")
+            format!("GGML native engine failed with {status}: {diagnostics}")
         });
     }
     if last_units.is_none_or(|(completed, total)| completed != total) {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&engine_output);
-        return Err("GGML RoFormer did not complete its measured chunk route".to_string());
+        return Err("GGML engine did not complete its measured work route".to_string());
+    }
+
+    if pitch_mode {
+        progress(0.92, "Validating and publishing RMVPE pitch evidence", None);
+        let destination = output_dir.join("rmvpe-pitch-evidence.json");
+        let result = publish_rmvpe_evidence(
+            &engine_output,
+            &destination,
+            &validated_runtime.manifest_content_digest,
+        )
+        .map(|()| {
+            vec![PublishedOutput {
+                artifact: "pitch_evidence",
+                path: destination.clone(),
+                media_type: "application/json",
+            }]
+        });
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&engine_output);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&destination);
+        }
+        progress(1.0, "GGML Vulkan inference complete", None);
+        return result;
     }
 
     progress(0.92, "Atomically encoding lossless GGML output", None);
@@ -358,6 +509,7 @@ pub fn run(
         let mut published = vec![PublishedOutput {
             artifact: artifact_name(model_id, config),
             path: destination.clone(),
+            media_type: "audio/flac",
         }];
         if model_id == "melband_roformer_harmony" {
             let residual = output_dir.join("vocal-residual.flac");
@@ -365,6 +517,7 @@ pub fn run(
             published.push(PublishedOutput {
                 artifact: "vocal_residual",
                 path: residual,
+                media_type: "audio/flac",
             });
         }
         Ok(published)
@@ -440,6 +593,14 @@ mod tests {
                 "--machine-progress",
             ]
         );
+        for variable in [
+            "UTA_STUDIO_RMVPE_FORCE_CPU",
+            "UTA_STUDIO_ROFORMER_FORCE_CPU",
+        ] {
+            assert!(command.get_envs().any(|(name, value)| {
+                name == std::ffi::OsStr::new(variable) && value.is_none()
+            }));
+        }
     }
 
     #[test]
@@ -491,6 +652,38 @@ mod tests {
     }
 
     #[test]
+    fn rmvpe_evidence_publication_is_typed_atomic_and_no_overwrite() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "uta-ggml-rmvpe-evidence-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let raw = root.join("engine.json");
+        let published = root.join("rmvpe-pitch-evidence.json");
+        std::fs::write(
+            &raw,
+            br#"{"frames":[{"time":0.0,"hz":220.0,"confidence":0.8,"voiced":true},{"time":0.01,"hz":120.0,"confidence":0.01,"voiced":false}]}"#,
+        )
+        .unwrap();
+        let runtime_digest = "d".repeat(64);
+        publish_rmvpe_evidence(&raw, &published, &runtime_digest).unwrap();
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&published).unwrap()).unwrap();
+        assert_eq!(evidence["schema_version"], 2);
+        assert_eq!(evidence["model_id"], "rmvpe");
+        assert_eq!(evidence["backend"], "ggml_vulkan");
+        assert_eq!(evidence["model_gguf_sha256"], runtime::RMVPE_GGUF_SHA256);
+        assert_eq!(evidence["runtime_manifest_sha256"], runtime_digest);
+        assert!(!published.with_extension("json.tmp").exists());
+        assert!(publish_rmvpe_evidence(&raw, &published, "replacement").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn semantic_routes_are_explicit_and_non_substituting() {
         assert!(
             validate_semantics(
@@ -528,6 +721,16 @@ mod tests {
                 &serde_json::json!({
                     "backend":"ggml_vulkan",
                     "semantic_output":"pitch"
+                })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_semantics(
+                "rmvpe",
+                &serde_json::json!({
+                    "backend":"ggml_vulkan",
+                    "semantic_output":"guide_vocals"
                 })
             )
             .is_err()

@@ -65,6 +65,41 @@ impl StorePaths {
                 "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH",
                 "uta-qwen-align-worker",
             ),
+            (
+                "game_native_v1",
+                "UTA_STUDIO_GAME_RUNTIME_PATH",
+                "uta-game-worker",
+            ),
+            (
+                "jbm555_native_v1",
+                "UTA_STUDIO_JBM_RUNTIME_PATH",
+                "uta-jbm-worker",
+            ),
+            (
+                "fcpe_native_v1",
+                "UTA_STUDIO_FCPE_RUNTIME_PATH",
+                "uta-fcpe-worker",
+            ),
+            (
+                "basic_pitch_native_v1",
+                "UTA_STUDIO_BASIC_PITCH_RUNTIME_PATH",
+                "uta-basic-pitch-worker",
+            ),
+            (
+                "firered_native_v1",
+                "UTA_STUDIO_FIRERED_RUNTIME_PATH",
+                "uta-firered-worker",
+            ),
+            (
+                "stars_native_v1",
+                "UTA_STUDIO_STARS_RUNTIME_PATH",
+                "uta-stars-worker",
+            ),
+            (
+                "rosvot_native_v1",
+                "UTA_STUDIO_ROSVOT_RUNTIME_PATH",
+                "uta-rosvot-worker",
+            ),
         ] {
             let configured = std::env::var_os(variable).map(PathBuf::from);
             let packaged = executable_directory
@@ -127,17 +162,24 @@ impl StorePaths {
     }
 
     pub fn ggml_model_path(&self, model_id: &str) -> Option<PathBuf> {
-        let directory = match model_id {
-            "melband_roformer_harmony" => "melband_roformer_karaoke_aufr33_viperx",
+        let (directory, filename) = match model_id {
+            "melband_roformer_harmony" => {
+                ("melband_roformer_karaoke_aufr33_viperx", "model-fp16.gguf")
+            }
             "melband_roformer_inst_v2"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
-            | "bs_polarformer_public_instrumental" => model_id,
+            | "bs_polarformer_public_instrumental" => (model_id, "model-fp16.gguf"),
+            "rmvpe" => (model_id, "rmvpe-f32.gguf"),
+            "game" => (model_id, "game-medium-f32.gguf"),
+            "jbm555_cectc_80" => ("jbm555", "jbm555-cectc80-f32.gguf"),
+            "fcpe" => (model_id, "fcpe-f32.gguf"),
+            "basic_pitch" => (model_id, "basic-pitch-f32.gguf"),
             _ => return None,
         };
         self.ggml_models_root
             .as_ref()
-            .map(|root| root.join(directory).join("model-fp16.gguf"))
+            .map(|root| root.join(directory).join(filename))
             .filter(|path| path.is_file())
     }
 
@@ -433,6 +475,23 @@ mod tests {
             select_ggml_models_root(Some(PathBuf::from("/explicit/models")), Some(store)),
             Some(PathBuf::from("/explicit/models"))
         );
+    }
+
+    #[test]
+    fn rmvpe_uses_its_f32_filename_in_the_durable_ggml_root() {
+        let root =
+            std::env::temp_dir().join(format!("uta-rmvpe-ggml-path-test-{}", std::process::id()));
+        let model = root.join("rmvpe/rmvpe-f32.gguf");
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, b"fixture").unwrap();
+        assert_eq!(
+            StorePaths::default()
+                .with_ggml_models_root(&root)
+                .ggml_model_path("rmvpe")
+                .as_deref(),
+            Some(model.as_path())
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

@@ -71,7 +71,42 @@ fn roformer_gguf_directory_import_uses_current_vulkan_artifact_identity() {
     assert_eq!(manifest.source_sha256, None);
     assert_eq!(
         manifest.runtime_recipe_digest.as_deref(),
-        Some("4c2784c0e58358f852ed9ee95cd7a5b99e4e6c226f72a4790e7beeb42f7d631a")
+        Some(crate::runtime_lock::GGML_RUNTIME_RECIPE_SHA256)
+    );
+}
+
+#[test]
+fn rmvpe_gguf_import_publishes_the_vulkan_filename_and_provenance() {
+    let fixture = Fixture::new();
+    let manager = fixture.manager();
+    let resource = ResourceRef::model("rmvpe").unwrap();
+    let source = fixture.write("rmvpe-f32.gguf", b"rmvpe gguf fixture");
+
+    manager
+        .import_resource(&resource, &source, &confirmed())
+        .unwrap();
+
+    let pointer = read_current_pointer(&fixture.root.join("models/rmvpe/current.json")).unwrap();
+    let manifest = read_install_manifest(
+        &fixture
+            .root
+            .join("models/rmvpe/generations")
+            .join(pointer.generation),
+    )
+    .unwrap();
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.files[0].path, Path::new("rmvpe-f32.gguf"));
+    assert_eq!(
+        manifest.source_sha256.as_deref(),
+        Some("1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2")
+    );
+    assert_eq!(
+        manifest.conversion_recipe_digest.as_deref(),
+        Some(crate::runtime_lock::RMVPE_GGUF_CONVERSION_RECIPE_SHA256)
+    );
+    assert_eq!(
+        manifest.runtime_recipe_digest.as_deref(),
+        Some(crate::runtime_lock::GGML_RUNTIME_RECIPE_SHA256)
     );
 }
 

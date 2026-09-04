@@ -324,8 +324,11 @@ pub(crate) fn run_firered_schedule(
                 &output_root.join("worker/firered"),
                 cancellation,
             )?;
-            parse_firered_transcript(typed_worker_output(&outputs, "transcript_evidence")?)
-                .map(Some)
+            let artifact = match model.backend {
+                uta_runtime_manager::NativeBackend::NativeDsp => "firered_transcript_evidence",
+                _ => "transcript_evidence",
+            };
+            parse_firered_transcript(typed_worker_output(&outputs, artifact)?).map(Some)
         }
         (ScheduledExecution::Windows(_), _) => Err(EngineError::new(
             EngineErrorCode::InternalError,
@@ -450,8 +453,12 @@ fn run_fcpe_task(
         &output_dir,
         cancellation,
     )?;
+    let artifact = match model.backend {
+        uta_runtime_manager::NativeBackend::NativeDsp => "fcpe_pitch_evidence",
+        _ => "pitch_evidence",
+    };
     parse_fcpe_pitch(
-        typed_worker_output(&outputs, "pitch_evidence")?,
+        typed_worker_output(&outputs, artifact)?,
         range.start,
         range.end.saturating_sub(range.start),
     )
@@ -473,8 +480,12 @@ fn run_basic_pitch_task(
         &output_dir,
         cancellation,
     )?;
+    let artifact = match model.backend {
+        uta_runtime_manager::NativeBackend::NativeDsp => "basic_pitch_activation_evidence",
+        _ => "basic_pitch_evidence",
+    };
     parse_basic_pitch_evidence(
-        typed_worker_output(&outputs, "basic_pitch_evidence")?,
+        typed_worker_output(&outputs, artifact)?,
         range.start,
         range.end.saturating_sub(range.start),
     )
@@ -489,10 +500,23 @@ fn run_native_task(
     cancellation: &CancellationToken,
 ) -> EngineResult<Vec<NativeTaskOutput>> {
     fresh_directory(output_dir)?;
+    let (component, config) = match model.backend {
+        uta_runtime_manager::NativeBackend::NativeDsp => (
+            native_dsp_component(&model.model_id)?,
+            serde_json::json!({ "model_path": model.model_path }),
+        ),
+        _ => (
+            "uta-openvino-worker",
+            serde_json::json!({
+                "model_path": model.model_path,
+                "backend": openvino_backend(model)?
+            }),
+        ),
+    };
     SupervisedWorker::run(
         &model.runtime_executable,
         &WorkerExpectation {
-            component: "uta-openvino-worker".to_string(),
+            component: component.to_string(),
             runtime_recipe_digest: model.runtime_recipe_digest.clone(),
         },
         &NativeTask {
@@ -502,15 +526,24 @@ fn run_native_task(
             model_id: model.model_id.clone(),
             input_artifacts: vec![input.to_path_buf()],
             output_dir: output_dir.to_path_buf(),
-            config: serde_json::json!({
-                "model_path": model.model_path,
-                "backend": openvino_backend(model)?
-            }),
+            config,
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,
         |_| {},
     )
+}
+
+fn native_dsp_component(model_id: &str) -> EngineResult<&'static str> {
+    match model_id {
+        "fcpe" => Ok("uta-fcpe-worker"),
+        "basic_pitch" => Ok("uta-basic-pitch-worker"),
+        "firered_asr2_aed" => Ok("uta-firered-worker"),
+        other => Err(EngineError::new(
+            EngineErrorCode::RuntimeResolutionFailed,
+            format!("model {other} has no wired native DSP worker component"),
+        )),
+    }
 }
 
 fn openvino_backend(model: &ResolvedModel) -> EngineResult<&'static str> {

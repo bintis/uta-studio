@@ -724,4 +724,3 @@ pub(crate) fn spawn_empty_library(
                 });
         });
 }
-

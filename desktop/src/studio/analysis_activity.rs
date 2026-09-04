@@ -275,20 +275,30 @@ pub(crate) fn follow_live_analysis_node(
                     app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
                 })
             });
-        let mut target = estimated_analysis_graph_center_target(
+        // A real repro chased a `(0, 0)` fallback for a node's entire running
+        // duration: the topology/layout for a just-started node can lag a
+        // frame or two behind the live engine reporting it as running, and
+        // recording that miss as this node's target meant the recompute
+        // trigger above (`follow_node != live_id`) never fired again until
+        // the *next* node transition. Only commit a target -- and only then
+        // mark this node "resolved" -- once the real rect is available;
+        // otherwise leave state untouched so this same branch retries next
+        // frame instead of settling on a wrong corner.
+        if let Some(mut target) = estimated_analysis_graph_center_target(
             workflow.as_ref(),
             &live_id,
             clamp_analysis_graph_zoom(analysis.analysis_graph_zoom),
             viewport_size,
-        );
-        target.x = target
-            .x
-            .clamp(0.0, (content_size.x - viewport_size.x).max(0.0));
-        target.y = target
-            .y
-            .clamp(0.0, (content_size.y - viewport_size.y).max(0.0));
-        analysis.analysis_graph_follow_node = Some(live_id);
-        analysis.analysis_graph_follow_target = Some(target);
+        ) {
+            target.x = target
+                .x
+                .clamp(0.0, (content_size.x - viewport_size.x).max(0.0));
+            target.y = target
+                .y
+                .clamp(0.0, (content_size.y - viewport_size.y).max(0.0));
+            analysis.analysis_graph_follow_node = Some(live_id);
+            analysis.analysis_graph_follow_target = Some(target);
+        }
     }
 
     let Some(target) = analysis.analysis_graph_follow_target else {

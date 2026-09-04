@@ -45,8 +45,12 @@ struct RmvpeEvidence {
     schema_version: u32,
     model_id: String,
     source_model_sha256: String,
-    model_manifest_sha256: String,
-    model_bin_sha256: String,
+    #[serde(default)]
+    model_manifest_sha256: Option<String>,
+    #[serde(default)]
+    model_bin_sha256: Option<String>,
+    #[serde(default)]
+    model_gguf_sha256: Option<String>,
     runtime_manifest_sha256: String,
     backend: String,
     timeline_step_ms: u32,
@@ -78,9 +82,23 @@ pub fn parse_rmvpe_pitch(
             .map_err(|error| invalid(format!("could not read RMVPE evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
-    if raw.schema_version != 1
+    let backend_identity_valid = match raw.schema_version {
+        1 => {
+            matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+                && raw.model_manifest_sha256.is_some()
+                && raw.model_bin_sha256.is_some()
+                && raw.model_gguf_sha256.is_none()
+        }
+        2 => {
+            raw.backend == "ggml_vulkan"
+                && raw.model_manifest_sha256.is_none()
+                && raw.model_bin_sha256.is_none()
+                && raw.model_gguf_sha256.is_some()
+        }
+        _ => false,
+    };
+    if !backend_identity_valid
         || raw.model_id != "rmvpe"
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
         || raw.timeline_step_ms == 0
         || raw.sample_rate == 0
         || raw.frames.is_empty()
@@ -102,6 +120,7 @@ pub fn parse_rmvpe_pitch(
             || frame.hz <= 0.0
             || !frame.confidence.is_finite()
             || !(0.0..=1.0).contains(&frame.confidence)
+            || frame.voiced != (frame.confidence >= 0.03)
         {
             return Err(invalid(
                 "RMVPE frames are invalid or not on the declared grid",
@@ -116,13 +135,21 @@ pub fn parse_rmvpe_pitch(
         "source_sha256".to_string(),
         serde_json::json!(raw.source_model_sha256),
     );
+    if let Some(manifest) = raw.model_manifest_sha256 {
+        model.insert("manifest_sha256".to_string(), serde_json::json!(manifest));
+    }
+    let weights = raw
+        .model_gguf_sha256
+        .or(raw.model_bin_sha256)
+        .ok_or_else(|| invalid("RMVPE evidence omitted its backend-specific weight identity"))?;
+    model.insert("weights_sha256".to_string(), serde_json::json!(weights));
     model.insert(
-        "manifest_sha256".to_string(),
-        serde_json::json!(raw.model_manifest_sha256),
-    );
-    model.insert(
-        "weights_sha256".to_string(),
-        serde_json::json!(raw.model_bin_sha256),
+        "artifact_format".to_string(),
+        serde_json::json!(if raw.schema_version == 2 {
+            "gguf_f32"
+        } else {
+            "openvino_ir"
+        }),
     );
     model.insert(
         "runtime_manifest_sha256".to_string(),
@@ -200,7 +227,10 @@ pub fn parse_fcpe_pitch(
     .map_err(|error| invalid(format!("FCPE evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 3
         || raw.model_id != "fcpe"
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+        || !matches!(
+            raw.backend.as_str(),
+            "openvino_gpu" | "openvino_cpu" | "ggml_native"
+        )
         || raw.timeline_step_ms != 10
         || raw.sample_rate != 16_000
         || raw.window_samples != 32_000
@@ -330,6 +360,39 @@ mod tests {
             parse_rmvpe_pitch(&path, 0, 9_999).unwrap_err().code,
             EngineErrorCode::OutputValidationFailed
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_ggml_rmvpe_with_truthful_gguf_identity() {
+        let path = std::env::temp_dir().join(format!("uta-rmvpe-ggml-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 2,
+                "model_id": "rmvpe",
+                "source_model_sha256": RMVPE_SOURCE_SHA256,
+                "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
+                "runtime_manifest_sha256": "d".repeat(64),
+                "backend": "ggml_vulkan",
+                "timeline_step_ms": 10,
+                "sample_rate": 16000,
+                "frames": [
+                    {"time":0.0,"hz":220.3,"confidence":0.88,"voiced":true},
+                    {"time":0.01,"hz":120.0,"confidence":0.01,"voiced":false}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let evidence = parse_rmvpe_pitch(&path, 0, 10_000).unwrap();
+        assert_eq!(evidence.model["backend"], "ggml_vulkan");
+        assert_eq!(evidence.model["artifact_format"], "gguf_f32");
+        assert_eq!(
+            evidence.model["weights_sha256"],
+            "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2"
+        );
+        assert!(!evidence.model.contains_key("manifest_sha256"));
         std::fs::remove_file(path).unwrap();
     }
 

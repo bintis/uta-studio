@@ -38,6 +38,14 @@ cargo build --release --locked \
     -p uta-openvino-worker --bin uta-openvino-worker \
     -p uta-qwen-worker --bin uta-qwen-asr-worker \
     -p uta-qwen-worker --bin uta-qwen-align-worker \
+    -p uta-game-worker --bin uta-game-worker \
+    -p uta-jbm-worker --bin uta-jbm-worker \
+    -p uta-fcpe-worker --bin uta-fcpe-worker \
+    -p uta-basic-pitch-worker --bin uta-basic-pitch-worker \
+    -p uta-firered-worker --bin uta-firered-worker \
+    -p uta-stars-worker --bin uta-stars-worker \
+    -p uta-rosvot-worker --bin uta-rosvot-worker \
+    --features uta-game-worker/gpu \
     "$@"
 
 printf '\nBuilt Studio and packaged protocols in: %s\n' "$repo_root/target/release"

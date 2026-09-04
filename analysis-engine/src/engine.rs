@@ -1013,17 +1013,28 @@ impl AnalysisEngine {
             } else {
                 let model = resolved_model(&resolved, "rmvpe")?;
                 let directory = create_task_dir(&output_root, "worker/rmvpe")?;
+                let backend = roformer_backend(model)?;
+                let mut config = serde_json::json!({
+                    "model_path": model.model_path,
+                    "backend": backend,
+                    "semantic_output": "pitch"
+                });
+                if let Some(device_class) = ggml_vulkan_device_class(
+                    backend,
+                    request
+                        .execution_policy
+                        .requested_device_for(&model.model_id),
+                ) {
+                    config["device_class"] = serde_json::Value::from(device_class);
+                }
                 let outputs = run_native_task(
                     model,
-                    "uta-openvino-worker",
+                    roformer_component(backend),
                     "task-rmvpe",
                     "pitch.track",
                     &input,
                     &directory,
-                    serde_json::json!({
-                        "model_path": model.model_path,
-                        "backend": openvino_backend(model)?
-                    }),
+                    config,
                     cancellation,
                 )?;
                 let pitch = parse_rmvpe_pitch(
@@ -1065,19 +1076,40 @@ impl AnalysisEngine {
             )?;
             let model = resolved_model(&resolved, "game")?;
             let directory = create_task_dir(&output_root, "worker/game")?;
+            let is_game_native = model.runtime_id == "game_native_v1"
+                || model.backend == uta_runtime_manager::NativeBackend::Vulkan;
+            let (component, backend) = if is_game_native {
+                ("uta-game-worker", "game_native")
+            } else {
+                ("uta-openvino-worker", openvino_backend(model)?)
+            };
+            let mut task_config = serde_json::json!({
+                "model_path": model.model_path,
+                "language": request.lyrics.language,
+                "known_boundaries_us": game_known_boundaries_us,
+                "backend": backend
+            });
+            if is_game_native {
+                // `backend` above is only the routing label ("game_native"
+                // for both the Vulkan and CpuReference capabilities of
+                // `game_native_v1`); the worker itself has no other way to
+                // know which one the Runtime Manager actually resolved, so
+                // pass the real device choice through explicitly.
+                let device = if model.backend == uta_runtime_manager::NativeBackend::Vulkan {
+                    "gpu"
+                } else {
+                    "cpu"
+                };
+                task_config["device"] = serde_json::Value::String(device.to_string());
+            }
             let outputs = run_native_task(
                 model,
-                "uta-openvino-worker",
+                component,
                 "task-game",
                 "notes.game",
                 &input,
                 &directory,
-                serde_json::json!({
-                    "model_path": model.model_path,
-                    "language": request.lyrics.language,
-                    "known_boundaries_us": game_known_boundaries_us,
-                    "backend": openvino_backend(model)?
-                }),
+                task_config,
                 cancellation,
             )?;
             Some(parse_game_evidence(
@@ -1185,17 +1217,28 @@ impl AnalysisEngine {
                     )
                 } else {
                     let directory = create_task_dir(&output_root, "worker/rmvpe-secondary")?;
+                    let backend = roformer_backend(model)?;
+                    let mut config = serde_json::json!({
+                        "model_path": model.model_path,
+                        "backend": backend,
+                        "semantic_output": "pitch"
+                    });
+                    if let Some(device_class) = ggml_vulkan_device_class(
+                        backend,
+                        request
+                            .execution_policy
+                            .requested_device_for(&model.model_id),
+                    ) {
+                        config["device_class"] = serde_json::Value::from(device_class);
+                    }
                     let outputs = run_native_task(
                         model,
-                        "uta-openvino-worker",
+                        roformer_component(backend),
                         "task-rmvpe",
                         capability,
                         &input,
                         &directory,
-                        serde_json::json!({
-                            "model_path": model.model_path,
-                            "backend": openvino_backend(model)?
-                        }),
+                        config,
                         cancellation,
                     );
                     outputs.and_then(|outputs| {
@@ -1459,11 +1502,13 @@ impl AnalysisEngine {
                 .map(|resource| resource.generation.as_str())
                 .unwrap_or("caller-vocal");
             let directory = create_task_dir(&output_root, "worker/jbm555")?;
-            let backend = openvino_backend(model)?;
+            let is_native = model.runtime_executable.ends_with("uta-jbm-worker");
+            let component = if is_native { "uta-jbm-worker" } else { "uta-openvino-worker" };
+            let backend = if is_native { "jbm555_native" } else { openvino_backend(model)? };
             let outputs = SupervisedWorker::run(
                 &model.runtime_executable,
                 &WorkerExpectation {
-                    component: "uta-openvino-worker".to_string(),
+                    component: component.to_string(),
                     runtime_recipe_digest: model.runtime_recipe_digest.clone(),
                 },
                 &NativeTask {
@@ -1474,15 +1519,11 @@ impl AnalysisEngine {
                     input_artifacts: vec![primary.path.clone(), analysis_input.clone()],
                     output_dir: directory,
                     config: serde_json::json!({
-                        "model_path": model.model_path,
-                        "backend": backend,
-                        "source_start": source_start,
-                        "source_duration": source_duration,
-                        "model_generation": model.generation,
-                        "mix_audio_identity": "task-mix",
-                        "vocal_audio_identity": "task-vocal",
-                        "separator_model_generation": separator_generation,
-                        "vocal_preparation_generation": "native-44k1"
+                        "model_path": model.model_path, "backend": backend,
+                        "source_start": source_start, "source_duration": source_duration,
+                        "model_generation": model.generation, "mix_audio_identity": "task-mix",
+                        "vocal_audio_identity": "task-vocal", "separator_model_generation": separator_generation,
+                        "vocal_preparation_generation": "native-44k1",
                     }),
                     timeout: Duration::from_secs(4 * 60 * 60),
                 },

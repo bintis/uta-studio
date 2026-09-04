@@ -788,6 +788,7 @@ fn spawn_analysis_session_surface(
                 let current_label = (mode == AnalysisGraphMode::Live).then_some(operation);
                 let zoom = clamp_analysis_graph_zoom(session.analysis_graph_zoom);
                 let follow_available = analysis_graph_follow_available(mode);
+                let follow_active = follow_available && session.analysis_graph_follow_enabled;
                 spawn_analysis_graph_context_bar(
                     session_card,
                     font.clone(),
@@ -796,9 +797,6 @@ fn spawn_analysis_session_surface(
                     overall_progress,
                     current_label,
                     counts,
-                    zoom,
-                    follow_available && session.analysis_graph_follow_enabled,
-                    follow_available,
                 );
 
                 let mut steps = std::collections::BTreeMap::new();
@@ -1153,12 +1151,19 @@ fn spawn_analysis_session_surface(
                                     analysis.analysis_graph_follow_enabled = false;
                                 },
                             );
-                        // The pan hint stays a fixed overlay outside the
-                        // scrolling viewport so it never scrolls away with
-                        // the canvas content; the Fit/Zoom/Follow cluster
-                        // now lives in the context bar above the canvas
-                        // instead (§ its own doc comment).
+                        // Both overlays stay fixed outside the scrolling
+                        // viewport so neither scrolls away with the canvas
+                        // content: the pan hint in the bottom-left corner,
+                        // the Fit/Zoom/Follow cluster in the bottom-right.
                         spawn_analysis_graph_pan_hint(frame, font.clone(), theme);
+                        spawn_analysis_graph_viewport_controls(
+                            frame,
+                            font.clone(),
+                            theme,
+                            zoom,
+                            follow_active,
+                            follow_available,
+                        );
                     });
             }
 

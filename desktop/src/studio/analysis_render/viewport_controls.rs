@@ -1,8 +1,8 @@
-//! Discoverable canvas chrome for the Advanced Graph viewport. The pan/zoom
-//! hint is an absolutely-positioned overlay inside the viewport so the
-//! canvas itself keeps the full available height (§12). The Fit/Zoom/Follow
-//! control cluster instead renders inline in the context bar above the
-//! canvas, next to the read-only disclaimer.
+//! Discoverable canvas chrome for the Advanced Graph viewport. Both the
+//! pan/zoom hint and the Fit/Zoom/Follow control cluster are
+//! absolutely-positioned overlays inside the viewport frame -- bottom-left
+//! and bottom-right respectively -- so the canvas itself keeps the full
+//! available height (§12) instead of losing a row to either.
 
 use super::*;
 use crate::studio::*;
@@ -87,14 +87,12 @@ fn spawn_follow_toggle(
     });
 }
 
-/// `[Fit] [-] [zoom%] [+] [Follow]`, inline in the context bar next to the
-/// read-only disclaimer (it used to float over the canvas as its own
-/// pill, which kept a fixed, near-opaque background regardless of the
-/// window's transparency setting -- moving it into the already-themed bar
-/// removes the need for that separate surface entirely). Zoom buttons and
-/// Fit dispatch the exact existing commands/systems
-/// (`AdjustAnalysisGraphZoom`, the `fit_analysis_graph_to_viewport` system
-/// via `FitAnalysisGraph`) rather than a second implementation.
+/// `[Fit] [-] [zoom%] [+] [Follow]`, floating in the canvas's own
+/// bottom-right corner -- the pan hint (§ its own doc comment) occupies the
+/// bottom-left, so the two never collide. Zoom buttons and Fit dispatch the
+/// exact existing commands/systems (`AdjustAnalysisGraphZoom`, the
+/// `fit_analysis_graph_to_viewport` system via `FitAnalysisGraph`) rather
+/// than a second implementation.
 pub(crate) fn spawn_analysis_graph_viewport_controls(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -104,12 +102,20 @@ pub(crate) fn spawn_analysis_graph_viewport_controls(
     follow_available: bool,
 ) {
     parent
-        .spawn(Node {
-            flex_shrink: 0.0,
-            align_items: AlignItems::Center,
-            column_gap: px(5.0),
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(10.0),
+                bottom: px(10.0),
+                align_items: AlignItems::Center,
+                column_gap: px(5.0),
+                padding: UiRect::axes(px(7.0), px(4.0)),
+                border_radius: BorderRadius::all(px(4.0)),
+                ..default()
+            },
+            BackgroundColor(theme.card.with_alpha(0.6)),
+            ZIndex(20),
+        ))
         .with_children(|controls| {
             spawn_viewport_control_button(
                 controls,

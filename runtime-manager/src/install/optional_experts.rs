@@ -7,6 +7,8 @@ use serde::Deserialize;
 use super::sha256_file;
 use super::{PublishIdentity, publish_file_set, publish_io};
 use crate::catalog::ModelCatalogEntry;
+#[cfg(test)]
+use crate::catalog::NativeBackend;
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resolver::RuntimeManager;
 use crate::resource::ResourceRef;
@@ -308,17 +310,22 @@ mod tests {
                 .import_resource(&resource, &fixture.source, &confirmed())
                 .unwrap();
             let first = fixture.current_generation();
-            let status = manager.status(&resource, RuntimePolicy::Benchmark).unwrap();
+            // This fixture only wires the `openvino_2026_3` runtime, and
+            // OpenVINO is Experimental-only in this catalog now (it is the
+            // route that caused this host's documented crash, and it is no
+            // longer any model's default) -- so verifying the imported
+            // generation is usable means requesting that backend explicitly
+            // under Experimental policy, not relying on default resolution.
+            let status = manager
+                .status_with_backend(
+                    &resource,
+                    RuntimePolicy::Experimental,
+                    Some(NativeBackend::OpenVino),
+                )
+                .unwrap();
             assert_eq!(status.install_state, InstallState::Installed, "{model_id}");
             assert!(status.integrity_verified, "{model_id}");
             assert!(status.usable, "{model_id}: {status:?}");
-            assert!(
-                manager
-                    .status(&resource, RuntimePolicy::Production)
-                    .unwrap()
-                    .usable,
-                "every promoted optional expert must be Production usable: {model_id}"
-            );
 
             manager
                 .import_resource(&resource, &fixture.source, &confirmed())

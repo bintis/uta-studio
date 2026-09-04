@@ -10,6 +10,9 @@ const MAX_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
 #[cfg(test)]
 const MANIFEST_SHA256: &str = "093335b6a113e5eead88bb011a7870d61f18319e8d0204523c3ce9d82e6c8c35";
 const REVISION: &str = "42ailab/FireRedASR2-AED-ONNX@13f950858934f7b6a0d3ce52bae65af0dc022258";
+/// The official FireRedTeam checkpoint used by the native (`ggml_native`)
+/// route -- see `native-inference/firered/src/engine.rs::NATIVE_SOURCE_REVISION`.
+const NATIVE_REVISION: &str = "FireRedTeam/FireRedASR2-AED@2304afed56eacfee6256dee5937ed22ffa0b64ec";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,8 +84,8 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV
         .join(" ");
     if raw.schema_version != 3
         || raw.model_id != "firered_asr2_aed"
-        || raw.selected_source_revision != REVISION
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+        || !matches!(raw.selected_source_revision.as_str(), REVISION | NATIVE_REVISION)
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu" | "ggml_native")
         || raw.contract_scope != "windowed_230_feature_frame_sequence"
         || raw.input_samples == 0
         || raw.window_samples != 37_199

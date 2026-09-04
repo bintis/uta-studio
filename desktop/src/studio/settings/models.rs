@@ -561,9 +561,17 @@ fn spawn_model_runtime_row(
                                     spawn_text(
                                         button,
                                         font.clone(),
-                                        if value == "integrated_gpu" { "iGPU" } else { label },
+                                        if value == "integrated_gpu" {
+                                            "iGPU"
+                                        } else {
+                                            label
+                                        },
                                         9.0,
-                                        if active { theme.primary } else { theme.foreground },
+                                        if active {
+                                            theme.primary
+                                        } else {
+                                            theme.foreground
+                                        },
                                     );
                                 });
                         }

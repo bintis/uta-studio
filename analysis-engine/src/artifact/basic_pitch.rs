@@ -82,7 +82,10 @@ pub fn parse_basic_pitch_evidence(
     .map_err(|error| invalid(format!("Basic Pitch evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 3
         || raw.model_id != "basic_pitch"
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+        || !matches!(
+            raw.backend.as_str(),
+            "openvino_gpu" | "openvino_cpu" | "ggml_native"
+        )
         || raw.sample_rate != 22_050
         || raw.window_samples != 43_844
         || raw.window_hop_samples != 36_164

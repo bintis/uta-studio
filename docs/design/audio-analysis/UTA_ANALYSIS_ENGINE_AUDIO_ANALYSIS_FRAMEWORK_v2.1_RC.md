@@ -1794,8 +1794,8 @@ confidence
 
 ```text
 16 kHz mono
-host-side mel frontend
-OpenVINO native inference
+native mel frontend
+GGML/Vulkan native inference
 ```
 
 每帧：
@@ -2849,14 +2849,14 @@ debug
 ```text
 Analysis Engine process
 │
-├── RoFormer Runtime
-│   └── C++ / GGML
+├── GGML/Vulkan worker
+│   ├── RoFormer runtime
+│   └── RMVPE runtime
 │
 ├── qwen-speech-worker
 │   └── qwen3-asr.cpp
 │
 ├── OpenVINO experts
-│   ├── RMVPE
 │   ├── GAME
 │   └── Basic Pitch
 │

@@ -92,7 +92,7 @@ pub fn parse_game_evidence(
         || raw.model_id != "game"
         || raw.variant != "GAME-1.0.3-medium-onnx"
         || raw.source_commit != GAME_SOURCE_COMMIT
-        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
+        || !matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu" | "game_native")
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10
         || raw.d3pm_steps != 8
@@ -212,6 +212,40 @@ mod tests {
         assert_eq!(evidence.notes[0].range.start, 2_100_000);
         assert_eq!(evidence.notes[0].midi, 69.25);
         assert_eq!(evidence.notes[1].range.end, 2_500_000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_game_native_evidence() {
+        let path = std::env::temp_dir().join(format!("uta-game-native-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "model_id": "game",
+                "variant": "GAME-1.0.3-medium-onnx",
+                "source_asset_sha256": "a".repeat(64),
+                "source_commit": GAME_SOURCE_COMMIT,
+                "model_manifest_sha256": "b".repeat(64),
+                "runtime_manifest_sha256": "uta-game-worker-native-v1",
+                "backend": "game_native",
+                "sample_rate": 44100,
+                "timestep_ms": 10,
+                "d3pm_steps": 8,
+                "estimator_note_buckets": ESTIMATOR_NOTE_BUCKETS,
+                "boundary_decision_threshold": 0.2,
+                "presence_decision_threshold": 0.2,
+                "notes": [
+                    {"start":0.0,"duration":0.5,"midi":60.0,"voiced":true}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let evidence = parse_game_evidence(&path, 0, 1_000_000).unwrap();
+        assert_eq!(evidence.backend, "game_native");
+        assert_eq!(evidence.notes.len(), 1);
+        assert_eq!(evidence.notes[0].midi, 60.0);
         std::fs::remove_file(path).unwrap();
     }
 }

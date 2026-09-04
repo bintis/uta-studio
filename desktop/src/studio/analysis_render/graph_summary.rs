@@ -157,8 +157,10 @@ fn spawn_context_bar_status_chip(
 
 /// The DAG page's own top-of-canvas status strip. Song title and overall
 /// analysis progress remain in the existing page header above this; this
-/// bar only adds mode, current activity, and real per-node counts.
-#[allow(clippy::too_many_arguments)]
+/// bar only adds mode, current activity, and real per-node counts. The
+/// Fit/Zoom/Follow cluster lives as a floating overlay in the canvas's own
+/// bottom-right corner instead (`spawn_analysis_graph_viewport_controls` in
+/// `viewport_controls.rs`), next to the pan hint in its bottom-left corner.
 pub(crate) fn spawn_analysis_graph_context_bar(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -167,9 +169,6 @@ pub(crate) fn spawn_analysis_graph_context_bar(
     overall_progress: Option<usize>,
     current_label: Option<&str>,
     counts: AnalysisGraphNodeCounts,
-    zoom: f32,
-    follow_active: bool,
-    follow_available: bool,
 ) {
     parent
         .spawn((
@@ -265,12 +264,7 @@ pub(crate) fn spawn_analysis_graph_context_bar(
                     // so this key and the canvas always agree. This replaces
                     // the DAG canvas's old floating color-key overlay: it
                     // lived on top of the graph itself, which crowded the
-                    // canvas at high transparency. Sharing the footer row
-                    // with Fit/Zoom/Follow (rather than the mode/progress
-                    // row above) keeps that row from wrapping the live
-                    // operation label on top of the counts on a narrow
-                    // window -- confirmed against a real screenshot where
-                    // it did exactly that.
+                    // canvas at high transparency.
                     let complete_accent =
                         analysis_graph_category_accent(GraphNodeCategory::Output, theme);
                     for (label, value, accent) in [
@@ -294,14 +288,6 @@ pub(crate) fn spawn_analysis_graph_context_bar(
                             accent,
                         );
                     }
-                    spawn_analysis_graph_viewport_controls(
-                        footer,
-                        font,
-                        theme,
-                        zoom,
-                        follow_active,
-                        follow_available,
-                    );
                 });
         });
 }

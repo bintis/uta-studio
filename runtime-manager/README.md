@@ -30,38 +30,36 @@ availability, never authentication readiness. A selected provider may contact
 an external AI service and incur provider charges; credentials remain owned by
 the provider CLI.
 
-## RMVPE audited import
+## RMVPE GGML/Vulkan import
 
-RMVPE conversion is an explicit two-step install action. First run
-`native-inference/openvino-worker/convert-rmvpe-to-ir.sh` with the pinned source
-ONNX and source-built OpenVINO 2026.3 converter. The script verifies source SHA
-`5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`
-and conversion recipe
-`ac3df548a9e51d36b5d5817ba6988eeaaa29f168d121588fd088daf91dbdf876`,
-then atomically creates the bucketed IR directory without replacing source or
-existing output.
+RMVPE conversion is an explicit local action. Run
+`native-inference/rmvpe/tools/convert_rmvpe_to_gguf.py` with the cataloged
+`rmvpe.onnx` source to produce `rmvpe-f32.gguf`; the converter maps the native
+ONNX Conv, BatchNorm, bidirectional-GRU, and output-head tensors into the
+repository's `rmvpe` GGUF architecture without modifying the source file.
 
-Import that completed directory through the machine boundary:
+Import that GGUF through the machine boundary:
 
 ```sh
 uta-runtime import model:rmvpe \
-  --from /path/to/openvino-ir-2026.3.0-bucketed \
-  --yes --policy production --output ndjson --store /authorized/runtime/store
+  --from /path/to/rmvpe-f32.gguf \
+  --yes --policy benchmark --output ndjson --store /authorized/runtime/store
 ```
 
-The catalog and generated receipt keep three identities separate: the
-Dream-High/RMVPE algorithm lineage, the exact lj1995 `rmvpe.onnx` source
-artifact, and the converted bucketed OpenVINO IR manifest/runtime recipe.
-Runtime Manager verifies the pinned IR manifest and every XML/weights digest,
-stages all files into an immutable generation, verifies the generated install
-manifest, and only then atomically publishes `current.json`.
+The catalog and generated receipt keep the Dream-High/RMVPE algorithm lineage,
+the exact lj1995 `rmvpe.onnx` source identity, the GGUF conversion recipe, and
+the GGML/Vulkan runtime recipe separate. Runtime Manager stages the file into
+an immutable generation, verifies the generated install manifest, and only
+then atomically publishes `current.json`. RMVPE remains a benchmark candidate
+until its native Vulkan output and stability evidence are accepted.
 
 ## Safety invariants
 
 - Read commands are offline and do not create or modify the store.
 - Network acquisition is limited to explicitly confirmed setup/install/repair/
   reinstall operations.
-- Downloaded and imported payloads must match catalog-pinned SHA-256 identities.
+- Cataloged digests are retained as provenance; acceptance also uses structural,
+  manifest, type, and execution checks rather than a hash-only gate.
 - A generation is published and verified before `current.json` changes.
 - Existing and leased generations are not overwritten.
 - Legacy user directories are detected but never silently adopted or deleted.

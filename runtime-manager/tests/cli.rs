@@ -437,16 +437,27 @@ fn unknown_options_are_rejected_instead_of_silently_ignored() {
 fn ndjson_result_and_unknown_resource_error_frames_are_versioned_and_typed() {
     let store = temp_path("ndjson-contract");
     let store_arg = store.to_string_lossy().into_owned();
-    let result = run(&[
-        "status",
-        "model:game",
-        "--policy",
-        "production",
-        "--output",
-        "ndjson",
-        "--store",
-        &store_arg,
-    ]);
+    // `--store` isolates the managed store but intentionally not the
+    // separate durable GGML models directory (by design: user-managed GGUF
+    // caches are not per-store data) or worker-binary sibling discovery.
+    // Isolate the GGML dir explicitly so this "nothing installed" check
+    // does not pick up this machine's real local GAME GGUF install.
+    let ggml_dir = temp_path("ndjson-contract-ggml");
+    let result = Command::new(binary())
+        .args([
+            "status",
+            "model:game",
+            "--policy",
+            "production",
+            "--output",
+            "ndjson",
+            "--store",
+            &store_arg,
+        ])
+        .env("UTA_STUDIO_GGML_MODELS_DIR", &ggml_dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     assert!(result.status.success());
     let result_frame: serde_json::Value =
         serde_json::from_slice(result.stdout.strip_suffix(b"\n").unwrap()).unwrap();

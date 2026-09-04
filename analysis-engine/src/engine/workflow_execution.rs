@@ -208,59 +208,113 @@ pub(super) fn run_advanced_note_challenger(
             })?
         )
     );
-    let device = match model.backend {
-        uta_runtime_manager::NativeBackend::CpuReference => "cpu",
-        uta_runtime_manager::NativeBackend::OpenVino => {
-            match std::env::var("UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE") {
-                Ok(value) if value.eq_ignore_ascii_case("cpu") => "cpu",
-                Ok(value) if value.eq_ignore_ascii_case("gpu") => "gpu",
-                Ok(_) => {
-                    return Err(EngineError::new(
-                        EngineErrorCode::InvalidContract,
-                        "UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE must be cpu or gpu",
-                    ));
-                }
-                Err(std::env::VarError::NotPresent) => "gpu",
-                Err(error) => {
-                    return Err(EngineError::new(
-                        EngineErrorCode::InvalidContract,
-                        format!("advanced-note diagnostic device is invalid: {error}"),
-                    ));
-                }
-            }
-        }
-        _ => {
-            return Err(EngineError::new(
-                EngineErrorCode::RuntimeResolutionFailed,
-                "advanced-note route requires an OpenVINO IR backend",
-            ));
-        }
-    };
     let directory = create_task_dir(output_root, &format!("worker/{model_id}"))?;
     let task_capability = if include_technique {
         "technique.analyze".to_string()
     } else {
         format!("notes.{model_id}")
     };
-    let outputs = run_native_task(
-        model,
-        "uta-openvino-worker",
-        &format!("task-{model_id}"),
-        &task_capability,
-        analysis_input,
-        &directory,
-        serde_json::json!({
+    let outputs = if model.backend == uta_runtime_manager::NativeBackend::NativeDsp {
+        // Both native workers bundle their own copy of the RMVPE weights
+        // alongside their own GGUF (mirroring how the OpenVINO route
+        // bundles `shared/annotation-rmvpe-t256.*` inside the same STARS/
+        // ROSVOT model package rather than depending on the
+        // separately-catalogued standalone `rmvpe` model) -- so the path is
+        // derived from the resolved model's own directory, not a second
+        // model resolution.
+        let model_dir = if model.model_path.is_dir() {
+            model.model_path.clone()
+        } else {
+            model.model_path.parent().map(Path::to_path_buf).ok_or_else(|| {
+                EngineError::new(
+                    EngineErrorCode::RuntimeResolutionFailed,
+                    "resolved advanced-note model path has no parent directory",
+                )
+            })?
+        };
+        let rmvpe_model_path = model_dir.join("rmvpe-f32.gguf");
+        if !rmvpe_model_path.is_file() {
+            return Err(EngineError::new(
+                EngineErrorCode::RuntimeResolutionFailed,
+                "native advanced-note route is missing its bundled RMVPE weights",
+            ));
+        }
+        let component = match model_id {
+            "stars" => "uta-stars-worker",
+            "rosvot" => "uta-rosvot-worker",
+            _ => unreachable!("model_id is checked against stars|rosvot above"),
+        };
+        let mut config = serde_json::json!({
             "model_path": model.model_path,
+            "rmvpe_model_path": rmvpe_model_path,
             "model_generation": model.generation,
             "source_start": source_start,
             "source_duration": source_duration,
             "timed_transcript_generation": timed_transcript_generation,
             "words": word_config,
-            "device": device,
-            "include_technique": include_technique
-        }),
-        cancellation,
-    )?;
+        });
+        if model_id == "stars" {
+            config["include_technique"] = serde_json::json!(include_technique);
+        }
+        run_native_task(
+            model,
+            component,
+            &format!("task-{model_id}"),
+            &task_capability,
+            analysis_input,
+            &directory,
+            config,
+            cancellation,
+        )?
+    } else {
+        let device = match model.backend {
+            uta_runtime_manager::NativeBackend::CpuReference => "cpu",
+            uta_runtime_manager::NativeBackend::OpenVino => {
+                match std::env::var("UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE") {
+                    Ok(value) if value.eq_ignore_ascii_case("cpu") => "cpu",
+                    Ok(value) if value.eq_ignore_ascii_case("gpu") => "gpu",
+                    Ok(_) => {
+                        return Err(EngineError::new(
+                            EngineErrorCode::InvalidContract,
+                            "UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE must be cpu or gpu",
+                        ));
+                    }
+                    Err(std::env::VarError::NotPresent) => "gpu",
+                    Err(error) => {
+                        return Err(EngineError::new(
+                            EngineErrorCode::InvalidContract,
+                            format!("advanced-note diagnostic device is invalid: {error}"),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(EngineError::new(
+                    EngineErrorCode::RuntimeResolutionFailed,
+                    "advanced-note route requires an OpenVINO IR backend",
+                ));
+            }
+        };
+        run_native_task(
+            model,
+            "uta-openvino-worker",
+            &format!("task-{model_id}"),
+            &task_capability,
+            analysis_input,
+            &directory,
+            serde_json::json!({
+                "model_path": model.model_path,
+                "model_generation": model.generation,
+                "source_start": source_start,
+                "source_duration": source_duration,
+                "timed_transcript_generation": timed_transcript_generation,
+                "words": word_config,
+                "device": device,
+                "include_technique": include_technique
+            }),
+            cancellation,
+        )?
+    };
     let evidence = parse_advanced_note_evidence(
         typed_worker_output(&outputs, "advanced_note_evidence")?,
         model_id,

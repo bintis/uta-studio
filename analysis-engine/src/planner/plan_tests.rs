@@ -914,7 +914,7 @@ fn per_model_backend_override_is_forwarded_without_changing_other_models() {
     );
     assert_eq!(
         backend("rmvpe"),
-        Some(uta_runtime_manager::NativeBackend::OpenVino)
+        Some(uta_runtime_manager::NativeBackend::Vulkan)
     );
     assert_eq!(
         backend("qwen3_asr_1_7b"),
@@ -942,7 +942,7 @@ fn runtime_policy_is_forwarded_to_candidate_resolution() {
         .unwrap();
     assert_eq!(
         production_fcpe.selected_backend,
-        Some(uta_runtime_manager::NativeBackend::OpenVino)
+        Some(uta_runtime_manager::NativeBackend::NativeDsp)
     );
     assert!(
         !production_fcpe.usable,
@@ -962,7 +962,7 @@ fn runtime_policy_is_forwarded_to_candidate_resolution() {
         .unwrap();
     assert_eq!(
         benchmark_fcpe.selected_backend,
-        Some(uta_runtime_manager::NativeBackend::OpenVino)
+        Some(uta_runtime_manager::NativeBackend::NativeDsp)
     );
     assert!(
         !benchmark_fcpe.usable,

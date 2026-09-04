@@ -669,7 +669,7 @@ fn unavailable_optional_fcpe_resolution_is_explicitly_degraded() {
         ..uta_runtime_manager::SourceIdentity::default()
     };
     install_fixture_generation(&store, "rmvpe", Some(rmvpe_source.clone()));
-    let worker = root.join("openvino-worker");
+    let worker = root.join("ggml-worker");
     let ffmpeg = root.join("ffmpeg");
     executable(&worker, "exit 0");
     executable(&ffmpeg, "exit 0");
@@ -680,7 +680,7 @@ fn unavailable_optional_fcpe_resolution_is_explicitly_degraded() {
             catalog,
             StorePaths::default()
                 .with_store_root(&store)
-                .with_runtime_override("openvino_2026_3", &worker)
+                .with_runtime_override("ggml_vulkan_v1", &worker)
                 .with_tool_override("ffmpeg", &ffmpeg),
         )
     };
@@ -735,19 +735,18 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     fs::write(&source, b"authorized fixture audio").unwrap();
     let ffmpeg = root.join("ffmpeg");
     executable(&ffmpeg, &non_silent_pcm_script(480));
-    let worker = root.join("openvino-worker");
+    let worker = root.join("ggml-worker");
     let evidence_one = output_one.join("worker/rmvpe/rmvpe-pitch-evidence.json");
     let evidence_two = output_two.join("worker/rmvpe/rmvpe-pitch-evidence.json");
     executable(
         &worker,
         &format!(
-            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nwhile read line; do\ncase \"$line\" in\n*output-one*) out='{}' ;;\n*output-two*) out='{}' ;;\n*quit*) exit 0 ;;\nesac\nmkdir -p \"$(dirname \"$out\")\"\nprintf '%s\\n' '{{\"schema_version\":1,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"{}\",\"model_manifest_sha256\":\"{}\",\"model_bin_sha256\":\"{}\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.25,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":440.0,\"confidence\":0.8,\"voiced\":true}}]}}' > \"$out\"\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-rmvpe\",\"fraction\":0.5,\"message\":\"measured frame batch\"}}'\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"task-rmvpe\\\",\\\"artifact\\\":\\\"pitch_evidence\\\",\\\"path\\\":\\\"$out\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rmvpe\",\"status\":\"ok\"}}'\ndone",
-            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-ggml-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nwhile read line; do\ncase \"$line\" in\n*output-one*) out='{}' ;;\n*output-two*) out='{}' ;;\n*quit*) exit 0 ;;\nesac\nmkdir -p \"$(dirname \"$out\")\"\nprintf '%s\\n' '{{\"schema_version\":2,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"{}\",\"model_gguf_sha256\":\"{}\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"ggml_vulkan\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.25,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":440.0,\"confidence\":0.8,\"voiced\":true}}]}}' > \"$out\"\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-rmvpe\",\"fraction\":0.5,\"message\":\"measured frame batch\"}}'\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"task-rmvpe\\\",\\\"artifact\\\":\\\"pitch_evidence\\\",\\\"path\\\":\\\"$out\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rmvpe\",\"status\":\"ok\"}}'\ndone",
+            uta_runtime_manager::GGML_RUNTIME_RECIPE_SHA256,
             evidence_one.display(),
             evidence_two.display(),
             "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd",
-            "cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb",
-            "d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b",
+            "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
             "d".repeat(64),
         ),
     );
@@ -757,7 +756,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
         catalog,
         StorePaths::default()
             .with_store_root(&store)
-            .with_runtime_override("openvino_2026_3", &worker)
+            .with_runtime_override("ggml_vulkan_v1", &worker)
             .with_tool_override("ffmpeg", &ffmpeg),
     );
     let engine = AnalysisEngine::new(manager);
@@ -870,8 +869,14 @@ fn basic_pitch_helper_uses_resolved_worker_and_parses_schema_three() {
             .with_store_root(&store)
             .with_runtime_override("openvino_2026_3", &worker),
     );
+    // basic_pitch has no native route yet, so its only backend (OpenVINO)
+    // is Experimental-only in this catalog now; request it explicitly.
     let model = manager
-        .resolve_model("basic_pitch", uta_runtime_manager::RuntimePolicy::Benchmark)
+        .resolve_model_with_backend(
+            "basic_pitch",
+            uta_runtime_manager::RuntimePolicy::Experimental,
+            Some(uta_runtime_manager::NativeBackend::OpenVino),
+        )
         .unwrap();
     let parsed = run_basic_pitch_schedule(
         &model,
@@ -999,8 +1004,14 @@ fn advanced_note_helper_correlates_timed_transcript_and_resolved_generation() {
             .with_store_root(&store)
             .with_runtime_override("openvino_2026_3", &worker),
     );
+    // rosvot has no native route yet, so its only backend (OpenVINO) is
+    // Experimental-only in this catalog now; request it explicitly.
     let model = manager
-        .resolve_model("rosvot", uta_runtime_manager::RuntimePolicy::Benchmark)
+        .resolve_model_with_backend(
+            "rosvot",
+            uta_runtime_manager::RuntimePolicy::Experimental,
+            Some(uta_runtime_manager::NativeBackend::OpenVino),
+        )
         .unwrap();
     let parsed = run_advanced_note_challenger(
         &model,
@@ -1029,6 +1040,371 @@ fn advanced_note_helper_correlates_timed_transcript_and_resolved_generation() {
             .as_deref()
             .unwrap()
             .contains("timed_transcript:")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn advanced_note_helper_dispatches_native_stars_backend_to_the_stars_worker() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "uta-engine-advanced-note-native-{}-{stamp}",
+        std::process::id()
+    ));
+    let store = root.join("store");
+    let output = root.join("output");
+    fs::create_dir_all(&store).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let fixture_source = uta_runtime_manager::SourceIdentity::default();
+    // A hand-built fixture generation (rather than the shared
+    // `install_fixture_generation` helper) because the native STARS route
+    // needs a *second* declared file (its bundled RMVPE weights, sibling to
+    // the model itself) in the same generation directory -- an installer
+    // for `stars_native_v1` would declare both from the start; injecting an
+    // undeclared extra file after the fact fails this store's integrity
+    // check (`resource_corrupt`).
+    let payload = b"fixture model";
+    let payload_sha = format!("{:x}", Sha256::digest(payload));
+    let rmvpe_payload = b"fixture rmvpe weights";
+    let rmvpe_payload_sha = format!("{:x}", Sha256::digest(rmvpe_payload));
+    let stars_catalog_model = ResourceCatalog::default_catalog().unwrap().model("stars").unwrap().clone();
+    let manifest = InstallManifest {
+        schema: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA.to_string(),
+        schema_version: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA_VERSION,
+        resource: ResourceRef::model("stars").unwrap(),
+        catalog_version: uta_runtime_manager::catalog::RUNTIME_CATALOG_VERSION.to_string(),
+        source: Some(fixture_source.clone()),
+        source_sha256: fixture_source.sha256.clone(),
+        model_recipe_digest: Some(stars_catalog_model.recipe_digest),
+        conversion_recipe_digest: None,
+        runtime_recipe_digest: Some("stars-native-recipe-v1".to_string()),
+        files: vec![
+            InstalledFile {
+                path: PathBuf::from("model.bin"),
+                sha256: payload_sha,
+                size: payload.len() as u64,
+            },
+            InstalledFile {
+                path: PathBuf::from("rmvpe-f32.gguf"),
+                sha256: rmvpe_payload_sha,
+                size: rmvpe_payload.len() as u64,
+            },
+        ],
+        created_timestamp: "fixture".to_string(),
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let generation = uta_runtime_manager::manifest::generation_id(&manifest_bytes);
+    let generation_dir = store.join("models/stars/generations").join(&generation);
+    fs::create_dir_all(&generation_dir).unwrap();
+    fs::write(generation_dir.join("model.bin"), payload).unwrap();
+    fs::write(generation_dir.join("rmvpe-f32.gguf"), rmvpe_payload).unwrap();
+    fs::write(generation_dir.join("install-manifest.json"), &manifest_bytes).unwrap();
+    fs::write(
+        store.join("models/stars/current.json"),
+        format!(r#"{{"generation":"{generation}"}}"#),
+    )
+    .unwrap();
+    let generation = generation.as_str();
+    let source_start = 1_000_000;
+    let source_duration = 1_000_000;
+    let words = vec![crate::fusion::CanonicalWordBoundary {
+        word_id: "word-0".to_string(),
+        text: "你好".to_string(),
+        range: crate::fusion::TimeRange::new(1_000_000, 1_500_000).unwrap(),
+        confidence: None,
+        disagreement: None,
+        source_experts: vec!["qwen3_forced_aligner_0_6b".to_string()],
+    }];
+    let word_config = vec![serde_json::json!({
+        "id": "word-0",
+        "text": "你好",
+        "start": 1_000_000,
+        "duration": 500_000
+    })];
+    let timed_generation = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "uta.timed-transcript/1",
+                "source_start": source_start,
+                "source_duration": source_duration,
+                "words": word_config
+            }))
+            .unwrap()
+        )
+    );
+    let fixture = root.join("advanced-note-evidence.json");
+    let evidence = serde_json::json!({
+        "schema_version": 2,
+        "model_id": "stars",
+        "capabilities": ["notes.stars"],
+        "upstream_commit": "f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167",
+        "checkpoint_sha256": "9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c",
+        "config_sha256": "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d10a459e4e7e91",
+        "model_generation": generation,
+        "runtime_manifest_sha256": "stars-native-recipe-v1",
+        "backend": "ggml_native",
+        "shared_frontend_profile": "shared-singing-frontend-24k-v1",
+        "shared_frontend_generation": "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c",
+        "annotation_rmvpe_sha256": "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2",
+        "word_boundary_source": "timed_transcript",
+        "g2p_profile": "stars-chinese-g2p-pypinyin-0.55.0-v1",
+        "frame_step_num": 128,
+        "frame_step_den": 24_000,
+        "valid_frames": 188,
+        "note_boundary_logits": vec![0.0_f32; 188],
+        "regulated_note_boundaries": [10],
+        "notes": [{
+            "start_frame": 0,
+            "end_frame": 10,
+            "pitch_logits": vec![0.0_f32; 89],
+            "midi": 69
+        }],
+        "dependencies": [
+            {"kind":"shared_frontend","generation":"986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c"},
+            {"kind":"annotation_rmvpe","generation":"986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c"},
+            {"kind":"timed_transcript","generation":timed_generation},
+            {"kind":"chinese_g2p","generation":"433fcd2a7379cb9554a7a0dfe254746c3c7ee70bfd5de4fa18c1462757b888a5"}
+        ]
+    });
+    fs::write(&fixture, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let source = root.join("source.wav");
+    fs::write(&source, b"authorized fixture audio").unwrap();
+    let output_evidence = output.join("worker/stars/advanced-note-evidence.json");
+    let worker = root.join("stars-worker");
+    executable(
+        &worker,
+        &format!(
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-stars-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\ncase \"$run\" in *'\"model_generation\":\"{}\"'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"rmvpe_model_path\":'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"timed_transcript_generation\":\"{}\"'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"id\":\"word-0\"'*) ;; *) exit 9 ;; esac\ncp '{}' '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-stars\",\"artifact\":\"advanced_note_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-stars\",\"status\":\"ok\"}}'\nread quit",
+            "stars-native-recipe-v1",
+            generation,
+            timed_generation,
+            fixture.display(),
+            output_evidence.display(),
+            output_evidence.display(),
+        ),
+    );
+    let mut catalog = ResourceCatalog::default_catalog().unwrap();
+    catalog.models.get_mut("stars").unwrap().source = fixture_source;
+    let manager = RuntimeManager::new(
+        catalog,
+        StorePaths::default()
+            .with_store_root(&store)
+            .with_runtime_override("stars_native_v1", &worker),
+    );
+    // stars_native_v1 is deliberately BenchmarkCandidate (not promoted), so
+    // it needs an explicit backend request under Benchmark/Experimental
+    // policy -- exactly like the not-yet-promoted rosvot/OpenVINO route
+    // above.
+    let model = manager
+        .resolve_model_with_backend(
+            "stars",
+            uta_runtime_manager::RuntimePolicy::Benchmark,
+            Some(uta_runtime_manager::NativeBackend::NativeDsp),
+        )
+        .unwrap();
+    let parsed = run_advanced_note_challenger(
+        &model,
+        &source,
+        &output,
+        &words,
+        source_start,
+        source_duration,
+        false,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.backend, "ggml_native");
+    assert_eq!(parsed.model_generation, model.generation);
+    assert_eq!(
+        parsed
+            .canonical_notes(source_start, source_duration)
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn advanced_note_helper_dispatches_native_rosvot_backend_to_the_rosvot_worker() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "uta-engine-advanced-note-native-rosvot-{}-{stamp}",
+        std::process::id()
+    ));
+    let store = root.join("store");
+    let output = root.join("output");
+    fs::create_dir_all(&store).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let fixture_source = uta_runtime_manager::SourceIdentity::default();
+    // Hand-built fixture generation (see the matching STARS test) so the
+    // bundled RMVPE sibling file can be declared in the manifest from the
+    // start.
+    let payload = b"fixture model";
+    let payload_sha = format!("{:x}", Sha256::digest(payload));
+    let rmvpe_payload = b"fixture rmvpe weights";
+    let rmvpe_payload_sha = format!("{:x}", Sha256::digest(rmvpe_payload));
+    let rosvot_catalog_model = ResourceCatalog::default_catalog().unwrap().model("rosvot").unwrap().clone();
+    let manifest = InstallManifest {
+        schema: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA.to_string(),
+        schema_version: uta_runtime_manager::manifest::INSTALL_MANIFEST_SCHEMA_VERSION,
+        resource: ResourceRef::model("rosvot").unwrap(),
+        catalog_version: uta_runtime_manager::catalog::RUNTIME_CATALOG_VERSION.to_string(),
+        source: Some(fixture_source.clone()),
+        source_sha256: fixture_source.sha256.clone(),
+        model_recipe_digest: Some(rosvot_catalog_model.recipe_digest),
+        conversion_recipe_digest: None,
+        runtime_recipe_digest: Some("rosvot-native-recipe-v1".to_string()),
+        files: vec![
+            InstalledFile {
+                path: PathBuf::from("model.bin"),
+                sha256: payload_sha,
+                size: payload.len() as u64,
+            },
+            InstalledFile {
+                path: PathBuf::from("rmvpe-f32.gguf"),
+                sha256: rmvpe_payload_sha,
+                size: rmvpe_payload.len() as u64,
+            },
+        ],
+        created_timestamp: "fixture".to_string(),
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let generation = uta_runtime_manager::manifest::generation_id(&manifest_bytes);
+    let generation_dir = store.join("models/rosvot/generations").join(&generation);
+    fs::create_dir_all(&generation_dir).unwrap();
+    fs::write(generation_dir.join("model.bin"), payload).unwrap();
+    fs::write(generation_dir.join("rmvpe-f32.gguf"), rmvpe_payload).unwrap();
+    fs::write(generation_dir.join("install-manifest.json"), &manifest_bytes).unwrap();
+    fs::write(
+        store.join("models/rosvot/current.json"),
+        format!(r#"{{"generation":"{generation}"}}"#),
+    )
+    .unwrap();
+    let generation = generation.as_str();
+    let source_start = 1_000_000;
+    let source_duration = 1_000_000;
+    let words = vec![crate::fusion::CanonicalWordBoundary {
+        word_id: "word-0".to_string(),
+        text: "la".to_string(),
+        range: crate::fusion::TimeRange::new(1_000_000, 1_500_000).unwrap(),
+        confidence: None,
+        disagreement: None,
+        source_experts: vec!["qwen3_forced_aligner_0_6b".to_string()],
+    }];
+    let word_config = vec![serde_json::json!({
+        "id": "word-0",
+        "text": "la",
+        "start": 1_000_000,
+        "duration": 500_000
+    })];
+    let timed_generation = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "uta.timed-transcript/1",
+                "source_start": source_start,
+                "source_duration": source_duration,
+                "words": word_config
+            }))
+            .unwrap()
+        )
+    );
+    let fixture = root.join("advanced-note-evidence.json");
+    let evidence = serde_json::json!({
+        "schema_version": 1,
+        "model_id": "rosvot",
+        "capability": "notes.rosvot",
+        "upstream_commit": "3c8332bf43adae35f6e4d64971862f2f6139b310",
+        "checkpoint_sha256": "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb",
+        "config_sha256": "2ad2cb756623418c471b7dc2f56175cce88b69a70b4a2c354fa1a78525aa54e2",
+        "model_generation": generation,
+        "runtime_manifest_sha256": "rosvot-native-recipe-v1",
+        "backend": "ggml_native",
+        "shared_frontend_profile": "shared-singing-frontend-24k-v1",
+        "shared_frontend_generation": "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c",
+        "annotation_rmvpe_sha256": "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2",
+        "word_boundary_source": "timed_transcript",
+        "frame_step_num": 128,
+        "frame_step_den": 24_000,
+        "valid_frames": 188,
+        "note_boundary_logits": vec![0.0_f32; 188],
+        "regulated_note_boundaries": [10],
+        "notes": [{
+            "start_frame": 0,
+            "end_frame": 10,
+            "pitch_logits": vec![0.0_f32; 89],
+            "midi": 69
+        }],
+        "dependencies": [
+            {"kind":"shared_frontend","generation":"986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c"},
+            {"kind":"annotation_rmvpe","generation":"986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c"},
+            {"kind":"timed_transcript","generation":timed_generation}
+        ]
+    });
+    fs::write(&fixture, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let source = root.join("source.wav");
+    fs::write(&source, b"authorized fixture audio").unwrap();
+    let output_evidence = output.join("worker/rosvot/advanced-note-evidence.json");
+    let worker = root.join("rosvot-worker");
+    executable(
+        &worker,
+        &format!(
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-rosvot-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\ncase \"$run\" in *'\"model_generation\":\"{}\"'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"rmvpe_model_path\":'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"timed_transcript_generation\":\"{}\"'*) ;; *) exit 9 ;; esac\ncase \"$run\" in *'\"id\":\"word-0\"'*) ;; *) exit 9 ;; esac\ncp '{}' '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-rosvot\",\"artifact\":\"advanced_note_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rosvot\",\"status\":\"ok\"}}'\nread quit",
+            "rosvot-native-recipe-v1",
+            generation,
+            timed_generation,
+            fixture.display(),
+            output_evidence.display(),
+            output_evidence.display(),
+        ),
+    );
+    let mut catalog = ResourceCatalog::default_catalog().unwrap();
+    catalog.models.get_mut("rosvot").unwrap().source = fixture_source;
+    let manager = RuntimeManager::new(
+        catalog,
+        StorePaths::default()
+            .with_store_root(&store)
+            .with_runtime_override("rosvot_native_v1", &worker),
+    );
+    // rosvot_native_v1 is deliberately BenchmarkCandidate (not promoted), so
+    // it needs an explicit backend request under Benchmark/Experimental
+    // policy.
+    let model = manager
+        .resolve_model_with_backend(
+            "rosvot",
+            uta_runtime_manager::RuntimePolicy::Benchmark,
+            Some(uta_runtime_manager::NativeBackend::NativeDsp),
+        )
+        .unwrap();
+    let parsed = run_advanced_note_challenger(
+        &model,
+        &source,
+        &output,
+        &words,
+        source_start,
+        source_duration,
+        false,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.backend, "ggml_native");
+    assert_eq!(parsed.model_generation, model.generation);
+    assert_eq!(
+        parsed
+            .canonical_notes(source_start, source_duration)
+            .unwrap()
+            .len(),
+        1
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -1288,21 +1664,23 @@ fn fcpe_secondary_waits_for_typed_disagreement_in_standalone_balanced() {
     let ffmpeg = root.join("ffmpeg");
     executable(&ffmpeg, &non_silent_pcm_script(48_000));
     let rmvpe_output = output.join("worker/rmvpe/rmvpe-pitch-evidence.json");
-    let fcpe_output = output.join("worker/fcpe/fcpe-pitch-evidence.json");
     let worker = root.join("openvino-worker");
+    executable(&worker, "exit 0");
+    // fcpe now defaults to its own native runtime; this fixture never
+    // actually invokes it (the scheduler skips fcpe here for lack of
+    // disagreement), so a trivial stub is enough to let resolution succeed.
+    let fcpe_worker = root.join("fcpe-worker");
+    executable(&fcpe_worker, "exit 0");
+    let ggml_worker = root.join("ggml-worker");
     executable(
-        &worker,
+        &ggml_worker,
         &format!(
-            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\ncase \"$run\" in\n*'\"model_id\":\"rmvpe\"'*) task=task-rmvpe; mkdir -p '{}'; printf '%s\\n' '{{\"schema_version\":1,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd\",\"model_manifest_sha256\":\"cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb\",\"model_bin_sha256\":\"d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.0,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":441.0,\"confidence\":0.9,\"voiced\":true}}]}}' > '{}'; printf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-rmvpe\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}';;\n*) task=task-fcpe; mkdir -p '{}'; printf '%s\\n' '{{\"schema_version\":3,\"model_id\":\"fcpe\",\"source_model_sha256\":\"b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0\",\"model_manifest_sha256\":\"bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6\",\"model_xml_sha256\":\"9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237\",\"model_bin_sha256\":\"6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"openvino_gpu\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"window_samples\":32000,\"window_hop_samples\":32000,\"frames\":[{{\"time\":0.0,\"hz\":440.2}},{{\"time\":0.01,\"hz\":440.8}}]}}' > '{}'; printf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-fcpe\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}';;\nesac\nprintf '%s\\n' \"{{\\\"type\\\":\\\"done\\\",\\\"task_id\\\":\\\"$task\\\",\\\"status\\\":\\\"ok\\\"}}\"\nread quit",
-            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-ggml-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\nmkdir -p '{}'\nprintf '%s\\n' '{{\"schema_version\":2,\"model_id\":\"rmvpe\",\"source_model_sha256\":\"5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd\",\"model_gguf_sha256\":\"1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2\",\"runtime_manifest_sha256\":\"{}\",\"backend\":\"ggml_vulkan\",\"timeline_step_ms\":10,\"sample_rate\":16000,\"frames\":[{{\"time\":0.0,\"hz\":440.0,\"confidence\":0.9,\"voiced\":true}},{{\"time\":0.01,\"hz\":441.0,\"confidence\":0.9,\"voiced\":true}}]}}' > '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-rmvpe\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-rmvpe\",\"status\":\"ok\"}}'\nread quit",
+            uta_runtime_manager::GGML_RUNTIME_RECIPE_SHA256,
             rmvpe_output.parent().unwrap().display(),
             "c".repeat(64),
             rmvpe_output.display(),
             rmvpe_output.display(),
-            fcpe_output.parent().unwrap().display(),
-            "d".repeat(64),
-            fcpe_output.display(),
-            fcpe_output.display(),
         ),
     );
     let mut catalog = ResourceCatalog::default_catalog().unwrap();
@@ -1313,6 +1691,8 @@ fn fcpe_secondary_waits_for_typed_disagreement_in_standalone_balanced() {
         StorePaths::default()
             .with_store_root(&store)
             .with_runtime_override("openvino_2026_3", &worker)
+            .with_runtime_override("ggml_vulkan_v1", &ggml_worker)
+            .with_runtime_override("fcpe_native_v1", &fcpe_worker)
             .with_tool_override("ffmpeg", &ffmpeg),
     );
     let engine = AnalysisEngine::new(manager);
@@ -1425,7 +1805,15 @@ fn firered_challenger_runs_full_input_for_typed_reference_disagreement() {
     request.audio_sources[0].path = source.clone();
     request.audio_sources[0].sha256 = "a".repeat(64);
     request.analysis.profile = crate::contract::AnalysisProfile::Balanced;
-    request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Benchmark;
+    // This fixture specifically exercises the OpenVINO worker path (its
+    // config/output shape below is OpenVINO-shaped); firered_asr2_aed now
+    // defaults to its own native route, so request OpenVINO explicitly.
+    // OpenVINO is Experimental-only in this catalog now.
+    request.execution_policy.runtime_policy = uta_runtime_manager::RuntimePolicy::Experimental;
+    request.execution_policy.model_backend_overrides.insert(
+        "firered_asr2_aed".to_string(),
+        uta_runtime_manager::NativeBackend::OpenVino,
+    );
     request.requested_artifacts.vocal_chart = false;
     request.requested_artifacts.pitch_evidence = false;
     request.requested_artifacts.singing_analysis = false;
@@ -1519,8 +1907,8 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
             "model_manifest_sha256": "bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6",
             "model_xml_sha256": "9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237",
             "model_bin_sha256": "6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824",
-            "runtime_manifest_sha256": uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
-            "backend": "openvino_gpu",
+            "runtime_manifest_sha256": "fcpe-native-recipe-v1",
+            "backend": "ggml_native",
             "timeline_step_ms": 10,
             "sample_rate": 16000,
             "window_samples": 32000,
@@ -1540,8 +1928,8 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
             "source_asset_sha256": "5b7a21e64c6310efac399f5d12838fffa70565be162436b5a4a65f290721e7d8",
             "source_commit": "475a8ee781fe8cca980b3b12fbe6c80c768a813a",
             "model_manifest_sha256": "aa9f3a4c2d107527913ef3947f337b41bff7b6de39de6c91ce46b82ced15ac87",
-            "runtime_manifest_sha256": uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
-            "backend": "openvino_gpu",
+            "runtime_manifest_sha256": "game-native-recipe-v1",
+            "backend": "game_native",
             "sample_rate": 44100,
             "timestep_ms": 10,
             "d3pm_steps": 8,
@@ -1576,16 +1964,28 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
 
     let fcpe_output = output.join("worker/fcpe/fcpe.json");
     let game_output = output.join("worker/game/game.json");
-    let openvino = root.join("openvino-worker");
+    // GAME now defaults to its own native worker (`uta-game-worker`), not
+    // OpenVINO; emit the exact wire shape that worker produces.
+    let game_worker = root.join("game-worker");
     executable(
-        &openvino,
+        &game_worker,
         &format!(
-            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-openvino-worker\",\"runtime_recipe_digest\":\"{}\"}}'\nread run\ncase \"$run\" in\n*'\"model_id\":\"fcpe\"'*) task=task-fcpe; artifact=pitch_evidence; path='{}'; fixture='{}';;\n*) task=task-game; artifact=note_candidate_evidence; path='{}'; fixture='{}';;\nesac\nmkdir -p \"$(dirname \"$path\")\"\ncp \"$fixture\" \"$path\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"$task\\\",\\\"artifact\\\":\\\"$artifact\\\",\\\"path\\\":\\\"$path\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"done\\\",\\\"task_id\\\":\\\"$task\\\",\\\"status\\\":\\\"ok\\\"}}\"\nread quit",
-            uta_runtime_manager::OPENVINO_WORKER_RECIPE_SHA256,
-            fcpe_output.display(),
-            fcpe_fixture.display(),
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-game-worker\",\"runtime_recipe_digest\":\"game-native-recipe-v1\"}}'\nread run\ntask=task-game; artifact=note_candidate_evidence; path='{}'; fixture='{}'\nmkdir -p \"$(dirname \"$path\")\"\ncp \"$fixture\" \"$path\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"output\\\",\\\"task_id\\\":\\\"$task\\\",\\\"artifact\\\":\\\"$artifact\\\",\\\"path\\\":\\\"$path\\\",\\\"media_type\\\":\\\"application/json\\\"}}\"\nprintf '%s\\n' \"{{\\\"type\\\":\\\"done\\\",\\\"task_id\\\":\\\"$task\\\",\\\"status\\\":\\\"ok\\\"}}\"\nread quit",
             game_output.display(),
             game_fixture.display(),
+        ),
+    );
+    // fcpe now defaults to its own native worker (`uta-fcpe-worker`), not
+    // OpenVINO; emit the exact wire shape that worker produces.
+    let fcpe_worker = root.join("fcpe-worker");
+    executable(
+        &fcpe_worker,
+        &format!(
+            "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"uta-fcpe-worker\",\"runtime_recipe_digest\":\"fcpe-native-recipe-v1\"}}'\nread run\nmkdir -p '{}'\ncp '{}' '{}'\nprintf '%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-fcpe\",\"artifact\":\"fcpe_pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}'\nprintf '%s\\n' '{{\"type\":\"done\",\"task_id\":\"task-fcpe\",\"status\":\"ok\"}}'\nread quit",
+            fcpe_output.parent().unwrap().display(),
+            fcpe_fixture.display(),
+            fcpe_output.display(),
+            fcpe_output.display(),
         ),
     );
     let alignment_output = output.join("worker/alignment/alignment.json");
@@ -1611,7 +2011,8 @@ fn fcpe_primary_candidate_runs_validate_requirements_plan_and_analyze() {
         StorePaths::default()
             .with_store_root(&store)
             .with_tool_override("ffmpeg", &ffmpeg)
-            .with_runtime_override("openvino_2026_3", &openvino)
+            .with_runtime_override("game_native_v1", &game_worker)
+            .with_runtime_override("fcpe_native_v1", &fcpe_worker)
             .with_runtime_override("qwen_align_runtime", &align_worker),
     ));
     let mut request = valid_request(AudioRole::CleanLeadVocal);

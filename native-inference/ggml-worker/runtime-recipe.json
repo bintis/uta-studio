@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "component": "uta-ggml-worker",
   "worker_protocol": "native-ggml-vulkan-v1",
   "ggml": {
@@ -9,11 +9,22 @@
     "device": 0,
     "cpu_fallback": false
   },
-  "roformer_engine": {
-    "source": "native-inference/roformer",
-    "batch_size": 1,
-    "serial_pipeline": true,
-    "vulkan_async": false
+  "engines": {
+    "roformer": {
+      "source": "native-inference/roformer",
+      "batch_size": 1,
+      "serial_pipeline": true,
+      "vulkan_async": false
+    },
+    "rmvpe": {
+      "source": "native-inference/rmvpe",
+      "sample_rate": 16000,
+      "channels": 1,
+      "gru_chunk_frames": 128,
+      "batch_size": 1,
+      "serial_pipeline": true,
+      "vulkan_async": false
+    }
   },
   "model_format": "gguf",
   "downloads_on_launch": false

@@ -116,8 +116,7 @@ pub(super) fn search(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    let search_id =
-        18_014_398_509_481_984_u64 + ((now_ms % 4_194_304) << 32) + now_ms % 86_400_000;
+    let search_id = 18_014_398_509_481_984_u64 + ((now_ms % 4_194_304) << 32) + now_ms % 86_400_000;
     let data = client.request(
         "DoSearchForQQMusicLite",
         "music.search.SearchCgiService",

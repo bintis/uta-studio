@@ -37,10 +37,12 @@ fn run_ffmpeg(arguments: &mut Command, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn decode_stereo_wav(
+fn decode_wav(
     source: &Path,
     output_dir: &Path,
     task_id: &str,
+    sample_rate: &str,
+    channels: &str,
 ) -> Result<PathBuf, String> {
     if !source.is_file() {
         return Err("GGML input audio is unavailable".to_string());
@@ -56,9 +58,9 @@ pub fn decode_stereo_wav(
         .args([
             "-vn",
             "-ar",
-            "44100",
+            sample_rate,
             "-ac",
-            "2",
+            channels,
             "-c:a",
             "pcm_f32le",
             "-f",
@@ -73,6 +75,18 @@ pub fn decode_stereo_wav(
         return Err("ffmpeg did not publish the GGML input WAV".to_string());
     }
     Ok(destination)
+}
+
+pub fn decode_stereo_wav(
+    source: &Path,
+    output_dir: &Path,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    decode_wav(source, output_dir, task_id, "44100", "2")
+}
+
+pub fn decode_mono_wav(source: &Path, output_dir: &Path, task_id: &str) -> Result<PathBuf, String> {
+    decode_wav(source, output_dir, task_id, "16000", "1")
 }
 
 pub fn encode_flac(source: &Path, destination: &Path) -> Result<(), String> {

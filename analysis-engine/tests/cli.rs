@@ -335,7 +335,7 @@ fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
             workflow_node("asr", "analysis.asr", Some("qwen3_asr_1_7b"), "always", 700, "pinned_qwen_asr_vulkan", serde_json::json!({})),
             workflow_node("transcript", "fusion.transcript", None, "always", 690, "native_dsp", serde_json::json!({})),
             workflow_node("align", "analysis.forced_alignment", Some("qwen3_forced_aligner_0_6b"), "always", 680, "pinned_qwen_align_vulkan", serde_json::json!({})),
-            workflow_node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 670, "openvino", serde_json::json!({})),
+            workflow_node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 670, "ggml_vulkan", serde_json::json!({})),
             workflow_node(
                 "fusion",
                 "fusion.singing_evidence",

@@ -34,7 +34,11 @@ hosted large-file SHA-256 identities returned by the official file endpoint.
 | Q9 | qwen3-asr.cpp runtime commit `6dcc586…` | predict-woo | primary runtime | <https://github.com/predict-woo/qwen3-asr.cpp/commit/6dcc586e5073fd6e85ee5728e75f0903d6c70c6c> | MIT runtime; F16 Forced Aligner conversion and word-timestamp contract; 16 kHz mono PCM WAV. README's model table is stale/incomplete relative to source/tests. |
 | Q10 | Qwen3-ASR technical report | Qwen | primary paper | <https://arxiv.org/abs/2601.21337> | Architecture/benchmark context only; not GGUF binary provenance. |
 
-## RMVPE and OpenVINO
+## RMVPE backend lineage
+
+The OpenVINO row below is retained as historical validation context. Current
+RMVPE routing uses the separately pinned GGML/Vulkan candidate and does not
+transfer OpenVINO qualification evidence.
 
 | ID | Source | Publisher | Class | URL | Facts supported |
 | --- | --- | --- | --- | --- | --- |
@@ -43,7 +47,8 @@ hosted large-file SHA-256 identities returned by the official file endpoint.
 | M3 | Exact `rmvpe.onnx` host revision `e6d0c1a…` | lj1995 | primary artifact host | <https://huggingface.co/lj1995/VoiceConversionWebUI/tree/e6d0c1a17da07c33557852f9dfa2bd44cc75737d> | Hosted `rmvpe.onnx`, 361,688,443 bytes, published SHA-256 `5370e71a…`, repository metadata `license:mit`. |
 | M4 | rmvpe-onnx source lineage | NewComer00 | secondary wrapper/provenance | <https://github.com/NewComer00/rmvpe-onnx/commit/a16200fd8b90aec04ba3e5691fcdd808f74259a8> | Documents exact lj1995 model hash, RVC frontend lineage, 16 kHz mono, 128 mel bins, 1,024 Hann FFT/window, 160 hop, 30–8,000 Hz frontend, 360 salience bins and local-average F0/confidence output. Installed package version observed locally is 0.2.3. |
 | M5 | RVC RMVPE frontend commit | RVC Project | primary implementation lineage | <https://github.com/RVC-Project/Retrieval-based-Voice-Conversion/blob/7e03261/rvc/lib/rmvpe.py> | Reference frontend/decoder lineage cited by `rmvpe-onnx`; MIT project lineage. |
-| M6 | OpenVINO runtime commit `8a17657…` | OpenVINO Toolkit | primary runtime | <https://github.com/openvinotoolkit/openvino/commit/8a17657b995fd3b4a52f8484acfcf2bb61214623> | Exact runtime source commit associated with tag 2026.3.0 and Apache-2.0 runtime licensing. Uta! Studio's build/conversion recipe remains repository-owned. |
+| M6 | OpenVINO runtime commit `8a17657…` | OpenVINO Toolkit | historical runtime | <https://github.com/openvinotoolkit/openvino/commit/8a17657b995fd3b4a52f8484acfcf2bb61214623> | Retired RMVPE backend context only; it remains relevant to other OpenVINO models. |
+| M7 | GGML runtime commit `8c63e70…` | ggml-org | current candidate runtime | <https://github.com/ggml-org/ggml/commit/8c63e70982c95ceb862e3a1073a2c1beef75d60a> | Pinned C/C++ graph/runtime source for the RMVPE GGML/Vulkan candidate; qualification remains pending. |
 
 **License conflict note:** the official Dream-High code repository is
 Apache-2.0, while the exact lj1995 ONNX host and the RVC/NewComer lineage state

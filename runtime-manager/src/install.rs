@@ -25,7 +25,6 @@ use crate::store::{CurrentPointer, StorePaths};
 mod advanced_notes;
 mod game;
 mod optional_experts;
-mod rmvpe;
 mod roformer_denoise;
 mod roformer_dereverb;
 mod roformer_harmony;
@@ -247,9 +246,6 @@ impl RuntimeManager {
         if source.is_dir() && converted_file.is_none() {
             let imported = match resource.id.as_str() {
                 "game" => Some(game::import_game_ir_directory(
-                    self, resource, model, source,
-                )?),
-                "rmvpe" => Some(rmvpe::import_rmvpe_ir_directory(
                     self, resource, model, source,
                 )?),
                 "melband_roformer_inst_v2" => {
