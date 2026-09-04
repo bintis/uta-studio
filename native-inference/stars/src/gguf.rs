@@ -382,8 +382,9 @@ impl GGUFFile {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)
-            .map_err(|err| Error::message(format!("failed to read GGUF {}: {err}", path.display())))?;
+        let bytes = std::fs::read(path).map_err(|err| {
+            Error::message(format!("failed to read GGUF {}: {err}", path.display()))
+        })?;
         Self::decode(Arc::<[u8]>::from(bytes))
     }
 

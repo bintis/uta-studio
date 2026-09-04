@@ -72,7 +72,7 @@ struct LinearWeights {
 
 struct ConformerFfn {
     norm: LayerNormWeights,
-    expand: LinearWeights, // d_model -> d_inner
+    expand: LinearWeights,  // d_model -> d_inner
     project: LinearWeights, // d_inner -> d_model
 }
 
@@ -91,10 +91,10 @@ struct RelPosMhsa {
 
 struct ConformerConv {
     pre_norm: LayerNormWeights,
-    pointwise1: Vec<f32>,  // [d_inner, d_model] (kernel=1, no bias)
-    depthwise: Vec<f32>,   // [d_inner, kernel] depthwise (no bias)
+    pointwise1: Vec<f32>,       // [d_inner, d_model] (kernel=1, no bias)
+    depthwise: Vec<f32>,        // [d_inner, kernel] depthwise (no bias)
     mid_norm: LayerNormWeights, // named batch_norm in source, actually LayerNorm
-    pointwise2: Vec<f32>,  // [d_model, d_inner] (kernel=1, no bias)
+    pointwise2: Vec<f32>,       // [d_model, d_inner] (kernel=1, no bias)
 }
 
 struct ConformerBlock {
@@ -143,7 +143,13 @@ fn take_owned(file: &GGUFFile, name: &str) -> Result<Vec<f32>> {
     file.tensor_data_f32_owned(name)
 }
 
-fn take_linear(file: &GGUFFile, prefix: &str, out_dim: usize, in_dim: usize, has_bias: bool) -> Result<LinearWeights> {
+fn take_linear(
+    file: &GGUFFile,
+    prefix: &str,
+    out_dim: usize,
+    in_dim: usize,
+    has_bias: bool,
+) -> Result<LinearWeights> {
     let weight = take_owned(file, &format!("{prefix}.weight"))?;
     if weight.len() != out_dim * in_dim {
         return Err(Error::message(format!(
@@ -189,7 +195,13 @@ fn take_mhsa(file: &GGUFFile, prefix: &str) -> Result<RelPosMhsa> {
         w_ks: take_linear(file, &format!("{prefix}.w_ks"), D_MODEL, D_MODEL, false)?,
         w_vs: take_linear(file, &format!("{prefix}.w_vs"), D_MODEL, D_MODEL, false)?,
         fc: take_linear(file, &format!("{prefix}.fc"), D_MODEL, D_MODEL, false)?,
-        linear_pos: take_linear(file, &format!("{prefix}.linear_pos"), D_MODEL, D_MODEL, false)?,
+        linear_pos: take_linear(
+            file,
+            &format!("{prefix}.linear_pos"),
+            D_MODEL,
+            D_MODEL,
+            false,
+        )?,
         pos_bias_u: take_owned(file, &format!("{prefix}.pos_bias_u"))?,
         pos_bias_v: take_owned(file, &format!("{prefix}.pos_bias_v"))?,
     })
@@ -230,16 +242,52 @@ impl Weights {
             decoder_layers.push(DecoderLayer {
                 self_attn_norm: take_layer_norm(&file, &format!("{p}.self_attn_norm"))?,
                 self_attn: DecoderMha {
-                    w_qs: take_linear(&file, &format!("{p}.self_attn.w_qs"), D_MODEL, D_MODEL, true)?,
-                    w_ks: take_linear(&file, &format!("{p}.self_attn.w_ks"), D_MODEL, D_MODEL, false)?,
-                    w_vs: take_linear(&file, &format!("{p}.self_attn.w_vs"), D_MODEL, D_MODEL, true)?,
+                    w_qs: take_linear(
+                        &file,
+                        &format!("{p}.self_attn.w_qs"),
+                        D_MODEL,
+                        D_MODEL,
+                        true,
+                    )?,
+                    w_ks: take_linear(
+                        &file,
+                        &format!("{p}.self_attn.w_ks"),
+                        D_MODEL,
+                        D_MODEL,
+                        false,
+                    )?,
+                    w_vs: take_linear(
+                        &file,
+                        &format!("{p}.self_attn.w_vs"),
+                        D_MODEL,
+                        D_MODEL,
+                        true,
+                    )?,
                     fc: take_linear(&file, &format!("{p}.self_attn.fc"), D_MODEL, D_MODEL, true)?,
                 },
                 cross_attn_norm: take_layer_norm(&file, &format!("{p}.cross_attn_norm"))?,
                 cross_attn: DecoderMha {
-                    w_qs: take_linear(&file, &format!("{p}.cross_attn.w_qs"), D_MODEL, D_MODEL, true)?,
-                    w_ks: take_linear(&file, &format!("{p}.cross_attn.w_ks"), D_MODEL, D_MODEL, false)?,
-                    w_vs: take_linear(&file, &format!("{p}.cross_attn.w_vs"), D_MODEL, D_MODEL, true)?,
+                    w_qs: take_linear(
+                        &file,
+                        &format!("{p}.cross_attn.w_qs"),
+                        D_MODEL,
+                        D_MODEL,
+                        true,
+                    )?,
+                    w_ks: take_linear(
+                        &file,
+                        &format!("{p}.cross_attn.w_ks"),
+                        D_MODEL,
+                        D_MODEL,
+                        false,
+                    )?,
+                    w_vs: take_linear(
+                        &file,
+                        &format!("{p}.cross_attn.w_vs"),
+                        D_MODEL,
+                        D_MODEL,
+                        true,
+                    )?,
                     fc: take_linear(&file, &format!("{p}.cross_attn.fc"), D_MODEL, D_MODEL, true)?,
                 },
                 mlp_norm: take_layer_norm(&file, &format!("{p}.mlp_norm"))?,
@@ -252,7 +300,13 @@ impl Weights {
             subsample_conv0_b: take_owned(&file, "encoder.input_preprocessor.conv.0.bias")?,
             subsample_conv2_w: take_owned(&file, "encoder.input_preprocessor.conv.2.weight")?,
             subsample_conv2_b: take_owned(&file, "encoder.input_preprocessor.conv.2.bias")?,
-            subsample_out: take_linear(&file, "encoder.input_preprocessor.out", D_MODEL, 608, true)?,
+            subsample_out: take_linear(
+                &file,
+                "encoder.input_preprocessor.out",
+                D_MODEL,
+                608,
+                true,
+            )?,
             encoder_pe: take_owned(&file, "encoder.positional_encoding.pe")?,
             encoder_layers,
             tgt_word_emb: take_owned(&file, "decoder.tgt_word_emb.weight")?,
@@ -336,7 +390,8 @@ fn layer_norm_copy(x: &[f32], rows: usize, dim: usize, w: &LayerNormWeights) -> 
 }
 
 fn swish_inplace(x: &mut [f32]) {
-    x.par_iter_mut().for_each(|v| *v *= 1.0 / (1.0 + (-*v).exp()));
+    x.par_iter_mut()
+        .for_each(|v| *v *= 1.0 / (1.0 + (-*v).exp()));
 }
 
 fn gelu_inplace(x: &mut [f32]) {
@@ -381,7 +436,10 @@ fn add_inplace(a: &mut [f32], b: &[f32]) {
 }
 
 fn scale_blend(a: &[f32], b: &[f32], w: f32) -> Vec<f32> {
-    a.iter().zip(b).map(|(x, y)| w * x + (1.0 - w) * y).collect()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| w * x + (1.0 - w) * y)
+        .collect()
 }
 
 // ---------------------------------------------------------------------
@@ -399,50 +457,56 @@ fn conv2d_subsample(features: &[f32], t_in: usize, w: &Weights) -> (Vec<f32>, us
     let t1 = (t_in - 3) / 2 + 1;
     let f1 = (IDIM - 3) / 2 + 1;
     let mut conv0 = vec![0.0_f32; C * t1 * f1];
-    conv0.par_chunks_mut(t1 * f1).enumerate().for_each(|(co, plane)| {
-        let bias = w.subsample_conv0_b[co];
-        let kernel = &w.subsample_conv0_w[co * 9..(co + 1) * 9]; // [1,3,3] flattened
-        for ot in 0..t1 {
-            for of in 0..f1 {
-                let mut sum = bias;
-                for kt in 0..3 {
-                    for kf in 0..3 {
-                        let it = ot * 2 + kt;
-                        let iff = of * 2 + kf;
-                        sum += features[it * IDIM + iff] * kernel[kt * 3 + kf];
+    conv0
+        .par_chunks_mut(t1 * f1)
+        .enumerate()
+        .for_each(|(co, plane)| {
+            let bias = w.subsample_conv0_b[co];
+            let kernel = &w.subsample_conv0_w[co * 9..(co + 1) * 9]; // [1,3,3] flattened
+            for ot in 0..t1 {
+                for of in 0..f1 {
+                    let mut sum = bias;
+                    for kt in 0..3 {
+                        for kf in 0..3 {
+                            let it = ot * 2 + kt;
+                            let iff = of * 2 + kf;
+                            sum += features[it * IDIM + iff] * kernel[kt * 3 + kf];
+                        }
                     }
+                    plane[ot * f1 + of] = sum;
                 }
-                plane[ot * f1 + of] = sum;
             }
-        }
-    });
+        });
     relu_inplace(&mut conv0);
 
     // conv2: in_channels=32, out_channels=32, kernel=3, stride=2, no padding
     let t2 = (t1 - 3) / 2 + 1;
     let f2 = (f1 - 3) / 2 + 1;
     let mut conv2 = vec![0.0_f32; C * t2 * f2];
-    conv2.par_chunks_mut(t2 * f2).enumerate().for_each(|(co, plane)| {
-        let bias = w.subsample_conv2_b[co];
-        let kernel_co = &w.subsample_conv2_w[co * C * 9..(co + 1) * C * 9]; // [32,3,3]
-        for ot in 0..t2 {
-            for of in 0..f2 {
-                let mut sum = bias;
-                for ci in 0..C {
-                    let in_plane = &conv0[ci * t1 * f1..(ci + 1) * t1 * f1];
-                    let kernel = &kernel_co[ci * 9..(ci + 1) * 9];
-                    for kt in 0..3 {
-                        for kf in 0..3 {
-                            let it = ot * 2 + kt;
-                            let iff = of * 2 + kf;
-                            sum += in_plane[it * f1 + iff] * kernel[kt * 3 + kf];
+    conv2
+        .par_chunks_mut(t2 * f2)
+        .enumerate()
+        .for_each(|(co, plane)| {
+            let bias = w.subsample_conv2_b[co];
+            let kernel_co = &w.subsample_conv2_w[co * C * 9..(co + 1) * C * 9]; // [32,3,3]
+            for ot in 0..t2 {
+                for of in 0..f2 {
+                    let mut sum = bias;
+                    for ci in 0..C {
+                        let in_plane = &conv0[ci * t1 * f1..(ci + 1) * t1 * f1];
+                        let kernel = &kernel_co[ci * 9..(ci + 1) * 9];
+                        for kt in 0..3 {
+                            for kf in 0..3 {
+                                let it = ot * 2 + kt;
+                                let iff = of * 2 + kf;
+                                sum += in_plane[it * f1 + iff] * kernel[kt * 3 + kf];
+                            }
                         }
                     }
+                    plane[ot * f2 + of] = sum;
                 }
-                plane[ot * f2 + of] = sum;
             }
-        }
-    });
+        });
     relu_inplace(&mut conv2);
 
     // transpose(1,2).reshape(N,T,C*D): [C,T,F] -> [T, C*F]
@@ -484,7 +548,8 @@ fn rel_shift(x: &[f32], t1: usize, t2: usize) -> Vec<f32> {
     // x_padded = cat([zeros(t1,1), x], dim=-1) -> [t1, t2+1], flattened.
     let mut padded = vec![0.0_f32; t1 * (t2 + 1)];
     for row in 0..t1 {
-        padded[row * (t2 + 1) + 1..row * (t2 + 1) + 1 + t2].copy_from_slice(&x[row * t2..(row + 1) * t2]);
+        padded[row * (t2 + 1) + 1..row * (t2 + 1) + 1 + t2]
+            .copy_from_slice(&x[row * t2..(row + 1) * t2]);
     }
     // Reinterpret the same flat buffer as [t2+1, t1] (a torch `.view`, not a
     // transpose): element (r, c) of the new shape is padded[r*t1 + c].
@@ -629,19 +694,22 @@ fn conformer_conv(x: &[f32], t: usize, conv: &ConformerConv) -> Vec<f32> {
     // depthwise weight is [half, 1, KERNEL_SIZE].
     let pad = (KERNEL_SIZE - 1) / 2;
     let mut depthwise_out = vec![0.0_f32; t * half];
-    depthwise_out.par_chunks_mut(half).enumerate().for_each(|(ti, out_row)| {
-        for c in 0..half {
-            let kernel = &conv.depthwise[c * KERNEL_SIZE..(c + 1) * KERNEL_SIZE];
-            let mut sum = 0.0_f32;
-            for k in 0..KERNEL_SIZE {
-                let src_t = ti as isize + k as isize - pad as isize;
-                if src_t >= 0 && (src_t as usize) < t {
-                    sum += glu[src_t as usize * half + c] * kernel[k];
+    depthwise_out
+        .par_chunks_mut(half)
+        .enumerate()
+        .for_each(|(ti, out_row)| {
+            for c in 0..half {
+                let kernel = &conv.depthwise[c * KERNEL_SIZE..(c + 1) * KERNEL_SIZE];
+                let mut sum = 0.0_f32;
+                for k in 0..KERNEL_SIZE {
+                    let src_t = ti as isize + k as isize - pad as isize;
+                    if src_t >= 0 && (src_t as usize) < t {
+                        sum += glu[src_t as usize * half + c] * kernel[k];
+                    }
                 }
+                out_row[c] = sum;
             }
-            out_row[c] = sum;
-        }
-    });
+        });
 
     // "batch_norm" is actually nn.LayerNorm(half) in this checkpoint.
     let mut normed2 = depthwise_out;
@@ -749,7 +817,13 @@ fn decoder_mha(q_in: &[f32], kv_in: &[f32], t_q: usize, t_kv: usize, mha: &Decod
 /// One decoder layer, full recompute over all `t` generated-so-far
 /// positions (see module doc comment on why this is exact, not an
 /// approximation of the reference's incremental cache).
-fn decoder_layer_forward(x: &[f32], t: usize, enc: &[f32], t_enc: usize, layer: &DecoderLayer) -> Vec<f32> {
+fn decoder_layer_forward(
+    x: &[f32],
+    t: usize,
+    enc: &[f32],
+    t_enc: usize,
+    layer: &DecoderLayer,
+) -> Vec<f32> {
     let residual = x.to_vec();
     let normed = layer_norm_copy(x, t, D_MODEL, &layer.self_attn_norm);
     let mut x = decoder_mha(&normed, &normed, t, t, &layer.self_attn);
@@ -837,11 +911,13 @@ fn load_vocabulary(dict_path: &Path) -> Result<Vec<String>> {
         let (token, id) = line
             .rsplit_once(' ')
             .ok_or_else(|| Error::message("FireRed token vocabulary is malformed".to_string()))?;
-        let id: usize = id
-            .parse()
-            .map_err(|_| Error::message("FireRed token vocabulary id is not an integer".to_string()))?;
+        let id: usize = id.parse().map_err(|_| {
+            Error::message("FireRed token vocabulary id is not an integer".to_string())
+        })?;
         if id >= VOCAB_SIZE {
-            return Err(Error::message("FireRed token vocabulary id is out of range".to_string()));
+            return Err(Error::message(
+                "FireRed token vocabulary id is out of range".to_string(),
+            ));
         }
         vocabulary[id] = token.to_string();
         seen += 1;
@@ -892,9 +968,16 @@ fn window_ranges(samples: usize) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn infer_window_with_cmvn(audio: &[f32], cmvn: &[u8], w: &Weights, vocabulary: &[String]) -> Result<WindowResult> {
+fn infer_window_with_cmvn(
+    audio: &[f32],
+    cmvn: &[u8],
+    w: &Weights,
+    vocabulary: &[String],
+) -> Result<WindowResult> {
     if audio.is_empty() || audio.len() > MAX_WINDOW_SAMPLES {
-        return Err(Error::message("FireRed internal window shape is invalid".to_string()));
+        return Err(Error::message(
+            "FireRed internal window shape is invalid".to_string(),
+        ));
     }
     let mut window = vec![0.0_f32; audio.len().max(MIN_WINDOW_SAMPLES)];
     window[..audio.len()].copy_from_slice(audio);
@@ -909,7 +992,9 @@ fn infer_window_with_cmvn(audio: &[f32], cmvn: &[u8], w: &Weights, vocabulary: &
     }
     let enc = encoder_forward(&features, w)?;
     if !enc.iter().all(|v| v.is_finite()) {
-        return Err(Error::message("FireRed encoder output is non-finite".to_string()));
+        return Err(Error::message(
+            "FireRed encoder output is non-finite".to_string(),
+        ));
     }
     if let Ok(dir) = std::env::var("UTA_STUDIO_FIRERED_DEBUG_DIR") {
         dump_f32(&format!("{dir}/encoder_output.f32le"), &enc);
@@ -1048,7 +1133,8 @@ pub fn infer(
 /// Matches `analysis-engine/src/artifact/firered.rs`'s accepted
 /// `selected_source_revision` for the native route -- the official
 /// FireRedTeam checkpoint, not the third-party INT8 ONNX export's revision.
-pub const NATIVE_SOURCE_REVISION: &str = "FireRedTeam/FireRedASR2-AED@2304afed56eacfee6256dee5937ed22ffa0b64ec";
+pub const NATIVE_SOURCE_REVISION: &str =
+    "FireRedTeam/FireRedASR2-AED@2304afed56eacfee6256dee5937ed22ffa0b64ec";
 
 /// `sha256sum` of the exact pinned `firered-f32.gguf` produced by
 /// `tools/convert_firered_to_gguf.py` from that checkpoint -- computed once
@@ -1064,15 +1150,23 @@ fn resolve_model_files(config_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     // containing `firered-f32.gguf` + `cmvn.ark` + `dict.txt` side by side
     // (matching the runtime store layout other native workers use).
     if config_path.is_file() {
-        let dir = config_path
-            .parent()
-            .ok_or_else(|| Error::message("FireRed model path has no parent directory".to_string()))?;
-        return Ok((config_path.to_path_buf(), dir.join("cmvn.ark"), dir.join("dict.txt")));
+        let dir = config_path.parent().ok_or_else(|| {
+            Error::message("FireRed model path has no parent directory".to_string())
+        })?;
+        return Ok((
+            config_path.to_path_buf(),
+            dir.join("cmvn.ark"),
+            dir.join("dict.txt"),
+        ));
     }
     if config_path.is_dir() {
         let gguf = config_path.join("firered-f32.gguf");
         if gguf.is_file() {
-            return Ok((gguf, config_path.join("cmvn.ark"), config_path.join("dict.txt")));
+            return Ok((
+                gguf,
+                config_path.join("cmvn.ark"),
+                config_path.join("dict.txt"),
+            ));
         }
     }
     Err(Error::message(

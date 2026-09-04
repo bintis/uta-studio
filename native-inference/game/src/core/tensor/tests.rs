@@ -191,7 +191,11 @@ pub fn run_linear_applies_weight_rows_and_optional_bias<T: Tensor>(device: &T::D
 
     let no_bias = input.linear(&weight, None).unwrap();
     assert_eq!(no_bias.shape(), &[2, 2]);
-    assert_close(&export(&no_bias), &[6.0, 15.0, 12.0, 30.0], "linear no bias");
+    assert_close(
+        &export(&no_bias),
+        &[6.0, 15.0, 12.0, 30.0],
+        "linear no bias",
+    );
 
     let bias = T::from_data(&[100.0, 200.0], &[2], device).unwrap();
     let with_bias = input.linear(&weight, Some(&bias)).unwrap();
@@ -218,9 +222,7 @@ fn erf_approx_reference(x: f32) -> f32 {
     sign * y
 }
 
-pub fn run_normalization_and_activation_ops_match_reference_values<T: Tensor>(
-    device: &T::Device,
-) {
+pub fn run_normalization_and_activation_ops_match_reference_values<T: Tensor>(device: &T::Device) {
     let sigmoid_input = [0.0f32, 1.0, -1.0];
     let sig = T::from_data(&sigmoid_input, &[3], device)
         .unwrap()
@@ -383,9 +385,7 @@ pub fn run_embedding_and_repeat_return_expected_rows<T: Tensor>(device: &T::Devi
     assert_eq!(repeated.shape(), &[6, 2]);
     assert_close(
         &export(&repeated),
-        &[
-            1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0,
-        ],
+        &[1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0],
         "repeat",
     );
 }
@@ -453,16 +453,8 @@ pub fn run_fused_attention_matches_reference<T: Tensor>(device: &T::Device) {
     let k2 = T::from_data(&k_data, &[1, 2, 2], device).unwrap();
     let v2 = T::from_data(&v_data, &[1, 2, 2], device).unwrap();
     let out_masked = T::fused_attention(&q2, &k2, &v2, Some(&mask), 1.0).unwrap();
-    let expected_masked = reference_fused_attention(
-        &q_data,
-        &k_data,
-        &v_data,
-        Some(&mask_data),
-        2,
-        2,
-        2,
-        1.0,
-    );
+    let expected_masked =
+        reference_fused_attention(&q_data, &k_data, &v_data, Some(&mask_data), 2, 2, 2, 1.0);
     assert_close(
         &export(&out_masked),
         &expected_masked,

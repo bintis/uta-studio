@@ -4,7 +4,6 @@ mod gpu;
 #[cfg(test)]
 pub mod tests;
 
-
 use crate::Result;
 
 pub use cpu::{CpuDevice, CpuTensor};

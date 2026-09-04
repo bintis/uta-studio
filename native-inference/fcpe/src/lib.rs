@@ -9,7 +9,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use error::{Error, Result};
-use protocol::{emit, WorkerCommand, WorkerFrame, PROTOCOL_VERSION};
+use protocol::{PROTOCOL_VERSION, WorkerCommand, WorkerFrame, emit};
 
 pub const COMPONENT_NAME: &str = "uta-fcpe-worker";
 pub const RUNTIME_RECIPE_DIGEST: &str = "fcpe-native-recipe-v1";
@@ -28,8 +28,7 @@ fn resolve_model_path(config: &serde_json::Value) -> Result<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let candidate =
-            home.join(".local/share/uta-studio/runtime/ggml-models/fcpe/fcpe-f32.gguf");
+        let candidate = home.join(".local/share/uta-studio/runtime/ggml-models/fcpe/fcpe-f32.gguf");
         if candidate.is_file() {
             return Ok(candidate);
         }
@@ -65,12 +64,21 @@ pub fn run_task(
     let audio = audio::decode_mono(&input_artifacts[0], output_dir, 16_000)
         .map_err(|e| Error::message(format!("could not decode audio: {e}")))?;
 
+    let execution =
+        uta_wgpu_runtime::ExecutionDevice::from_worker_config(config).map_err(Error::message)?;
+    #[cfg(not(feature = "gpu"))]
+    if matches!(execution, uta_wgpu_runtime::ExecutionDevice::Gpu(_)) {
+        return Err(Error::message(
+            "FCPE GPU execution requested but the worker was built without the `gpu` feature",
+        ));
+    }
     let model_path = resolve_model_path(config)?;
 
     let output = engine::infer(
         &audio,
         &model_path,
         output_dir,
+        execution,
         |fraction, message, work_units| {
             emit(&WorkerFrame::Progress {
                 task_id,
@@ -144,13 +152,9 @@ pub fn run_stdio() -> std::process::ExitCode {
                 config,
                 ..
             } => {
-                if let Err(err) = run_task(
-                    &task_id,
-                    &model_id,
-                    &input_artifacts,
-                    &output_dir,
-                    &config,
-                ) {
+                if let Err(err) =
+                    run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config)
+                {
                     emit(&WorkerFrame::Error {
                         task_id: Some(&task_id),
                         code: "fcpe_execution_error",

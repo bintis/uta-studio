@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use rustfft::num_complex::Complex32;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex32;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -78,7 +78,12 @@ fn reflected(audio: &[f32], index: isize) -> f32 {
     }]
 }
 
-pub fn append_signal_features(audio: &[f32], frames: usize, output: &mut [f32], base_channel: usize) {
+pub fn append_signal_features(
+    audio: &[f32],
+    frames: usize,
+    output: &mut [f32],
+    base_channel: usize,
+) {
     let fft_sizes = [8_192_usize, 16_384, 32_768];
     let mut planner = FftPlanner::<f32>::new();
     for (scale_index, fft_size) in fft_sizes.into_iter().enumerate() {
@@ -140,7 +145,8 @@ fn conv2d(
                             if cur_h < 0 || cur_h >= h as isize {
                                 continue;
                             }
-                            let row = &in_ci[(cur_h as usize) * w_in..((cur_h as usize) + 1) * w_in];
+                            let row =
+                                &in_ci[(cur_h as usize) * w_in..((cur_h as usize) + 1) * w_in];
                             let w_row = &w_ci[kh as usize * 9..(kh as usize + 1) * 9];
                             for kw in 0..9 {
                                 let cur_w = w_start + kw;
@@ -545,7 +551,9 @@ pub fn infer(
     mut progress: impl FnMut(f32, &'static str),
 ) -> Result<PathBuf> {
     if mix.is_empty() || vocal.is_empty() {
-        return Err(Error::message("JBM555 requires non-empty mix and vocal inputs"));
+        return Err(Error::message(
+            "JBM555 requires non-empty mix and vocal inputs",
+        ));
     }
     let samples = mix.len().min(vocal.len());
     let frames = samples.div_ceil(HOP).max(1);

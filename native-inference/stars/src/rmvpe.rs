@@ -159,15 +159,15 @@ fn take_batch_norm2d(file: &GGUFFile, prefix: &str) -> Result<BatchNorm2dWeights
 
 fn take_res_block(file: &GGUFFile, prefix: &str, in_ch: usize) -> Result<ResBlockWeights> {
     let conv0 = take_conv2d(file, &format!("{prefix}.conv.conv.0"), in_ch, 3, 3)?;
-    let conv3 = take_conv2d(
-        file,
-        &format!("{prefix}.conv.conv.3"),
-        conv0.out_ch,
-        3,
-        3,
-    )?;
+    let conv3 = take_conv2d(file, &format!("{prefix}.conv.conv.3"), conv0.out_ch, 3, 3)?;
     let shortcut = if take_optional(file, &format!("{prefix}.shortcut.weight")).is_some() {
-        Some(take_conv2d(file, &format!("{prefix}.shortcut"), in_ch, 1, 1)?)
+        Some(take_conv2d(
+            file,
+            &format!("{prefix}.shortcut"),
+            in_ch,
+            1,
+            1,
+        )?)
     } else {
         None
     };
@@ -226,7 +226,8 @@ impl RmvpeWeights {
                 )));
             }
             let up_out_ch = up_weight.len() / (up_in_ch * 9);
-            let up_bn = take_batch_norm2d(&file, &format!("unet.decoder.layers.{stage}.conv1.conv1.1"))?;
+            let up_bn =
+                take_batch_norm2d(&file, &format!("unet.decoder.layers.{stage}.conv1.conv1.1"))?;
             // Skip connection concatenation doubles the channel count before
             // the stage's own ResConvBlocks.
             let mut block_in = up_out_ch * 2;
@@ -432,7 +433,8 @@ fn conv_transpose2d_upsample(x: &Feature, weight: &[f32], in_ch: usize, out_ch: 
     let mut out = Feature::zeros(out_ch, out_h, out_w);
     for oc in 0..out_ch {
         for oy in 0..out_h {
-            let src = &full[(oc * full_h + (oy + 1)) * full_w + 1..(oc * full_h + (oy + 1)) * full_w + 1 + out_w];
+            let src = &full[(oc * full_h + (oy + 1)) * full_w + 1
+                ..(oc * full_h + (oy + 1)) * full_w + 1 + out_w];
             out.channel_mut(oc)[oy * out_w..(oy + 1) * out_w].copy_from_slice(src);
         }
     }
@@ -447,7 +449,13 @@ fn concat_channels(a: &Feature, b: &Feature) -> Feature {
     out
 }
 
-fn gru_gate_view(weight: &[f32], direction: usize, gate: usize, rows: usize, cols: usize) -> &[f32] {
+fn gru_gate_view(
+    weight: &[f32],
+    direction: usize,
+    gate: usize,
+    rows: usize,
+    cols: usize,
+) -> &[f32] {
     let stage = 3 * rows * cols;
     let base = direction * stage + gate * rows * cols;
     &weight[base..base + rows * cols]
@@ -534,8 +542,7 @@ pub fn forward(weights: &RmvpeWeights, mel_channel_major: &[f32], t: usize) -> V
     let mut image = Feature::zeros(1, t, crate::mel16::MEL_BINS);
     for mel in 0..crate::mel16::MEL_BINS {
         for time in 0..t {
-            image.data[time * crate::mel16::MEL_BINS + mel] =
-                mel_channel_major[mel * t + time];
+            image.data[time * crate::mel16::MEL_BINS + mel] = mel_channel_major[mel * t + time];
         }
     }
     batch_norm2d(&mut image, &weights.encoder_bn);
@@ -555,7 +562,8 @@ pub fn forward(weights: &RmvpeWeights, mel_channel_major: &[f32], t: usize) -> V
     }
 
     for (stage, decoder) in weights.decoder_stages.iter().enumerate() {
-        let mut up = conv_transpose2d_upsample(&x, &decoder.up_weight, decoder.up_in_ch, decoder.up_out_ch);
+        let mut up =
+            conv_transpose2d_upsample(&x, &decoder.up_weight, decoder.up_in_ch, decoder.up_out_ch);
         batch_norm2d(&mut up, &decoder.up_bn);
         relu_inplace(&mut up);
         let skip = &skips[ENCODER_STAGES - 1 - stage];
@@ -572,8 +580,10 @@ pub fn forward(weights: &RmvpeWeights, mel_channel_major: &[f32], t: usize) -> V
     let mut gru_input = vec![0.0_f32; t * GRU_INPUT];
     for time in 0..t {
         for channel in 0..3 {
-            let row = &head.channel(channel)[time * crate::mel16::MEL_BINS..(time + 1) * crate::mel16::MEL_BINS];
-            gru_input[time * GRU_INPUT + channel * crate::mel16::MEL_BINS..time * GRU_INPUT + (channel + 1) * crate::mel16::MEL_BINS]
+            let row = &head.channel(channel)
+                [time * crate::mel16::MEL_BINS..(time + 1) * crate::mel16::MEL_BINS];
+            gru_input[time * GRU_INPUT + channel * crate::mel16::MEL_BINS
+                ..time * GRU_INPUT + (channel + 1) * crate::mel16::MEL_BINS]
                 .copy_from_slice(row);
         }
     }
@@ -595,7 +605,8 @@ pub fn forward(weights: &RmvpeWeights, mel_channel_major: &[f32], t: usize) -> V
         .for_each(|(time, row)| {
             let x_t = &gru_out[time * 2 * GRU_HIDDEN..(time + 1) * 2 * GRU_HIDDEN];
             for (cls, value) in row.iter_mut().enumerate() {
-                let logit: f32 = weights.fc_weight[cls * 2 * GRU_HIDDEN..(cls + 1) * 2 * GRU_HIDDEN]
+                let logit: f32 = weights.fc_weight
+                    [cls * 2 * GRU_HIDDEN..(cls + 1) * 2 * GRU_HIDDEN]
                     .iter()
                     .zip(x_t)
                     .map(|(w, v)| w * v)

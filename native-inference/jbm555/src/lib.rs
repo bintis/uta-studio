@@ -8,7 +8,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use error::{Error, Result};
-use protocol::{emit, WorkerCommand, WorkerFrame, PROTOCOL_VERSION};
+use protocol::{PROTOCOL_VERSION, WorkerCommand, WorkerFrame, emit};
 
 pub const COMPONENT_NAME: &str = "uta-jbm-worker";
 pub const RUNTIME_RECIPE_DIGEST: &str = "jbm555-native-recipe-v1";
@@ -28,13 +28,15 @@ fn resolve_model_path(config: &serde_json::Value) -> Result<PathBuf> {
     }
     // Fallback: check standard runtime directory
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let candidate = home
-            .join(".local/share/uta-studio/runtime/ggml-models/jbm555/jbm555-cectc80-f32.gguf");
+        let candidate =
+            home.join(".local/share/uta-studio/runtime/ggml-models/jbm555/jbm555-cectc80-f32.gguf");
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
-    Err(Error::message("JBM555 GGUF model path not found in config or runtime store"))
+    Err(Error::message(
+        "JBM555 GGUF model path not found in config or runtime store",
+    ))
 }
 
 pub fn run_task(
@@ -45,7 +47,9 @@ pub fn run_task(
     config: &serde_json::Value,
 ) -> Result<()> {
     if input_artifacts.len() != 2 {
-        return Err(Error::message("JBM555 requires exactly two input artifacts: mix and vocal audio"));
+        return Err(Error::message(
+            "JBM555 requires exactly two input artifacts: mix and vocal audio",
+        ));
     }
     if !output_dir.is_dir() {
         return Err(Error::message("Output directory does not exist"));
@@ -152,13 +156,9 @@ pub fn run_stdio() -> std::process::ExitCode {
                 config,
                 ..
             } => {
-                if let Err(err) = run_task(
-                    &task_id,
-                    &model_id,
-                    &input_artifacts,
-                    &output_dir,
-                    &config,
-                ) {
+                if let Err(err) =
+                    run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config)
+                {
                     emit(&WorkerFrame::Error {
                         task_id: Some(&task_id),
                         code: "jbm_execution_error",

@@ -225,12 +225,16 @@ pub(super) fn run_advanced_note_challenger(
         let model_dir = if model.model_path.is_dir() {
             model.model_path.clone()
         } else {
-            model.model_path.parent().map(Path::to_path_buf).ok_or_else(|| {
-                EngineError::new(
-                    EngineErrorCode::RuntimeResolutionFailed,
-                    "resolved advanced-note model path has no parent directory",
-                )
-            })?
+            model
+                .model_path
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| {
+                    EngineError::new(
+                        EngineErrorCode::RuntimeResolutionFailed,
+                        "resolved advanced-note model path has no parent directory",
+                    )
+                })?
         };
         let rmvpe_model_path = model_dir.join("rmvpe-f32.gguf");
         if !rmvpe_model_path.is_file() {

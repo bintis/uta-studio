@@ -101,25 +101,27 @@ pub fn conv1d_same(
     let cout_per_group = cout / groups;
     let pad = (dilation * (k - 1)) / 2;
     let mut out = vec![0.0_f32; t * cout];
-    out.par_chunks_mut(cout).enumerate().for_each(|(time, row)| {
-        for oc in 0..cout {
-            let group = oc / cout_per_group;
-            let mut acc = bias.map_or(0.0, |b| b[oc]);
-            for ic_local in 0..cin_per_group {
-                let ic = group * cin_per_group + ic_local;
-                for kk in 0..k {
-                    let offset = kk as isize * dilation as isize - pad as isize;
-                    let src_t = time as isize + offset;
-                    if src_t < 0 || src_t as usize >= t {
-                        continue;
+    out.par_chunks_mut(cout)
+        .enumerate()
+        .for_each(|(time, row)| {
+            for oc in 0..cout {
+                let group = oc / cout_per_group;
+                let mut acc = bias.map_or(0.0, |b| b[oc]);
+                for ic_local in 0..cin_per_group {
+                    let ic = group * cin_per_group + ic_local;
+                    for kk in 0..k {
+                        let offset = kk as isize * dilation as isize - pad as isize;
+                        let src_t = time as isize + offset;
+                        if src_t < 0 || src_t as usize >= t {
+                            continue;
+                        }
+                        let w = weight[(oc * cin_per_group + ic_local) * k + kk];
+                        acc += w * x[src_t as usize * cin + ic];
                     }
-                    let w = weight[(oc * cin_per_group + ic_local) * k + kk];
-                    acc += w * x[src_t as usize * cin + ic];
                 }
+                row[oc] = acc;
             }
-            row[oc] = acc;
-        }
-    });
+        });
     out
 }
 
@@ -344,7 +346,8 @@ fn rel_shift(x: &[f32], t1: usize, t2: usize) -> Vec<f32> {
     let mut padded = vec![0.0_f32; t1 * (t2 + 1)];
     for row in 0..t1 {
         padded[row * (t2 + 1)] = 0.0;
-        padded[row * (t2 + 1) + 1..row * (t2 + 1) + 1 + t2].copy_from_slice(&x[row * t2..(row + 1) * t2]);
+        padded[row * (t2 + 1) + 1..row * (t2 + 1) + 1 + t2]
+            .copy_from_slice(&x[row * t2..(row + 1) * t2]);
     }
     // Reinterpret the same flat buffer as [(t2+1), t1] row-major, drop the
     // first row, then reinterpret the remainder as [t1, t2] row-major.
@@ -359,8 +362,8 @@ pub struct RelPosMhsaWeights {
     pub w_v: LinearWeights,
     pub w_out: LinearWeights,
     pub linear_pos: LinearWeights, // bias = None
-    pub pos_bias_u: Vec<f32>, // [heads, d_k]
-    pub pos_bias_v: Vec<f32>, // [heads, d_k]
+    pub pos_bias_u: Vec<f32>,      // [heads, d_k]
+    pub pos_bias_v: Vec<f32>,      // [heads, d_k]
     pub heads: usize,
 }
 
@@ -463,8 +466,10 @@ pub fn feed_forward_moe(x: &[f32], t: usize, w: &FeedForwardMoeWeights) -> Vec<f
     for (expert_index, (w1, w2)) in w.experts.iter().enumerate() {
         let mut chunk_in = vec![0.0_f32; t * chunk];
         for time in 0..t {
-            chunk_in[time * chunk..(time + 1) * chunk]
-                .copy_from_slice(&x[time * HIDDEN + expert_index * chunk..time * HIDDEN + (expert_index + 1) * chunk]);
+            chunk_in[time * chunk..(time + 1) * chunk].copy_from_slice(
+                &x[time * HIDDEN + expert_index * chunk
+                    ..time * HIDDEN + (expert_index + 1) * chunk],
+            );
         }
         let mut hidden = linear(&chunk_in, t, w1);
         relu(&mut hidden);
@@ -711,9 +716,29 @@ pub struct UnetMidWeights {
 }
 
 pub fn unet_mid(x: &[f32], t: usize, w: &UnetMidWeights) -> Vec<f32> {
-    let pre = conv1d_same(x, t, HIDDEN, &w.pre_weight, Some(&w.pre_bias), HIDDEN, w.kernel_size, 1, 1);
+    let pre = conv1d_same(
+        x,
+        t,
+        HIDDEN,
+        &w.pre_weight,
+        Some(&w.pre_bias),
+        HIDDEN,
+        w.kernel_size,
+        1,
+        1,
+    );
     let net_out = conformer_layers_moe(&pre, t, &w.net);
-    conv1d_same(&net_out, t, HIDDEN, &w.post_weight, Some(&w.post_bias), HIDDEN, w.kernel_size, 1, 1)
+    conv1d_same(
+        &net_out,
+        t,
+        HIDDEN,
+        &w.post_weight,
+        Some(&w.post_bias),
+        HIDDEN,
+        w.kernel_size,
+        1,
+        1,
+    )
 }
 
 pub struct UnetUpStageWeights {
@@ -736,7 +761,14 @@ pub struct UnetUpWeights {
 
 /// `ConvTranspose1d(kernel, stride=2, padding=1, output_padding=1)`, native
 /// weight `[in_ch, out_ch, kernel]`. Output length is exactly `2*t`.
-fn conv_transpose1d_upsample2x(x: &[f32], t: usize, c: usize, weight: &[f32], bias: &[f32], kernel: usize) -> Vec<f32> {
+fn conv_transpose1d_upsample2x(
+    x: &[f32],
+    t: usize,
+    c: usize,
+    weight: &[f32],
+    bias: &[f32],
+    kernel: usize,
+) -> Vec<f32> {
     let out_t = 2 * t;
     let mut out = vec![0.0_f32; out_t * c];
     for ot in 0..out_t {
@@ -935,7 +967,8 @@ pub fn expand_states(pooled: &[f32], rows: usize, seg_ids: &[i64], t: usize) -> 
         if index >= rows {
             continue;
         }
-        out[time * HIDDEN..(time + 1) * HIDDEN].copy_from_slice(&pooled[index * HIDDEN..(index + 1) * HIDDEN]);
+        out[time * HIDDEN..(time + 1) * HIDDEN]
+            .copy_from_slice(&pooled[index * HIDDEN..(index + 1) * HIDDEN]);
     }
     out
 }

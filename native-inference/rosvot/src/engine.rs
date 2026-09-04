@@ -57,7 +57,8 @@ const MEL_BINS: usize = 40;
 const ROSVOT_COMMIT: &str = "3c8332bf43adae35f6e4d64971862f2f6139b310";
 const ROSVOT_CHECKPOINT: &str = "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb";
 const ROSVOT_CONFIG: &str = "2ad2cb756623418c471b7dc2f56175cce88b69a70b4a2c354fa1a78525aa54e2";
-const SHARED_MANIFEST_SHA256: &str = "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c";
+const SHARED_MANIFEST_SHA256: &str =
+    "986327618f2055873a98fca481893db83ffff2e386b6c522532a5272a1597a2c";
 const RUNTIME_MANIFEST_IDENTITY: &str = "rosvot-native-recipe-v1";
 
 // ---------------------------------------------------------------------
@@ -75,7 +76,13 @@ fn take_layer_norm(file: &GGUFFile, prefix: &str) -> Result<LayerNormWeights> {
     })
 }
 
-fn take_linear(file: &GGUFFile, prefix: &str, out_dim: usize, in_dim: usize, has_bias: bool) -> Result<LinearWeights> {
+fn take_linear(
+    file: &GGUFFile,
+    prefix: &str,
+    out_dim: usize,
+    in_dim: usize,
+    has_bias: bool,
+) -> Result<LinearWeights> {
     let weight = take(file, &format!("{prefix}.weight"))?;
     if weight.len() != out_dim * in_dim {
         return Err(Error::message(format!(
@@ -97,7 +104,13 @@ fn take_linear(file: &GGUFFile, prefix: &str, out_dim: usize, in_dim: usize, has
     })
 }
 
-fn take_residual_sub_block(file: &GGUFFile, prefix: &str, channels: usize, c_multiple: usize, kernel: usize) -> Result<ResidualSubBlock> {
+fn take_residual_sub_block(
+    file: &GGUFFile,
+    prefix: &str,
+    channels: usize,
+    c_multiple: usize,
+    kernel: usize,
+) -> Result<ResidualSubBlock> {
     let expand_weight = take(file, &format!("{prefix}.1.weight"))?;
     if expand_weight.len() != c_multiple * channels * channels * kernel {
         return Err(Error::message(format!(
@@ -182,22 +195,68 @@ fn take_conv_blocks(
 /// Plain (non-MoE) `ConformerLayers`: a single dense
 /// `MultiLayeredConv1d(HIDDEN, HIDDEN*4)` feed-forward, modeled as one
 /// "expert" spanning the full hidden width in `feed_forward_moe`.
-fn take_conformer_layer_plain(file: &GGUFFile, prefix: &str, heads: usize) -> Result<ConformerEncoderLayerWeights> {
+fn take_conformer_layer_plain(
+    file: &GGUFFile,
+    prefix: &str,
+    heads: usize,
+) -> Result<ConformerEncoderLayerWeights> {
     let take_plain_ffn = |sub: &str| -> Result<FeedForwardMoeWeights> {
         Ok(FeedForwardMoeWeights {
             experts: vec![(
-                take_linear(file, &format!("{prefix}.{sub}.w_1"), 4 * HIDDEN, HIDDEN, true)?,
-                take_linear(file, &format!("{prefix}.{sub}.w_2"), HIDDEN, 4 * HIDDEN, true)?,
+                take_linear(
+                    file,
+                    &format!("{prefix}.{sub}.w_1"),
+                    4 * HIDDEN,
+                    HIDDEN,
+                    true,
+                )?,
+                take_linear(
+                    file,
+                    &format!("{prefix}.{sub}.w_2"),
+                    HIDDEN,
+                    4 * HIDDEN,
+                    true,
+                )?,
             )],
         })
     };
     Ok(ConformerEncoderLayerWeights {
         self_attn: RelPosMhsaWeights {
-            w_q: take_linear(file, &format!("{prefix}.self_attn.linear_q"), HIDDEN, HIDDEN, true)?,
-            w_k: take_linear(file, &format!("{prefix}.self_attn.linear_k"), HIDDEN, HIDDEN, true)?,
-            w_v: take_linear(file, &format!("{prefix}.self_attn.linear_v"), HIDDEN, HIDDEN, true)?,
-            w_out: take_linear(file, &format!("{prefix}.self_attn.linear_out"), HIDDEN, HIDDEN, true)?,
-            linear_pos: take_linear(file, &format!("{prefix}.self_attn.linear_pos"), HIDDEN, HIDDEN, false)?,
+            w_q: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_q"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_k: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_k"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_v: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_v"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            w_out: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_out"),
+                HIDDEN,
+                HIDDEN,
+                true,
+            )?,
+            linear_pos: take_linear(
+                file,
+                &format!("{prefix}.self_attn.linear_pos"),
+                HIDDEN,
+                HIDDEN,
+                false,
+            )?,
             pos_bias_u: take(file, &format!("{prefix}.self_attn.pos_bias_u"))?,
             pos_bias_v: take(file, &format!("{prefix}.self_attn.pos_bias_v"))?,
             heads,
@@ -205,7 +264,10 @@ fn take_conformer_layer_plain(file: &GGUFFile, prefix: &str, heads: usize) -> Re
         feed_forward: take_plain_ffn("feed_forward")?,
         feed_forward_macaron: take_plain_ffn("feed_forward_macaron")?,
         conv_module: ConvolutionModuleWeights {
-            pointwise1_weight: take(file, &format!("{prefix}.conv_module.pointwise_conv1.weight"))?,
+            pointwise1_weight: take(
+                file,
+                &format!("{prefix}.conv_module.pointwise_conv1.weight"),
+            )?,
             pointwise1_bias: take(file, &format!("{prefix}.conv_module.pointwise_conv1.bias"))?,
             depthwise_weight: take(file, &format!("{prefix}.conv_module.depthwise_conv.weight"))?,
             depthwise_bias: take(file, &format!("{prefix}.conv_module.depthwise_conv.bias"))?,
@@ -215,7 +277,10 @@ fn take_conformer_layer_plain(file: &GGUFFile, prefix: &str, heads: usize) -> Re
                 running_mean: take(file, &format!("{prefix}.conv_module.norm.running_mean"))?,
                 running_var: take(file, &format!("{prefix}.conv_module.norm.running_var"))?,
             },
-            pointwise2_weight: take(file, &format!("{prefix}.conv_module.pointwise_conv2.weight"))?,
+            pointwise2_weight: take(
+                file,
+                &format!("{prefix}.conv_module.pointwise_conv2.weight"),
+            )?,
             pointwise2_bias: take(file, &format!("{prefix}.conv_module.pointwise_conv2.bias"))?,
             kernel_size: 9,
         },
@@ -227,10 +292,18 @@ fn take_conformer_layer_plain(file: &GGUFFile, prefix: &str, heads: usize) -> Re
     })
 }
 
-fn take_conformer_layers_plain(file: &GGUFFile, prefix: &str, num_layers: usize) -> Result<ConformerLayersMoeWeights> {
+fn take_conformer_layers_plain(
+    file: &GGUFFile,
+    prefix: &str,
+    num_layers: usize,
+) -> Result<ConformerLayersMoeWeights> {
     let mut layers = Vec::with_capacity(num_layers);
     for i in 0..num_layers {
-        layers.push(take_conformer_layer_plain(file, &format!("{prefix}.encoder_layers.{i}"), 4)?);
+        layers.push(take_conformer_layer_plain(
+            file,
+            &format!("{prefix}.encoder_layers.{i}"),
+            4,
+        )?);
     }
     Ok(ConformerLayersMoeWeights {
         layers,
@@ -259,7 +332,15 @@ fn take_unet(file: &GGUFFile, prefix: &str, mid_layers: usize) -> Result<UnetWei
             up_norm: take_layer_norm(file, &format!("{p}.ups.{stage}.1"))?,
             merge_weight: take(file, &format!("{p}.layers.{stage}.0.weight"))?,
             merge_bias: take(file, &format!("{p}.layers.{stage}.0.bias"))?,
-            merge_block: take_residual_block(file, &format!("{p}.layers.{stage}.1"), 1, 3, HIDDEN, 1, false)?,
+            merge_block: take_residual_block(
+                file,
+                &format!("{p}.layers.{stage}.1"),
+                1,
+                3,
+                HIDDEN,
+                1,
+                false,
+            )?,
             kernel_size: 3,
         });
     }
@@ -293,12 +374,12 @@ pub struct RosvotWeights {
     mel_proj_weight: Vec<f32>,
     mel_proj_bias: Vec<f32>,
     mel_encoder: ConvBlocksWeights,
-    pitch_embed: Vec<f32>,    // [300, HIDDEN]
-    uv_embed: Vec<f32>,       // [3, HIDDEN]
-    word_bd_embed: Vec<f32>,  // [3, HIDDEN]
+    pitch_embed: Vec<f32>,   // [300, HIDDEN]
+    uv_embed: Vec<f32>,      // [3, HIDDEN]
+    word_bd_embed: Vec<f32>, // [3, HIDDEN]
     cond_encoder: ConvBlocksWeights,
     net: UnetWeights,
-    note_bd_out: LinearWeights, // 256 -> 1
+    note_bd_out: LinearWeights,        // 256 -> 1
     pitch_decoder_attn: LinearWeights, // 256 -> 4
     pitch_decoder_post: ConvBlocksWeights,
     pitch_decoder_out: LinearWeights, // 256 -> 89
@@ -322,9 +403,21 @@ impl RosvotWeights {
             cond_encoder: take_conv_blocks(&file, "cond_encoder", 1, 3, 3, false)?,
             net: take_unet(&file, "net.net", 2)?,
             note_bd_out: take_linear(&file, "note_bd_out", 1, HIDDEN, true)?,
-            pitch_decoder_attn: take_linear(&file, "pitch_decoder.multihead_dot_attn", 4, HIDDEN, true)?,
+            pitch_decoder_attn: take_linear(
+                &file,
+                "pitch_decoder.multihead_dot_attn",
+                4,
+                HIDDEN,
+                true,
+            )?,
             pitch_decoder_post: take_conv_blocks(&file, "pitch_decoder.post", 1, 3, 3, false)?,
-            pitch_decoder_out: take_linear(&file, "pitch_decoder.pitch_out", PITCH_CLASSES, HIDDEN, true)?,
+            pitch_decoder_out: take_linear(
+                &file,
+                "pitch_decoder.pitch_out",
+                PITCH_CLASSES,
+                HIDDEN,
+                true,
+            )?,
         })
     }
 }
@@ -337,7 +430,8 @@ fn embedding_lookup(table: &[f32], ids: &[i64]) -> Vec<f32> {
     let mut out = vec![0.0_f32; ids.len() * HIDDEN];
     for (row, id) in ids.iter().enumerate() {
         let id = (*id).max(0) as usize;
-        out[row * HIDDEN..(row + 1) * HIDDEN].copy_from_slice(&table[id * HIDDEN..(id + 1) * HIDDEN]);
+        out[row * HIDDEN..(row + 1) * HIDDEN]
+            .copy_from_slice(&table[id * HIDDEN..(id + 1) * HIDDEN]);
     }
     out
 }
@@ -368,7 +462,17 @@ pub fn stage_frame(
     word_bd: &[i64],
     t: usize,
 ) -> StageFrameOutput {
-    let mut mel_embed = conv1d_same(mel, t, MEL_BINS, &w.mel_proj_weight, Some(&w.mel_proj_bias), HIDDEN, 3, 1, 1);
+    let mut mel_embed = conv1d_same(
+        mel,
+        t,
+        MEL_BINS,
+        &w.mel_proj_weight,
+        Some(&w.mel_proj_bias),
+        HIDDEN,
+        3,
+        1,
+        1,
+    );
     mel_embed = conv_blocks(&mel_embed, t, &w.mel_encoder);
 
     let mut pitch_embed = embedding_lookup(&w.pitch_embed, pitch);
@@ -445,7 +549,8 @@ struct Segment {
 }
 
 fn frame_to_micros(frame: usize) -> u64 {
-    (frame as u128 * singing_frontend::HOP_SIZE as u128 * 1_000_000 / singing_frontend::SAMPLE_RATE as u128) as u64
+    (frame as u128 * singing_frontend::HOP_SIZE as u128 * 1_000_000
+        / singing_frontend::SAMPLE_RATE as u128) as u64
 }
 
 fn canonical_to_frame(value: u64) -> Result<usize> {
@@ -522,7 +627,12 @@ fn padded_i64(values: &[i64], start: usize) -> Vec<i64> {
 fn note_ranges(boundaries: &[usize], valid: usize) -> Vec<(usize, usize)> {
     let mut starts = Vec::with_capacity(boundaries.len() + 1);
     starts.push(0);
-    starts.extend(boundaries.iter().copied().filter(|value| *value > 0 && *value < valid));
+    starts.extend(
+        boundaries
+            .iter()
+            .copied()
+            .filter(|value| *value > 0 && *value < valid),
+    );
     starts.sort_unstable();
     starts.dedup();
     starts
@@ -549,14 +659,23 @@ pub struct RawNote {
     pub midi: Option<u8>,
 }
 
-fn append_notes(notes: &mut Vec<RawNote>, segment_start: usize, ranges: &[(usize, usize)], logits: &[f32]) {
+fn append_notes(
+    notes: &mut Vec<RawNote>,
+    segment_start: usize,
+    ranges: &[(usize, usize)],
+    logits: &[f32],
+) {
     for (index, (start, end)) in ranges.iter().copied().enumerate() {
         let row = logits[index * PITCH_CLASSES..(index + 1) * PITCH_CLASSES].to_vec();
         let midi = row
             .iter()
             .enumerate()
             .max_by(|left, right| left.1.total_cmp(right.1))
-            .and_then(|(class, _)| (NOTE_START..=NOTE_NUM).contains(&class).then_some(class as u8));
+            .and_then(|(class, _)| {
+                (NOTE_START..=NOTE_NUM)
+                    .contains(&class)
+                    .then_some(class as u8)
+            });
         notes.push(RawNote {
             start_frame: segment_start + start,
             end_frame: segment_start + end,
@@ -630,12 +749,17 @@ pub fn resolve_model_files(config: &serde_json::Value) -> Result<(PathBuf, PathB
         .map(PathBuf::from)
         .filter(|p| p.is_file())
         .or_else(|| {
-            std::env::var_os("HOME").map(PathBuf::from).and_then(|home| {
-                let candidate = home.join(".local/share/uta-studio/runtime/ggml-models/rosvot/rosvot-f32.gguf");
-                candidate.is_file().then_some(candidate)
-            })
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .and_then(|home| {
+                    let candidate = home
+                        .join(".local/share/uta-studio/runtime/ggml-models/rosvot/rosvot-f32.gguf");
+                    candidate.is_file().then_some(candidate)
+                })
         })
-        .ok_or_else(|| Error::message("ROSVOT GGUF model path not found in config or runtime store"))?;
+        .ok_or_else(|| {
+            Error::message("ROSVOT GGUF model path not found in config or runtime store")
+        })?;
     let rmvpe_path = config
         .get("rmvpe_model_path")
         .and_then(serde_json::Value::as_str)
@@ -650,7 +774,11 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
     const WINDOW: usize = 256;
     const OVERLAP: usize = 64;
     const STRIDE: usize = WINDOW - OVERLAP;
-    let windows = if frames <= WINDOW { 1 } else { (frames - WINDOW).div_ceil(STRIDE) + 1 };
+    let windows = if frames <= WINDOW {
+        1
+    } else {
+        (frames - WINDOW).div_ceil(STRIDE) + 1
+    };
     let mut raw = Vec::with_capacity(frames);
     let mut start = 0;
     for window in 0..windows {
@@ -659,9 +787,15 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
         let values = mel16::to_channel_major_window(&mel, frames, start, WINDOW);
         let salience = rmvpe::forward(weights, &values, WINDOW);
         let keep_start = if window == 0 { 0 } else { OVERLAP / 2 };
-        let keep_end = if final_window { remaining } else { WINDOW - OVERLAP / 2 };
+        let keep_end = if final_window {
+            remaining
+        } else {
+            WINDOW - OVERLAP / 2
+        };
         for frame in keep_start..keep_end {
-            raw.push(decode_rmvpe_frame(&salience[frame * rmvpe::PITCH_CLASSES..(frame + 1) * rmvpe::PITCH_CLASSES]));
+            raw.push(decode_rmvpe_frame(
+                &salience[frame * rmvpe::PITCH_CLASSES..(frame + 1) * rmvpe::PITCH_CLASSES],
+            ));
         }
         if final_window {
             break;
@@ -669,7 +803,9 @@ fn run_annotation_rmvpe(weights: &RmvpeWeights, audio_16k: &[f32]) -> Result<Vec
         start += STRIDE;
     }
     if raw.len() != frames {
-        return Err(Error::message("annotation RMVPE window stitching lost frames"));
+        return Err(Error::message(
+            "annotation RMVPE window stitching lost frames",
+        ));
     }
     Ok(raw)
 }
@@ -693,7 +829,11 @@ fn decode_rmvpe_frame(values: &[f32]) -> f32 {
         weighted += salience * (20.0 * class as f32 + CENTS_OFFSET);
         weight += salience;
     }
-    let cents = if weight > f32::EPSILON { weighted / weight } else { 20.0 * center as f32 + CENTS_OFFSET };
+    let cents = if weight > f32::EPSILON {
+        weighted / weight
+    } else {
+        20.0 * center as f32 + CENTS_OFFSET
+    };
     10.0 * 2.0_f32.powf(cents / 1_200.0)
 }
 
@@ -704,7 +844,11 @@ pub struct SharedInputs {
     pub uv: Vec<i64>,
 }
 
-pub fn shared_inputs(audio_24k: &[f32], audio_16k: &[f32], rmvpe_weights: &RmvpeWeights) -> Result<SharedInputs> {
+pub fn shared_inputs(
+    audio_24k: &[f32],
+    audio_16k: &[f32],
+    rmvpe_weights: &RmvpeWeights,
+) -> Result<SharedInputs> {
     let (mel80, frames) = singing_frontend::mel_80(audio_24k).map_err(Error::message)?;
     let mel = singing_frontend::rosvot_mel_prefix(&mel80, frames).map_err(Error::message)?;
     let raw_f0 = run_annotation_rmvpe(rmvpe_weights, audio_16k)?;
@@ -732,7 +876,9 @@ pub fn run_rosvot(
 ) -> Result<RunRosvotResult> {
     let segments = conditioned_segments(words, source_start, shared.frames);
     if segments.is_empty() {
-        return Err(Error::message("ROSVOT has no TimedTranscript-conditioned frames"));
+        return Err(Error::message(
+            "ROSVOT has no TimedTranscript-conditioned frames",
+        ));
     }
     let mut all_logits = vec![0.0; shared.frames];
     let mut all_boundaries = Vec::new();
@@ -740,7 +886,10 @@ pub fn run_rosvot(
 
     let total = segments.len().max(1);
     for (index, segment) in segments.iter().enumerate() {
-        progress(index as f32 / total as f32, "Running ROSVOT frame/pitch segments");
+        progress(
+            index as f32 / total as f32,
+            "Running ROSVOT frame/pitch segments",
+        );
 
         let mel = padded_rows(&shared.mel, shared.frames, MEL_BINS, segment.start);
         let pitch = padded_i64(&shared.pitch_coarse, segment.start);
@@ -748,15 +897,30 @@ pub fn run_rosvot(
         let reference = segment_word_boundaries(segment, source_start)?;
 
         let frame = stage_frame(weights, &mel, &pitch, &uv, &reference, FRAME_BUCKET);
-        all_logits[segment.start..segment.start + segment.valid].copy_from_slice(&frame.note_bd_logits[..segment.valid]);
+        all_logits[segment.start..segment.start + segment.valid]
+            .copy_from_slice(&frame.note_bd_logits[..segment.valid]);
 
-        let regulated =
-            rosvot_host::regulate_boundaries(&frame.note_bd_logits, 0.85, 17, &reference, 8, segment.valid)
-                .map_err(Error::message)?;
-        let aggregated = rosvot_host::aggregate_notes(&frame.weighted, &frame.attention, &regulated, HIDDEN, segment.valid)
-            .map_err(Error::message)?;
+        let regulated = rosvot_host::regulate_boundaries(
+            &frame.note_bd_logits,
+            0.85,
+            17,
+            &reference,
+            8,
+            segment.valid,
+        )
+        .map_err(Error::message)?;
+        let aggregated = rosvot_host::aggregate_notes(
+            &frame.weighted,
+            &frame.attention,
+            &regulated,
+            HIDDEN,
+            segment.valid,
+        )
+        .map_err(Error::message)?;
         if aggregated.count > NOTE_BUCKET {
-            return Err(Error::message("ROSVOT segment exceeds the pinned note bucket"));
+            return Err(Error::message(
+                "ROSVOT segment exceeds the pinned note bucket",
+            ));
         }
         let pitch_logits = stage_pitch(weights, &aggregated.features, aggregated.count);
 
@@ -796,9 +960,15 @@ pub fn infer(
     progress(0.05, "Computing shared mel and pitch annotation", None);
     let shared = shared_inputs(audio_24k, audio_16k, &rmvpe_weights)?;
 
-    let result = run_rosvot(&rosvot_weights, &shared, words, source_start, |fraction, message| {
-        progress(0.1 + fraction * 0.85, message, None);
-    })?;
+    let result = run_rosvot(
+        &rosvot_weights,
+        &shared,
+        words,
+        source_start,
+        |fraction, message| {
+            progress(0.1 + fraction * 0.85, message, None);
+        },
+    )?;
 
     let dependencies = vec![
         DependencyIdentity {
@@ -876,7 +1046,9 @@ mod tests {
 
         let make_tone = |sample_rate: usize| -> Vec<f32> {
             (0..sample_rate * 3)
-                .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sample_rate as f32).sin() * 0.2)
+                .map(|i| {
+                    (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sample_rate as f32).sin() * 0.2
+                })
                 .collect()
         };
         let audio_24k = make_tone(singing_frontend::SAMPLE_RATE);
@@ -942,10 +1114,14 @@ mod tests {
         };
         let weights = RosvotWeights::load(std::path::Path::new(&rosvot_path)).unwrap();
 
-        let frontend: FrontendFixture =
-            serde_json::from_str(include_str!("../fixtures/shared-singing-frontend-upstream.json")).unwrap();
-        let reference: ReferenceOutput =
-            serde_json::from_str(include_str!("../fixtures/pytorch-reference-rosvot-output.json")).unwrap();
+        let frontend: FrontendFixture = serde_json::from_str(include_str!(
+            "../fixtures/shared-singing-frontend-upstream.json"
+        ))
+        .unwrap();
+        let reference: ReferenceOutput = serde_json::from_str(include_str!(
+            "../fixtures/pytorch-reference-rosvot-output.json"
+        ))
+        .unwrap();
         assert_eq!(frontend.mel_frames, reference.valid);
         let valid = frontend.mel_frames;
         const T: usize = 256;
@@ -964,9 +1140,15 @@ mod tests {
         let frame = stage_frame(&weights, &mel, &pitch, &uv, &word_bd, T);
 
         let max_diff = |a: &[f32], b: &[f32]| -> f32 {
-            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0_f32, f32::max)
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
         };
-        let bd_diff = max_diff(&frame.note_bd_logits[..valid], &reference.note_bd_logits[..valid]);
+        let bd_diff = max_diff(
+            &frame.note_bd_logits[..valid],
+            &reference.note_bd_logits[..valid],
+        );
         let attn_diff = max_diff(&frame.attention[..valid], &reference.attention[..valid]);
         let reference_weighted_flat = reference.weighted[..valid].concat();
         let weighted_diff = max_diff(&frame.weighted[..valid * HIDDEN], &reference_weighted_flat);
@@ -980,7 +1162,10 @@ mod tests {
         // remaining correctness gap.
         assert!(bd_diff < 5.0e-3, "note_bd_logits diverged: {bd_diff}");
         assert!(attn_diff < 1.0e-3, "attention diverged: {attn_diff}");
-        assert!(weighted_diff < 5.0e-3, "weighted features diverged: {weighted_diff}");
+        assert!(
+            weighted_diff < 5.0e-3,
+            "weighted features diverged: {weighted_diff}"
+        );
 
         // Cross-check PitchDecoder.post+pitch_out in isolation, using the
         // exact same synthetic note aggregate (mean of the first 5 valid
@@ -996,7 +1181,10 @@ mod tests {
         }
         let note_agg_diff = max_diff(&note_agg, &reference.note_agg);
         println!("note_agg max diff: {note_agg_diff}");
-        assert!(note_agg_diff < 1.0e-3, "note aggregate input diverged: {note_agg_diff}");
+        assert!(
+            note_agg_diff < 1.0e-3,
+            "note aggregate input diverged: {note_agg_diff}"
+        );
 
         let note_logits = stage_pitch(&weights, &note_agg, 1);
         let logits_diff = max_diff(&note_logits, &reference.note_logits);
@@ -1063,12 +1251,18 @@ mod debug_bisect {
             return;
         };
         let w = RosvotWeights::load(std::path::Path::new(&rosvot_path)).unwrap();
-        let frontend: FrontendFixture =
-            serde_json::from_str(include_str!("../fixtures/shared-singing-frontend-upstream.json")).unwrap();
-        let reference: ReferenceOutput =
-            serde_json::from_str(include_str!("../fixtures/pytorch-reference-rosvot-output.json")).unwrap();
-        let debug: DebugFixture =
-            serde_json::from_str(include_str!("../fixtures/pytorch-reference-rosvot-debug.json")).unwrap();
+        let frontend: FrontendFixture = serde_json::from_str(include_str!(
+            "../fixtures/shared-singing-frontend-upstream.json"
+        ))
+        .unwrap();
+        let reference: ReferenceOutput = serde_json::from_str(include_str!(
+            "../fixtures/pytorch-reference-rosvot-output.json"
+        ))
+        .unwrap();
+        let debug: DebugFixture = serde_json::from_str(include_str!(
+            "../fixtures/pytorch-reference-rosvot-debug.json"
+        ))
+        .unwrap();
         let valid = frontend.mel_frames;
         const T: usize = 256;
 
@@ -1083,31 +1277,56 @@ mod debug_bisect {
         let mut word_bd = vec![0_i64; T];
         word_bd[..valid].copy_from_slice(&reference.word_bd[..valid]);
 
-        let mel_embed_proj = conv1d_same(&mel, T, MEL_BINS, &w.mel_proj_weight, Some(&w.mel_proj_bias), HIDDEN, 3, 1, 1);
+        let mel_embed_proj = conv1d_same(
+            &mel,
+            T,
+            MEL_BINS,
+            &w.mel_proj_weight,
+            Some(&w.mel_proj_bias),
+            HIDDEN,
+            3,
+            1,
+            1,
+        );
         println!(
             "mel_embed_proj diff: {}",
             max_diff_2d(&mel_embed_proj, &debug.mel_embed_proj, valid, HIDDEN)
         );
 
         let mel_embed = conv_blocks(&mel_embed_proj, T, &w.mel_encoder);
-        println!("mel_embed diff: {}", max_diff_2d(&mel_embed, &debug.mel_embed, valid, HIDDEN));
+        println!(
+            "mel_embed diff: {}",
+            max_diff_2d(&mel_embed, &debug.mel_embed, valid, HIDDEN)
+        );
 
         let mut pitch_embed = embedding_lookup(&w.pitch_embed, &pitch);
         let uv_embed = embedding_lookup(&w.uv_embed, &uv);
         add_inplace(&mut pitch_embed, &uv_embed);
-        println!("pitch_embed diff: {}", max_diff_2d(&pitch_embed, &debug.pitch_embed, valid, HIDDEN));
+        println!(
+            "pitch_embed diff: {}",
+            max_diff_2d(&pitch_embed, &debug.pitch_embed, valid, HIDDEN)
+        );
 
         let word_bd_embed = embedding_lookup(&w.word_bd_embed, &word_bd);
-        println!("word_bd_embed diff: {}", max_diff_2d(&word_bd_embed, &debug.word_bd_embed, valid, HIDDEN));
+        println!(
+            "word_bd_embed diff: {}",
+            max_diff_2d(&word_bd_embed, &debug.word_bd_embed, valid, HIDDEN)
+        );
 
         let mut combined = mel_embed.clone();
         add_inplace(&mut combined, &pitch_embed);
         add_inplace(&mut combined, &word_bd_embed);
         let feat0 = conv_blocks(&combined, T, &w.cond_encoder);
-        println!("feat_cond_encoder diff: {}", max_diff_2d(&feat0, &debug.feat_cond_encoder, valid, HIDDEN));
+        println!(
+            "feat_cond_encoder diff: {}",
+            max_diff_2d(&feat0, &debug.feat_cond_encoder, valid, HIDDEN)
+        );
 
         let feat = unet_forward(&feat0, T, &w.net);
-        println!("feat_net diff: {}", max_diff_2d(&feat, &debug.feat_net, valid, HIDDEN));
+        println!(
+            "feat_net diff: {}",
+            max_diff_2d(&feat, &debug.feat_net, valid, HIDDEN)
+        );
 
         // Bisect inside the Unet: down -> mid -> up.
         let (down_out, skips) = unet_down(&feat0, T, &w.net.down);
@@ -1116,7 +1335,12 @@ mod debug_bisect {
             "unet_down_out diff: {}",
             max_diff_2d(&down_out, &debug.unet_down_out, bottleneck_t, HIDDEN)
         );
-        let skip_refs = [&debug.unet_skip_0, &debug.unet_skip_1, &debug.unet_skip_2, &debug.unet_skip_3];
+        let skip_refs = [
+            &debug.unet_skip_0,
+            &debug.unet_skip_1,
+            &debug.unet_skip_2,
+            &debug.unet_skip_3,
+        ];
         for (i, (skip, skip_t)) in skips.iter().enumerate() {
             let sd = max_diff_2d(skip, skip_refs[i], *skip_t, HIDDEN);
             println!("unet_skip_{i} (t={skip_t}) diff: {sd}");
@@ -1164,7 +1388,13 @@ mod debug_bisect {
             );
         }
         let mut conformer_out = current.clone();
-        layer_norm(&mut conformer_out, bottleneck_t, HIDDEN, &w.net.mid.net.final_layer_norm, 1.0e-5);
+        layer_norm(
+            &mut conformer_out,
+            bottleneck_t,
+            HIDDEN,
+            &w.net.mid.net.final_layer_norm,
+            1.0e-5,
+        );
         apply_nonpadding(&mut conformer_out, bottleneck_t, HIDDEN, &nonpadding);
         println!(
             "conformer_out diff: {}",
@@ -1186,7 +1416,10 @@ mod debug_bisect {
             max_diff_2d(&post_out, &debug.mid_post_out, bottleneck_t, HIDDEN)
         );
         let up_out = unet_up(&mid_out, bottleneck_t, &skips, &w.net.up);
-        println!("unet_up_out diff: {}", max_diff_2d(&up_out, &debug.unet_up_out, valid, HIDDEN));
+        println!(
+            "unet_up_out diff: {}",
+            max_diff_2d(&up_out, &debug.unet_up_out, valid, HIDDEN)
+        );
     }
 }
 
@@ -1197,17 +1430,36 @@ mod fullsong {
     #[test]
     #[ignore = "requires local audio fixture and real GGUF paths"]
     fn full_song_runs_without_crashing() {
-        let stars_audio = std::env::var("UTA_STUDIO_TEST_FULLSONG_WAV").expect("UTA_STUDIO_TEST_FULLSONG_WAV is required");
-        let rosvot_path = std::env::var("UTA_STUDIO_TEST_ROSVOT_GGUF").expect("UTA_STUDIO_TEST_ROSVOT_GGUF is required");
-        let rmvpe_path = std::env::var("UTA_STUDIO_TEST_RMVPE_GGUF").expect("UTA_STUDIO_TEST_RMVPE_GGUF is required");
+        let stars_audio = std::env::var("UTA_STUDIO_TEST_FULLSONG_WAV")
+            .expect("UTA_STUDIO_TEST_FULLSONG_WAV is required");
+        let rosvot_path = std::env::var("UTA_STUDIO_TEST_ROSVOT_GGUF")
+            .expect("UTA_STUDIO_TEST_ROSVOT_GGUF is required");
+        let rmvpe_path = std::env::var("UTA_STUDIO_TEST_RMVPE_GGUF")
+            .expect("UTA_STUDIO_TEST_RMVPE_GGUF is required");
 
-        let scratch = std::env::temp_dir().join(format!("uta-rosvot-fullsong-{}", std::process::id()));
+        let scratch =
+            std::env::temp_dir().join(format!("uta-rosvot-fullsong-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).unwrap();
-        let audio_24k = crate::audio::decode_mono(std::path::Path::new(&stars_audio), &scratch, singing_frontend::SAMPLE_RATE).unwrap();
-        let audio_16k = crate::audio::decode_mono(std::path::Path::new(&stars_audio), &scratch, mel16::SAMPLE_RATE).unwrap();
-        println!("decoded {} 24kHz samples, {} 16kHz samples", audio_24k.len(), audio_16k.len());
+        let audio_24k = crate::audio::decode_mono(
+            std::path::Path::new(&stars_audio),
+            &scratch,
+            singing_frontend::SAMPLE_RATE,
+        )
+        .unwrap();
+        let audio_16k = crate::audio::decode_mono(
+            std::path::Path::new(&stars_audio),
+            &scratch,
+            mel16::SAMPLE_RATE,
+        )
+        .unwrap();
+        println!(
+            "decoded {} 24kHz samples, {} 16kHz samples",
+            audio_24k.len(),
+            audio_16k.len()
+        );
 
-        let duration_micros = (audio_24k.len() as u64 * 1_000_000) / singing_frontend::SAMPLE_RATE as u64;
+        let duration_micros =
+            (audio_24k.len() as u64 * 1_000_000) / singing_frontend::SAMPLE_RATE as u64;
         let mut words = Vec::new();
         let mut t = 0_u64;
         let mut idx = 0;
@@ -1221,13 +1473,21 @@ mod fullsong {
             t += 500_000;
             idx += 1;
         }
-        println!("{} synthetic words spanning {} us", words.len(), duration_micros);
+        println!(
+            "{} synthetic words spanning {} us",
+            words.len(),
+            duration_micros
+        );
 
         let rosvot_weights = RosvotWeights::load(std::path::Path::new(&rosvot_path)).unwrap();
         let rmvpe_weights = RmvpeWeights::load(std::path::Path::new(&rmvpe_path)).unwrap();
         let start = std::time::Instant::now();
         let shared = shared_inputs(&audio_24k, &audio_16k, &rmvpe_weights).unwrap();
-        println!("shared_inputs: {:?}, frames={}", start.elapsed(), shared.frames);
+        println!(
+            "shared_inputs: {:?}, frames={}",
+            start.elapsed(),
+            shared.frames
+        );
 
         let start = std::time::Instant::now();
         let result = run_rosvot(&rosvot_weights, &shared, &words, 0, |fraction, _| {
@@ -1236,7 +1496,11 @@ mod fullsong {
             }
         })
         .unwrap();
-        println!("run_rosvot: {:?}, notes={}", start.elapsed(), result.notes.len());
+        println!(
+            "run_rosvot: {:?}, notes={}",
+            start.elapsed(),
+            result.notes.len()
+        );
 
         let mut finite = 0;
         let mut with_midi = 0;

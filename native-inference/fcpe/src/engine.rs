@@ -39,21 +39,21 @@ struct InputStack<'a> {
 }
 
 struct ConformerLayer<'a> {
-    norm_w: &'a [f32],   // [512]
-    norm_b: &'a [f32],   // [512]
-    fc1_w: &'a [f32],    // [1, 512, 2048]
-    fc1_b: &'a [f32],    // [2048]
-    conv_w: &'a [f32],   // [31, 1, 1024]
-    conv_b: &'a [f32],   // [1024]
-    fc2_w: &'a [f32],    // [1, 1024, 512]
-    fc2_b: &'a [f32],    // [512]
+    norm_w: &'a [f32], // [512]
+    norm_b: &'a [f32], // [512]
+    fc1_w: &'a [f32],  // [1, 512, 2048]
+    fc1_b: &'a [f32],  // [2048]
+    conv_w: &'a [f32], // [31, 1, 1024]
+    conv_b: &'a [f32], // [1024]
+    fc2_w: &'a [f32],  // [1, 1024, 512]
+    fc2_b: &'a [f32],  // [512]
 }
 
 struct OutputHead<'a> {
-    norm_w: &'a [f32],       // [512]
-    norm_b: &'a [f32],       // [512]
-    proj_w: &'a [f32],       // [360, 512]
-    proj_b: &'a [f32],       // [360]
+    norm_w: &'a [f32],        // [512]
+    norm_b: &'a [f32],        // [512]
+    proj_w: &'a [f32],        // [360, 512]
+    proj_b: &'a [f32],        // [360]
     cents_mapping: &'a [f32], // [360]
 }
 
@@ -188,24 +188,24 @@ fn pointwise_conv1d(
     // dst = input @ weight → [frames, out_ch]
     unsafe {
         gemm::gemm(
-            frames,           // m
-            out_ch,           // n
-            in_ch,            // k
+            frames, // m
+            out_ch, // n
+            in_ch,  // k
             output.as_mut_ptr(),
-            1,                // dst_cs
-            out_ch as isize,  // dst_rs
-            false,            // read_dst
+            1,               // dst_cs
+            out_ch as isize, // dst_rs
+            false,           // read_dst
             input.as_ptr(),
-            1,                // lhs_cs
-            in_ch as isize,   // lhs_rs
+            1,              // lhs_cs
+            in_ch as isize, // lhs_rs
             weight.as_ptr(),
-            1,                // rhs_cs
-            out_ch as isize,  // rhs_rs
-            0.0,              // alpha (no accumulate)
-            1.0,              // beta (scale factor)
-            false,            // conj_dst
-            false,            // conj_lhs
-            false,            // conj_rhs
+            1,               // rhs_cs
+            out_ch as isize, // rhs_rs
+            0.0,             // alpha (no accumulate)
+            1.0,             // beta (scale factor)
+            false,           // conj_dst
+            false,           // conj_lhs
+            false,           // conj_rhs
             gemm::Parallelism::None,
         );
     }
@@ -255,8 +255,7 @@ fn layer_norm(data: &mut [f32], frames: usize, channels: usize, weight: &[f32], 
     for f in 0..frames {
         let row = &mut data[f * channels..(f + 1) * channels];
         let mean = row.iter().sum::<f32>() / channels as f32;
-        let variance =
-            row.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / channels as f32;
+        let variance = row.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / channels as f32;
         let inv_std = 1.0 / (variance + eps).sqrt();
         for c in 0..channels {
             row[c] = (row[c] - mean) * inv_std * weight[c] + bias[c];
@@ -267,11 +266,7 @@ fn layer_norm(data: &mut [f32], frames: usize, channels: usize, weight: &[f32], 
 // ---------------------------------------------------------------------------
 // Conformer block
 // ---------------------------------------------------------------------------
-fn conformer_block(
-    input: &[f32],
-    frames: usize,
-    layer: &ConformerLayer<'_>,
-) -> Vec<f32> {
+fn conformer_block(input: &[f32], frames: usize, layer: &ConformerLayer<'_>) -> Vec<f32> {
     // 1. LayerNorm
     let mut normed = input.to_vec();
     layer_norm(&mut normed, frames, D_MODEL, layer.norm_w, layer.norm_b);
@@ -283,13 +278,25 @@ fn conformer_block(
     let gated = glu(&expanded, frames, D_FF);
 
     // 4. Depthwise Conv1D (1024, k=31) + SiLU
-    let mut conv_out =
-        depthwise_conv1d(&gated, frames, D_CONV_INNER, layer.conv_w, layer.conv_b, CONV_KERNEL);
+    let mut conv_out = depthwise_conv1d(
+        &gated,
+        frames,
+        D_CONV_INNER,
+        layer.conv_w,
+        layer.conv_b,
+        CONV_KERNEL,
+    );
     silu_inplace(&mut conv_out);
 
     // 5. fc2: pointwise Conv1D (1024 → 512)
-    let projected =
-        pointwise_conv1d(&conv_out, frames, D_CONV_INNER, layer.fc2_w, layer.fc2_b, D_MODEL);
+    let projected = pointwise_conv1d(
+        &conv_out,
+        frames,
+        D_CONV_INNER,
+        layer.fc2_w,
+        layer.fc2_b,
+        D_MODEL,
+    );
 
     // 6. Residual add
     let mut output = input.to_vec();
@@ -302,11 +309,7 @@ fn conformer_block(
 // ---------------------------------------------------------------------------
 // Output head: centroid-based pitch decoding
 // ---------------------------------------------------------------------------
-fn decode_pitch(
-    features: &[f32],
-    frames: usize,
-    head: &OutputHead<'_>,
-) -> Vec<Option<f32>> {
+fn decode_pitch(features: &[f32], frames: usize, head: &OutputHead<'_>) -> Vec<Option<f32>> {
     // LayerNorm
     let mut normed = features.to_vec();
     layer_norm(&mut normed, frames, D_MODEL, head.norm_w, head.norm_b);
@@ -426,19 +429,14 @@ pub fn infer(
     // Compute log-mel spectrogram
     progress(0.05, "Computing log-mel spectrogram", None);
     let (mel_data, total_mel_frames) = mel::log_mel_spectrogram(audio, |frac| {
-        progress(
-            0.05 + frac * 0.15,
-            "Computing log-mel spectrogram",
-            None,
-        );
+        progress(0.05 + frac * 0.15, "Computing log-mel spectrogram", None);
     })
     .map_err(Error::message)?;
 
     // Process in windows of OUTPUT_FRAMES (201 frames)
     let window_count = audio.len().div_ceil(INPUT_SAMPLES);
-    let mut all_frames: Vec<PitchFrame> = Vec::with_capacity(
-        total_mel_frames.min(window_count * OUTPUT_FRAMES),
-    );
+    let mut all_frames: Vec<PitchFrame> =
+        Vec::with_capacity(total_mel_frames.min(window_count * OUTPUT_FRAMES));
 
     for window_index in 0..window_count {
         let window_start_sample = window_index * INPUT_SAMPLES;
@@ -484,8 +482,7 @@ pub fn infer(
         let mut hidden = after_conv1;
         for (layer_idx, layer) in weights.encoder_layers.iter().enumerate() {
             hidden = conformer_block(&hidden, OUTPUT_FRAMES, layer);
-            let layer_frac =
-                (layer_idx + 1) as f32 / N_ENCODER_LAYERS as f32;
+            let layer_frac = (layer_idx + 1) as f32 / N_ENCODER_LAYERS as f32;
             progress(
                 0.20 + 0.60 * (window_index as f32 + layer_frac) / window_count as f32,
                 "Running FCPE conformer layers",

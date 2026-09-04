@@ -9,6 +9,10 @@ publish = false
 name = "uta-rosvot-worker"
 path = "src/main.rs"
 
+[features]
+default = []
+gpu = ["uta-wgpu-runtime/gpu"]
+
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 gemm = { version = "0.19" }
@@ -17,3 +21,4 @@ rayon = "1"
 rustfft = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+uta-wgpu-runtime = { path = "../wgpu-runtime", default-features = false }

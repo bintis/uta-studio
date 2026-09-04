@@ -1503,8 +1503,16 @@ impl AnalysisEngine {
                 .unwrap_or("caller-vocal");
             let directory = create_task_dir(&output_root, "worker/jbm555")?;
             let is_native = model.runtime_executable.ends_with("uta-jbm-worker");
-            let component = if is_native { "uta-jbm-worker" } else { "uta-openvino-worker" };
-            let backend = if is_native { "jbm555_native" } else { openvino_backend(model)? };
+            let component = if is_native {
+                "uta-jbm-worker"
+            } else {
+                "uta-openvino-worker"
+            };
+            let backend = if is_native {
+                "jbm555_native"
+            } else {
+                openvino_backend(model)?
+            };
             let outputs = SupervisedWorker::run(
                 &model.runtime_executable,
                 &WorkerExpectation {
