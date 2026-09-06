@@ -23,7 +23,7 @@ thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 aes = "0.8"
 base64 = "0.22"
-cipher = "0.4"
+cipher = "0.5"
 flate2 = "1"
 hex = "0.4"
 md-5 = "0.10"
