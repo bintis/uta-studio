@@ -33,7 +33,7 @@ pollster = { version = "=0.4.0", optional = true }
 uta-wgpu-runtime = { path = "../wgpu-runtime", default-features = false }
 
 [dev-dependencies]
-naga = { version = "=29.0.4", features = ["wgsl-in"] }
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
 env_logger = "0.11"
 
 [target.'cfg(unix)'.dependencies]
