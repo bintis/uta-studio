@@ -603,10 +603,7 @@ pub(crate) fn spawn_song_context_menu(
                     UiAction::from(LibraryCommand::AnalyzeSong(context.song.file_hash.clone())),
                 );
             }
-            if !matches!(
-                app_core::candidate_chart_status(&context.song.file_hash),
-                app_core::CandidateChartStatus::NotAuthoredYet
-            ) {
+            if app_core::authored_chart_exists(&context.song.file_hash) {
                 spawn_menu_text_button(
                     menu,
                     font.clone(),

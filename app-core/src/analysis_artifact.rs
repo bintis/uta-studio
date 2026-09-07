@@ -573,7 +573,8 @@ pub(crate) fn reconcile_active_candidate_charts(cache_root: &Path) {
                 revision.id
             );
         }
-        if let Err(error) = crate::library_db::mark_songs_analyzed(&[file_hash.clone()]) {
+        if let Err(error) = crate::library_db::mark_songs_analyzed(std::slice::from_ref(&file_hash))
+        {
             tracing::warn!(
                 "[artifacts] Active candidate chart {} could not update its song index: {error}",
                 revision.id

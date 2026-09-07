@@ -437,16 +437,16 @@ pub(crate) fn spawn_activity_center(
                                     );
                                 }
                             });
-                            if let app_core::QueuedStatus::Failed(message) = &task.status {
-                                if !message.trim().is_empty() {
-                                    spawn_bounded_wrapped_text(
-                                        card,
-                                        font.clone(),
-                                        message,
-                                        8.0,
-                                        theme.destructive,
-                                    );
-                                }
+                            if let app_core::QueuedStatus::Failed(message) = &task.status
+                                && !message.trim().is_empty()
+                            {
+                                spawn_bounded_wrapped_text(
+                                    card,
+                                    font.clone(),
+                                    message,
+                                    8.0,
+                                    theme.destructive,
+                                );
                             }
                             if !purpose_cards.is_empty() {
                                 for purpose in purpose_cards {

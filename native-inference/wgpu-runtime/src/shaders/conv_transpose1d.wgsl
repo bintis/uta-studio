@@ -1,16 +1,16 @@
 struct Params {
-    frames: u32,
-    channels: u32,
+    input_frames: u32,
+    in_channels: u32,
+    out_channels: u32,
     kernel: u32,
+    stride: u32,
     padding: u32,
+    output_frames: u32,
     total: u32,
     width: u32,
     element_offset: u32,
     dispatch_count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-    _pad3: u32,
+    _pad: u32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -25,13 +25,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (local >= p.dispatch_count) { return; }
     let flat = p.element_offset + local;
     if (flat >= p.total) { return; }
-    let frame = flat / p.channels;
-    let channel = flat % p.channels;
-    var sum = bias[channel];
+    let output_frame = flat / p.out_channels;
+    let oc = flat % p.out_channels;
+    var sum = bias[oc];
     for (var kernel_index = 0u; kernel_index < p.kernel; kernel_index = kernel_index + 1u) {
-        let source = i32(frame) + i32(kernel_index) - i32(p.padding);
-        if (source < 0 || source >= i32(p.frames)) { continue; }
-        sum = sum + input[u32(source) * p.channels + channel] * weight[kernel_index * p.channels + channel];
+        let numerator = i32(output_frame) + i32(p.padding) - i32(kernel_index);
+        if (numerator < 0 || numerator % i32(p.stride) != 0) { continue; }
+        let input_frame = numerator / i32(p.stride);
+        if (input_frame >= i32(p.input_frames)) { continue; }
+        for (var ic = 0u; ic < p.in_channels; ic = ic + 1u) {
+            let weight_index = (ic * p.out_channels + oc) * p.kernel + kernel_index;
+            sum = sum + input[u32(input_frame) * p.in_channels + ic] * weight[weight_index];
+        }
     }
     output[flat] = sum;
 }

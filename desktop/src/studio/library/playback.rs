@@ -625,6 +625,7 @@ pub(crate) fn restart_library_song(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -732,6 +733,7 @@ pub(crate) fn seek_library_relative(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_library_scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,

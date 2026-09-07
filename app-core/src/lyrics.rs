@@ -127,10 +127,7 @@ pub fn strip_lyrics_timing(input: &str) -> String {
     for raw in input.replace("\r\n", "\n").replace('\r', "\n").lines() {
         let mut rest = raw.trim_start();
         let mut saw_timestamp = false;
-        loop {
-            let Some((tag, after)) = leading_delimited_tag(rest, '[', ']') else {
-                break;
-            };
+        while let Some((tag, after)) = leading_delimited_tag(rest, '[', ']') {
             if is_lrc_timestamp(tag) {
                 rest = after.trim_start();
                 saw_timestamp = true;

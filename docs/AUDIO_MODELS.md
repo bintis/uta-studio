@@ -15,6 +15,69 @@ Models and runtime components are installed only after confirmation in **Setting
 
 Workflow nodes store catalog model IDs, never arbitrary checkpoint paths. Model file hashes, runtime recipe digests, exact input revisions, normalized parameters, and algorithm versions participate only in artifact identity, provenance, and cache identity; hashes are not acceptance gates.
 
+## Rust WGPU/Vulkan workers
+
+The dedicated Rust GGUF workers for JBM555, FCPE, Basic Pitch, FireRed, STARS,
+and ROSVOT have a separate WGPU/Vulkan execution lane. This is not GGML:
+GGUF is the weight container, while model kernels are implemented in Rust and
+WGSL. The shared runtime compiles only its Vulkan/WGSL backend and has no
+OpenVINO, OpenCL, SYCL, oneAPI, or Level Zero dependency.
+
+Every GPU request must carry the exact `wgpu-vulkan-serial-v1` profile. Both
+Analysis Engine and the worker enforce batch size 1, synchronous completion of
+each bounded submission, and a serial pipeline before a Vulkan device is
+created. Requested device classes never fall back to another class or CPU.
+JBM555 uses receptive-field-preserving bounded frame chunks; FCPE and Basic
+Pitch retain their fixed source windows. STARS/ROSVOT move their relative and
+cross-attention score, row-softmax, and context operations to the same bounded
+GPU lane while retaining stage/bucket boundaries and deterministic host
+orchestration. ROSVOT additionally keeps both directions of each annotation-
+RMVPE GRU window inside one bounded Vulkan dispatch instead of synchronizing six
+matrix-vector operations per frame. FireRed uses the shared relative- and
+decoder-attention kernels, read-only memory-maps its 4.7 GB GGUF, keeps native
+F32 tensors as shared lazy views, and uploads bounded operation weights rather
+than making a second all-model host copy or all-model GPU copy.
+
+Per explicit repository-owner direction, these six WGPU capabilities are
+`ProductionPinned` and are each model's default backend; CPU remains an explicit
+diagnostic/reference lane rather than a fallback. Separately authorized
+2026-09-05 execution on Intel Arc B580 passed short CPU/WGPU parity for every
+exact graph: JBM555 produced the same five notes with maximum numeric delta
+`2.4e-7`; FCPE's 601 frames had maximum delta `0.0001 Hz`; Basic Pitch's 2,589
+compared values had maximum delta `3.784e-5`; STARS's 628 values had maximum
+delta `3.6e-5`; FireRed emitted identical `你好世界` text and token sequence
+`1202,2246,1019,4710`; and ROSVOT's 492 values had maximum delta `9.5e-5`.
+
+One serial representative full-input WGPU run also passed for each graph:
+JBM555 processed 305.813333 s in 312.083 s and emitted 33 notes; FCPE took
+55.401 s and emitted 30,582 F0 frames; Basic Pitch took 30.224 s and emitted
+26,340 activation frames; FireRed processed the 216.880 s Chinese `崔子格 -
+卜卦` input in 80.792 s across 94 windows; STARS processed a 245.120 s real
+Chinese vocal track with 197 timed words in 161.424 s across 78 conditioned
+segments; and ROSVOT processed 305.813333 s across 114 conditioned segments.
+The original ROSVOT validation accidentally used a debug worker and took
+823.102 s; a release rebuild took 522.403 s, and the persistent Vulkan GRU path
+reduced the same run to 155.613 s (3.357× faster than the unoptimized release,
+5.289× faster than the debug run). It retained all 397 regulated notes and
+57,340 valid frames; only raw audit logits in one sensitive region changed,
+while regulated semantic evidence remained equal. All validated numeric
+evidence was finite. STARS deliberately keeps
+its pinned G2P Chinese-only: an attempted Japanese input failed closed on `を`
+and was not counted as success.
+
+The ROSVOT run uses the official conditioned 50,000-step checkpoint
+`7501fb5f…3fcb` (245 F32 tensors), converted to F32 GGUF `a8d8eeb8…df6f` and
+published as an immutable runtime generation without replacing the existing
+staged OpenVINO generation. The checkpoint passed genuine PyTorch-reference
+stage checks before CPU/WGPU parity. Every full run used the mandatory serial
+profile; source identities and boot ID remained unchanged, a sudo-readable
+whole-boot kernel review found no GPU hang/fault/reset, and FireRed additionally
+remained clean through a 420 s post-exit watch. The Production promotion is an
+explicit owner policy decision rather than an automatic inference from one
+full-input pass; repeat and broader quality coverage remain advisory follow-up.
+Historical OpenVINO, GGML, or CPU evidence remains backend-specific and
+non-interchangeable.
+
 ## RMVPE GGML/Vulkan worker
 
 `uta-ggml-worker` implements RMVPE continuous-F0 inference through the dedicated

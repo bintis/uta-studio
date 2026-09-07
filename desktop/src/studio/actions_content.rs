@@ -978,8 +978,16 @@ pub(crate) fn apply_content_action(
                 studio.shell.notice = Some(match app_core::delete_authored_chart(&file_hash) {
                     Ok(()) => {
                         studio.library.refresh();
-                        "Authored chart removed. Source media, CandidateChart, analysis evidence and a recoverable authored revision were retained."
-                            .to_string()
+                        localized_ui_text(
+                            &studio.shell.config,
+                            "Authored chart removed. Source media, CandidateChart, analysis evidence and a recoverable authored revision were retained.",
+                        )
+                    }
+                    Err(_) if app_core::authored_chart_deletion_is_pinned(&file_hash) => {
+                        localized_ui_text(
+                            &studio.shell.config,
+                            "This authored chart is pinned. Unpin the artifact revision before deleting it. Source media, CandidateChart and analysis evidence are retained.",
+                        )
                     }
                     Err(error) => format!("Could not delete the chart: {error}"),
                 });

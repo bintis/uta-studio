@@ -879,10 +879,6 @@ pub(crate) fn apply_chrome_action(
                 studio.analysis.analysis_graph_fit_active = true;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
-            } else if studio.shell.route == StudioRoute::Queue {
-                studio.shell.route = StudioRoute::Library;
-                studio.shell.notice = None;
-                invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route != StudioRoute::Library {
                 studio.shell.route = StudioRoute::Library;
                 studio.shell.notice = None;

@@ -76,9 +76,10 @@ impl AnalysisLifecycleFrameWireV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioRoleWireV1 {
+    #[default]
     OriginalMix,
     VocalStem,
     GuideVocals,
@@ -87,12 +88,6 @@ pub enum AudioRoleWireV1 {
     Instrumental,
     BackingVocal,
     HarmonyVocal,
-}
-
-impl Default for AudioRoleWireV1 {
-    fn default() -> Self {
-        Self::OriginalMix
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

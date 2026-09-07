@@ -309,8 +309,7 @@ fn apply_krc_languages(
         };
         match kind {
             Some(0) => {
-                let mut row_index = 0_usize;
-                for line in lines.iter_mut() {
+                for (row_index, line) in lines.iter_mut().enumerate() {
                     let Some(row) = rows.get(row_index).and_then(Value::as_array) else {
                         break;
                     };
@@ -322,7 +321,6 @@ fn apply_krc_languages(
                     if !romanized.trim().is_empty() {
                         line.romanization = Some(romanized);
                     }
-                    row_index += 1;
                 }
             }
             Some(1) => {

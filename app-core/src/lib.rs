@@ -120,9 +120,10 @@ pub use cache::{
 };
 pub use chart::{
     CandidateChartStatus, CandidateChartSummary, ChartAudio, ChartDocument, ChartReadiness,
-    ChartUpdatePolicy, ChartWaveform, candidate_chart_status, chart_problem_count, chart_readiness,
-    decode_chart_waveform, delete_authored_chart, load_chart,
-    replace_authored_chart_with_fresh_analysis, save_vocal_chart, save_vocal_chart_from_revision,
+    ChartUpdatePolicy, ChartWaveform, authored_chart_deletion_is_pinned, authored_chart_exists,
+    candidate_chart_status, chart_problem_count, chart_readiness, decode_chart_waveform,
+    delete_authored_chart, load_chart, replace_authored_chart_with_fresh_analysis,
+    save_vocal_chart, save_vocal_chart_from_revision,
 };
 pub use config::{AppConfig, LibrarySource};
 pub use editor::{

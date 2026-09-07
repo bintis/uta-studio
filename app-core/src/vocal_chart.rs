@@ -461,10 +461,7 @@ pub fn migrate_analyzer_chart(
         notes_by_word[word_index].push(note_index);
     }
 
-    let mut occupied = notes
-        .iter()
-        .map(|note| analyzer_note_range(note))
-        .collect::<Vec<_>>();
+    let mut occupied = notes.iter().map(analyzer_note_range).collect::<Vec<_>>();
     occupied.sort_unstable();
 
     for (word_index, word) in words.iter().enumerate() {
@@ -613,11 +610,11 @@ fn best_analyzer_word_owner(note: &MigratedNote, words: &[AnalyzerWord]) -> Opti
                 word_index == 0 || words[word_index.saturating_sub(1)].segment != word.segment;
             let crosses_line_start =
                 starts_new_line && note_range.0 < word_range.0 && note_range.1 > word_range.0;
-            let adjusted_overlap = overlap.saturating_add(
-                crosses_line_start
-                    .then_some(ANALYZER_LINE_START_OWNERSHIP_BIAS)
-                    .unwrap_or(0),
-            );
+            let adjusted_overlap = overlap.saturating_add(if crosses_line_start {
+                ANALYZER_LINE_START_OWNERSHIP_BIAS
+            } else {
+                0
+            });
             let owns_midpoint = midpoint >= word_range.0 && midpoint < word_range.1;
             Some((
                 (adjusted_overlap, overlap, owns_midpoint, word_index),

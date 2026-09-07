@@ -667,24 +667,25 @@ pub(crate) fn rebuild_ui(
                 rebuilt = true;
             }
         }
-        if editor_dirty && session.route == StudioRoute::Editor {
-            if let Ok(region) = ui.editor_regions.single() {
-                // Preserve the editor region itself while refreshing its
-                // contents. Replacing the whole route subtree briefly exposed
-                // an empty root to the Wayland surface and appeared as a
-                // flash during common edits, scrolling and auto-follow.
-                commands.entity(region).despawn_children();
-                commands.entity(region).with_children(|region| {
-                    spawn_editor(
-                        region,
-                        asset_server.load(FONT_PATH),
-                        asset_server.load(ICON_ATLAS_PATH),
-                        &session,
-                        &theme,
-                    );
-                });
-                rebuilt = true;
-            }
+        if editor_dirty
+            && session.route == StudioRoute::Editor
+            && let Ok(region) = ui.editor_regions.single()
+        {
+            // Preserve the editor region itself while refreshing its
+            // contents. Replacing the whole route subtree briefly exposed
+            // an empty root to the Wayland surface and appeared as a
+            // flash during common edits, scrolling and auto-follow.
+            commands.entity(region).despawn_children();
+            commands.entity(region).with_children(|region| {
+                spawn_editor(
+                    region,
+                    asset_server.load(FONT_PATH),
+                    asset_server.load(ICON_ATLAS_PATH),
+                    &session,
+                    &theme,
+                );
+            });
+            rebuilt = true;
         }
         if overlay_dirty {
             for entity in &ui.overlay_regions {

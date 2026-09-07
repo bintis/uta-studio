@@ -6883,6 +6883,7 @@ version = "0.8.3"
 dependencies = [
  "bytemuck",
  "gemm",
+ "memmap2",
  "num_cpus",
  "rayon",
  "rustfft",

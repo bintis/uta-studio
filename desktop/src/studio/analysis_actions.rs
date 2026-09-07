@@ -1385,9 +1385,11 @@ fn spawn_preview_resources(
                         identity,
                         version,
                         protocol,
-                        (!reasons.is_empty())
-                            .then(|| format!(" · {reasons}"))
-                            .unwrap_or_default()
+                        if reasons.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {reasons}")
+                        }
                     ),
                 )
             } else {

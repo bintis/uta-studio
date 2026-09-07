@@ -6,7 +6,10 @@ struct Params {
     has_bias: u32,
     total: u32,
     width: u32,
-    _pad: u32,
+    element_offset: u32,
+    dispatch_count: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -17,7 +20,9 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let flat = gid.y * p.width + gid.x;
+    let local = gid.y * p.width + gid.x;
+    if (local >= p.dispatch_count) { return; }
+    let flat = p.element_offset + local;
     if (flat >= p.total) { return; }
     let row = flat / p.n;
     let col = flat % p.n;

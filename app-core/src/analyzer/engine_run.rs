@@ -404,13 +404,22 @@ fn apply_engine_lifecycle_event(
         .model_id
         .clone()
         .unwrap_or_else(|| "Engine native".to_string());
-    // `fraction` measures the complete worker operation, including phases
-    // which do not naturally expose integer work units. Work units remain
-    // useful detail, but must not suppress a model's real reported percent.
+    // A visible node percentage is exact only when the worker supplies real
+    // completed/total units tied to a task identity. Unitless fractions remain
+    // in the bounded lifecycle log and whole-run estimate, but the node card
+    // must stay indeterminate.
     let reported_progress = event
-        .progress
-        .filter(|fraction| fraction.is_finite())
-        .map(|fraction| (fraction.clamp(0.0, 1.0) * 100.0).floor() as usize);
+        .work_units_completed
+        .zip(event.work_units_total)
+        .filter(|(completed, total)| {
+            *total > 0
+                && completed <= total
+                && event
+                    .worker_task_id
+                    .as_deref()
+                    .is_some_and(|task_id| !task_id.trim().is_empty())
+        })
+        .map(|(completed, total)| (completed.saturating_mul(100) / total).min(100) as usize);
     let terminal = matches!(event.frame_type.as_str(), "node_completed" | "node_failed");
     let started = matches!(
         event.frame_type.as_str(),
@@ -1990,8 +1999,8 @@ mod tests {
             event("node_progress", Some(0.9), None, None),
         );
         let unitless = LIVE_ANALYSIS.lock().unwrap().remove(file_hash).unwrap();
-        assert_eq!(unitless.stage_progress, 90);
-        assert_eq!(unitless.stage_routes[0].stage_progress, 90);
+        assert_eq!(unitless.stage_progress, 0);
+        assert_eq!(unitless.stage_routes[0].stage_progress, 0);
         assert_eq!(unitless.stage_routes[0].work_units_completed, None);
         assert_eq!(unitless.stage_routes[0].work_units_total, None);
         assert_eq!(unitless.stage_routes[0].worker_task_id, None);

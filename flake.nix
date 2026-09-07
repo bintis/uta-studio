@@ -46,7 +46,7 @@
             zlib
           ];
 
-          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker -p uta-game-worker -p uta-jbm-worker -p uta-fcpe-worker -p uta-basic-pitch-worker -p uta-firered-worker -p uta-stars-worker -p uta-rosvot-worker --features uta-game-worker/gpu";
+          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker -p uta-game-worker -p uta-jbm-worker -p uta-fcpe-worker -p uta-basic-pitch-worker -p uta-firered-worker -p uta-stars-worker -p uta-rosvot-worker --features uta-game-worker/gpu,uta-jbm-worker/gpu,uta-fcpe-worker/gpu,uta-basic-pitch-worker/gpu,uta-firered-worker/gpu,uta-stars-worker/gpu,uta-rosvot-worker/gpu";
 
           commonArgs = {
             inherit pname version src cargoExtraArgs;

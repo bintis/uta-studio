@@ -115,8 +115,10 @@ pub fn decode_chart_waveform(path: &Path) -> Result<ChartWaveform, UtaStudioErro
     }
     let samples = output
         .stdout
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .filter(|sample| sample.is_finite())
         .collect::<Vec<_>>();
     if samples.is_empty() {
@@ -520,6 +522,29 @@ pub fn save_vocal_chart_from_revision(
     Ok(())
 }
 
+fn authored_chart_exists_for(cache: &CacheDir, file_hash: &str) -> bool {
+    load_active_artifact(file_hash, ArtifactKind::AuthoredChart).is_some()
+        || cache.vocal_chart_path(file_hash).is_file()
+}
+
+/// Whether an authored chart, including a compatibility-only legacy chart,
+/// can be reached by the explicit Delete Chart action.
+pub fn authored_chart_exists(file_hash: &str) -> bool {
+    authored_chart_exists_for(&CacheDir::new(), file_hash)
+}
+
+fn authored_chart_deletion_is_pinned_for(cache: &CacheDir, file_hash: &str) -> bool {
+    let chart_path = cache.vocal_chart_path(file_hash);
+    crate::artifact_workbench::authored_chart_is_pinned(file_hash)
+        || crate::library_db::analysis_artifact_path_is_pinned(&chart_path).unwrap_or(false)
+}
+
+/// Pin status for the exact deletion target. This includes immutable authored
+/// revisions and a compatibility path pinned by older artifact inventories.
+pub fn authored_chart_deletion_is_pinned(file_hash: &str) -> bool {
+    authored_chart_deletion_is_pinned_for(&CacheDir::new(), file_hash)
+}
+
 /// Explicit, user-confirmed removal of the active Authored Chart selection.
 /// Immutable authored revisions remain non-invalidated for explicit recovery
 /// in Artifact Workbench; the next normal load therefore resolves the active
@@ -535,9 +560,7 @@ pub(crate) fn delete_authored_chart_from_cache(
     file_hash: &str,
 ) -> Result<(), UtaStudioError> {
     let chart_path = cache.vocal_chart_path(file_hash);
-    if crate::artifact_workbench::authored_chart_is_pinned(file_hash)
-        || crate::library_db::analysis_artifact_path_is_pinned(&chart_path).unwrap_or(false)
-    {
+    if authored_chart_deletion_is_pinned_for(cache, file_hash) {
         return Err(UtaStudioError::Other(
             "the authored chart is pinned; unpin its artifact revision before deleting it".into(),
         ));
@@ -557,10 +580,11 @@ pub(crate) fn delete_authored_chart_from_cache(
     if chart_path.is_file() {
         std::fs::rename(&chart_path, &staged)?;
     }
-    let recovery_source = staged
-        .is_file()
-        .then_some(staged.as_path())
-        .unwrap_or(&chart_path);
+    let recovery_source = if staged.is_file() {
+        staged.as_path()
+    } else {
+        &chart_path
+    };
     let recovery =
         crate::analysis_artifact::capture_compatibility_recovery_revision(
             cache,
@@ -1400,9 +1424,9 @@ mod chart_problem_count_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        CandidateChartStatus, candidate_chart_status_for, delete_authored_chart_from_cache,
-        normalize_pitch_note_timings, normalize_transcript_timings, playable_audio,
-        validate_pitch_notes, validate_transcript,
+        CandidateChartStatus, authored_chart_deletion_is_pinned_for, authored_chart_exists_for,
+        candidate_chart_status_for, delete_authored_chart_from_cache, normalize_pitch_note_timings,
+        normalize_transcript_timings, playable_audio, validate_pitch_notes, validate_transcript,
     };
     use crate::{
         analysis_graph::ArtifactKind,
@@ -1509,11 +1533,17 @@ mod tests {
             legacy: false,
             invalidated: false,
         };
+        let compatibility_path = cache.vocal_chart_path(file_hash);
         analysis_artifacts_publish_batch(
             &[
                 row("authored", &authored_kind, &authored_revision),
                 row("candidate", &candidate_kind, &candidate_revision),
                 row("evidence", &evidence_kind, &evidence_revision),
+                row(
+                    "compatibility-path-pin",
+                    &evidence_kind,
+                    &compatibility_path,
+                ),
             ],
             &[
                 (
@@ -1535,6 +1565,11 @@ mod tests {
             &[],
         )
         .unwrap();
+
+        analysis_artifact_set_pinned("compatibility-path-pin", true).unwrap();
+        assert!(authored_chart_deletion_is_pinned_for(&cache, file_hash));
+        assert!(delete_authored_chart_from_cache(&cache, file_hash).is_err());
+        analysis_artifact_set_pinned("compatibility-path-pin", false).unwrap();
 
         analysis_artifact_set_pinned("authored", true).unwrap();
         assert!(delete_authored_chart_from_cache(&cache, file_hash).is_err());
@@ -1601,12 +1636,14 @@ mod tests {
         .unwrap();
         let legacy_bytes = serde_json::to_vec(&legacy_chart).unwrap();
         std::fs::write(cache.vocal_chart_path(legacy_hash), &legacy_bytes).unwrap();
+        assert!(authored_chart_exists_for(&cache, legacy_hash));
         assert!(matches!(
             candidate_chart_status_for(&cache, legacy_hash),
             CandidateChartStatus::UpToDate
         ));
         delete_authored_chart_from_cache(&cache, legacy_hash).unwrap();
         assert!(!cache.vocal_chart_path(legacy_hash).exists());
+        assert!(!authored_chart_exists_for(&cache, legacy_hash));
         assert!(matches!(
             candidate_chart_status_for(&cache, legacy_hash),
             CandidateChartStatus::NotAuthoredYet

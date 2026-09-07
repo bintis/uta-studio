@@ -50,6 +50,27 @@ pub(crate) fn compute_analysis_lineage(
 const EDGE_DASH: f32 = 5.0;
 const EDGE_GAP: f32 = 4.0;
 
+/// Chooses only one real active continuation per source for the default solid
+/// backbone. Every other exact binding remains in `RenderGraph.edges` and is
+/// rendered contextually as a secondary dashed connector.
+fn default_solid_edge_pairs(
+    edges: &[crate::studio::analysis_model::RenderEdge],
+) -> BTreeSet<(AnalysisNodeId, AnalysisNodeId)> {
+    let mut claimed_sources = BTreeSet::new();
+    let mut solid = BTreeSet::new();
+    for preferred_role in [
+        RenderEdgeRole::ComputeDependency,
+        RenderEdgeRole::AnalyzerAttachment,
+    ] {
+        for edge in edges.iter().filter(|edge| edge.role == preferred_role) {
+            if claimed_sources.insert(edge.from.clone()) {
+                solid.insert(edge.endpoints());
+            }
+        }
+    }
+    solid
+}
+
 fn spawn_edge_rect(
     parent: &mut ChildSpawnerCommands,
     left: f32,
@@ -75,6 +96,7 @@ fn spawn_edge_rect(
 
 /// One orthogonal path segment; `x1==x2` (vertical) or `y1==y2` (horizontal)
 /// always holds for router output, so no diagonal case is needed.
+#[allow(clippy::too_many_arguments)]
 fn spawn_edge_segment(
     parent: &mut ChildSpawnerCommands,
     x1: f32,
@@ -184,6 +206,7 @@ pub(crate) fn spawn_analysis_graph_edges(
     lineage: Option<&BTreeSet<AnalysisNodeId>>,
     zoom: f32,
 ) {
+    let default_solid = default_solid_edge_pairs(&render_graph.edges);
     let mut pair_role: BTreeMap<(AnalysisNodeId, AnalysisNodeId), RenderEdgeRole> = BTreeMap::new();
     for edge in &render_graph.edges {
         pair_role
@@ -208,7 +231,7 @@ pub(crate) fn spawn_analysis_graph_edges(
     // `from` or `to` node has more than one such edge.
     let mut outgoing_bends: BTreeMap<AnalysisNodeId, usize> = BTreeMap::new();
     let mut incoming_bends: BTreeMap<AnalysisNodeId, usize> = BTreeMap::new();
-    for ((from, to), _) in &pair_role {
+    for (from, to) in pair_role.keys() {
         let Some(path) = routed.path(from, to) else {
             continue;
         };
@@ -256,6 +279,7 @@ pub(crate) fn spawn_analysis_graph_edges(
         let from_center_y = from_rect.y + from_rect.height / 2.0;
         let to_center_y = to_rect.y + to_rect.height / 2.0;
         let inactive = *role == RenderEdgeRole::InactiveBinding;
+        let dashed = inactive || !default_solid.contains(&(from.clone(), to.clone()));
         let detour = path_is_detour(path);
         let failure_adjacent = render_graph
             .node(from)
@@ -341,7 +365,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                     last.y * zoom,
                     thickness,
                     color,
-                    inactive,
+                    dashed,
                 );
             } else {
                 spawn_edge_segment(
@@ -352,7 +376,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                     first.y * zoom,
                     thickness,
                     color,
-                    inactive,
+                    dashed,
                 );
                 spawn_edge_segment(
                     parent,
@@ -362,7 +386,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                     last.y * zoom,
                     thickness,
                     color,
-                    inactive,
+                    dashed,
                 );
             }
             continue;
@@ -392,7 +416,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                 first.y * zoom,
                 thickness,
                 color,
-                inactive,
+                dashed,
             );
             spawn_edge_segment(
                 parent,
@@ -402,7 +426,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                 last.y * zoom,
                 thickness,
                 color,
-                inactive,
+                dashed,
             );
             spawn_edge_segment(
                 parent,
@@ -412,7 +436,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                 last.y * zoom,
                 thickness,
                 color,
-                inactive,
+                dashed,
             );
             continue;
         }
@@ -426,7 +450,7 @@ pub(crate) fn spawn_analysis_graph_edges(
                 b.y * zoom,
                 thickness,
                 color,
-                inactive,
+                dashed,
             );
         }
     }
@@ -438,6 +462,48 @@ mod tests {
 
     fn id(value: &str) -> AnalysisNodeId {
         AnalysisNodeId::new(value)
+    }
+
+    fn edge(
+        from: &str,
+        to: &str,
+        role: RenderEdgeRole,
+    ) -> crate::studio::analysis_model::RenderEdge {
+        crate::studio::analysis_model::RenderEdge {
+            from: id(from),
+            from_port: "out".to_string(),
+            to: id(to),
+            to_port: "in".to_string(),
+            semantic_type: "evidence".to_string(),
+            audio_role: None,
+            role,
+        }
+    }
+
+    #[test]
+    fn default_backbone_has_at_most_one_solid_continuation_per_source() {
+        let edges = vec![
+            // Input order must not let a secondary analyzer attachment steal
+            // the solid continuation from a compute dependency.
+            edge("source", "second", RenderEdgeRole::AnalyzerAttachment),
+            edge("source", "first", RenderEdgeRole::ComputeDependency),
+            edge("source", "inactive", RenderEdgeRole::InactiveBinding),
+            edge("first", "sink", RenderEdgeRole::ComputeDependency),
+        ];
+        let solid = default_solid_edge_pairs(&edges);
+        assert_eq!(solid.len(), 2);
+        assert!(solid.contains(&(id("source"), id("first"))));
+        assert!(solid.contains(&(id("first"), id("sink"))));
+        assert!(!solid.contains(&(id("source"), id("second"))));
+        assert!(!solid.contains(&(id("source"), id("inactive"))));
+        assert!(
+            solid
+                .iter()
+                .map(|(from, _)| from)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == solid.len()
+        );
     }
 
     #[test]

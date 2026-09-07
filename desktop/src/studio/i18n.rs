@@ -369,6 +369,10 @@ pub(crate) fn localized_message(
     })
 }
 
+pub(crate) fn localized_ui_text(config: &AppConfig, source: &str) -> String {
+    translate_ui(effective_ui_locale(config), source).unwrap_or_else(|| source.to_string())
+}
+
 pub(crate) fn translate_ui(locale: UiLocale, source: &str) -> Option<String> {
     if locale == UiLocale::English {
         return None;

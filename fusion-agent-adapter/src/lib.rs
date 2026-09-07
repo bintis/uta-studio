@@ -318,7 +318,7 @@ pub fn run_request_with_search_path(
             "request exceeded the bounded protocol limit".to_string(),
         ));
     }
-    let request: FusionRequest = serde_json::from_slice::<FusionRequest>(&request)
+    let request: FusionRequest = serde_json::from_slice::<FusionRequest>(request)
         .map_err(|error| AdapterError::InvalidRequest(format!("request JSON: {error}")))?
         .validate()?;
     let prompt = build_prompt(&request)?;
@@ -423,7 +423,7 @@ fn invoke_provider_executable(
 ) -> Result<Vec<u8>, AdapterError> {
     let workspace = isolated_workspace(provider)?;
     write_provider_inputs(workspace.path(), request)?;
-    let mut command = Command::new(&executable);
+    let mut command = Command::new(executable);
     command
         .args(provider_command_args(provider, workspace.path()))
         .current_dir(workspace.path())
@@ -777,10 +777,10 @@ fn extract_protocol_value(output: &[u8]) -> Result<Value, AdapterError> {
         candidates.push(&text[start..end]);
     }
     for candidate in candidates {
-        if let Ok(value) = serde_json::from_str::<Value>(candidate.trim()) {
-            if value.is_object() {
-                return Ok(value);
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(candidate.trim())
+            && value.is_object()
+        {
+            return Ok(value);
         }
     }
     Err(AdapterError::InvalidProviderResponse(

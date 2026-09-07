@@ -127,21 +127,11 @@ pub(crate) fn measured_work_unit_progress(
     Some((percent, format!("{completed}/{total} work units")))
 }
 
-/// Prefer exact completed/total units while still honoring a native
-/// worker's validated fractional phase updates. Preprocessing and compile
-/// phases can report a real fraction before an iterable work-unit count
-/// exists; those frames must not appear as "progress unavailable".
+/// Returns a determinate percentage only for real completed/total worker
+/// units. A validated but unitless lifecycle fraction remains useful in the
+/// JSONL trace, but the normal node card must render it as indeterminate.
 pub(crate) fn worker_reported_progress(route: &app_core::AnalysisStageRoute) -> Option<usize> {
-    measured_work_unit_progress(route)
-        .map(|(percent, _)| percent)
-        .or_else(|| {
-            (route.node_event.as_deref() == Some("node_progress")
-                && route
-                    .worker_task_id
-                    .as_deref()
-                    .is_some_and(|task_id| !task_id.trim().is_empty()))
-            .then_some(route.stage_progress.clamp(0, 100))
-        })
+    measured_work_unit_progress(route).map(|(percent, _)| percent)
 }
 
 pub(crate) fn analysis_graph_route_summary(
@@ -244,9 +234,10 @@ pub(crate) fn analysis_graph_route_summary(
 
 /// Equal-weight progress across the concrete model executions represented by
 /// one semantic purpose card. Completed models contribute 100%; configured
-/// models that have not started contribute 0%; an active native worker uses
-/// its measured work units/fraction. Profile-skipped and unrequested models
-/// are excluded because they are not part of this exact run.
+/// models that have not started contribute 0%; an active native worker must
+/// have measured work units or the whole card remains indeterminate.
+/// Profile-skipped and unrequested models are excluded because they are not
+/// part of this exact run.
 pub(crate) fn analysis_graph_node_progress(
     task: &app_core::AnalysisTask,
     node: &RenderNode,
@@ -267,17 +258,17 @@ pub(crate) fn analysis_graph_node_progress(
     if active.is_empty() {
         return None;
     }
-    let completed = active
-        .iter()
-        .map(|member| {
-            if member.state == GraphNodeState::Complete {
-                return 100;
-            }
-            find_matching_route(&live.stage_routes, member.id.as_str())
-                .and_then(worker_reported_progress)
-                .unwrap_or(0)
-        })
-        .sum::<usize>();
+    let completed = active.iter().try_fold(0usize, |total, member| {
+        if member.state == GraphNodeState::Complete {
+            return Some(total + 100);
+        }
+        if member.state == GraphNodeState::Running {
+            let measured = find_matching_route(&live.stage_routes, member.id.as_str())
+                .and_then(worker_reported_progress)?;
+            return Some(total + measured);
+        }
+        Some(total)
+    })?;
     Some((completed / active.len()).min(100))
 }
 
@@ -793,8 +784,8 @@ mod port_tests {
     }
 
     #[test]
-    fn native_fraction_is_visible_before_work_units_exist() {
-        assert_eq!(worker_reported_progress(&route(None)), Some(99));
+    fn unitless_native_fraction_remains_indeterminate() {
+        assert_eq!(worker_reported_progress(&route(None)), None);
         assert_eq!(worker_reported_progress(&route(Some((2, 4)))), Some(50));
     }
 

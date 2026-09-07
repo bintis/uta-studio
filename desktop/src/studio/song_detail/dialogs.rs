@@ -106,7 +106,7 @@ pub(crate) fn spawn_chart_delete_confirmation(
         .flatten()
         .map(|song| song.title)
         .unwrap_or_else(|| "this song".to_string());
-    let pinned = app_core::authored_chart_is_pinned(file_hash);
+    let pinned = app_core::authored_chart_deletion_is_pinned(file_hash);
     parent
         .spawn((
             Node {
@@ -296,7 +296,7 @@ pub(crate) fn spawn_chart_replace_confirmation(
         .flatten()
         .map(|song| song.title)
         .unwrap_or_else(|| "this song".to_string());
-    let pinned = app_core::authored_chart_is_pinned(file_hash);
+    let pinned = app_core::authored_chart_deletion_is_pinned(file_hash);
     let body = if pinned {
         format!(
             "The authored chart for “{title}” is pinned. Unpin that revision before replacing it with the candidate. Keep Authored leaves the saved chart unchanged."

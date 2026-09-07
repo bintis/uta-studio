@@ -656,9 +656,11 @@ fn validate_ready(ready: &AnalysisWorkerReadyV1) -> Result<(), BackendCliError> 
     Ok(())
 }
 
+type WorkerProgressStates = BTreeMap<(String, String), (f32, Option<(u64, u64)>)>;
+
 fn validate_worker_progress_monotonic(
     event: &AnalysisLifecycleFrameWireV1,
-    states: &mut BTreeMap<(String, String), (f32, Option<(u64, u64)>)>,
+    states: &mut WorkerProgressStates,
 ) -> Result<(), BackendCliError> {
     let Some(task_id) = event.worker_task_id.as_ref() else {
         return Ok(());
