@@ -1,0 +1,112 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -360,6 +360,50 @@
+             barrier();
+         }
+ 
++#if MATBC == 8 && defined(FA_O_F32)
++        if (HSK == 64 && HSV == 64 && Br == 16 && cols_per_iter == 32) {
++        // Keep one vec4 of adjacent query scores per key lane through max and
++        // exponentiation. This avoids four scalar shared loads followed by a
++        // second vec4 read, and bounds rescaling temporaries to four queries.
++        // Probability rounding and each row's accumulation order are unchanged.
++        [[unroll]] for (uint32_t row_group = 0; row_group < rows_per_thread; row_group += 4) {
++            const uint row = tile_row(row_group);
++            vec4 scores[cols_per_thread];
++            vec4 maximum = vec4(NEG_FLT_MAX_OVER_2);
++            [[unroll]] for (uint32_t column = 0; column < cols_per_thread; ++column) {
++                const uint key_column = column * cols_per_iter + col_tid;
++                scores[column] = (KV_bounds_check && j * Bc + key_column >= KV)
++                    ? vec4(NEG_FLT_MAX_OVER_2)
++                    : vec4(sfsh[row / 4 + key_column * sfshstride]);
++                maximum = max(maximum, scores[column]);
++            }
++            maximum = subgroupMax(maximum + vec4(FATTN_KQ_MAX_OFFSET));
++            const vec4 previous = vec4(Mf[row_group], Mf[row_group + 1], Mf[row_group + 2], Mf[row_group + 3]);
++            maximum = max(maximum, previous);
++            const vec4 rescale = exp(previous - maximum);
++            [[unroll]] for (uint32_t component = 0; component < 4; ++component) {
++                Mf[row_group + component] = maximum[component];
++                Lf[row_group + component] *= rescale[component];
++                [[unroll]] for (uint32_t depth = 0; depth < HSV / 4; depth += threads_per_rowgroup) {
++                    Of[row_group + component][depth / threads_per_rowgroup] *= O_TYPE(rescale[component]);
++                }
++            }
++            [[unroll]] for (uint32_t column = 0; column < cols_per_thread; ++column) {
++                const uint key_column = column * cols_per_iter + col_tid;
++                if (KV_bounds_check && j * Bc + key_column >= KV) {
++                    Psh[key_column * psh_stride + row / 4] = FLOAT_TYPEV4(0.0f);
++                } else {
++                    const FLOAT_TYPEV4 probability = FLOAT_TYPEV4(exp(scores[column] - maximum));
++                    [[unroll]] for (uint32_t component = 0; component < 4; ++component) {
++                        Lf[row_group + component] += probability[component];
++                    }
++                    Psh[key_column * psh_stride + row / 4] = probability;
++                }
++            }
++        }
++        } else
++#endif
++        {
+         float eMf[rows_per_thread];
+         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+             const uint r_vec  = tile_row(r) / 4;
+@@ -412,6 +456,7 @@
+                 }
+             }
+         }
++        }
+ 
+         if (SHMEM_STAGING != 0) {
+             [[unroll]] for (uint32_t idx = 0; idx < Bc * HSV_pad / 4; idx += gl_WorkGroupSize.x) {
+@@ -491,6 +536,42 @@
+             const uint o_offset = gl_SubgroupID * MatBr / 4;
+ 
+             if (hsv_offset < HSV_pad) {
++#if MATBC == 8 && defined(FA_O_F32)
++                if (HSK == 64 && HSV == 64 && Br == 16 && cols_per_iter == 32) {
++                // The M8 multiply covers only half of a sixteen-query tile.
++                // Reuse each V operand across its query-row accumulators instead
++                // of loading V once per row tile. Each accumulator still visits
++                // kv_chunk in the original order; shared-memory barriers, tail
++                // staging, probability precision and the Of update are unchanged.
++                coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> products[Br / MatBc];
++                [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                    products[row_tile] = coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++                }
++                [[unroll]] for (uint32_t kv_chunk = 0; kv_chunk < Bc / MatK; ++kv_chunk) {
++                    if (SHMEM_STAGING == 0) {
++                        if (!USE_DECODE_V && (!KV_bounds_check || (j < KV / Bc && ((HSK | HSV) & 15) == 0 && ((k_stride | v_stride) & 7) == 0))) {
++                            const uint value_row = j * Bc + kv_chunk * MatK;
++                            const uint value_offset = v_offset / 4 + value_row * v_stride / 4 + hsv_offset / 4;
++                            coopMatLoad(QMat, data_vv4, value_offset, v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
++                        } else {
++                            const uint value_offset = kv_chunk * MatK * v_cols + gl_SubgroupID * (MatBr / 4);
++                            coopMatLoad(QMat, kvsh, value_offset, vsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                        }
++                    } else {
++                        const uint value_offset = kv_chunk * MatK * kvsh_stride + (hsv_tile * row_split + gl_SubgroupID) * (MatBr / 4);
++                        coopMatLoad(QMat, kvsh, value_offset, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                    }
++                    [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                        coopMatLoad(KMat, Psh, kv_chunk * MatK * psh_stride + row_tile * MatBc / 4, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
++                        products[row_tile] = coopMatMulAdd(KMat, QMat, products[row_tile]);
++                    }
++                }
++                [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                    coopMatStore(products[row_tile], pvsh, o_offset + row_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                }
++                } else
++#endif
++                {
+                 // The accumulator's M spans Br. Where M is smaller than Br the
+                 // rows are covered by successive tiles rather than one.
+                 [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBc; ++br_tile) {
+@@ -522,6 +603,7 @@
+                     // Store PVMat to pvsh and load into Of
+                     coopMatStore(PVMat, pvsh, o_offset + br_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
+                 }
++                }
+             }
+ 
+             barrier();
