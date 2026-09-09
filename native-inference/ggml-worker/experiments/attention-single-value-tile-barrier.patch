@@ -1,0 +1,22 @@
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -486,7 +486,17 @@
+                 }
+             }
+             }
+-            barrier();
++            // Psh (and full shared-memory V staging) was already synchronized
++            // before this loop. With one HSV tile and direct V loads, nothing
++            // writes shared memory between those barriers. Keep the barrier
++            // for partial/decoded V staging and for multi-tile pvsh reuse.
++            const bool stages_values = SHMEM_STAGING == 0 &&
++                (USE_DECODE_V || (KV_bounds_check &&
++                    (j >= KV / Bc || ((HSK | HSV) & 15) != 0 ||
++                     ((k_stride | v_stride) & 7) != 0)));
++            if (num_hsv_tiles != 1 || stages_values) {
++                barrier();
++            }
+ 
+             const uint o_offset = gl_SubgroupID * MatBr / 4;
+ 
