@@ -1,33 +1,32 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -3806,7 +3806,9 @@
-     // each sixteen-column output row. Other precisions and shapes stay unchanged.
-     const bool intel_m8_h64 = device->vendor_id == VK_VENDOR_ID_INTEL && coopmat_block_cols == 8 &&
-         type == GGML_TYPE_F16 && D == 64 && DV == 64 && f32acc && device->subgroup_min_size <= 16;
--    if (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_SG32") == nullptr) {
-+    // Short sequences keep the previously measured subgroup and staged loads.
-+    const bool intel_short_h64 = intel_m8_h64 && kv_cols <= 128;
-+    if (intel_m8_h64 && !intel_short_h64 && std::getenv("UTA_STUDIO_GGML_FA_SG32") == nullptr) {
+@@ -3822,7 +3822,9 @@
+     const bool intel_m8_h64 = device->architecture == vk_device_architecture::INTEL_XE2 &&
+                               fa_m == 8 && hsk == 64 && hsv == 64 && f32acc &&
+                               k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16;
+-    if (intel_m8_h64 && device->subgroup_size_control &&
++    // Short sequences retain the previous subgroup and staged loads.
++    const bool intel_short_h64 = intel_m8_h64 && n_kv <= 128;
++    if (intel_m8_h64 && !intel_short_h64 && device->subgroup_size_control &&
+         device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16 &&
+         std::getenv("UTA_STUDIO_GGML_FA_SG32") == nullptr) {
          result.subgroup_size = 16;
-     }
- 
-@@ -3827,7 +3829,7 @@
-     // Sixteen remains available for an exact dispatch-level control.
+@@ -3832,7 +3834,7 @@
      if (intel_m8_h64) {
          const char * query_rows = std::getenv("UTA_STUDIO_GGML_FA_QUERY_ROWS");
--        const int requested = query_rows == nullptr ? 32 : std::atoi(query_rows);
-+        const int requested = query_rows == nullptr ? 16 : std::atoi(query_rows);
-         if (requested == 16 || requested == 32 || requested == 64) {
-             result.block_rows = static_cast<uint32_t>(requested);
+-        const uint32_t requested_rows = query_rows ? std::atoi(query_rows) : 32;
++        const uint32_t requested_rows = query_rows ? std::atoi(query_rows) : 16;
+         if (requested_rows == 16 || requested_rows == 32 || requested_rows == 64) {
+             result.block_rows = requested_rows;
          }
-@@ -3858,7 +3860,8 @@
-     // Full floating-point blocks can be loaded directly even when the last KV
-     // block is partial. The shader stages and guards only that final block.
-     result.shmem_staging = (D % 16 != 0) || (DV % 16 != 0) || ggml_is_quantized(type) ||
--        (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") != nullptr);
-+        intel_short_h64 ||
-+        (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") != nullptr);
-     result.shmem = flash_attn_shared_mem_estimate(result.block_rows, result.block_cols, D, DV, result.workgroup_size, result.subgroup_size, result.shmem_staging, false, type, f32acc);
+     }
+@@ -3854,7 +3856,7 @@
+     result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
+     // Explicit development comparison; does not change other devices or types.
+-    if (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") != nullptr) {
++    if (intel_short_h64 || (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") != nullptr)) {
+         result.shmem_staging = 1;
+     }
  
      return result;
