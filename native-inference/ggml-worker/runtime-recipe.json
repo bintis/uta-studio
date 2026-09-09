@@ -41,6 +41,12 @@
         "sha256": "6b3a4ced412c5c66b7164205e710de48cc4fc2f7afdcde71c8e7826fa339850a",
         "scope": "Cooperative attention query tiling; explicit larger-tile experiments only for Intel Xe2 F16 H64 F32-accumulator attention",
         "reason": "Reuse each K matrix load across multiple sixteen-query tiles when explicitly requested. Keep the measured sixteen-query default: larger query tiles increase shared memory, cause register spills and regress B580 attention. UTA_STUDIO_GGML_FA_QUERY_ROWS accepts 16, 32 or 64 for recorded comparisons. Key context, masks, query layout and accumulator precision are unchanged. See docs/ROFORMER_B580_ATTENTION.md."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0006-vulkan-m8-attention-local-tile-reuse.patch",
+        "sha256": "1ed8f63cbc59dafb069e8753d330eb7be15b387f327892731e0f13eea64c5e2b",
+        "scope": "M8 F16 K/V H64 attention with F32 accumulation, sixteen query rows, thirty-two key columns and four SIMD32 subgroups",
+        "reason": "Reuse packed scores between row maximum and probability calculation, and reuse each V matrix operand across the two M8 query-row products. Per-output accumulation order, F16 probability rounding, F32 online state, full context, masks, tail handling and all barriers remain unchanged. Matched B580 XE90 model measurements reduce time attention from about 108.6 to 96.2 ms and frequency attention from 8.78 to 7.92 ms; both six-second output passes are byte-identical to the control. Every other shape/type retains the prior shader path. See docs/ROFORMER_B580_ATTENTION.md."
       }
     ]
   },
