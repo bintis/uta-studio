@@ -8,7 +8,7 @@ diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulka
 +#if defined(FA_O_F32)
 +// Score reads finish before the existing Psh barrier; PV reads finish before
 +// the existing end-of-KV-block barrier. Their F32 scratch lifetimes are disjoint.
-+shared ACC_TYPEV4 scores_and_output[max(Bc * sfshstride, Br * osh_stride)];
++shared ACC_TYPEV4 scores_and_output[Bc * sfshstride > Br * osh_stride ? Bc * sfshstride : Br * osh_stride];
 +#define sfsh scores_and_output
 +#define pvsh scores_and_output
 +#else
