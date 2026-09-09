@@ -275,3 +275,13 @@ The first costs precision and buys no time; the second is already what the publi
 channels, and overlapping the host frontend with GPU execution. The entire host frontend is 1.3% of
 a chunk and already runs while the GPU is busy. Perfecting it would save under six seconds on a
 full song.
+
+## Current B580 attention tuning
+
+The matched subgroup/query-tile investigation and its numerical limits are recorded in
+[ROFORMER_B580_ATTENTION.md](ROFORMER_B580_ATTENTION.md). Keep sixteen query rows and
+the native B580 subgroup rather than forcing SIMD16. The rebuilt default measures
+about 4.98 TFLOPS for the complete 1722-by-1722, H64 time-attention fixture; this is
+not a 20-TFLOPS or same-shape XPU result. The six-second production-graph comparison
+is bounded evidence, not whole-song qualification. The redundant-barrier and shared
+scratch-aliasing probes remain experiments, not enabled runtime patches.
