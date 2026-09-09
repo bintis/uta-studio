@@ -7,6 +7,11 @@ Mesa 26.2.2, pinned GGML `8c63e70982c95ceb862e3a1073a2c1beef75d60a`.
 This is targeted kernel/model validation, not whole-song or release qualification.
 No 20-TFLOPS attention result or same-shape XPU comparison is claimed.
 
+The current recipe also includes the separately validated local score/value reuse
+patch from `a9e6b5480c7f27065375197597f371e3f77bf668`. Its measurements and exact
+output comparison are recorded under **Local score and value reuse** below.
+The subgroup comparison in the first sections remains a separate prior step.
+
 Commit `a34c69200557c69105031c477e94cb58bd735f2b` keeps the measured sixteen-query
 setting and stops forcing a sixteen-lane subgroup. The sixteen-query default was
 already an in-progress workspace correction; the subgroup correction was measured
@@ -178,3 +183,118 @@ during the recorded runs, not future host stability. AMD/NVIDIA validation, full
 performance, perceptual evaluation and packaged/Nix release acceptance are not part
 of this measurement. Raw diagnostic libraries remain under
 `test-artifacts/xe90-attention-review/runtime-final/lib`; user installations are unchanged.
+
+## Local score and value reuse
+
+Commit `a9e6b5480c7f27065375197597f371e3f77bf668` adds
+`native-inference/ggml-worker/patches/0006-vulkan-m8-attention-local-tile-reuse.patch`
+to `runtime-recipe.json`. This is an upstream-backend shader change, not a new
+model implementation. The installed models, installed runtime and input media
+were not changed.
+
+The specialization applies only to M8 cooperative attention with F16 K/V, F32
+accumulation, HSK=HSV=64, Br=16, Bc=32 and four 32-lane subgroups. Other shape/type
+combinations use the existing shader branch. It makes two local changes:
+
+- Keep a packed vector of four query scores between maximum reduction and
+  exponentiation, instead of separate source-level scalar and vector reads from
+  shared memory. Rescaling temporaries are scoped to those four query rows.
+- Load each V cooperative-matrix operand once for both M8 query-row products,
+  rather than repeating that load inside each query-row tile. Each accumulator
+  still visits key chunks in the original order.
+
+Full attention context, F16 probability rounding, F32 running maxima, normalizers
+and output accumulators are preserved. No workgroup barrier is removed. These
+changes reduce redundant data movement without enlarging the query tile or
+lowering precision. Actual hardware stall percentages and SLM transaction counts
+were not measured; the source change and controlled latency comparisons establish
+the improvement, not an inferred hardware-counter attribution.
+
+### Isolated kernel measurements
+
+Evidence root: `test-artifacts/xe90-pv-reuse-study/`. `measurements.json` preserves
+the individual GPU samples and model results, and each run directory retains its
+command, stdout/stderr, host observations and completion record. Each shape has
+eight warmups and eight measured calls, using the same geometry and FLOP counts
+specified above. Every measured call, including outliers, is retained.
+
+| Configuration | Time attention, mean +/- SD | Effective TFLOPS | Frequency attention, mean +/- SD |
+| --- | ---: | ---: | ---: |
+| Fresh native-SIMD32/query-16 control | 111.069 +/- 2.123 ms | 4.921 | 8.796 +/- 0.010 ms |
+| V-operand reuse only | 107.130 +/- 1.872 ms | 5.102 | 8.887 +/- 0.471 ms |
+| V reuse plus packed softmax prototype | 97.986 +/- 1.684 ms | 5.578 | 7.946 +/- 0.017 ms |
+| Return to unchanged control | 109.869 +/- 1.594 ms | 4.975 | 8.944 +/- 0.414 ms |
+| Rebuilt six-patch default, tuning overrides unset | 95.898 +/- 0.689 ms | 5.699 | 7.948 +/- 0.016 ms |
+
+The final row uses `runtime-default/lib` and explicitly removes the subgroup,
+query-row, KV-staging and F32-matmul-promotion tuning variables. This tests the
+compiled default rather than an environment-only fast path. The final source
+patch and recipe snapshot are preserved alongside the libraries. The earlier
+unscoped prototypes remain diagnostic experiments, not additional recipe patches.
+
+The packed-prototype pre-run snapshot overlapped heavy CPU compilation; its GPU
+timestamps are retained, but its host time is not treated as a clean comparison.
+Final-default pre-run CPU load was about 1.24%, with B580 idle before the run.
+Neither observation establishes exclusive use or fixed clocks.
+
+### Real XE90 graph and complete output comparison
+
+The same installed F32 GGUF and six-second stereo fixture described above ran
+through the production Rust Roformer graph twice per configuration. Both model
+pre-run snapshots had low CPU load (about 1.1% and 1.3%) and no measured B580 load.
+F32 matmul promotion was not enabled.
+
+| Measurement | Native-SIMD32/query-16 control | Scoped local reuse |
+| --- | ---: | ---: |
+| First processing pass | 5.844483 s | 5.698333 s |
+| Second processing pass | 5.784859 s | 5.577105 s |
+| Mean time-attention kernel across both passes | 108.626500 ms | 96.237150 ms |
+| Mean frequency-attention kernel across both passes | 8.784460 ms | 7.923345 ms |
+| Time-attention effective throughput | 5.032 TFLOPS | 5.679 TFLOPS |
+| All 32 attention kernels per processing pass | 1.878575 s | 1.666568 s |
+
+Time-attention latency decreases by 11.41%, with a 12.87% throughput increase;
+frequency-attention latency decreases by 9.80%. The observed second processing
+pass is 3.59% shorter. Those are separate measurements: the attention improvement
+must not be presented as a whole-model or whole-song percentage. The model timer
+includes WAV frontend/synthesis but excludes loading, worker IPC and FFmpeg
+publication/encoding. There are only two processing passes per configuration.
+
+`audio-comparison.json` compares all four complete WAV files. Both cross-version
+pass comparisons and both within-version repeats are byte-identical, including
+all 529,200 F32 samples per output. Each file is 2,116,868 bytes. This is stronger
+than a sampled numerical comparison for this fixture, but is not a broad
+perceptual-quality or full-song parity claim.
+
+A separate final-recipe model run (`model-default`) then removed all five tuning
+overrides and completed two passes in 5.622703 s and 5.573595 s. Both complete
+outputs are also byte-identical to the corresponding control outputs, recorded
+as `default_audio_comparison` in `measurements.json`. This confirms the rebuilt
+runtime default rather than relying only on the earlier scoped experiment;
+these later timings do not replace the matched pair above.
+
+### Final verification and reproducibility limits
+
+The final-default seven-case tail/mask/stride numerical test passes. Maximum NMSE
+across those cases is 1.7164e-8. Both large synthetic shapes retain the reference
+errors reported above, and every output is checked for finiteness.
+
+The post-integration focused command
+`bash dev.sh -c cargo test --locked -p uta-ggml-runtime -p uta-ggml-worker -j2`
+passes 108 runtime tests and 30 worker tests, with 25 opt-in tests ignored by that
+ordinary suite. Relevant B580 tests were invoked separately. The test operation
+record is `test-artifacts/operations/20260909T191005-00a842230127/`.
+
+All recorded test completions have exit code zero and unchanged boot IDs. Two
+long-build calls produced duplicate execution records during connector response
+failures; the original default build completed successfully, while its duplicate
+stopped before compilation because the source was already patched. Both records
+are retained rather than treating the failed duplicate as a failed GPU test.
+
+The compiled diagnostic runtime is
+`test-artifacts/xe90-pv-reuse-study/runtime-default/lib`. No installation or
+whole-workspace/Nix release pass was performed. This work does not establish a
+20-TFLOPS attention result, a same-shape XPU comparison, full-song performance,
+AMD/NVIDIA regression coverage, or long-term host stability. The remaining gap
+still calls for shape-matched XPU controls and a more substantial redesign of
+matrix/softmax work partitioning, not indiscriminately larger tiles.
