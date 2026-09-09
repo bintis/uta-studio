@@ -44,7 +44,8 @@ jobs:
             libglvnd-dev \
             libvulkan-dev \
             libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev
+            libgstreamer-plugins-base1.0-dev \
+            ffmpeg
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

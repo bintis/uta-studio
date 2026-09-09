@@ -91,7 +91,16 @@ pub(crate) fn transcode_audio(source: &Path, target: &Path) -> Result<(), UtaStu
             "unsupported audio export target: {target_extension}"
         )));
     }
-    let status = command.args(["-v", "error"]).arg(target).status()?;
+    let status = match command.args(["-v", "error"]).arg(target).status() {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = std::fs::remove_file(target);
+            return Err(UtaStudioError::Other(format!(
+                "ffmpeg could not create {} audio ({error})",
+                target_extension.to_ascii_uppercase()
+            )));
+        }
+    };
     if status.success() {
         Ok(())
     } else {
