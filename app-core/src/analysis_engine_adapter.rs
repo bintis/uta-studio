@@ -20,6 +20,7 @@ use crate::backend_cli::{
     RuntimePolicyWireV1, RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1,
     TrackTargetWireV1,
 };
+use crate::config::AppConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedAnalysisSource {
@@ -369,6 +370,17 @@ fn studio_tokens_from_timed_lrc(
         .collect())
 }
 
+fn resolve_analysis_language(configured: Option<&str>, stored: Option<&str>) -> Option<String> {
+    match configured.map(str::trim).filter(|code| !code.is_empty()) {
+        Some(code) if code.eq_ignore_ascii_case("auto") => None,
+        Some(code) => Some(code.to_string()),
+        None => stored
+            .map(str::trim)
+            .filter(|code| !code.is_empty() && !code.eq_ignore_ascii_case("auto"))
+            .map(str::to_string),
+    }
+}
+
 fn lyrics_context_for_song(
     file_hash: &str,
     requested_outputs: AnalysisOutputSelection,
@@ -376,13 +388,17 @@ fn lyrics_context_for_song(
     let song = crate::library_db::load_song_by_hash(file_hash)
         .map_err(|error| format!("could not load lyrics context for {file_hash}: {error}"))?
         .ok_or_else(|| format!("song not found: {file_hash}"))?;
+    let language_hint = resolve_analysis_language(
+        AppConfig::load().language_override(file_hash),
+        song.language.as_deref(),
+    );
     if let Some(lyrics) = crate::lyrics::load_lyrics_file(file_hash) {
         if let Some(timed_lrc) = lyrics.timed_lrc {
             let tokens = studio_tokens_from_timed_lrc(&timed_lrc, song.duration_secs)?;
             if !tokens.is_empty() {
                 return Ok(StudioLyricsContext {
                     mode: StudioLyricsMode::Canonical,
-                    language_hint: song.language,
+                    language_hint: language_hint.clone(),
                     tokens,
                 });
             }
@@ -409,7 +425,7 @@ fn lyrics_context_for_song(
                 if let Some(tokens) = matching_lrc_tokens(&tokens, &lrc_segments) {
                     return Ok(StudioLyricsContext {
                         mode: StudioLyricsMode::Canonical,
-                        language_hint: song.language,
+                        language_hint: language_hint.clone(),
                         tokens,
                     });
                 }
@@ -428,7 +444,7 @@ fn lyrics_context_for_song(
                 .collect();
             return Ok(StudioLyricsContext {
                 mode: StudioLyricsMode::Canonical,
-                language_hint: song.language,
+                language_hint: language_hint.clone(),
                 tokens,
             });
         }
@@ -458,7 +474,7 @@ fn lyrics_context_for_song(
         }
         return Ok(StudioLyricsContext {
             mode: StudioLyricsMode::Canonical,
-            language_hint: song.language,
+            language_hint: language_hint.clone(),
             tokens,
         });
     }
@@ -474,7 +490,7 @@ fn lyrics_context_for_song(
     }
     Ok(StudioLyricsContext {
         mode: StudioLyricsMode::None,
-        language_hint: song.language,
+        language_hint,
         tokens: Vec::new(),
     })
 }
@@ -1163,6 +1179,24 @@ mod tests {
     use crate::analysis_experience::{
         AnalysisExperienceSettings, AnalysisQualityProfile, resolve_analysis_experience,
     };
+
+    #[test]
+    fn analysis_language_uses_configured_override_when_lyrics_are_absent() {
+        assert_eq!(
+            resolve_analysis_language(Some("ja"), None).as_deref(),
+            Some("ja")
+        );
+        assert_eq!(
+            resolve_analysis_language(Some("ja"), Some("en")).as_deref(),
+            Some("ja")
+        );
+        assert_eq!(resolve_analysis_language(Some("auto"), Some("en")), None);
+        assert_eq!(
+            resolve_analysis_language(None, Some("zh")).as_deref(),
+            Some("zh")
+        );
+        assert_eq!(resolve_analysis_language(None, None), None);
+    }
 
     #[test]
     fn character_timed_lrc_reaches_alignment_as_clean_line_tokens_with_real_windows() {

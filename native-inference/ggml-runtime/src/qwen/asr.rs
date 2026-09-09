@@ -30,19 +30,23 @@ impl Qwen {
         &self,
         wav: &std::path::Path,
         max_new_tokens: usize,
+        forced_language: Option<&str>,
     ) -> Result<Transcription, String> {
         let samples = crate::wav::read_f32_wav(wav, super::frontend::SAMPLE_RATE as u32, 1)?;
-        self.transcribe_long(&samples, max_new_tokens)
+        self.transcribe_long(&samples, max_new_tokens, forced_language)
     }
 
     /// Runs bounded overlapping windows so a song-length input cannot turn
     /// encoder attention or the per-window decoder budget into an implicit
     /// whole-track truncation. Adjacent text is joined by deterministic
-    /// suffix/prefix reconciliation; every window must reach EOS.
+    /// suffix/prefix reconciliation. A configured language is forced the same
+    /// way as the official Qwen3-ASR prefix; auto-detect never fails the track
+    /// because one window named a different language.
     pub fn transcribe_long(
         &self,
         samples: &[f32],
         max_new_tokens_per_window: usize,
+        forced_language: Option<&str>,
     ) -> Result<Transcription, String> {
         if samples.len() > MAX_ASR_SAMPLES {
             return Err("Qwen ASR input exceeds the four-hour contract limit".to_string());
@@ -58,7 +62,7 @@ impl Qwen {
             WINDOW_OVERLAP_SAMPLES.min(window_samples / 4),
         )?;
         if windows.len() == 1 {
-            let single = self.transcribe(samples, max_new_tokens_per_window)?;
+            let single = self.transcribe(samples, max_new_tokens_per_window, forced_language)?;
             if !single.finished {
                 return Err(format!(
                     "Qwen ASR exhausted its {max_new_tokens_per_window}-token decoder budget after {} tokens on a single-window input",
@@ -77,7 +81,11 @@ impl Qwen {
         let window_count = windows.len();
         let mut unfinished_windows = 0usize;
         for (start, end) in windows.into_iter() {
-            let window = self.transcribe(&samples[start..end], max_new_tokens_per_window)?;
+            let window = self.transcribe(
+                &samples[start..end],
+                max_new_tokens_per_window,
+                forced_language,
+            )?;
             if !window.finished {
                 // A song is not speech from end to end. Intros, solos and
                 // outros give the decoder nothing to transcribe, and an
@@ -92,15 +100,6 @@ impl Qwen {
                 continue;
             }
             if let Some(detected) = window.language_name.as_deref() {
-                if language_name
-                    .as_deref()
-                    .is_some_and(|previous| !previous.eq_ignore_ascii_case(detected))
-                {
-                    return Err(format!(
-                        "Qwen ASR language changed between windows: {} then {detected}",
-                        language_name.as_deref().unwrap_or_default()
-                    ));
-                }
                 language_name.get_or_insert_with(|| detected.to_string());
             }
             text = merge_transcript_text(&text, &window.text);
@@ -119,7 +118,7 @@ impl Qwen {
         }
         Ok(Transcription {
             text,
-            language_name,
+            language_name: forced_language.map(str::to_string).or(language_name),
             raw_text: raw_text.join("\n<window>\n"),
             generated_tokens,
             finished: true,
@@ -134,6 +133,7 @@ impl Qwen {
         &self,
         samples: &[f32],
         max_new_tokens: usize,
+        forced_language: Option<&str>,
     ) -> Result<Transcription, String> {
         if self.config.kind != ModelKind::Asr {
             return Err("Qwen transcription requires the ASR model".to_string());
@@ -145,7 +145,7 @@ impl Qwen {
         let encoder_start = Instant::now();
         let audio = self.encode_audio(&mel)?;
         let encoder_seconds = encoder_start.elapsed().as_secs_f64();
-        let (prompt, audio_offset) = build_prompt(self, audio.rows)?;
+        let (prompt, audio_offset) = build_prompt(self, audio.rows, forced_language)?;
         let prompt_tokens = prompt.len();
         let decoder_start = Instant::now();
         let eos = self.tokenizer.id("<|im_end|>")?;
@@ -171,10 +171,10 @@ impl Qwen {
         }
         let decoder_seconds = decoder_start.elapsed().as_secs_f64();
         let raw_text = self.tokenizer.decode(&generated_tokens, true)?;
-        let (language_name, text) = parse_answer(&raw_text);
+        let (detected_language, text) = parse_answer(&raw_text);
         Ok(Transcription {
             text,
-            language_name,
+            language_name: forced_language.map(str::to_string).or(detected_language),
             raw_text,
             generated_tokens,
             finished,
@@ -186,7 +186,11 @@ impl Qwen {
     }
 }
 
-pub(super) fn build_prompt(model: &Qwen, audio_rows: usize) -> Result<(Vec<u32>, usize), String> {
+pub(super) fn build_prompt(
+    model: &Qwen,
+    audio_rows: usize,
+    forced_language: Option<&str>,
+) -> Result<(Vec<u32>, usize), String> {
     if model.config.kind != ModelKind::Asr {
         return Err("Qwen ASR prompt requires the ASR model".to_string());
     }
@@ -197,12 +201,23 @@ pub(super) fn build_prompt(model: &Qwen, audio_rows: usize) -> Result<(Vec<u32>,
     let audio_offset = prompt.len();
     prompt.extend(std::iter::repeat_n(model.config.audio_pad, audio_rows));
     prompt.push(model.config.audio_end);
-    prompt.extend(
-        model
-            .tokenizer
-            .encode("<|im_end|>\n<|im_start|>assistant\n")?,
-    );
+    let mut assistant = String::from("<|im_end|>\n<|im_start|>assistant\n");
+    assistant.push_str(&assistant_language_prefix(forced_language)?);
+    prompt.extend(model.tokenizer.encode(&assistant)?);
     Ok((prompt, audio_offset))
+}
+
+fn assistant_language_prefix(language: Option<&str>) -> Result<String, String> {
+    let Some(language) = language.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(String::new());
+    };
+    if !language
+        .chars()
+        .all(|character| character.is_ascii_alphabetic())
+    {
+        return Err(format!("Qwen ASR forced language {language} is invalid"));
+    }
+    Ok(format!("language {language}<asr_text>"))
 }
 
 pub(super) fn argmax(values: &[f32]) -> Result<u32, String> {
@@ -333,6 +348,12 @@ mod tests {
             parse_answer("language None<asr_text>"),
             (None, String::new())
         );
+        assert_eq!(
+            assistant_language_prefix(Some("Japanese")).unwrap(),
+            "language Japanese<asr_text>"
+        );
+        assert_eq!(assistant_language_prefix(None).unwrap(), "");
+        assert!(assistant_language_prefix(Some("Japanese then English")).is_err());
     }
 
     #[test]
@@ -380,7 +401,9 @@ mod tests {
             .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
-        let transcription = model.transcribe(&samples, DEFAULT_MAX_NEW_TOKENS).unwrap();
+        let transcription = model
+            .transcribe(&samples, DEFAULT_MAX_NEW_TOKENS, None)
+            .unwrap();
         assert_eq!(
             transcription.generated_tokens,
             [

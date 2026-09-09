@@ -689,6 +689,7 @@ impl AnalysisEngine {
             let directory = create_task_dir(&output_root, "worker/qwen-asr")?;
             let (component, mut config) = model_dispatch(model, request, "transcript_evidence")?;
             config["model_content_digest"] = serde_json::json!(model.model_content_digest);
+            config["language"] = serde_json::json!(request.lyrics.language);
             let outputs = run_native_task(
                 model,
                 component,

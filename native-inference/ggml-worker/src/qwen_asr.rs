@@ -12,6 +12,8 @@ const MODEL_ID: &str = "qwen3_asr_1_7b";
 #[derive(Debug, Deserialize)]
 struct Request {
     model_content_digest: String,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -73,7 +75,8 @@ pub fn infer(
         return Err("Qwen ASR requires model provenance".to_string());
     }
     let qwen = Qwen::load(runtime, device, model_path)?;
-    let transcription = qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS)?;
+    let forced_language = request.language.as_deref().and_then(qwen_language_name);
+    let transcription = qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS, forced_language)?;
     progress(1, 1);
     let evidence = evidence(request, transcription, runtime_manifest_digest, backend)?;
     write_evidence(destination, &evidence)
@@ -181,6 +184,33 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
     Ok(())
 }
 
+fn qwen_language_name(code: &str) -> Option<&'static str> {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "ja" | "jp" | "jpn" | "japanese" => Some("Japanese"),
+        "en" | "eng" | "english" => Some("English"),
+        "zh" | "cn" | "chi" | "zho" | "mandarin" | "chinese" => Some("Chinese"),
+        "yue" | "cantonese" => Some("Cantonese"),
+        "ko" | "kor" | "korean" => Some("Korean"),
+        "de" | "ger" | "german" => Some("German"),
+        "fr" | "fre" | "fra" | "french" => Some("French"),
+        "es" | "spa" | "spanish" => Some("Spanish"),
+        "pt" | "por" | "portuguese" => Some("Portuguese"),
+        "ru" | "rus" | "russian" => Some("Russian"),
+        "it" | "ita" | "italian" => Some("Italian"),
+        "nl" | "dut" | "nld" | "dutch" => Some("Dutch"),
+        "pl" | "pol" | "polish" => Some("Polish"),
+        "tr" | "tur" | "turkish" => Some("Turkish"),
+        "ar" | "ara" | "arabic" => Some("Arabic"),
+        "vi" | "vie" | "vietnamese" => Some("Vietnamese"),
+        "th" | "tha" | "thai" => Some("Thai"),
+        "id" | "ind" | "indonesian" => Some("Indonesian"),
+        "hi" | "hin" | "hindi" => Some("Hindi"),
+        "sv" | "swe" | "swedish" => Some("Swedish"),
+        "auto" | "und" | "none" | "" => None,
+        _ => None,
+    }
+}
+
 fn language_name_to_bcp47(language: &str) -> String {
     let normalized = language.trim().to_ascii_lowercase();
     let code = match normalized.as_str() {
@@ -266,6 +296,7 @@ mod tests {
         let value = evidence(
             Request {
                 model_content_digest: "model-provenance".to_string(),
+                language: None,
             },
             transcription(),
             "runtime-provenance",
@@ -285,6 +316,9 @@ mod tests {
         assert_eq!(language_name_to_bcp47("Cantonese"), "yue");
         assert_eq!(language_name_to_bcp47("xx"), "xx");
         assert_eq!(language_name_to_bcp47("unlisted language"), "und");
+        assert_eq!(qwen_language_name("ja"), Some("Japanese"));
+        assert_eq!(qwen_language_name("Japanese"), Some("Japanese"));
+        assert_eq!(qwen_language_name("auto"), None);
     }
 
     #[test]
@@ -303,6 +337,7 @@ mod tests {
         let value = evidence(
             Request {
                 model_content_digest: "model-provenance".to_string(),
+                language: None,
             },
             transcription(),
             "runtime-provenance",
