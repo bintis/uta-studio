@@ -37,8 +37,11 @@
                  // The accumulator's M spans Br. Where M is smaller than Br the
                  // rows are covered by successive tiles rather than one.
                  [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBc; ++br_tile) {
-@@ -522,3 +555,4 @@
+@@ -522,6 +555,7 @@
                      // Store PVMat to pvsh and load into Of
                      coopMatStore(PVMat, pvsh, o_offset + br_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
                  }
 +#endif
+             }
+ 
+             barrier();
