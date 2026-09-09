@@ -60,8 +60,6 @@
               unset UTA_STUDIO_RUNTIME_CLI_PATH
               unset UTA_STUDIO_OPENVINO_RUNTIME_PATH
               unset UTA_STUDIO_GGML_RUNTIME_PATH
-              unset UTA_STUDIO_QWEN_ASR_RUNTIME_PATH
-              unset UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH
               export WINIT_UNIX_BACKEND=wayland
               export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"

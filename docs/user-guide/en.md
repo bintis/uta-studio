@@ -88,7 +88,7 @@ Batch export requires a default export folder so files can be written without op
 
 Open **Settings → Models & runtime**.
 
-1. Select the acceleration target: CPU, NVIDIA CUDA, or Intel Arc where supported.
+1. Select GPU or integrated GPU for normal inference. CPU is an explicit experimental reference mode; GPU requests never fall back to it.
 2. Review **Runtime status**.
 3. Choose **Set up…** or **Reconfigure…**.
 4. Read the confirmation, including model size and license notices.
@@ -135,7 +135,7 @@ Uta! Studio executes an explicit node-based DAG. Generated files are typed **ana
 
 #### 01 · Vocal and BGM separation
 
-Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
+Runs one selected dual-output separation strategy. Leap XE90 is the default; public PolarFormer is an explicit experiment. One inference publishes the vocal estimate and its instrumental residual, after which optional lead isolation, denoise, and dereverb can prepare analysis audio.
 
 Available choices include validated RoFormer vocal/BGM separation, lead isolation, denoise, and dereverb models. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis stays local; existing chart data changes only after explicit re-analysis.
 
@@ -143,19 +143,19 @@ Use a balanced profile first. Memory-saving profiles reduce peak use; quality pr
 
 #### 02 · Lyrics transcription
 
-FireRedASR2-AED and Qwen3-ASR produce independent transcript evidence. Uta! Studio fuses their token evidence into Canonical Lyrics instead of silently choosing one complete transcript.
-
-A larger recognition model can improve difficult material but costs more memory and processing time. Confirm the selected model is installed on **Models & runtime**.
+Qwen3-ASR produces the generated transcript. When the language makes it applicable, FireRed runs as an optional challenger whose text is compared with the primary transcript rather than replacing it; if the challenger fails, the run continues and records the reason. Caller-provided and imported lyrics remain available as Canonical Lyrics and skip generated transcription entirely.
 
 #### 03 · Word timing and alignment
 
-The pinned Qwen3 Forced Aligner consumes Canonical Lyrics and selected lead-vocal audio. Its boundaries remain evidence until fusion and can be reviewed in the Editor.
-
-The optional NextFire MMS Karaoke model is separately licensed under AGPL-3.0 and is downloaded only after a dedicated confirmation. Use it only when its license and Japanese-specific behavior fit your project.
+The Qwen3 Forced Aligner produces word-level timing from the canonical transcript. It keeps an identity separate from ordinary transcription, and imported timing is never relabelled as generated alignment.
 
 #### 04 · Pitch analysis
 
-Extracts pitch evidence and MIDI note targets for chart authoring. The editor remains authoritative: inspect and correct notes instead of treating automatic output as final.
+RMVPE supplies the primary continuous-F0 evidence. Maximum mode also runs FCPE as a separate secondary F0 expert for agreement and disagreement evidence; it is not a fallback for RMVPE. The editor remains authoritative: inspect and correct notes instead of treating automatic output as final.
+
+#### 05 · Note and technique evidence
+
+GAME supplies the primary note and boundary evidence. Its small, medium, and large sizes are interchangeable choices on the note/boundary card in **Processing Studio**; medium is the default. Basic Pitch, JBM555, STARS, and ROSVOT are optional challengers that add evidence to fusion instead of replacing GAME; STARS additionally provides singing-technique evidence. STARS and ROSVOT are conditioned experts and run only when word timing and pitch evidence are both part of the run.
 
 #### Re-analysis rules
 
@@ -272,7 +272,7 @@ Include the application version, platform, selected runtime, relevant log excerp
 
 #### “Setup required” or missing model
 
-Open **Settings → Models & runtime**, press **Check again**, then install or repair the missing stage. Reconfigure after changing CPU/CUDA/Intel acceleration.
+Open **Settings → Models & runtime**, press **Check again**, then install or repair the missing stage. Reconfigure after changing the GGML GPU, integrated-GPU, or experimental CPU selection.
 
 #### Analysis button is disabled
 

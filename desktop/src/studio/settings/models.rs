@@ -259,24 +259,18 @@ pub(crate) fn spawn_model_settings(
 
 fn backend_value(backend: app_core::RuntimeBackendPresentation) -> &'static str {
     match backend {
-        app_core::RuntimeBackendPresentation::OpenVino => "openvino",
-        app_core::RuntimeBackendPresentation::Vulkan => "vulkan",
-        app_core::RuntimeBackendPresentation::NativeDsp => "native_dsp",
-        app_core::RuntimeBackendPresentation::CpuReference => "diagnostic_cpu",
+        app_core::RuntimeBackendPresentation::Ggml => "ggml",
     }
 }
 
 fn backend_label(backend: app_core::RuntimeBackendPresentation) -> &'static str {
     match backend {
-        app_core::RuntimeBackendPresentation::OpenVino => "OpenVINO",
-        app_core::RuntimeBackendPresentation::Vulkan => "GGML",
-        app_core::RuntimeBackendPresentation::NativeDsp => "Native DSP",
-        app_core::RuntimeBackendPresentation::CpuReference => "Diagnostic CPU",
+        app_core::RuntimeBackendPresentation::Ggml => "GGML",
     }
 }
 
 const DEVICE_CLASS_OPTIONS: [(&str, &str); 3] = [
-    ("cpu", "CPU"),
+    ("cpu", "CPU · Exp."),
     ("gpu", "GPU"),
     ("integrated_gpu", "Integrated GPU"),
 ];
@@ -290,26 +284,60 @@ fn validation_label(validation: app_core::RuntimeValidationPresentation) -> &'st
     }
 }
 
-fn model_backend_display_name(model_id: &str) -> String {
-    match model_id {
-        "bs_roformer_leap_xe90_vocals" => "BS-RoFormer Leap XE90 Vocals".to_string(),
-        "bs_polarformer_public_instrumental" => "BS-PolarFormer Public Instrumental".to_string(),
-        "jbm555_cectc_80" => "JBM555 CE-CTC 80".to_string(),
-        "melband_roformer_denoise_aufr33" => "MelBand RoFormer Denoise".to_string(),
-        "melband_roformer_dereverb_anvuew" => "MelBand RoFormer Dereverb".to_string(),
-        "melband_roformer_inst_v2" => "MelBand RoFormer Instrumental V2".to_string(),
-        "melband_roformer_harmony" => "MelBand RoFormer Lead Isolation".to_string(),
-        "qwen3_asr_1_7b" => "Qwen3 ASR 1.7B".to_string(),
-        "qwen3_forced_aligner_0_6b" => "Qwen3 Forced Aligner 0.6B".to_string(),
-        "firered_asr2_aed" => "FireRed ASR2 AED".to_string(),
-        "basic_pitch" => "Basic Pitch".to_string(),
-        "rmvpe" => "RMVPE".to_string(),
-        "fcpe" => "FCPE".to_string(),
-        "game" => "GAME".to_string(),
-        "stars" => "STARS".to_string(),
-        "rosvot" => "ROSVOT".to_string(),
-        other => other.replace('_', " "),
+fn model_install_state_label(state: app_core::InstallStateWireV1) -> &'static str {
+    match state {
+        app_core::InstallStateWireV1::Absent => "not installed",
+        app_core::InstallStateWireV1::Installed => "installed",
+        app_core::InstallStateWireV1::Incomplete => "incomplete",
+        app_core::InstallStateWireV1::Corrupt => "corrupt",
+        app_core::InstallStateWireV1::Legacy => "external GGUF layout",
     }
+}
+
+fn model_origin_label(origin: app_core::ResourceOriginWireV1) -> &'static str {
+    match origin {
+        app_core::ResourceOriginWireV1::Missing => "missing",
+        app_core::ResourceOriginWireV1::Managed => "managed store",
+        app_core::ResourceOriginWireV1::Legacy => "external model directory",
+        app_core::ResourceOriginWireV1::EnvironmentOverride => "environment override",
+        app_core::ResourceOriginWireV1::ExternalConfiguration => "external configuration",
+        app_core::ResourceOriginWireV1::Derived => "derived",
+    }
+}
+
+fn model_readiness_summary(model: &app_core::RuntimeModelPresentation) -> String {
+    let readiness = if model.usable {
+        "Ready under Production"
+    } else if model.runnable {
+        "Blocked by Production policy"
+    } else {
+        "Not runnable"
+    };
+    let generation = model
+        .generation
+        .as_deref()
+        .map(|generation| {
+            let short = generation.get(..12).unwrap_or(generation);
+            format!(" · generation {short}")
+        })
+        .unwrap_or_default();
+    let reasons = (!model.reasons.is_empty()).then(|| {
+        format!(
+            " · {}",
+            model
+                .reasons
+                .iter()
+                .map(readiness_reason_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    format!(
+        "{readiness} · {} · {}{generation}{}",
+        model_install_state_label(model.install_state),
+        model_origin_label(model.origin),
+        reasons.unwrap_or_default()
+    )
 }
 
 fn spawn_model_backend_settings(
@@ -345,22 +373,16 @@ fn spawn_model_backend_settings(
     }
 }
 
-/// GGML's Vulkan route resolves GPU/iGPU to the matching physical adapter at
-/// run start; every other route still only records the preference (Runtime
-/// Manager has no per-device resolution for OpenVINO/native-DSP/CPU yet).
+/// GGML resolves GPU/iGPU to the matching physical adapter when the model runs.
 fn device_preference_caption(
-    selected_backend: Option<app_core::RuntimeBackendPresentation>,
+    _selected_backend: Option<app_core::RuntimeBackendPresentation>,
 ) -> &'static str {
-    if selected_backend == Some(app_core::RuntimeBackendPresentation::Vulkan) {
-        "Device selects the matching physical adapter (GPU = discrete, iGPU = integrated) when this model runs."
-    } else {
-        "Device is a request preference for upcoming multi-device routing; it does not yet force a physical adapter."
-    }
+    "CPU is an explicit experimental reference mode. GPU and iGPU requests fail instead of falling back to CPU."
 }
 
 fn selected_device_label(selected: Option<&str>) -> &'static str {
     match selected {
-        Some("cpu") => "CPU",
+        Some("cpu") => "CPU · Experimental",
         Some("gpu") => "GPU",
         Some("integrated_gpu") => "iGPU",
         _ => "Auto",
@@ -456,21 +478,49 @@ fn spawn_model_runtime_row(
                 spawn_text(
                     copy,
                     font.clone(),
-                    model_backend_display_name(&model.model_id),
+                    model.display_name.clone(),
                     11.5,
                     theme.foreground,
                 );
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
-                    format!("Model ID · {}", model.model_id),
+                    model.purpose.clone(),
                     8.8,
                     theme.muted_foreground,
                 );
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
-                    format!("Available runtimes · {capabilities}"),
+                    format!("Status · {}", model_readiness_summary(model)),
+                    8.8,
+                    if model.usable {
+                        theme.primary
+                    } else {
+                        theme.muted_foreground
+                    },
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    format!(
+                        "Capabilities · {}",
+                        if model.capabilities.is_empty() {
+                            "none reported".to_string()
+                        } else {
+                            model.capabilities.join(", ")
+                        }
+                    ),
+                    8.8,
+                    theme.muted_foreground,
+                );
+                spawn_wrapped_text(
+                    copy,
+                    font.clone(),
+                    format!(
+                        "Model ID · {} · Runtime routes · {capabilities}",
+                        model.model_id
+                    ),
                     8.8,
                     theme.muted_foreground,
                 );
@@ -774,39 +824,6 @@ pub(crate) fn model_install_role(
     _config: &AppConfig,
     target: app_core::ModelDownloadTarget,
 ) -> &'static str {
-    use app_core::ModelDownloadTarget;
-    match target {
-        ModelDownloadTarget::FireRed
-        | ModelDownloadTarget::Fcpe
-        | ModelDownloadTarget::Stars
-        | ModelDownloadTarget::BasicPitch => "Optional challenger",
-        ModelDownloadTarget::Game => "Candidate requirement",
-        _ => "Baseline resource",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::model_install_role;
-
-    #[test]
-    fn lifecycle_roles_do_not_claim_optional_challengers_are_selected() {
-        let config = app_core::AppConfig::default();
-        assert_eq!(
-            model_install_role(&config, app_core::ModelDownloadTarget::FireRed),
-            "Optional challenger"
-        );
-        assert_eq!(
-            model_install_role(&config, app_core::ModelDownloadTarget::Fcpe),
-            "Optional challenger"
-        );
-        assert_eq!(
-            model_install_role(&config, app_core::ModelDownloadTarget::Game),
-            "Candidate requirement"
-        );
-        assert_eq!(
-            model_install_role(&config, app_core::ModelDownloadTarget::Pitch),
-            "Baseline resource"
-        );
-    }
+    let _ = target;
+    "Baseline GGML resource"
 }

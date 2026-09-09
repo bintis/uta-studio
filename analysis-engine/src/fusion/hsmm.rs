@@ -322,7 +322,7 @@ pub fn attach_boundary_constraints(
     // candidate/evidence relation limit must protect this attachment pass too.
     validate_candidate_evidence_relation_count(candidates.len(), constraints.len())?;
     let mut indexed = constraints.iter().enumerate().collect::<Vec<_>>();
-    indexed.sort_by(|left, right| (left.1.time, left.0).cmp(&(right.1.time, right.0)));
+    indexed.sort_by_key(|left| (left.1.time, left.0));
     for candidate in candidates {
         let mut matches = Vec::<(usize, &BoundaryConstraintEvidenceV1)>::new();
         for edge in [candidate.range.start, candidate.range.end] {
@@ -1017,7 +1017,7 @@ fn validate_candidate_path_with_index(
         if previous_end.is_some_and(|end| end > candidate.range.start) {
             return Err("candidate path is not ordered and non-overlapping".to_string());
         }
-        if candidate_crosses_hard_boundary(candidate, &hard_boundary_times) {
+        if candidate_crosses_hard_boundary(candidate, hard_boundary_times) {
             return Err(format!(
                 "candidate path candidate {} crosses a hard boundary",
                 candidate.id

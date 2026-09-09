@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const WORKFLOW_SCHEMA_VERSION: u32 = 4;
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -172,24 +172,19 @@ pub enum ConditionalExecution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeparationStrategyV1 {
-    /// Legacy serialized value. Loading maps it onto the current independent
-    /// Leap XE90 + public PolarFormer strategy.
+    /// Legacy serialized value. Loading maps it onto the current Leap XE90
+    /// dual-output strategy.
     Ep317VocalResidual,
-    /// Independent role-specialized native invocations: Leap XE90 vocals +
-    /// public PolarFormer instrumental (GGML/Vulkan; mix-minus-vocals, since
-    /// the checkpoint's single trained stem is vocals, not instrumental).
-    IndependentSpecialists,
-    /// Independent role-specialized native invocations: Leap XE90 vocals +
-    /// MelBand-RoFormer Inst V2 instrumental. Retained as a selectable
-    /// alternative per Task 23 policy: PolarFormer is not chosen as
-    /// instrumental truth solely by qualification -- Inst V2 stays a real,
-    /// user-selectable option pending broader A/B evidence.
-    IndependentSpecialistsInstV2,
-    /// PolarFormer serves both roles from its own single trained stem:
-    /// the checkpoint's raw vocal output is published as GuideVocals, and
-    /// the mix-minus-vocals residual is published as Instrumental. Two
-    /// independent native invocations of the same model (not one dual-
-    /// output execution), matching the existing per-role dispatch shape.
+    /// One Leap XE90 invocation publishes both its trained vocal estimate and
+    /// the mix-minus-vocals Instrumental residual.
+    #[serde(alias = "independent_specialists")]
+    LeapDualOutput,
+    /// One instrumental-target Leap XE90 invocation publishes its trained
+    /// Instrumental estimate and the mix-minus-instrumental vocal residual.
+    LeapInstrumentalDirect,
+    /// Experimental alternative: one PolarFormer invocation publishes both
+    /// its trained vocal estimate and the mix-minus-vocals Instrumental
+    /// residual. This option is available but is not the default.
     PolarformerBoth,
 }
 

@@ -261,12 +261,9 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         }
         UiCommand::Settings(SettingsCommand::SetModelBackend(model_id, backend)) => {
             studio.dialogs.open_model_runtime_select = None;
-            let valid = backend.as_deref().is_none_or(|backend| {
-                matches!(
-                    backend,
-                    "openvino" | "vulkan" | "native_dsp" | "diagnostic_cpu"
-                )
-            });
+            let valid = backend
+                .as_deref()
+                .is_none_or(|backend| matches!(backend, "ggml"));
             if !valid {
                 studio.shell.notice = Some("Unsupported model backend selection.".to_string());
             } else {
@@ -311,7 +308,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 }
                 studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
                     Some(format!(
-                        "Device preference recorded for {model_id}. This is captured for upcoming multi-device routing; it does not yet change which physical device Runtime Manager selects."
+                        "Device preference recorded for {model_id}. The next Engine request sends this exact CPU, GPU, or integrated-GPU class to the GGML worker; unavailable selections fail without CPU fallback."
                     ))
                 });
             }

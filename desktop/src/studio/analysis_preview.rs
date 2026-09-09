@@ -66,14 +66,10 @@ fn workflow_planned_evidence(workflow: &app_core::WorkflowExecutionPlanWireV1) -
                 node.capabilities
                     .iter()
                     .find_map(|capability| match capability.as_str() {
-                        "pitch.track" => Some("Primary continuous F0"),
-                        "notes.game" => Some("GAME note regions"),
-                        "pitch.secondary" | "pitch.secondary.fcpe" => Some("FCPE secondary F0"),
-                        "pitch.secondary.rmvpe" => Some("RMVPE secondary F0"),
-                        "notes.basic_pitch" => Some("Basic Pitch onset/note"),
-                        "notes.rosvot" => Some("ROSVOT note challenger"),
-                        "notes.stars" => Some("STARS note challenger"),
-                        "technique.analyze" => Some("STARS technique context"),
+                        "pitch.track" | "pitch.secondary.rmvpe" => Some("Primary continuous F0"),
+                        "pitch.secondary" | "pitch.secondary.fcpe" => {
+                            Some("FCPE secondary continuous F0")
+                        }
                         "analysis.acoustic_dsp" => Some("Acoustic DSP context"),
                         _ => None,
                     })?;
@@ -157,10 +153,8 @@ pub(crate) fn spawn_preview_request_summary(
         if let Some(policy) = workflow.fusion_policy {
             let continuous_f0 = match policy.continuous_f0 {
                 app_core::ContinuousF0SourceWireV1::Rmvpe => "RMVPE",
-                app_core::ContinuousF0SourceWireV1::Fcpe => "FCPE",
             };
             let note_lengths = match policy.note_lengths {
-                app_core::NoteLengthSourceWireV1::Game => "GAME note regions",
                 app_core::NoteLengthSourceWireV1::F0Derived => {
                     "F0-derived fallback regions · review required"
                 }
@@ -168,7 +162,6 @@ pub(crate) fn spawn_preview_request_summary(
             let onset_support = match policy.onset_support {
                 app_core::OnsetSupportSourceWireV1::Automatic => "Automatic",
                 app_core::OnsetSupportSourceWireV1::Acoustic => "Acoustic DSP",
-                app_core::OnsetSupportSourceWireV1::BasicPitch => "Basic Pitch",
             };
             spawn_wrapped_text(
                 parent,
@@ -286,52 +279,12 @@ mod tests {
                         "input_bindings": []
                     },
                     {
-                        "instance_id": "game",
-                        "analysis_node": "workflow.game",
-                        "capabilities": ["notes.game"],
+                        "instance_id": "acoustic",
+                        "analysis_node": "workflow.acoustic",
+                        "capabilities": ["analysis.acoustic_dsp"],
                         "execution_policy": "always",
                         "execution_state": "ready",
                         "priority": 750,
-                        "depends_on": [],
-                        "input_bindings": []
-                    },
-                    {
-                        "instance_id": "secondary-rmvpe",
-                        "analysis_node": "workflow.secondary-rmvpe",
-                        "capabilities": ["pitch.secondary.rmvpe"],
-                        "execution_policy": "always",
-                        "execution_state": "ready",
-                        "priority": 700,
-                        "depends_on": [],
-                        "input_bindings": []
-                    },
-                    {
-                        "instance_id": "basic",
-                        "analysis_node": "workflow.basic",
-                        "capabilities": ["notes.basic_pitch"],
-                        "execution_policy": "disagreement_windows",
-                        "execution_state": "deferred",
-                        "priority": 650,
-                        "depends_on": [],
-                        "input_bindings": []
-                    },
-                    {
-                        "instance_id": "stars-note",
-                        "analysis_node": "workflow.stars-note",
-                        "capabilities": ["notes.stars"],
-                        "execution_policy": "disabled",
-                        "execution_state": "disabled",
-                        "priority": 640,
-                        "depends_on": [],
-                        "input_bindings": []
-                    },
-                    {
-                        "instance_id": "stars-technique",
-                        "analysis_node": "workflow.stars-technique",
-                        "capabilities": ["technique.analyze"],
-                        "execution_policy": "maximum_only",
-                        "execution_state": "profile_skipped",
-                        "priority": 630,
                         "depends_on": [],
                         "input_bindings": []
                     }
@@ -346,10 +299,7 @@ mod tests {
             workflow_planned_evidence(&workflow),
             [
                 "Primary continuous F0 (ready)",
-                "GAME note regions (ready)",
-                "RMVPE secondary F0 (ready)",
-                "Basic Pitch onset/note (conditional)",
-                "STARS technique context (profile skipped)"
+                "Acoustic DSP context (ready)"
             ]
         );
     }

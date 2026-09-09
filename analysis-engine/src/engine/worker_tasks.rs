@@ -4,17 +4,20 @@
 //! Shared native-worker execution and typed-output validation.
 
 use super::*;
+use crate::execution::{NativeTask, NativeTaskOutput, SupervisedWorker, WorkerExpectation};
 
-pub(super) fn run_openvino_cleanup(
+pub(super) fn run_ggml_cleanup(
     task: &DenoiseTask<'_>,
     spec: &CleanupSpec<'_>,
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
     let directory = create_task_dir(task.output_root, spec.worker_directory)?;
+    let (component, config) =
+        roformer_dispatch_config(&task.route, task.model_path, spec.semantic_output)?;
     let outputs = SupervisedWorker::run(
         task.executable,
         &WorkerExpectation {
-            component: roformer_component(task.backend).to_string(),
+            component: component.to_string(),
             runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
         },
         &NativeTask {
@@ -24,17 +27,7 @@ pub(super) fn run_openvino_cleanup(
             model_id: spec.model_id.to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
-            config: {
-                let mut config = serde_json::json!({
-                    "model_path": task.model_path,
-                    "backend": task.backend,
-                    "semantic_output": spec.semantic_output
-                });
-                if let Some(device_class) = task.device_class {
-                    config["device_class"] = serde_json::Value::from(device_class);
-                }
-                config
-            },
+            config,
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,
@@ -106,6 +99,29 @@ pub(super) fn run_native_task(
     config: serde_json::Value,
     cancellation: &CancellationToken,
 ) -> EngineResult<Vec<NativeTaskOutput>> {
+    run_native_task_with_inputs(
+        model,
+        component,
+        task_id,
+        node_id,
+        &[input.to_path_buf()],
+        output_dir,
+        config,
+        cancellation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_native_task_with_inputs(
+    model: &uta_runtime_manager::ResolvedModel,
+    component: &str,
+    task_id: &str,
+    node_id: &str,
+    inputs: &[PathBuf],
+    output_dir: &Path,
+    config: serde_json::Value,
+    cancellation: &CancellationToken,
+) -> EngineResult<Vec<NativeTaskOutput>> {
     SupervisedWorker::run(
         &model.runtime_executable,
         &WorkerExpectation {
@@ -117,7 +133,7 @@ pub(super) fn run_native_task(
             node_id: node_id.to_string(),
             presentation_node_id: None,
             model_id: model.model_id.clone(),
-            input_artifacts: vec![input.to_path_buf()],
+            input_artifacts: inputs.to_vec(),
             output_dir: output_dir.to_path_buf(),
             config,
             timeout: Duration::from_secs(4 * 60 * 60),

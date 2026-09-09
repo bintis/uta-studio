@@ -12,9 +12,9 @@ Source music is read-only. Removing a watched folder only disconnects it from th
 
 Desktop and Nix builds package `uta-analyze`, `uta-runtime`, native backend workers, and system/packaged `ffmpeg`. Studio receives only `UTA_STUDIO_ANALYSIS_CLI_PATH`, `UTA_STUDIO_RUNTIME_CLI_PATH`, and `UTA_STUDIO_FFMPEG_PATH`; component worker variables remain backend-owned. Production inference has no script runtime or package environment.
 
-Generic production models consume source-verified native artifacts and fail closed when the exact model/backend/runtime combination is not validated. All non-Qwen OpenVINO IR models also expose an explicit CPU-only diagnostic route; CPU is never selected as an automatic fallback. Exact legacy RoFormer GGUF artifacts use a separate GGML/Vulkan worker. All five RoFormer resources—BS-RoFormer, Inst V2, Harmony, Denoise and Dereverb—expose only user-selected GGML/Vulkan `ProductionPinned` routes and must never launch OpenVINO. Every invocation forces batch size 1, no async submission and a serial pipeline. Their durable default root is `<runtime-store>/ggml-models`; `UTA_STUDIO_GGML_MODELS_DIR` may explicitly override it, and `/tmp` is never a production model location. Qwen3-ASR-1.7B and Qwen3 Forced Aligner keep their independent pinned GGML/Vulkan product runtimes defined by `native-inference/runtime-lock.json`. **AI-agent development/acceptance on this host may not execute non-Qwen Vulkan inference without separate explicit user authorization** after the 2026-08-22 black-screen/reboot incident. Vulkan-only paths may be statically audited and may reuse exact prior evidence; any new Vulkan execution requires the exact model-specific validation procedure. Manifest-pinned CPU islands inside a CPU/GPU OpenVINO topology remain required execution rather than fallback.
+Every model runs on one boundary: Rust-owned model graphs over shared libraries built from pinned upstream `ggml-org/ggml` plus exactly the patches `native-inference/ggml-worker/runtime-recipe.json` declares. Those patches may only fix backend behaviour, never add model code, and the recipe digest covers them so an undeclared build fails the manifest check. The package contains no app-owned C/C++ model graph, shim, model CLI, model-inference subprocess, OpenVINO route, or WGPU model route, and the repository tracks no model conversion, model rewrite, or model execution script in any scripting language: container migration is `cargo xtask gguf`. CPU is exposed only as an explicitly selected experimental reference lane. Vulkan remains the default, and a GPU or integrated-GPU request fails closed without CPU fallback.
 
-The Rust GGUF workers for JBM555, FCPE, Basic Pitch, FireRed, STARS, and ROSVOT also contain an explicitly Vulkan-only WGPU lane. These WGPU routes are `Experimental` until each exact graph has separately authorized parity and stability evidence; no existing CPU/OpenVINO evidence promotes them. Analysis Engine and every worker independently require `wgpu-vulkan-serial-v1`: batch size 1, synchronous wait after every bounded submission, and a serial pipeline. They fail closed on an unavailable requested device, validation error, OOM, or device loss, without CPU fallback. The WGPU dependency enables only Vulkan/WGSL and does not use OpenVINO, OpenCL, SYCL, oneAPI, or Level Zero.
+Runtime Manager exposes exactly the models and the one shared-library runtime recorded in `tasks/remaining-models/STATE.md`, and `docs/AUDIO_MODELS.md` lists each model's capability and product role. Separation, pitch, note, technique, transcription, and forced-alignment capabilities all have Rust/upstream-GGML providers; only Inst V2 remains permanently retired. Optional challengers never replace a primary provider, and a request for a model that is not installed or whose device is unavailable still fails closed. Historical backend evidence never promotes a current route.
 
 The app must not download tools, packages, or models on launch. Analysis setup lives in **Settings > Models & runtime**, reports each native component/model separately, and downloads only after explicit confirmation. That page exposes only Runtime Manager-advertised backends per model; explicit choices persist in `model_backend_overrides`, while no entry means the pinned default. Unavailable choices fail in exact Plan Preview without fallback. The JSON `model_backend_note` is human guidance only and records the Intel XPU recommendation for the tested RoFormer GGML serial/no-async route. Analysis controls stay disabled with a direct Settings explanation until setup is ready. Existing analyzed charts remain editable without forcing setup.
 
@@ -65,11 +65,11 @@ The commands below are **not** per-card acceptance. The full suite runs only dur
 The final repository checks are:
 
 ```sh
-bash dev.sh -c cargo fmt --all -- --check
-bash dev.sh -c cargo check --workspace --all-targets --locked
-bash dev.sh -c cargo test --workspace --all-targets --locked
-bash dev.sh -c cargo clippy --workspace --all-targets --locked -- -D warnings
-bash dev.sh -c cargo xtask docs check
+bash dev.sh --command cargo fmt --all -- --check
+bash dev.sh --command cargo check --workspace --all-targets --locked
+bash dev.sh --command cargo test --workspace --all-targets --locked
+bash dev.sh --command cargo clippy --workspace --all-targets --locked -- -D warnings
+bash dev.sh --command cargo xtask docs check
 nix build path:.#uta-studio --print-build-logs
 ```
 
@@ -82,9 +82,9 @@ changes, so already-realized store paths are reused. `UTA_STUDIO_NIX_OFFLINE=1`
 is available only for an already-realized shell; normal bootstrap should retain
 binary substitutes rather than forcing source builds.
 
-The repository must contain no tracked script-runtime source files, and a packaged analysis run must have no script-runtime process in its process tree. Native worker stdout is protocol-only NDJSON; cancellation, timeout, crash cleanup, runtime-lock identity, and fail-closed routing are release gates.
+The repository must contain no tracked script-runtime model source files and no app-owned C/C++ model source. Declared GGML backend patches under `native-inference/ggml-worker/patches/` are not model source; each must be listed in the runtime recipe with its digest and must state the measurement that motivated it. A packaged analysis run must have no model-inference subprocess in its process tree. Native worker stdout is protocol-only NDJSON; cancellation, timeout, crash cleanup, runtime-lock identity, and fail-closed routing are release gates.
 
-Without separate current user authorization, GPU inference tests during agent and final-acceptance work are OpenVINO-only: do not run Vulkan smoke, benchmark, stress, full-track, or intentional Vulkan-context commands. Historical RoFormer validation records document machine-level failures and make clear that even passing configurations are graph-specific; there is no general safe Vulkan mode. The explicitly authorized 2026-08-24 scope covered fresh isolated serial/no-async full-song runs for the five exact legacy RoFormer GGUFs, plus two earlier 12 s BS checks. Those clean results do not authorize benchmarks, repeat/stress sequences, concurrent runs, another checkpoint, or another graph; each requires new explicit scope.
+GPU execution evidence remains graph-, model-, device-, and command-specific. A successful process exit does not establish post-exit host stability, and smoke output does not establish strict numerical or perceptual parity. Every changed-code execution follows `docs/ROFORMER_OPERATION_RECORDING.md`.
 
 In addition, use an analyzed fixture to decode editor audio with ffmpeg and perform real UTZ and UltraStar exports. Validate the UTZ ZIP/manifest/hash metadata, parse the UltraStar chart, decode both exported audio assets, confirm temporary cleanup, and smoke-launch the wrapped Nix executable.
 

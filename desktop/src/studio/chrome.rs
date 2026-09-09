@@ -1229,8 +1229,8 @@ pub(crate) fn spawn_about_dialog(
                 "Lyrics data · LRCLIB / QQ Music / Kugou / NetEase",
                 "Stem separation · native RoFormer",
                 "Stem architecture · audio-separator (MIT)",
-                "Transcript fusion · FireRedASR2-AED / Qwen3-ASR",
-                "Forced alignment · pinned Qwen3 Forced Aligner",
+                "Transcription unavailable · no Rust GGML provider",
+                "Forced alignment unavailable · no Rust GGML provider",
                 "Optional Japanese model · NextFire MMS Karaoke (AGPL-3.0)",
                 "CJK romanization · fugashi / pypinyin / hangul-romanize / ToJyutping",
             ] {

@@ -15,10 +15,7 @@ fn isolated_command(binary: &str) -> (Command, PathBuf) {
     command
         .env("UTA_STUDIO_MODELS_DIR", &root)
         .env("UTA_STUDIO_RUNTIME_STORE", &root)
-        .env("UTA_STUDIO_MODELS_PATH", &root)
-        .env_remove("UTA_STUDIO_OPENVINO_RUNTIME_PATH")
-        .env_remove("UTA_STUDIO_QWEN_ASR_RUNTIME_PATH")
-        .env_remove("UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH");
+        .env("UTA_STUDIO_MODELS_PATH", &root);
     (command, root)
 }
 
@@ -48,7 +45,7 @@ fn request(request_id: &str, version: u32) -> serde_json::Value {
             "vocal_chart": false,
             "pitch_evidence": false,
             "singing_analysis": false,
-            "transcript": true,
+            "transcript": false,
             "alignment": false,
             "stems": []
         },
@@ -92,8 +89,6 @@ fn matrix_request(case: &str) -> serde_json::Value {
             value["requested_artifacts"]["vocal_chart"] = serde_json::json!(true);
             value["requested_artifacts"]["pitch_evidence"] = serde_json::json!(true);
             value["requested_artifacts"]["singing_analysis"] = serde_json::json!(true);
-            value["requested_artifacts"]["transcript"] = serde_json::json!(true);
-            value["requested_artifacts"]["alignment"] = serde_json::json!(true);
         }
         _ => unreachable!("known request matrix case"),
     }
@@ -163,7 +158,8 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
     );
     assert_eq!(read_frame(&mut stdout)["type"], "ready");
 
-    let valid = request("wire-valid", 1);
+    let mut valid = request("wire-valid", 1);
+    valid["requested_artifacts"]["pitch_evidence"] = serde_json::json!(true);
     for (command_type, response_type) in [
         ("validate", "validation_result"),
         ("requirements", "requirements"),
@@ -189,19 +185,19 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
     let capabilities = read_frame(&mut stdout);
     assert_eq!(capabilities["type"], "capabilities");
     let descriptors = capabilities["capabilities"].as_array().unwrap();
-    for capability in ["analysis.acoustic_dsp", "notes.game"] {
-        let descriptor = descriptors
-            .iter()
-            .find(|entry| entry["id"] == capability)
-            .unwrap();
-        assert_eq!(descriptor["implementation_exists"], true, "{capability}");
-    }
     for capability in [
+        "analysis.acoustic_dsp",
         "fusion.transcript",
         "fusion.alignment",
         "fusion.singing",
         "fusion.candidate_graph",
         "finalize.vocal_chart",
+        "pitch.secondary.fcpe",
+        "speech.transcribe",
+        "speech.align",
+        "notes.game",
+        "notes.basic_pitch",
+        "notes.jbm555",
     ] {
         let descriptor = descriptors
             .iter()
@@ -209,7 +205,6 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
             .unwrap();
         assert_eq!(descriptor["implementation_exists"], true, "{capability}");
     }
-
     let matrix = [
         (
             "stem-only-vocals",
@@ -224,7 +219,7 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
         ),
         (
             "instrumental-only",
-            vec!["model:bs_polarformer_public_instrumental"],
+            vec!["model:bs_roformer_leap_xe90_vocals"],
         ),
         ("transcript-only", vec!["model:qwen3_asr_1_7b"]),
         ("alignment-only", vec!["model:qwen3_forced_aligner_0_6b"]),
@@ -236,7 +231,6 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
                 "model:qwen3_asr_1_7b",
                 "model:qwen3_forced_aligner_0_6b",
                 "model:rmvpe",
-                "model:game",
             ],
         ),
     ];
@@ -331,11 +325,12 @@ fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
         "nodes": [
             workflow_node("source", "audio.source", None, "always", 1000, "native_dsp", serde_json::json!({})),
             workflow_node("split", "audio.separate_vocal_bgm", Some("bs_roformer_leap_xe90_vocals"), "always", 900, "vulkan", serde_json::json!({})),
-            workflow_node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), "always", 800, "vulkan", serde_json::json!({})),
-            workflow_node("asr", "analysis.asr", Some("qwen3_asr_1_7b"), "always", 700, "pinned_qwen_asr_vulkan", serde_json::json!({})),
-            workflow_node("transcript", "fusion.transcript", None, "always", 690, "native_dsp", serde_json::json!({})),
-            workflow_node("align", "analysis.forced_alignment", Some("qwen3_forced_aligner_0_6b"), "always", 680, "pinned_qwen_align_vulkan", serde_json::json!({})),
-            workflow_node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 670, "ggml_vulkan", serde_json::json!({})),
+            workflow_node("lead", "audio.lead_isolate", Some("melband_roformer_harmony"), "always", 800, "ggml", serde_json::json!({})),
+            workflow_node("asr", "analysis.asr", Some("qwen3_asr_1_7b"), "always", 720, "ggml", serde_json::json!({})),
+            workflow_node("transcript", "fusion.transcript", None, "always", 710, "native_dsp", serde_json::json!({})),
+            workflow_node("align", "analysis.forced_alignment", Some("qwen3_forced_aligner_0_6b"), "always", 700, "ggml", serde_json::json!({})),
+            workflow_node("pitch", "analysis.pitch_f0", Some("rmvpe"), "always", 670, "ggml", serde_json::json!({})),
+            workflow_node("acoustic", "analysis.acoustic_dsp", None, "always", 660, "native_dsp", serde_json::json!({})),
             workflow_node(
                 "fusion",
                 "fusion.singing_evidence",
@@ -356,13 +351,14 @@ fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
             workflow_binding("source", "mix", "split", "audio", "audio", Some("source_mix"), false),
             workflow_binding("split", "vocal", "lead", "audio", "audio", Some("vocal"), false),
             workflow_binding("lead", "lead", "asr", "audio", "audio", Some("lead_vocal"), true),
-            workflow_binding("lead", "lead", "align", "audio", "audio", Some("lead_vocal"), true),
-            workflow_binding("lead", "lead", "pitch", "audio", "audio", Some("lead_vocal"), true),
             workflow_binding("asr", "transcript", "transcript", "evidence", "transcript_evidence", None, false),
+            workflow_binding("lead", "lead", "align", "audio", "audio", Some("lead_vocal"), true),
             workflow_binding("transcript", "lyrics", "align", "lyrics", "lyrics", None, false),
-            workflow_binding("transcript", "lyrics", "canonical", "lyrics", "lyrics", None, false),
-            workflow_binding("align", "alignment", "fusion", "alignment", "alignment_evidence", None, false),
+            workflow_binding("lead", "lead", "pitch", "audio", "audio", Some("lead_vocal"), true),
+            workflow_binding("lead", "lead", "acoustic", "audio", "audio", Some("lead_vocal"), true),
             workflow_binding("pitch", "pitch", "fusion", "pitch", "pitch_evidence", None, false),
+            workflow_binding("align", "alignment", "fusion", "alignment", "alignment_evidence", None, false),
+            workflow_binding("acoustic", "acoustic", "fusion", "acoustic", "acoustic_evidence", None, false),
             workflow_binding("fusion", "evidence", "candidates", "evidence", "evidence_bundle", None, false),
             workflow_binding("candidates", "candidates", "canonical", "candidates", "candidate_graph", None, false)
         ],
@@ -402,11 +398,13 @@ fn workflow_node(
         }
     });
     if capability_id == "audio.separate_vocal_bgm" {
+        let provider = model_id.expect("separation fixture has a provider");
+        value["provider_preferences"]["instrumental"] = serde_json::json!(provider);
         value["execution_invocations"] = serde_json::json!([{
-            "invocation_id": format!("{instance_id}.vocal"),
-            "provider_id": model_id.expect("separation fixture has a provider"),
-            "capabilities": ["audio.extract_vocals"],
-            "output_ports": ["vocal"]
+            "invocation_id": instance_id,
+            "provider_id": provider,
+            "capabilities": ["audio.extract_vocals", "audio.extract_instrumental"],
+            "output_ports": ["vocal", "instrumental"]
         }]);
     }
     value
@@ -479,7 +477,9 @@ fn f0_derived_fusion_crosses_the_packaged_cli_boundary() {
         .filter_map(|resource| resource["resource"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
     assert!(resources.contains("model:rmvpe"));
-    assert!(!resources.contains("model:game"));
+    assert!(resources.contains("model:qwen3_asr_1_7b"));
+    assert!(resources.contains("model:qwen3_forced_aligner_0_6b"));
+    assert!(!resources.contains("model:game_1_0_3_medium"));
 
     let plan = run_request_command("plan", &request);
     let capabilities = plan["execution_nodes"]

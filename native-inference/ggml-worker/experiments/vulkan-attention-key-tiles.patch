@@ -1,0 +1,83 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3829,6 +3829,14 @@
+     }
+     result.workgroup_size = num_subgroups * result.subgroup_size;
+ 
++    if (intel_m8_h64) {
++        const char * key_cols = std::getenv("UTA_STUDIO_GGML_FA_KEY_COLS");
++        const uint32_t requested_cols = key_cols ? std::atoi(key_cols) : 32;
++        if (requested_cols == 32 || requested_cols == 64 || requested_cols == 128) {
++            result.block_cols = requested_cols;
++        }
++    }
++
+     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit
+     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
+ 
+@@ -4577,4 +4585,4 @@
+             } else {
+-                // Bc is MatBc per subgroup, so this recovers the M the tuning chose.
+-                if (Bc / fa.first.row_split == 8) {
++                // Matrix instruction shape does not depend on key-block length.
++                if (ggml_vk_coopmat_fa_m(device, f32acc) == 8) {
+                     if (f32acc) { spv_data = flash_attn_f32_f16_cm1_m8_data;        spv_size = flash_attn_f32_f16_cm1_m8_len; }
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -263,7 +263,11 @@
+         // K * Q^T -> S^T: Bc x HSK_pad * HSK_pad x Br -> Bc x Br
+         // Bc split across workgroup (four subgroups), loop over HSK in chunks of 16: 16 x 16 * 16 x 16 -> 16 x 16
+         // This is written transposed in order to allow for N being 8 if implementations need it
+-        coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> SfMat = coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++        const uint key_tiles = Bc / (MatBc * row_split);
++        coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> SfMat[key_tiles];
++        [[unroll]] for (uint tile = 0; tile < key_tiles; ++tile) {
++            SfMat[tile] = coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++        }
+         coopmat<FLOAT_TYPE, gl_ScopeSubgroup, MatBc, 16, gl_MatrixUseA> KMat;
+         coopmat<FLOAT_TYPE, gl_ScopeSubgroup, 16, MatBr, gl_MatrixUseB> QMat;
+ 
+@@ -306,25 +310,29 @@
+                 barrier();
+             }
+ 
+-            if (stage_k) {
+-                uint coord = (gl_SubgroupID * MatBc) * kvsh_stride;
+-                coopMatLoad(KMat, kvsh, coord, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
+-            } else {
+-                const uint coord = k_offset / 4 + (j * Bc + gl_SubgroupID * MatBc) * k_stride / 4 + d * 16 / 4;
+-                coopMatLoad(KMat, data_kv4, coord, k_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
+-            }
+-            } else {
+-                uint coord = (gl_SubgroupID * MatBc) * kvsh_stride + d * 16 / 4;
+-                coopMatLoad(KMat, kvsh, coord, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
+             }
+ 
++            // Q is shared by all key tiles assigned to this subgroup.
+             coopMatLoad(QMat, Qf, d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
+-
+-            SfMat = coopMatMulAdd(KMat, QMat, SfMat);
++            [[unroll]] for (uint tile = 0; tile < key_tiles; ++tile) {
++                const uint key_row = (tile * row_split + gl_SubgroupID) * MatBc;
++                const bool stage_key = USE_DECODE_K || (KV_bounds_check && (j >= KV / Bc || ((HSK | HSV) & 15) != 0 || ((k_stride | v_stride) & 7) != 0)) || d * 16 + 16 > HSK;
++                if (SHMEM_STAGING != 0) {
++                    coopMatLoad(KMat, kvsh, key_row * kvsh_stride + d * 16 / 4, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                } else if (stage_key) {
++                    coopMatLoad(KMat, kvsh, key_row * kvsh_stride, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                } else {
++                    const uint coord = k_offset / 4 + (j * Bc + key_row) * k_stride / 4 + d * 16 / 4;
++                    coopMatLoad(KMat, data_kv4, coord, k_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
++                }
++                SfMat[tile] = coopMatMulAdd(KMat, QMat, SfMat[tile]);
++            }
+         }
+ 
+-        uint coord = gl_SubgroupID * MatBc * sfshstride;
+-        coopMatStore(SfMat, sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
++        [[unroll]] for (uint tile = 0; tile < key_tiles; ++tile) {
++            uint coord = (tile * row_split + gl_SubgroupID) * MatBc * sfshstride;
++            coopMatStore(SfMat[tile], sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
++        }
+         barrier();
+ 
+         if (LOGIT_SOFTCAP) {

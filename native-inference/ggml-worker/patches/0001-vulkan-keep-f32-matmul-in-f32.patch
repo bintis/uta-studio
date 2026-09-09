@@ -1,0 +1,101 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+index 585e10d45ac79cfc563b767040b8a529e86f1c59..c859eaf7327d1dddaabca1f2ba5ca0e40f385c56 100644
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4158,6 +4158,13 @@ struct CompileTask {
+ };
+ 
+ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
++    // Uta! Studio local patch: an all-F32 matrix multiply keeps F32 precision
++    // unless the caller explicitly asks for the device's fast shader family.
++    // Absent, or any other value, is the exact path. See the block after the
++    // final #undef CREATE_MM for what the trade is and what it was measured at.
++    const char * uta_f32_matmul = getenv("UTA_STUDIO_GGML_F32_MATMUL");
++    const bool uta_promote_f32_matmul = uta_f32_matmul != nullptr && strcmp(uta_f32_matmul, "promote") == 0;
++
+     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
+ 
+     // some shaders have a minimum subgroup size
+@@ -4731,7 +4738,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             CREATE_MM(TYPE, PIPELINE_NAME . f32acc, NAMELC, , WG_DENOMS, WARPTILE, PUSHCONST, PARAMCOUNT, ID) \
+         } \
+ 
+-        CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32, matmul_f32_f32, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
++        // Uta! Studio local patch: unless promotion was asked for,
++        // pipeline_matmul_f32 is built after this chain from the scalar _fp32
++        // shaders so an all-F32 matmul keeps F32 precision. See the block
++        // after the final #undef CREATE_MM.
++        if (uta_promote_f32_matmul) {
++            CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32, matmul_f32_f32, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
++        }
+         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32_f16, matmul_f32_f16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16, matmul_f16, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16_f32, matmul_f16_f32, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+@@ -4871,7 +4884,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         CREATE_MM(TYPE, PIPELINE_NAME . f16acc, NAMELC, _f16acc, WG_DENOMS, WARPTILE, PUSHCONST, PARAMCOUNT, ID, REQSUBGROUPSIZE) \
+         CREATE_MM(TYPE, PIPELINE_NAME . f32acc, NAMELC, , WG_DENOMS, WARPTILE, PUSHCONST, PARAMCOUNT, ID, REQSUBGROUPSIZE) \
+ 
+-        CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32, matmul_f32_f32, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, , 0);
++        // Uta! Studio local patch: see the matching comment in the coopmat
++        // branch above.
++        if (uta_promote_f32_matmul) {
++            CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32, matmul_f32_f32, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, , 0);
++        }
+         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32_f16, matmul_f32_f16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, , 0);
+         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16, matmul_f16, wg_denoms, warptile, vk_mat_mat_push_constants, 3, , 0);
+         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16_f32, matmul_f16_f32, wg_denoms, warptile, vk_mat_mat_push_constants, 3, , 0);
+@@ -5181,6 +5198,54 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     }
+ #undef CREATE_MM
+ 
++    // Uta! Studio local patch: keep an all-F32 matrix multiply in F32.
++    //
++    // pipeline_matmul_f32 is built above from whichever shader family the
++    // device selected. In the coopmat2, coopmat and fp16 families the matmul
++    // shader's FLOAT_TYPE is float16_t (vulkan-shaders-gen.cpp promotes it
++    // whenever coopmat2 || fp16), so a multiply whose operands are both F32
++    // is still evaluated on F16-rounded operands. Measured against an exact
++    // f64 reference: 2.388e-3 worst relative error at k=9 and 1.596e-2 at
++    // k=1280, on both an AMD Radeon 780M and an Intel Arc B580, versus
++    // 2.391e-7 on the CPU backend.
++    //
++    // That is a reasonable trade for quantised LLM weights, which is what
++    // upstream tunes for -- test-backend-ops accordingly allows MUL_MAT an
++    // NMSE of 5e-4 where ordinary operations get 1e-7. Uta! Studio's audio
++    // graphs are F32 end to end and decode greedily, so the same trade turns
++    // into wrong output: FireRed transcribes its reference fixture correctly
++    // on the CPU lane and incorrectly on both GPUs.
++    //
++    // Rebuild only this one pipeline from the scalar _fp32 shaders, whose
++    // FLOAT_TYPE is float. Every F16, BF16 and quantised pipeline keeps the
++    // device's fast family, so this costs accuracy nowhere and speed only on
++    // F32 x F32. Measured cost on the B580: Leap separation 21.34s -> 23.58s,
++    // GAME medium 2.11s -> 2.24s.
++    //
++    // Only the coopmat and fp16 families were measured here; coopmat2 is
++    // covered by the same reasoning but was not available on this hardware.
++    if (!uta_promote_f32_matmul && (device->coopmat2 || device->coopmat_support || device->fp16)) {
++        const uint32_t f32_s_warptile_wm = device->subgroup_size == 8 ? 8 : 32;
++        const std::vector<uint32_t> f32_m_warptile = { 128,              64,  64, 16, subgroup_size_8,     32, 2, 4, 2, 1, subgroup_size_8 };
++        const std::vector<uint32_t> f32_s_warptile = { subgroup_size_32, 32,  32, 16, f32_s_warptile_wm,   32, 2, 2, 2, 1, subgroup_size_8 };
++
++        // The large scalar tile is the one upstream turns off for AMD and Intel
++        // whenever coopmat is unavailable, and measurement agrees: keeping it
++        // made Leap separation 71.3s against 23.1s on the medium and small
++        // tiles. Drop it for F32 the same way the scalar branch would, and
++        // clear the flag so the size heuristic never selects a pipeline that
++        // no longer exists.
++        device->mul_mat_l[GGML_TYPE_F32] = false;
++        if (device->mul_mat_m[GGML_TYPE_F32]) {
++            ggml_vk_create_pipeline(device, device->pipeline_matmul_f32->m, "matmul_f32_f32_m", matmul_f32_f32_fp32_len, matmul_f32_f32_fp32_data, "main", 3, sizeof(vk_mat_mat_push_constants), m_wg_denoms, ggml_vk_mul_mm_spec(f32_m_warptile, false), 1);
++            ggml_vk_create_pipeline(device, device->pipeline_matmul_f32->a_m, "matmul_f32_f32_aligned_m", matmul_f32_f32_fp32_len, matmul_f32_f32_fp32_data, "main", 3, sizeof(vk_mat_mat_push_constants), m_wg_denoms, ggml_vk_mul_mm_spec(f32_m_warptile, true), m_align);
++        }
++        if (device->mul_mat_s[GGML_TYPE_F32]) {
++            ggml_vk_create_pipeline(device, device->pipeline_matmul_f32->s, "matmul_f32_f32_s", matmul_f32_f32_fp32_len, matmul_f32_f32_fp32_data, "main", 3, sizeof(vk_mat_mat_push_constants), s_wg_denoms, ggml_vk_mul_mm_spec(f32_s_warptile, false), 1);
++            ggml_vk_create_pipeline(device, device->pipeline_matmul_f32->a_s, "matmul_f32_f32_aligned_s", matmul_f32_f32_fp32_len, matmul_f32_f32_fp32_data, "main", 3, sizeof(vk_mat_mat_push_constants), s_wg_denoms, ggml_vk_mul_mm_spec(f32_s_warptile, true), s_align);
++        }
++    }
++
+     // mul mat vec
+ 
+     // the number of rows computed per shader depends on GPU model and quant

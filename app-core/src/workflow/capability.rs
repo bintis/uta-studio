@@ -79,56 +79,43 @@ pub struct SeparationStrategyOptionV1 {
     pub executions: &'static [SeparationProviderExecutionV1],
 }
 
-const VOCAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Vocal];
-const INSTRUMENTAL_ROLE: &[SeparationOutputRoleV1] = &[SeparationOutputRoleV1::Instrumental];
-const SPECIALIST_EXECUTIONS: &[SeparationProviderExecutionV1] = &[
-    SeparationProviderExecutionV1 {
+const VOCAL_INSTRUMENTAL_ROLES: &[SeparationOutputRoleV1] = &[
+    SeparationOutputRoleV1::Vocal,
+    SeparationOutputRoleV1::Instrumental,
+];
+const LEAP_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecutionV1] =
+    &[SeparationProviderExecutionV1 {
         provider_id: "bs_roformer_leap_xe90_vocals",
-        output_roles: VOCAL_ROLE,
-    },
-    SeparationProviderExecutionV1 {
+        output_roles: VOCAL_INSTRUMENTAL_ROLES,
+    }];
+const LEAP_INSTRUMENTAL_DIRECT_EXECUTION: &[SeparationProviderExecutionV1] =
+    &[SeparationProviderExecutionV1 {
+        provider_id: "bs_roformer_leap_xe90_instrumental",
+        output_roles: VOCAL_INSTRUMENTAL_ROLES,
+    }];
+const POLARFORMER_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecutionV1] =
+    &[SeparationProviderExecutionV1 {
         provider_id: "bs_polarformer_public_instrumental",
-        output_roles: INSTRUMENTAL_ROLE,
-    },
-];
-const SPECIALIST_EXECUTIONS_INST_V2: &[SeparationProviderExecutionV1] = &[
-    SeparationProviderExecutionV1 {
-        provider_id: "bs_roformer_leap_xe90_vocals",
-        output_roles: VOCAL_ROLE,
-    },
-    SeparationProviderExecutionV1 {
-        provider_id: "melband_roformer_inst_v2",
-        output_roles: INSTRUMENTAL_ROLE,
-    },
-];
-const SPECIALIST_EXECUTIONS_POLARFORMER_BOTH: &[SeparationProviderExecutionV1] = &[
-    SeparationProviderExecutionV1 {
-        provider_id: "bs_polarformer_public_instrumental",
-        output_roles: VOCAL_ROLE,
-    },
-    SeparationProviderExecutionV1 {
-        provider_id: "bs_polarformer_public_instrumental",
-        output_roles: INSTRUMENTAL_ROLE,
-    },
-];
+        output_roles: VOCAL_INSTRUMENTAL_ROLES,
+    }];
 const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[
     SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::IndependentSpecialists,
-        label: "Independent vocal + Instrumental specialists (PolarFormer)",
-        description: "Leap XE90 extracts GuideVocals and public PolarFormer independently extracts Instrumental, with separate native progress and logs.",
-        executions: SPECIALIST_EXECUTIONS,
+        strategy: SeparationStrategyV1::LeapDualOutput,
+        label: "Leap XE90 · Vocals + Instrumental",
+        description: "Default. One Leap XE90 inference publishes the trained vocal estimate and its mix-minus-vocals Instrumental residual.",
+        executions: LEAP_DUAL_OUTPUT_EXECUTION,
     },
     SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::IndependentSpecialistsInstV2,
-        label: "Independent vocal + Instrumental specialists (Inst V2)",
-        description: "Leap XE90 extracts GuideVocals and MelBand-RoFormer Inst V2 independently extracts Instrumental, with separate native progress and logs.",
-        executions: SPECIALIST_EXECUTIONS_INST_V2,
+        strategy: SeparationStrategyV1::LeapInstrumentalDirect,
+        label: "Leap XE90 · Fuller BGM",
+        description: "Optional. The instrumental-target model publishes its direct, fuller Instrumental estimate and a mix-minus-instrumental vocal residual. It may retain more vocal bleed than the default.",
+        executions: LEAP_INSTRUMENTAL_DIRECT_EXECUTION,
     },
     SeparationStrategyOptionV1 {
         strategy: SeparationStrategyV1::PolarformerBoth,
-        label: "PolarFormer for both roles",
-        description: "Public PolarFormer extracts both GuideVocals (its own trained stem) and Instrumental (that stem subtracted from the mix), as two independent native invocations.",
-        executions: SPECIALIST_EXECUTIONS_POLARFORMER_BOTH,
+        label: "Experimental · PolarFormer · Vocals + Instrumental",
+        description: "Disabled by default. One public PolarFormer inference publishes the trained vocal estimate and its mix-minus-vocals Instrumental residual for explicit A/B evaluation.",
+        executions: POLARFORMER_DUAL_OUTPUT_EXECUTION,
     },
 ];
 
@@ -151,67 +138,61 @@ pub fn separation_strategy_descriptor(
 pub fn workflow_model_label(model_id: &str) -> &str {
     match model_id {
         "bs_roformer_leap_xe90_vocals" => "BS-RoFormer Leap XE90 Vocals",
+        "bs_roformer_leap_xe90_instrumental" => "BS-RoFormer Leap XE90 Instrumental",
         "bs_polarformer_public_instrumental" => "BS-PolarFormer Public Instrumental",
-        "jbm555_cectc_80" => "JBM555 CE-CTC 80",
         "melband_roformer_harmony" => "MelBand-RoFormer Lead Isolation",
-        "melband_roformer_inst_v2" => "MelBand-RoFormer Inst V2",
         "melband_roformer_denoise_aufr33" => "MelBand-RoFormer Denoise",
         "melband_roformer_dereverb_anvuew" => "MelBand-RoFormer Dereverb",
-        "qwen3_asr_1_7b" => "Qwen3-ASR 1.7B",
-        "firered_asr2_aed" => "FireRedASR2-AED",
-        "qwen3_forced_aligner_0_6b" => "Qwen3 Forced Aligner 0.6B",
         "rmvpe" => "RMVPE",
         "fcpe" => "FCPE",
-        "game" => "GAME",
+        "qwen3_asr_1_7b" => "Qwen3-ASR 1.7B",
+        "qwen3_forced_aligner_0_6b" => "Qwen3 Forced Aligner 0.6B",
         "basic_pitch" => "Basic Pitch",
-        "rosvot" => "ROSVOT",
+        "game" | "game_1_0_3_medium" => "GAME 1.0.3 Medium",
+        "game_1_0_3_small" => "GAME 1.0.3 Small",
+        "game_1_0_3_large" => "GAME 1.0.3 Large",
+        "jbm555" | "jbm555_cectc_80" => "JBM555 CECTC-80",
         "stars" => "STARS",
+        "rosvot" => "ROSVOT",
+        "firered_asr2_aed" => "FireRedASR2-AED",
         other => other,
     }
 }
 
-/// Exact Engine-v1 provider choices that are interchangeable inside one
-/// Processing Studio capability card. Fixed-role and single-provider
-/// capabilities return no choices so the desktop does not render a fake selector.
-pub fn workflow_model_options(capability_id: &CapabilityId) -> &'static [WorkflowModelOption] {
-    const PITCH: &[WorkflowModelOption] = &[
-        WorkflowModelOption {
-            model_id: "rmvpe",
-            label: "RMVPE",
-        },
-        WorkflowModelOption {
-            model_id: "fcpe",
-            label: "FCPE",
-        },
-    ];
-    const NOTE_BOUNDARY: &[WorkflowModelOption] = &[
-        WorkflowModelOption {
-            model_id: "game",
-            label: "GAME",
-        },
-        WorkflowModelOption {
-            model_id: "basic_pitch",
-            label: "Basic Pitch",
-        },
-        WorkflowModelOption {
-            model_id: "rosvot",
-            label: "ROSVOT",
-        },
-        WorkflowModelOption {
-            model_id: "stars",
-            label: "STARS",
-        },
-        WorkflowModelOption {
-            model_id: "jbm555_cectc_80",
-            label: "JBM555 CE-CTC 80 (Japanese)",
-        },
-    ];
-    const EMPTY: &[WorkflowModelOption] = &[];
+const GAME_MODEL_OPTIONS: &[WorkflowModelOption] = &[
+    WorkflowModelOption {
+        model_id: "game_1_0_3_small",
+        label: "Small",
+    },
+    WorkflowModelOption {
+        model_id: "game_1_0_3_medium",
+        label: "Medium · default",
+    },
+    WorkflowModelOption {
+        model_id: "game_1_0_3_large",
+        label: "Large",
+    },
+];
 
-    match capability_id.as_str() {
-        "analysis.pitch_f0" => PITCH,
-        "analysis.note_boundary" => NOTE_BOUNDARY,
-        _ => EMPTY,
+/// Exact Engine-v1 provider choices that are interchangeable inside one
+/// Processing Studio card. Only the GAME card exposes variants; independent
+/// Basic Pitch/JBM555/STARS/ROSVOT experts cannot be silently repurposed into
+/// duplicate GAME executions.
+pub fn workflow_model_options(
+    capability_id: &CapabilityId,
+    current_model_id: Option<&str>,
+) -> &'static [WorkflowModelOption] {
+    if capability_id.as_str() == "analysis.note_boundary"
+        && current_model_id.is_some_and(|model| {
+            matches!(
+                model,
+                "game" | "game_1_0_3_small" | "game_1_0_3_medium" | "game_1_0_3_large"
+            )
+        })
+    {
+        GAME_MODEL_OPTIONS
+    } else {
+        &[]
     }
 }
 
@@ -391,16 +372,13 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
                 required: false,
                 multiple: true,
             },
-            port("alignment", AlignmentEvidence, true),
+            port("alignment", AlignmentEvidence, false),
             port("techniques", TechniqueEvidence, false),
             port("acoustic", AcousticEvidence, false),
         ],
         vec![port("evidence", EvidenceBundle, false)],
     );
-    evidence_fusion.hard_dependencies = vec![
-        CapabilityId::new("analysis.pitch_f0"),
-        CapabilityId::new("analysis.forced_alignment"),
-    ];
+    evidence_fusion.hard_dependencies = vec![CapabilityId::new("analysis.pitch_f0")];
     result.push(evidence_fusion);
 
     let mut candidate = capability(
@@ -419,17 +397,14 @@ pub fn builtin_capabilities() -> Vec<NodeCapability> {
         Finalization,
         vec![
             port("candidates", CandidateGraph, true),
-            port("lyrics", Lyrics, true),
+            port("lyrics", Lyrics, false),
         ],
         vec![
             port("track", CanonicalSingingTrack, false),
             port("chart", CandidateChart, false),
         ],
     );
-    canonical.hard_dependencies = vec![
-        CapabilityId::new("fusion.candidate_graph"),
-        CapabilityId::new("fusion.transcript"),
-    ];
+    canonical.hard_dependencies = vec![CapabilityId::new("fusion.candidate_graph")];
     result.push(canonical);
 
     result

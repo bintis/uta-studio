@@ -1,0 +1,330 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -843,6 +843,8 @@
+     bool coopmat_bf16_support {};
+     bool coopmat_support_16x16x16_f16acc {};
+     bool coopmat_support_16x16x16_f32acc {};
++    bool coopmat_support_8x16x16_f32acc {};
++    bool coopmat_support_8x16x16_f16acc {};
+     bool coopmat1_fa_support {};
+     uint32_t coopmat_m;
+     uint32_t coopmat_n;
+@@ -3780,12 +3782,26 @@
+     return result;
+ }
+ 
++// The M of the MatBc x MatBr x 16 multiply this device can run the coopmat1
++// attention shader with: 16 where the 16x16x16 shape exists, otherwise 8 for
++// devices such as Intel Xe that report only 8x16x16, and 0 when neither does.
++static uint32_t ggml_vk_coopmat_fa_m(const vk_device& device, bool f32acc) {
++    if ((f32acc && device->coopmat_support_16x16x16_f32acc) ||
++        (!f32acc && device->coopmat_support_16x16x16_f16acc)) {
++        return 16;
++    }
++    if ((f32acc && device->coopmat_support_8x16x16_f32acc) ||
++        (!f32acc && device->coopmat_support_8x16x16_f16acc)) {
++        return 8;
++    }
++    return 0;
++}
++
+ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device, uint32_t hsk, uint32_t hsv, uint32_t n_rows, uint32_t n_kv, ggml_type k_type, ggml_type v_type, bool f32acc) {
+     GGML_UNUSED(n_rows);
+     GGML_UNUSED(n_kv);
+     GGML_UNUSED(k_type);
+     GGML_UNUSED(v_type);
+-    GGML_UNUSED(f32acc);
+ 
+     vk_fa_tuning_params result{};
+     result.path = FA_COOPMAT1;
+@@ -3793,7 +3809,8 @@
+     const uint32_t D = hsk | hsv;
+ 
+     const uint32_t coopmat_block_rows = 16;
+-    const uint32_t coopmat_block_cols = 16;
++    const uint32_t fa_m = ggml_vk_coopmat_fa_m(device, f32acc);
++    const uint32_t coopmat_block_cols = fa_m ? fa_m : 16;
+ 
+     const uint32_t num_subgroups = 4;
+ 
+@@ -3850,14 +3867,18 @@
+         path = FA_SCALAR;
+     }
+ 
++    // Only the F16 attention shader has an M=8 build; the bf16 one is 16x16x16.
++    if (path == FA_COOPMAT1 && k_type == GGML_TYPE_BF16 && ggml_vk_coopmat_fa_m(device, f32acc) == 8) {
++        path = FA_SCALAR;
++    }
++
+     if (path == FA_COOPMAT1 && device->architecture == vk_device_architecture::NVIDIA_TURING) {
+         // Nvidia compiler bug, see https://github.com/ggml-org/llama.cpp/pull/19075#issuecomment-3820716090
+         path = FA_SCALAR;
+     }
+ 
+     if (path == FA_COOPMAT1) {
+-        bool shape_ok = (f32acc && device->coopmat_support_16x16x16_f32acc) ||
+-                        (!f32acc && device->coopmat_support_16x16x16_f16acc);
++        bool shape_ok = ggml_vk_coopmat_fa_m(device, f32acc) != 0;
+         const vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+         bool shmem_ok = ggml_vk_flash_attn_coopmat_shmem_support(device, params, hsk, hsv, f32acc, k_type, v_type);
+ 
+@@ -4534,9 +4555,16 @@
+                 continue;
+ #endif
+             } else {
+-                if (f32acc) { spv_data = flash_attn_f32_f16_cm1_data;        spv_size = flash_attn_f32_f16_cm1_len; }
+-                else        { spv_data = flash_attn_f32_f16_f16acc_cm1_data; spv_size = flash_attn_f32_f16_f16acc_cm1_len; }
+-                name = aligned ? "flash_attn_f32_f16_aligned_cm1" : "flash_attn_f32_f16_cm1";
++                // Bc is MatBc per subgroup, so this recovers the M the tuning chose.
++                if (Bc / fa.first.row_split == 8) {
++                    if (f32acc) { spv_data = flash_attn_f32_f16_cm1_m8_data;        spv_size = flash_attn_f32_f16_cm1_m8_len; }
++                    else        { spv_data = flash_attn_f32_f16_f16acc_cm1_m8_data; spv_size = flash_attn_f32_f16_f16acc_cm1_m8_len; }
++                    name = aligned ? "flash_attn_f32_f16_aligned_cm1_m8" : "flash_attn_f32_f16_cm1_m8";
++                } else {
++                    if (f32acc) { spv_data = flash_attn_f32_f16_cm1_data;        spv_size = flash_attn_f32_f16_cm1_len; }
++                    else        { spv_data = flash_attn_f32_f16_f16acc_cm1_data; spv_size = flash_attn_f32_f16_f16acc_cm1_len; }
++                    name = aligned ? "flash_attn_f32_f16_aligned_cm1" : "flash_attn_f32_f16_cm1";
++                }
+             }
+             ggml_vk_create_pipeline(device, fa.second, name, spv_size, spv_data, "main", 7,
+                                     sizeof(vk_flash_attn_push_constants), {Br, 1, 1},
+@@ -6910,6 +6938,9 @@
+                         if (prop.MSize == 16 && prop.NSize == 16 && prop.KSize == 16) {
+                             device->coopmat_support_16x16x16_f32acc = true;
+                         }
++                        if (prop.MSize == 8 && prop.NSize == 16 && prop.KSize == 16) {
++                            device->coopmat_support_8x16x16_f32acc = true;
++                        }
+                     } else if ((vk::ComponentTypeKHR)prop.CType == vk::ComponentTypeKHR::eFloat16 &&
+                                (vk::ComponentTypeKHR)prop.ResultType == vk::ComponentTypeKHR::eFloat16) {
+                         // coopmat sizes not set yet
+@@ -6924,6 +6955,9 @@
+                         }
+                         if (prop.MSize == 16 && prop.NSize == 16 && prop.KSize == 16) {
+                             device->coopmat_support_16x16x16_f16acc = true;
++                        }
++                        if (prop.MSize == 8 && prop.NSize == 16 && prop.KSize == 16) {
++                            device->coopmat_support_8x16x16_f16acc = true;
+                         }
+                     }
+                 } else if ((vk::ComponentTypeKHR)prop.AType      == vk::ComponentTypeKHR::eSint8 &&
+@@ -10758,9 +10792,9 @@
+     const uint32_t Br = params.block_rows;
+     const uint32_t Bc = params.block_cols;
+ 
+-    const uint32_t MatBr = 16, MatBc = 16;
+-
+-    const uint32_t row_split = Bc / MatBc;
++    const uint32_t MatBr = 16;
++
++    const uint32_t row_split = params.row_split;
+ 
+     const uint32_t hsk_pad = ROUNDUP_POW2(hsk, 16);
+     const uint32_t hsv_pad = ROUNDUP_POW2(hsv, 16);
+@@ -10768,7 +10802,7 @@
+     const uint32_t acctype = f32acc ? 4 : 2;
+     const uint32_t f16vec4 = 8;
+ 
+-    const uint32_t tmpsh = (Bc / MatBc) * sizeof(float);
++    const uint32_t tmpsh = row_split * sizeof(float);
+     // DATA_A_IQ4_NL is compiled into the FA shaders unconditionally, so its shared table is always allocated.
+     const uint32_t iq_shmem = 16 * sizeof(ggml_fp16_t);
+ 
+@@ -10782,13 +10816,14 @@
+     const uint32_t sfsh = Bc * sfshstride * acctype;
+ 
+     const uint32_t kvshstride = (params.shmem_staging ? std::max(hsk_pad, hsv_pad) : MatBr) / 4 + 2;
+-    const uint32_t vsh_stride = MatBc / 4 * row_split;
++    const uint32_t vsh_stride = MatBr / 4 * row_split;
+     const uint32_t ksh = ((kvshstride >= vsh_stride) ? (Bc * kvshstride) : (Bc * vsh_stride)) * f16vec4;
+ 
+-    // BF16 PVMat accumulator is f32 (no bf16 accumulator support), so pvsh is vec4 (16 bytes)
+-    const uint32_t pvsh_elem_size = (k_type == GGML_TYPE_BF16) ? 16u : f16vec4;
++    // The PV accumulator is f32 for BF16, which has no bf16 accumulator, and
++    // whenever the graph asked for F32 precision, so pvsh is vec4 (16 bytes)
++    const uint32_t pvsh_elem_size = (k_type == GGML_TYPE_BF16 || f32acc) ? 16u : f16vec4;
+     const uint32_t osh_stride = params.row_split * MatBr / 4;
+-    const uint32_t pvsh = MatBc * osh_stride * pvsh_elem_size;
++    const uint32_t pvsh = Br * osh_stride * pvsh_elem_size;
+ 
+     const uint32_t slope = Br * acctype;
+ 
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl b/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
+@@ -100,7 +100,10 @@
+ #define FA_TYPE_IQ4_NL 20u
+ #define FA_TYPE_BF16 30u
+ 
+-#if defined(BFLOAT16)
++// FA_O_F32 keeps the PV accumulator in F32. Without it the cooperative-matrix
++// attention accumulates O in float16_t even when the graph asked for
++// GGML_PREC_F32, because only the QK accumulator follows that request.
++#if defined(BFLOAT16) || defined(FA_O_F32)
+ #define O_TYPE float
+ #define O_TYPEV4 vec4
+ #else
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -22,9 +22,17 @@
+ #include "flash_attn_dequant.glsl"
+ #endif
+ 
+-// These need to be supported N,M values for a MatBc x MatBr x 16 coopmatmuladd
++// These need to be supported N,M values for a MatBc x MatBr x 16 coopmatmuladd.
++// MatBc is the M of that multiply. Intel Xe reports only M=8 through
++// VK_KHR_cooperative_matrix, so MATBC selects an M=8 build of this shader.
++#ifndef MATBC
++#define MATBC 16
++#endif
+ const uint32_t MatBr = 16;
+-const uint32_t MatBc = 16;
++const uint32_t MatBc = MATBC;
++// Contraction tile of both multiplies. It is the K of MatBc x MatBr x MatK and
++// is always 16; only M varies by device, so it cannot be spelled MatBc.
++const uint32_t MatK = 16;
+ 
+ const uint32_t rows_per_thread = Br / row_split;
+ const uint32_t cols_per_iter = gl_WorkGroupSize.x / row_split;
+@@ -53,12 +61,13 @@
+ 
+ const uint32_t D_pad = HSK_pad > HSV_pad ? HSK_pad : HSV_pad;
+ const uint32_t kvsh_stride = (SHMEM_STAGING != 0 ? D_pad : MatBr) / 4 + 2;
+-const uint v_cols = MatBc / 4 * row_split; // total cols, 4 vec4s per MatBc * number of subgroups
++const uint v_cols = MatBr / 4 * row_split; // total cols, 4 vec4s per MatBr * number of subgroups
+ const uint vsh_stride = v_cols;
+ shared FLOAT_TYPEV4 kvsh[(kvsh_stride >= vsh_stride) ? (Bc * kvsh_stride) : (Bc * vsh_stride)];
+ 
+ const uint32_t osh_stride = row_split * MatBr / 4;
+-shared O_TYPEV4 pvsh[MatBc * osh_stride];
++// Br rows, because the PV accumulator's M spans Br and may need several tiles.
++shared O_TYPEV4 pvsh[Br * osh_stride];
+ 
+ shared ACC_TYPE slope[Br];
+ 
+@@ -421,13 +430,11 @@
+         }
+         barrier();
+ 
+-        const uint num_hsv_tiles = (HSV + MatBc * row_split - 1) / (MatBc * row_split); // round up
+-
+-        // Each subgroup handles HSV/4 columns
++        const uint num_hsv_tiles = (HSV + MatBr * row_split - 1) / (MatBr * row_split); // round up
++
++        // Each subgroup handles MatBr of the HSV columns
+         [[unroll]] for (uint32_t hsv_tile = 0; hsv_tile < num_hsv_tiles; ++hsv_tile) {
+-            const uint hsv_offset = (hsv_tile * row_split + gl_SubgroupID) * 16;
+-
+-            coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> PVMat = coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++            const uint hsv_offset = (hsv_tile * row_split + gl_SubgroupID) * MatBr;
+ 
+             // Preload V tiles for [Bc, 16 * num subgroups]
+             const uint v_rows = Bc;
+@@ -449,7 +456,7 @@
+                     const uint col = idx % v_cols;
+ 
+                     const uint v_row = j * Bc + row;
+-                    const uint v_col = hsv_tile * MatBc * row_split + col * 4;
++                    const uint v_col = hsv_tile * MatBr * row_split + col * 4;
+ 
+                     const uint coord = v_row * v_stride * BLOCK_SIZE_V + v_col;
+                     const uint ib = coord / BLOCK_SIZE_V;
+@@ -475,34 +482,42 @@
+             const uint o_offset = gl_SubgroupID * MatBr / 4;
+ 
+             if (hsv_offset < HSV_pad) {
+-                [[unroll]] for (uint32_t bc_chunk = 0; bc_chunk < Bc / MatBc; ++bc_chunk) {
+-                    coopMatLoad(KMat, Psh, bc_chunk * MatBc * psh_stride, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
+-
+-                    if (SHMEM_STAGING == 0) {
+-                    if (!USE_DECODE_V && !KV_bounds_check) {
+-                        // F16/BF16 values can be loaded directly from global memory
+-                        const uint v_tile_row = j * Bc + bc_chunk * MatBc;
+-                        const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;
+-                        coopMatLoad(QMat, data_vv4, v_tile_offset, v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
+-                    } else {
+-                        const uint v_tile_offset = bc_chunk * MatBr * v_cols + gl_SubgroupID * (MatBc / 4);
+-                        coopMatLoad(QMat, kvsh, v_tile_offset, vsh_stride, gl_CooperativeMatrixLayoutRowMajor);
+-                    }
+-                    } else {
+-                        const uint v_tile_offset = bc_chunk * MatBc * kvsh_stride + (hsv_tile * row_split + gl_SubgroupID) * (MatBc / 4);
+-                        coopMatLoad(QMat, kvsh, v_tile_offset, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
+-                    }
+-
+-                    PVMat = coopMatMulAdd(KMat, QMat, PVMat);
+-                }
+-
+-                // Store PVMat to pvsh and load into Of
+-                coopMatStore(PVMat, pvsh, o_offset, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                // The accumulator's M spans Br. Where M is smaller than Br the
++                // rows are covered by successive tiles rather than one.
++                [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBc; ++br_tile) {
++                    coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> PVMat = coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++
++                    [[unroll]] for (uint32_t kv_chunk = 0; kv_chunk < Bc / MatK; ++kv_chunk) {
++                        // Column-major over Psh: M is the fast axis, so the row
++                        // tile is a scalar offset within one Psh row.
++                        coopMatLoad(KMat, Psh, kv_chunk * MatK * psh_stride + br_tile * MatBc / 4, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
++
++                        if (SHMEM_STAGING == 0) {
++                        if (!USE_DECODE_V && !KV_bounds_check) {
++                            // F16/BF16 values can be loaded directly from global memory
++                            const uint v_tile_row = j * Bc + kv_chunk * MatK;
++                            const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;
++                            coopMatLoad(QMat, data_vv4, v_tile_offset, v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
++                        } else {
++                            const uint v_tile_offset = kv_chunk * MatK * v_cols + gl_SubgroupID * (MatBr / 4);
++                            coopMatLoad(QMat, kvsh, v_tile_offset, vsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                        }
++                        } else {
++                            const uint v_tile_offset = kv_chunk * MatK * kvsh_stride + (hsv_tile * row_split + gl_SubgroupID) * (MatBr / 4);
++                            coopMatLoad(QMat, kvsh, v_tile_offset, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                        }
++
++                        PVMat = coopMatMulAdd(KMat, QMat, PVMat);
++                    }
++
++                    // Store PVMat to pvsh and load into Of
++                    coopMatStore(PVMat, pvsh, o_offset + br_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                }
+             }
+ 
+             barrier();
+ 
+-            const uint hsv_per_tile = row_split * MatBc;
++            const uint hsv_per_tile = row_split * MatBr;
+             const uint hsv_base = hsv_tile * hsv_per_tile;
+             const uint d_values_per_tile = hsv_per_tile / 4;
+ 
+@@ -613,7 +628,8 @@
+         const uint d_local = d0 / threads_per_rowgroup;
+         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+             Of[r][d_local] *= O_TYPE(Lfrcp[r]);
+-#if defined(FLOAT_TYPE_MAX)
++// An F32 O accumulator cannot overflow the half range this clamp guards.
++#if defined(FLOAT_TYPE_MAX) && !defined(FA_O_F32)
+             Of[r][d_local] = clamp(Of[r][d_local], -FLOAT_TYPE_MAX, FLOAT_TYPE_MAX);
+ #endif
+         }
+diff --git a/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+--- a/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -687,8 +687,15 @@
+ #endif
+ 
+ #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
++                std::map<std::string, std::string> fa_cm1_dict = merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"COOPMAT", "1"}});
++                // An F32 accumulator request has to reach the O accumulator too.
++                if (!f16acc) {
++                    fa_cm1_dict["FA_O_F32"] = "1";
++                }
++                string_to_spv("flash_attn_f32_f16", "flash_attn_cm1.comp", fa_cm1_dict, fp16, true, false, f16acc);
++                // M=8 build for devices whose cooperative matrix shape is 8x16x16, such as Intel Xe.
+                 string_to_spv("flash_attn_f32_f16", "flash_attn_cm1.comp",
+-                    merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"COOPMAT", "1"}}), fp16, true, false, f16acc);
++                    merge_maps(fa_cm1_dict, {{"MATBC", "8"}}), fp16, true, false, f16acc, "_m8");
+ #endif
+             }
+ 

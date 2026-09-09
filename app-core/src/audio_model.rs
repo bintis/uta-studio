@@ -8,7 +8,7 @@ pub const AUDIO_CATALOG_VERSION: &str = "native-final-v1";
 pub const AUDIO_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 pub const DEFAULT_VOCAL_MODEL_ID: &str = "bs_roformer_leap_xe90_vocals";
-pub const DEFAULT_BGM_MODEL_ID: &str = "bs_polarformer_public_instrumental";
+pub const DEFAULT_BGM_MODEL_ID: &str = "bs_roformer_leap_xe90_vocals";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

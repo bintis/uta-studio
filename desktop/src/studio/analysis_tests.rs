@@ -49,7 +49,10 @@ mod graph_view_polish_tests {
     /// content nor execution state nor selection are inputs here.
     #[test]
     fn production_node_width_scale_is_always_uniform() {
-        assert_eq!(analysis_node_width_scale("ASR", &["qwen".to_string()]), 1.0);
+        assert_eq!(
+            analysis_node_width_scale("Pitch", &["rmvpe".to_string()]),
+            1.0
+        );
         assert_eq!(
             analysis_node_width_scale("Pitch", &["rmvpe".to_string(), "fcpe".to_string()]),
             1.0

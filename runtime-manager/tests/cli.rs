@@ -250,7 +250,7 @@ fn every_read_only_command_makes_zero_proxy_connections() {
         vec!["list", "--output", "json", "--store", &store_arg],
         vec![
             "show",
-            "model:qwen3_asr_1_7b",
+            "model:rmvpe",
             "--output",
             "json",
             "--store",
@@ -260,7 +260,7 @@ fn every_read_only_command_makes_zero_proxy_connections() {
         vec!["paths", "--output", "json", "--store", &store_arg],
         vec![
             "plan",
-            "model:qwen3_asr_1_7b",
+            "model:rmvpe",
             "--output",
             "json",
             "--store",
@@ -270,7 +270,7 @@ fn every_read_only_command_makes_zero_proxy_connections() {
         vec!["doctor", "--output", "json", "--store", &store_arg],
         vec![
             "resolve",
-            "model:qwen3_asr_1_7b",
+            "model:rmvpe",
             "--output",
             "json",
             "--store",
@@ -278,7 +278,7 @@ fn every_read_only_command_makes_zero_proxy_connections() {
         ],
         vec![
             "smoke",
-            "model:qwen3_asr_1_7b",
+            "model:rmvpe",
             "--output",
             "json",
             "--store",
@@ -330,7 +330,7 @@ fn status_check_and_resolve_use_readiness_exit_codes_and_clean_json() {
 
     let benchmark = run(&[
         "resolve",
-        "model:qwen3_asr_1_7b",
+        "model:rmvpe",
         "--policy",
         "benchmark",
         "--output",
@@ -349,7 +349,7 @@ fn plan_is_offline_and_ndjson_is_one_structured_result() {
     let store_arg = store.to_string_lossy().into_owned();
     let output = run(&[
         "plan",
-        "model:qwen3_asr_1_7b",
+        "model:rmvpe",
         "--policy",
         "benchmark",
         "--output",
@@ -368,7 +368,7 @@ fn plan_is_offline_and_ndjson_is_one_structured_result() {
     assert_eq!(value["type"], "result");
     let json_output = run(&[
         "plan",
-        "model:qwen3_asr_1_7b",
+        "model:rmvpe",
         "--policy",
         "benchmark",
         "--output",
@@ -387,7 +387,7 @@ fn ndjson_mutation_uses_structured_start_resource_and_error_events() {
     let store_arg = store.to_string_lossy().into_owned();
     let output = run(&[
         "install",
-        "model:jbm555_cectc_80",
+        "model:rmvpe",
         "--yes",
         "--output",
         "ndjson",
@@ -414,7 +414,7 @@ fn non_tty_mutation_requires_yes_without_network_or_store_changes() {
     let store_arg = store.to_string_lossy().into_owned();
     let output = run(&[
         "install",
-        "model:qwen3_asr_1_7b",
+        "model:rmvpe",
         "--output",
         "json",
         "--store",
@@ -441,12 +441,12 @@ fn ndjson_result_and_unknown_resource_error_frames_are_versioned_and_typed() {
     // separate durable GGML models directory (by design: user-managed GGUF
     // caches are not per-store data) or worker-binary sibling discovery.
     // Isolate the GGML dir explicitly so this "nothing installed" check
-    // does not pick up this machine's real local GAME GGUF install.
+    // does not pick up this machine's real local GGML model install.
     let ggml_dir = temp_path("ndjson-contract-ggml");
     let result = Command::new(binary())
         .args([
             "status",
-            "model:game",
+            "model:rmvpe",
             "--policy",
             "production",
             "--output",

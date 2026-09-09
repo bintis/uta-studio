@@ -1,0 +1,15 @@
+[package]
+name = "uta-gpu-probes"
+version = "0.8.4"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "uta-ggml-vulkan-probe"
+path = "src/main.rs"
+
+[dependencies]
+ash = "0.38"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

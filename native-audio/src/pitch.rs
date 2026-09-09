@@ -187,6 +187,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn samples(wav: &[u8]) -> Vec<i16> {
         wav[44..]
             .chunks_exact(2)

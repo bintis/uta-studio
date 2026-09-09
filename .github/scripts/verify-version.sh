@@ -18,9 +18,9 @@ MANIFESTS=(
   desktop/Cargo.toml
   fusion-agent-adapter/Cargo.toml
   native-audio/Cargo.toml
+  native-inference/ggml-runtime/Cargo.toml
   native-inference/ggml-worker/Cargo.toml
-  native-inference/openvino-worker/Cargo.toml
-  native-inference/qwen-worker/Cargo.toml
+  native-inference/gpu-probes/Cargo.toml
   runtime-manager/Cargo.toml
   studio-diagnostics/Cargo.toml
   utz-export/Cargo.toml

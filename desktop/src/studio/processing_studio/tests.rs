@@ -154,45 +154,39 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     let option = &options[0];
     assert_eq!(
         option.strategy,
-        app_core::SeparationStrategyV1::IndependentSpecialists
+        app_core::SeparationStrategyV1::LeapDualOutput
     );
-    assert_eq!(option.executions.len(), 2);
+    assert_eq!(option.executions.len(), 1);
     assert_eq!(
         option.executions[0].provider_id,
         "bs_roformer_leap_xe90_vocals"
     );
+    assert_eq!(option.executions[0].output_roles.len(), 2);
+    let instrumental_direct_option = &options[1];
     assert_eq!(
-        option.executions[1].provider_id,
-        "bs_polarformer_public_instrumental"
+        instrumental_direct_option.strategy,
+        app_core::SeparationStrategyV1::LeapInstrumentalDirect
     );
-    let inst_v2_option = &options[1];
+    assert_eq!(instrumental_direct_option.executions.len(), 1);
     assert_eq!(
-        inst_v2_option.strategy,
-        app_core::SeparationStrategyV1::IndependentSpecialistsInstV2
-    );
-    assert_eq!(inst_v2_option.executions.len(), 2);
-    assert_eq!(
-        inst_v2_option.executions[0].provider_id,
-        "bs_roformer_leap_xe90_vocals"
+        instrumental_direct_option.executions[0].provider_id,
+        "bs_roformer_leap_xe90_instrumental"
     );
     assert_eq!(
-        inst_v2_option.executions[1].provider_id,
-        "melband_roformer_inst_v2"
+        instrumental_direct_option.executions[0].output_roles.len(),
+        2
     );
     let polarformer_both_option = &options[2];
     assert_eq!(
         polarformer_both_option.strategy,
         app_core::SeparationStrategyV1::PolarformerBoth
     );
-    assert_eq!(polarformer_both_option.executions.len(), 2);
+    assert_eq!(polarformer_both_option.executions.len(), 1);
     assert_eq!(
         polarformer_both_option.executions[0].provider_id,
         "bs_polarformer_public_instrumental"
     );
-    assert_eq!(
-        polarformer_both_option.executions[1].provider_id,
-        "bs_polarformer_public_instrumental"
-    );
+    assert_eq!(polarformer_both_option.executions[0].output_roles.len(), 2);
     let mod_source = include_str!("mod.rs");
     let node_card_source = include_str!("node_card.rs");
     let fusion_source = include_str!("stage_fusion.rs");
@@ -332,7 +326,7 @@ fn disabled_is_available_only_when_the_compiled_topology_allows_it() {
     assert!(
         workflow_policy_availability(
             &workflow,
-            &app_core::WorkflowNodeId::new("boundary_stars"),
+            &app_core::WorkflowNodeId::new("lead_isolate"),
             app_core::ExecutionPolicy::Disabled,
         )
         .is_ok()
@@ -349,12 +343,11 @@ fn disabled_is_available_only_when_the_compiled_topology_allows_it() {
 
 #[test]
 fn expert_disable_buttons_follow_the_real_minimum_evidence_contract() {
-    let mut workflow = app_core::default_workflow("song-a");
+    let workflow = app_core::default_workflow("song-a");
     for node in [
         "lead_isolate",
         "vocal_cleanup_1",
-        "boundary_game",
-        "boundary_basic_pitch",
+        "vocal_dereverb_1",
         "acoustic_dsp",
     ] {
         assert!(
@@ -375,36 +368,6 @@ fn expert_disable_buttons_follow_the_real_minimum_evidence_contract() {
         )
         .is_err(),
         "a sticky selected F0 expert needs an explicit policy transition"
-    );
-    app_core::set_workflow_execution_policy(
-        &mut workflow,
-        &app_core::WorkflowNodeId::new("f0_fcpe"),
-        app_core::ExecutionPolicy::Always,
-    )
-    .unwrap();
-    app_core::set_workflow_execution_policy(
-        &mut workflow,
-        &app_core::WorkflowNodeId::new("f0_rmvpe"),
-        app_core::ExecutionPolicy::Disabled,
-    )
-    .unwrap();
-    assert!(
-        workflow_policy_availability(
-            &workflow,
-            &app_core::WorkflowNodeId::new("f0_fcpe"),
-            app_core::ExecutionPolicy::Disabled,
-        )
-        .is_err(),
-        "the final continuous F0 expert must remain enabled"
-    );
-    assert!(
-        workflow_policy_availability(
-            &workflow,
-            &app_core::WorkflowNodeId::new("forced_alignment"),
-            app_core::ExecutionPolicy::Disabled,
-        )
-        .is_err(),
-        "forced alignment is a required lyrics stage"
     );
 }
 

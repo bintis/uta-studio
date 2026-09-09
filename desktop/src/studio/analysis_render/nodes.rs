@@ -792,8 +792,8 @@ mod port_tests {
     #[test]
     fn multiple_models_are_presented_as_independent_lines() {
         assert_eq!(
-            analysis_graph_model_ids("rmvpe + fcpe\nrmvpe"),
-            ["rmvpe", "fcpe"]
+            analysis_graph_model_ids("bs_roformer_leap_xe90_vocals + rmvpe\nrmvpe"),
+            ["bs_roformer_leap_xe90_vocals", "rmvpe"]
         );
         assert!(analysis_graph_model_ids("default").is_empty());
     }
@@ -801,15 +801,17 @@ mod port_tests {
     #[test]
     fn every_configured_model_keeps_an_explicit_card_label() {
         let model_ids = vec![
+            "bs_roformer_leap_xe90_vocals".to_string(),
+            "melband_roformer_harmony".to_string(),
             "rmvpe".to_string(),
-            "fcpe".to_string(),
-            "game".to_string(),
-            "basic_pitch".to_string(),
-            "rosvot".to_string(),
         ];
         assert_eq!(
             analysis_graph_model_labels(&model_ids).collect::<Vec<_>>(),
-            ["RMVPE", "FCPE", "GAME", "Basic Pitch", "ROSVOT"]
+            [
+                "BS-RoFormer Leap XE90 Vocals",
+                "MelBand-RoFormer Lead Isolation",
+                "RMVPE"
+            ]
         );
     }
 

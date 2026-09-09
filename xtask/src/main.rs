@@ -1,12 +1,18 @@
 mod docs;
+mod gguf;
 
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.first().map(String::as_str) == Some("docs") {
-        return match docs::run(&args[1..]) {
+    let subcommand = match args.first().map(String::as_str) {
+        Some("docs") => Some(docs::run(&args[1..])),
+        Some("gguf") => Some(gguf::run(&args[1..])),
+        _ => None,
+    };
+    if let Some(result) = subcommand {
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -20,7 +26,7 @@ fn main() -> ExitCode {
         Some("build") => ("build", &args[1..]),
         _ => {
             eprintln!(
-                "Usage: cargo desktop <dev|build> [extra cargo args...]\n       cargo xtask docs <build|check>"
+                "Usage: cargo desktop <dev|build> [extra cargo args...]\n       cargo xtask docs <build|check>\n       cargo xtask gguf <stars|rosvot|firered> SOURCE OUTPUT"
             );
             return ExitCode::FAILURE;
         }

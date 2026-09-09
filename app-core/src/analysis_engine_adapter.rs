@@ -544,11 +544,6 @@ pub fn compile_analyze_request_v1(
     if !valid_identifier(&intent.request_id) {
         return Err("analysis request_id contains unsupported characters".to_string());
     }
-    let diagnostic_policy = intent.compute_backend.as_deref() == Some("diagnostic_cpu")
-        || intent
-            .model_backend_overrides
-            .values()
-            .any(|backend| backend == "diagnostic_cpu");
     let target = intent
         .target_override
         .unwrap_or(effective.default_target.value);
@@ -643,15 +638,10 @@ pub fn compile_analyze_request_v1(
         },
         requested_artifacts,
         execution_policy: ExecutionPolicyWireV1 {
-            runtime_policy: if diagnostic_policy {
-                RuntimePolicyWireV1::Experimental
-            } else {
-                RuntimePolicyWireV1::Production
-            },
+            runtime_policy: RuntimePolicyWireV1::Production,
             requested_backend: match intent.compute_backend.as_deref() {
-                None | Some("auto" | "openvino") => None,
-                Some("vulkan") => Some(NativeBackendWireV1::Vulkan),
-                Some("diagnostic_cpu") => Some(NativeBackendWireV1::CpuReference),
+                None | Some("auto") => None,
+                Some("ggml" | "ggml_vulkan" | "vulkan") => Some(NativeBackendWireV1::Ggml),
                 Some(other) => {
                     return Err(format!("unsupported analysis compute backend: {other}"));
                 }
@@ -664,10 +654,7 @@ pub fn compile_analyze_request_v1(
                         return Err(format!("invalid model backend override id: {model_id}"));
                     }
                     let backend = match backend.as_str() {
-                        "openvino" => NativeBackendWireV1::OpenVino,
-                        "vulkan" => NativeBackendWireV1::Vulkan,
-                        "native_dsp" => NativeBackendWireV1::NativeDsp,
-                        "diagnostic_cpu" => NativeBackendWireV1::CpuReference,
+                        "ggml" | "ggml_vulkan" | "vulkan" => NativeBackendWireV1::Ggml,
                         other => {
                             return Err(format!(
                                 "unsupported backend {other} for model {model_id}"
@@ -1451,11 +1438,8 @@ mod tests {
     }
 
     #[test]
-    fn request_compiler_preserves_explicit_cpu_and_vulkan_selection() {
-        for (configured, expected) in [
-            ("diagnostic_cpu", NativeBackendWireV1::CpuReference),
-            ("vulkan", NativeBackendWireV1::Vulkan),
-        ] {
+    fn request_compiler_normalizes_explicit_ggml_selection() {
+        for configured in ["ggml", "ggml_vulkan", "vulkan"] {
             let request = compile_analyze_request_v1(
                 AnalysisRequestIntent {
                     request_id: format!("backend-{configured}"),
@@ -1476,14 +1460,13 @@ mod tests {
                 &effective(AnalysisDefaultTarget::PitchEvidence),
             )
             .unwrap();
-            assert_eq!(request.execution_policy.requested_backend, Some(expected));
+            assert_eq!(
+                request.execution_policy.requested_backend,
+                Some(NativeBackendWireV1::Ggml)
+            );
             assert_eq!(
                 request.execution_policy.runtime_policy,
-                if configured == "diagnostic_cpu" {
-                    RuntimePolicyWireV1::Experimental
-                } else {
-                    RuntimePolicyWireV1::Production
-                }
+                RuntimePolicyWireV1::Production
             );
         }
     }
@@ -1506,9 +1489,9 @@ mod tests {
                 model_backend_overrides: BTreeMap::from([
                     (
                         "bs_roformer_leap_xe90_vocals".to_string(),
-                        "vulkan".to_string(),
+                        "ggml".to_string(),
                     ),
-                    ("rmvpe".to_string(), "diagnostic_cpu".to_string()),
+                    ("rmvpe".to_string(), "ggml".to_string()),
                 ]),
                 default_device_class: None,
                 model_device_overrides: BTreeMap::new(),
@@ -1519,21 +1502,21 @@ mod tests {
         assert_eq!(request.execution_policy.requested_backend, None);
         assert_eq!(
             request.execution_policy.runtime_policy,
-            RuntimePolicyWireV1::Experimental
+            RuntimePolicyWireV1::Production
         );
         assert_eq!(
             request
                 .execution_policy
                 .model_backend_overrides
                 .get("bs_roformer_leap_xe90_vocals"),
-            Some(&NativeBackendWireV1::Vulkan)
+            Some(&NativeBackendWireV1::Ggml)
         );
         assert_eq!(
             request
                 .execution_policy
                 .model_backend_overrides
                 .get("rmvpe"),
-            Some(&NativeBackendWireV1::CpuReference)
+            Some(&NativeBackendWireV1::Ggml)
         );
     }
 

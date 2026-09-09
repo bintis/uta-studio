@@ -1,115 +1,117 @@
 # Native audio model catalog
 
-Uta! Studio keeps audio transformations, analysis experts, and runtime recipes separate.
+Uta! Studio keeps model identity, Rust graph implementation, and the upstream GGML runtime recipe separate.
 
-- Audio transformation models are listed by `app-core/src/audio_model.rs`.
-- Speech, pitch, boundary, and technique experts are represented by the workflow capability and native runtime registries.
-- Exact Qwen runtime identities are locked in `native-inference/runtime-lock.json`.
-- Runtime formats are model-specific. Most generic models use explicitly
-  installed OpenVINO IR, while Qwen, RMVPE, and the selected RoFormer family use
-  locked GGML/Vulkan recipes. These native GGUF routes never launch OpenVINO.
+## Current catalog
 
-A catalog entry is not production support. Every `(model revision, backend, runtime recipe)` is classified independently as production-pinned, benchmark candidate, experimental, or unsupported. The router uses only production-pinned combinations and fails closed when no validated backend is available.
+Runtime Manager exposes seventeen model resources. Every one of them runs on the same Rust/upstream-GGML boundary:
 
-Models and runtime components are installed only after confirmation in **Settings > Models & runtime**. Startup, page rendering, status checks, diagnostics, and workflow compilation are read-only and never download artifacts. Existing model directories are user data and are not automatically removed or replaced.
+| Model | Capability | Product role |
+| --- | --- | --- |
+| `bs_roformer_leap_xe90_vocals` | `audio.extract_vocals`, `audio.extract_instrumental` | Default one-invocation vocal/instrumental separation |
+| `bs_polarformer_public_instrumental` | `audio.extract_vocals`, `audio.extract_instrumental` | Explicit experimental separation strategy |
+| `melband_roformer_harmony` | `audio.lead_isolate` | Lead vocal plus vocal residual |
+| `melband_roformer_denoise_aufr33` | `audio.denoise` | Optional cleanup |
+| `melband_roformer_dereverb_anvuew` | `audio.dereverb` | Optional cleanup |
+| `rmvpe` | `pitch.track` | Primary continuous F0 evidence |
+| `fcpe` | `pitch.secondary`, `pitch.secondary.fcpe` | Maximum-mode secondary continuous F0 evidence |
+| `basic_pitch` | `notes.basic_pitch` | Optional onset/activation note challenger |
+| `game_1_0_3_small` | `notes.game` | Selectable GAME size |
+| `game_1_0_3_medium` | `notes.game` | Default note and boundary evidence |
+| `game_1_0_3_large` | `notes.game` | Selectable GAME size |
+| `jbm555_cectc_80` | `notes.jbm555` | Japanese mix-and-vocal conditioned note evidence |
+| `stars` | `notes.stars`, `technique.analyze` | Transcript-conditioned note, technique, and style evidence |
+| `rosvot` | `notes.rosvot` | Transcript-conditioned note evidence |
+| `firered_asr2_aed` | `speech.transcribe.challenger` | Optional transcript challenger |
+| `qwen3_asr_1_7b` | `speech.transcribe` | Primary singing transcription |
+| `qwen3_forced_aligner_0_6b` | `speech.align` | Word-level forced alignment |
 
-Workflow nodes store catalog model IDs, never arbitrary checkpoint paths. Model file hashes, runtime recipe digests, exact input revisions, normalized parameters, and algorithm versions participate only in artifact identity, provenance, and cache identity; hashes are not acceptance gates.
+There is one runtime resource, `ggml_vulkan`, and it lists every model above as supported.
 
-## Rust WGPU/Vulkan workers
+`stars` and `rosvot` additionally depend on `rmvpe` because they are conditioned on tracked F0. `firered_asr2_aed` declares a complete named artifact set — `firered-f32.gguf` as `model`, `cmvn.ark` as `cmvn`, and `dict.txt` as `tokens` — so its sidecars are catalog-pinned peers rather than paths the worker guesses.
 
-The dedicated Rust GGUF workers for JBM555, FCPE, Basic Pitch, FireRed, STARS,
-and ROSVOT have a separate WGPU/Vulkan execution lane. This is not GGML:
-GGUF is the weight container, while model kernels are implemented in Rust and
-WGSL. The shared runtime compiles only its Vulkan/WGSL backend and has no
-OpenVINO, OpenCL, SYCL, oneAPI, or Level Zero dependency.
+A catalog entry is not proof of production readiness. Every model revision and runtime recipe retains separate integration, numerical, performance, and perceptual evidence. Current readiness is recorded in `tasks/remaining-models/STATE.md`.
 
-Every GPU request must carry the exact `wgpu-vulkan-serial-v1` profile. Both
-Analysis Engine and the worker enforce batch size 1, synchronous completion of
-each bounded submission, and a serial pipeline before a Vulkan device is
-created. Requested device classes never fall back to another class or CPU.
-JBM555 uses receptive-field-preserving bounded frame chunks; FCPE and Basic
-Pitch retain their fixed source windows. STARS/ROSVOT move their relative and
-cross-attention score, row-softmax, and context operations to the same bounded
-GPU lane while retaining stage/bucket boundaries and deterministic host
-orchestration. ROSVOT additionally keeps both directions of each annotation-
-RMVPE GRU window inside one bounded Vulkan dispatch instead of synchronizing six
-matrix-vector operations per frame. FireRed uses the shared relative- and
-decoder-attention kernels, read-only memory-maps its 4.7 GB GGUF, keeps native
-F32 tensors as shared lazy views, and uploads bounded operation weights rather
-than making a second all-model host copy or all-model GPU copy.
+## Runtime boundary
 
-Per explicit repository-owner direction, these six WGPU capabilities are
-`ProductionPinned` and are each model's default backend; CPU remains an explicit
-diagnostic/reference lane rather than a fallback. Separately authorized
-2026-09-05 execution on Intel Arc B580 passed short CPU/WGPU parity for every
-exact graph: JBM555 produced the same five notes with maximum numeric delta
-`2.4e-7`; FCPE's 601 frames had maximum delta `0.0001 Hz`; Basic Pitch's 2,589
-compared values had maximum delta `3.784e-5`; STARS's 628 values had maximum
-delta `3.6e-5`; FireRed emitted identical `你好世界` text and token sequence
-`1202,2246,1019,4710`; and ROSVOT's 492 values had maximum delta `9.5e-5`.
+`native-inference/ggml-runtime` implements GGUF loading, audio frontend/postprocessing, and every model graph — RoFormer, RMVPE, FCPE, Basic Pitch, GAME, JBM555, STARS, ROSVOT, FireRed, and Qwen — in Rust. It calls only the C ABI of shared libraries built from upstream `ggml-org/ggml` revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a`.
 
-One serial representative full-input WGPU run also passed for each graph:
-JBM555 processed 305.813333 s in 312.083 s and emitted 33 notes; FCPE took
-55.401 s and emitted 30,582 F0 frames; Basic Pitch took 30.224 s and emitted
-26,340 activation frames; FireRed processed the 216.880 s Chinese `崔子格 -
-卜卦` input in 80.792 s across 94 windows; STARS processed a 245.120 s real
-Chinese vocal track with 197 timed words in 161.424 s across 78 conditioned
-segments; and ROSVOT processed 305.813333 s across 114 conditioned segments.
-The original ROSVOT validation accidentally used a debug worker and took
-823.102 s; a release rebuild took 522.403 s, and the persistent Vulkan GRU path
-reduced the same run to 155.613 s (3.357× faster than the unoptimized release,
-5.289× faster than the debug run). It retained all 397 regulated notes and
-57,340 valid frames; only raw audit logits in one sensitive region changed,
-while regulated semantic evidence remained equal. All validated numeric
-evidence was finite. STARS deliberately keeps
-its pinned G2P Chinese-only: an attempted Japanese input failed closed on `を`
-and was not counted as success.
+The package contains:
 
-The ROSVOT run uses the official conditioned 50,000-step checkpoint
-`7501fb5f…3fcb` (245 F32 tensors), converted to F32 GGUF `a8d8eeb8…df6f` and
-published as an immutable runtime generation without replacing the existing
-staged OpenVINO generation. The checkpoint passed genuine PyTorch-reference
-stage checks before CPU/WGPU parity. Every full run used the mandatory serial
-profile; source identities and boot ID remained unchanged, a sudo-readable
-whole-boot kernel review found no GPU hang/fault/reset, and FireRed additionally
-remained clean through a 420 s post-exit watch. The Production promotion is an
-explicit owner policy decision rather than an automatic inference from one
-full-input pass; repeat and broader quality coverage remain advisory follow-up.
-Historical OpenVINO, GGML, or CPU evidence remains backend-specific and
-non-interchangeable.
+- `libggml.so.0`
+- `libggml-base.so.0`
+- `libggml-cpu.so`
+- `libggml-vulkan.so`
+- `runtime-manifest.json`
 
-## RMVPE GGML/Vulkan worker
+It does not contain an app-owned C/C++ model graph, C shim, model CLI, or inference subprocess, and no model conversion, model rewrite, or model execution script in any scripting language. It is upstream GGML plus exactly the patches `native-inference/ggml-worker/runtime-recipe.json` declares, which today is one Vulkan backend fix and no model code; the recipe digest covers the patch set, so an undeclared build stops validating. The GGML CPU backend is an explicitly selected experimental reference lane. Vulkan device selection fails closed and never falls back to CPU.
 
-`uta-ggml-worker` implements RMVPE continuous-F0 inference through the dedicated
-`uta-rmvpe-runtime` engine. The engine runs the 16 kHz/128-bin log-mel frontend,
-CNN/U-Net, chunked bidirectional GRU, output head, and continuous pitch decoder
-natively. It emits ordered 10 ms pitch frames and does not quantize evidence to
-MIDI notes.
+`native-inference/gpu-probes` performs read-only Vulkan enumeration for diagnostics and device matching; it does not create a device or run inference.
 
-Explicit local conversion records the source RMVPE ONNX identity
-`5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd`,
-the F32 GGUF identity
-`1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2`,
-and conversion recipe
-`07856e413b0f141b7e0354f6edc52ffcfd853f8b33f4641d15e930aa1b888776`
-as separate provenance. The multi-engine GGML runtime recipe is
-`dd364845b256b8adc04c291e9c79a3426fe960ca1a7beab3990fdbcdc9e7bfd2`.
-The worker validates runtime structure, model size and RMVPE GGUF metadata,
-selects the requested Vulkan device class, and removes inherited diagnostic CPU
-controls before execution. There is no automatic CPU or OpenVINO fallback.
+FFmpeg may be launched for audio decode/encode. This is an audio codec boundary, not a model inference route.
 
-RMVPE currently remains a `BenchmarkCandidate`. Prior OpenVINO measurements do
-not qualify this new backend; promotion requires accepted real-audio Vulkan
-output and stability evidence.
+## Separation behavior
 
-## RoFormer backend selection
+Leap XE90 is the default strategy. One model invocation publishes both outputs:
 
-`uta-ggml-worker` validates safe paths, declared files, byte sizes, and exact
-GGUF/runtime semantic identities while retaining hashes only as provenance
-metadata. It emits typed lossless stem outputs without CPU fallback. All five RoFormer resources—BS-RoFormer
-Vocals EP317, MelBand Inst V2, MelBand Harmony, Denoise and Dereverb—expose only
-their user-selected GGML/Vulkan `ProductionPinned` routes and must never
-launch OpenVINO. The Worker always passes `--batch-size 1`,
-`--vulkan-no-async` and `--serial-pipeline`. All five exact GGUFs have isolated
-305.813333-second full-song evidence; this does not authorize concurrent or
-stress execution and backend-specific evidence is never interchangeable.
+1. `guide_vocals`
+2. `instrumental`, computed as the mixture residual
+
+This avoids a second independent instrumental model pass and preserves a reconstruction relationship between outputs. PolarFormer remains selectable only as an explicit experiment.
+
+Lossless outputs are FLAC. Output bytes, extension, MIME, channel count, sample rate, and canonical timeline are validated before publication.
+
+## RMVPE behavior
+
+The Rust RMVPE implementation owns:
+
+- 16 kHz audio frontend
+- 1024-point FFT, 160-sample hop, 128-bin HTK mel transform
+- reflection padding
+- U-Net/CNN graph
+- bidirectional GRU
+- output head and local weighted F0 decoding
+- bounded windows with overlap and canonical 10 ms output frames
+
+A real AMD 780M run completed. The remaining historical-reference difference is documented in `tasks/remaining-models/STATE.md`; smoke success is not strict parity.
+
+## FCPE behavior
+
+FCPE is a separate optional evidence node rather than an RMVPE fallback. The default workflow runs it only in Maximum mode. Rust owns its 32,000-sample windowing, exact Slaney-mel frontend, GGML graph, and centroid decoder. Any CPU or Vulkan execution failure is reported under the explicitly selected device route; FCPE does not trigger a device fallback.
+
+The isolated 6-second CPU and AMD 780M Vulkan checks each produced 601 frames and matched every voiced/unvoiced decision from the fresh OpenVINO reference. The bounded F0 differences are recorded in `tasks/remaining-models/STATE.md`; broader songs, layerwise vectors, and performance evidence remain before production qualification.
+
+## Transcription and alignment behavior
+
+Qwen3-ASR 1.7B owns `speech.transcribe`; Rust owns its mel frontend, tokenizer, sampling, and decoder. Qwen3 Forced Aligner 0.6B owns `speech.align` with a Rust-owned timestamp decoder, and keeps an identity separate from ordinary ASR.
+
+FireRedASR2-AED is an optional challenger on `speech.transcribe.challenger`. It never replaces the primary transcript and is never baseline-required: it is scheduled only when the request language makes it applicable, its output must carry the `firered_asr2_aed` expert identity, and a failure degrades the run with a recorded reason and removes its partial output rather than failing the analysis or substituting another provider.
+
+Caller-provided canonical lyrics still bypass generated transcription entirely.
+
+## Note and technique experts
+
+GAME 1.0.3 medium is the default note provider; small and large are interchangeable choices on the note/boundary card in **Processing Studio**. Only that card exposes variants, so an independent Basic Pitch, JBM555, STARS, or ROSVOT expert cannot be silently repurposed into a duplicate GAME execution. Basic Pitch, JBM555, STARS, and ROSVOT are optional challengers that contribute evidence to fusion rather than replacing GAME. STARS also owns `technique.analyze`. STARS and ROSVOT are conditioned experts: each run consumes the word-level timed transcript produced by forced alignment plus the shared RMVPE pitch evidence, so the plan carries them only when those inputs are part of the run.
+
+## Retired models
+
+Inst V2 is permanently retired: it has no catalog entry, graph, worker route, or fallback. Historical artifacts and measurements for deleted C++/CLI/WGPU/OpenVINO backends do not qualify the current runtime.
+
+## Container migration
+
+STARS, ROSVOT and FireRed have historical GGUF containers that record native PyTorch dimension order,
+and the two conformer models also carry tensor names at or above GGML's 64-character limit. Upstream
+GGML refuses to open them. `cargo xtask gguf <stars|rosvot|firered> SOURCE OUTPUT` rewrites the
+container in place of the retired conversion scripts: tensor payload bytes and offsets are copied
+verbatim, dimensions are reversed into GGML's fastest-varying-first order, and structural path
+components are abbreviated where required. The output is byte-identical to what the historical
+scripts produced.
+
+The command refuses to overwrite an existing file and publishes atomically, so it can never damage
+an installed model. Installing the result is a separate, explicit user action.
+
+## Installation and user data
+
+Models and runtime components are installed only after confirmation in **Settings > Models & runtime**. Startup, page rendering, status checks, diagnostics, and workflow compilation are read-only and never download artifacts.
+
+Configured model directories are user data. Tests use isolated roots and must not delete or replace user models. Workflow nodes store catalog IDs rather than arbitrary checkpoint paths. Digests remain provenance/cache metadata; they are not software-license or hash-verification gates.

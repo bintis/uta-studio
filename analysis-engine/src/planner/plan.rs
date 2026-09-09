@@ -103,15 +103,6 @@ impl Planner {
         request.validate()?;
         let intent = AnalysisIntent::from_request(request);
         let workflow = WorkflowExecutionV1::from_request(request)?;
-        let fusion_policy = workflow
-            .as_ref()
-            .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
-            .unwrap_or_default();
-        let pitch_owner = fusion_policy.continuous_f0.model_id();
-        let boundary_owner = fusion_policy.note_lengths.parameter_value();
-        let basic_pitch_required = workflow.as_ref().is_some_and(|workflow| {
-            workflow.policy_for_model("basic_pitch") == Some(WorkflowExecutionPolicyV1::Always)
-        });
         let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
             workflow.nodes.iter().any(|node| {
                 node.capability_id == "analysis.acoustic_dsp"
@@ -188,88 +179,70 @@ impl Planner {
                 .and_then(|workflow| {
                     workflow.model_for_engine_capability("audio.extract_instrumental")
                 })
-                .unwrap_or("bs_polarformer_public_instrumental");
+                .unwrap_or("bs_roformer_leap_xe90_vocals");
             requirements.add(provider, true, "audio.extract_instrumental");
         }
         if intent.needs_transcript {
             requirements.add("qwen3_asr_1_7b", true, "speech.transcribe");
             require_workflow_baseline(workflow.as_ref(), "speech.transcribe", request)?;
+            if workflow.as_ref().is_some_and(|workflow| {
+                workflow.should_schedule_model("firered_asr2_aed", request.analysis.profile)
+            }) {
+                requirements.add("firered_asr2_aed", false, "speech.transcribe.challenger");
+            }
         }
         if intent.needs_alignment {
             requirements.add("qwen3_forced_aligner_0_6b", true, "speech.align");
             require_workflow_baseline(workflow.as_ref(), "speech.align", request)?;
         }
         if intent.needs_pitch {
-            let primary_model = if pitch_owner == "fcpe" {
-                "fcpe"
-            } else {
-                "rmvpe"
-            };
-            requirements.add(primary_model, true, "pitch.track");
+            requirements.add("rmvpe", true, "pitch.track");
             require_workflow_baseline(workflow.as_ref(), "pitch.track", request)?;
+            if workflow.as_ref().is_some_and(|workflow| {
+                workflow.should_schedule_model("fcpe", request.analysis.profile)
+            }) {
+                requirements.add("fcpe", false, "pitch.secondary.fcpe");
+            }
         }
-        if intent.needs_notes
-            && matches!(boundary_owner, "automatic" | "game")
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.game",
-                request.analysis.profile,
-                true,
-            )
-        {
-            requirements.add("game", true, "notes.game");
-            require_workflow_baseline(workflow.as_ref(), "notes.game", request)?;
-        } else if intent.needs_notes
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.game",
-                request.analysis.profile,
-                true,
-            )
-        {
-            requirements.add("game", false, "notes.game");
-        }
-
-        let secondary_pitch_model = if pitch_owner == "fcpe" {
-            "rmvpe"
-        } else {
-            "fcpe"
-        };
-        if intent.needs_pitch
-            && workflow_selects_model(
-                workflow.as_ref(),
-                secondary_pitch_model,
-                request.analysis.profile,
-                request.analysis.profile != AnalysisProfile::Fast,
-            )
-        {
-            requirements.add(secondary_pitch_model, false, "pitch.secondary");
-        }
-        if intent.needs_notes
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.basic_pitch",
-                request.analysis.profile,
-                request.analysis.profile != AnalysisProfile::Fast,
-            )
-        {
-            requirements.add("basic_pitch", basic_pitch_required, "notes.basic_pitch");
-            if basic_pitch_required {
-                require_workflow_baseline(workflow.as_ref(), "notes.basic_pitch", request)?;
+        if intent.needs_notes {
+            let note_experts =
+                scheduled_core_note_experts(workflow.as_ref(), request.analysis.profile);
+            if note_experts
+                .iter()
+                .filter(|(_, _, capability)| *capability == "notes.game")
+                .count()
+                > 1
+            {
+                return Err(EngineError::new(
+                    EngineErrorCode::InvalidContract,
+                    "workflow must select exactly one immutable GAME resource",
+                )
+                .with_capability("notes.game")
+                .for_request(&request.request_id));
+            }
+            if note_experts
+                .iter()
+                .any(|(_, model_id, _)| *model_id == "jbm555_cectc_80")
+                && !request
+                    .audio_sources
+                    .iter()
+                    .any(|source| source.role == AudioRole::OriginalMix)
+            {
+                return Err(EngineError::new(
+                    EngineErrorCode::MissingRequiredInput,
+                    "JBM555 requires an original mix in addition to the prepared vocal input",
+                )
+                .with_capability("notes.jbm555")
+                .for_request(&request.request_id));
+            }
+            for (_, model_id, capability) in note_experts.into_iter().chain(
+                scheduled_advanced_experts(workflow.as_ref(), request.analysis.profile),
+            ) {
+                requirements.add(model_id, true, capability);
             }
         }
         if intent.needs_notes && acoustic_required {
             require_workflow_baseline(workflow.as_ref(), "analysis.acoustic_dsp", request)?;
-        }
-        if intent.needs_transcript
-            && workflow_selects(
-                workflow.as_ref(),
-                "speech.transcribe.challenger",
-                request.analysis.profile,
-                request.analysis.profile != AnalysisProfile::Fast,
-            )
-        {
-            requirements.add("firered_asr2_aed", false, "speech.transcribe.challenger");
         }
         if intent.needs_vocal_analysis_input
             && !capability_satisfied(request, "audio.denoise")
@@ -292,55 +265,6 @@ impl Planner {
             )
         {
             requirements.add("melband_roformer_dereverb_anvuew", false, "audio.dereverb");
-        }
-        if intent.needs_notes
-            && intent.needs_alignment
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.rosvot",
-                request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
-            )
-        {
-            requirements.add("rosvot", false, "notes.rosvot");
-        }
-        if intent.needs_notes
-            && intent.needs_alignment
-            && matches!(request.lyrics.language.as_deref(), Some("zh" | "yue"))
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.stars",
-                request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
-            )
-        {
-            requirements.add("stars", false, "notes.stars");
-        }
-        if intent.needs_notes
-            && request
-                .lyrics
-                .language
-                .as_deref()
-                .is_some_and(|language| language == "ja" || language.starts_with("ja-"))
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.jbm555",
-                request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
-            )
-        {
-            requirements.add("jbm555_cectc_80", false, "notes.jbm555");
-        }
-        if intent.needs_alignment
-            && matches!(request.lyrics.language.as_deref(), Some("zh" | "yue"))
-            && workflow_selects(
-                workflow.as_ref(),
-                "technique.analyze",
-                request.analysis.profile,
-                false,
-            )
-        {
-            requirements.add("stars", false, "technique.analyze");
         }
         if request
             .requested_artifacts
@@ -367,15 +291,6 @@ impl Planner {
         let requirements = Self::requirements(request)?;
         let intent = AnalysisIntent::from_request(request);
         let workflow = WorkflowExecutionV1::from_request(request)?;
-        let fusion_policy = workflow
-            .as_ref()
-            .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
-            .unwrap_or_default();
-        let pitch_owner = fusion_policy.continuous_f0.model_id();
-        let boundary_owner = fusion_policy.note_lengths.parameter_value();
-        let basic_pitch_required = workflow.as_ref().is_some_and(|workflow| {
-            workflow.policy_for_model("basic_pitch") == Some(WorkflowExecutionPolicyV1::Always)
-        });
         let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
             workflow.nodes.iter().any(|node| {
                 node.capability_id == "analysis.acoustic_dsp"
@@ -420,43 +335,24 @@ impl Planner {
                 .iter()
                 .any(|resource| resource.resource == format!("model:{model_id}"))
         };
+        let run_fcpe = has_model("fcpe");
         let run_firered = has_model("firered_asr2_aed");
-        let secondary_pitch_model = if pitch_owner == "fcpe" {
-            "rmvpe"
-        } else {
-            "fcpe"
-        };
-        let run_secondary_pitch = has_model(secondary_pitch_model);
-        let secondary_pitch_capability = if secondary_pitch_model == "rmvpe" {
-            "pitch.secondary.rmvpe"
-        } else {
-            "pitch.secondary.fcpe"
-        };
-        let run_basic_pitch = has_model("basic_pitch");
-        let run_rosvot = has_model("rosvot");
-        let run_stars = has_model("stars");
-        let run_jbm555 = has_model("jbm555_cectc_80");
-        let run_game = has_model("game");
+        let run_note_experts =
+            scheduled_core_note_experts(workflow.as_ref(), request.analysis.profile)
+                .into_iter()
+                .filter(|(_, model_id, _)| has_model(model_id))
+                .collect::<Vec<_>>();
+        let run_advanced_experts =
+            scheduled_advanced_experts(workflow.as_ref(), request.analysis.profile)
+                .into_iter()
+                .filter(|(_, model_id, _)| has_model(model_id))
+                .collect::<Vec<_>>();
         let run_acoustic = intent.needs_notes
             && workflow_selects(
                 workflow.as_ref(),
                 "analysis.acoustic_dsp",
                 request.analysis.profile,
                 true,
-            );
-        let run_stars_notes = run_stars
-            && workflow_selects(
-                workflow.as_ref(),
-                "notes.stars",
-                request.analysis.profile,
-                request.analysis.profile == AnalysisProfile::Maximum,
-            );
-        let run_stars_technique = run_stars
-            && workflow_selects(
-                workflow.as_ref(),
-                "technique.analyze",
-                request.analysis.profile,
-                false,
             );
         let run_denoise = has_model("melband_roformer_denoise_aufr33");
         let run_dereverb = has_model("melband_roformer_dereverb_anvuew");
@@ -494,20 +390,20 @@ impl Planner {
         }
         if intent.needs_transcript {
             nodes.push(node(
-                "transcript-evidence",
+                "qwen-asr",
                 "speech.transcribe",
                 true,
                 &[&analysis_parent],
             ));
-            let mut transcript_dependencies = vec!["transcript-evidence"];
+            let mut transcript_dependencies = vec!["qwen-asr"];
             if run_firered {
                 nodes.push(node(
-                    "transcript-challenger",
+                    "firered-asr",
                     "speech.transcribe.challenger",
                     false,
-                    &[&analysis_parent, "transcript-evidence"],
+                    &[&analysis_parent],
                 ));
-                transcript_dependencies.push("transcript-challenger");
+                transcript_dependencies.push("firered-asr");
             }
             nodes.push(node(
                 "transcript",
@@ -515,16 +411,14 @@ impl Planner {
                 true,
                 &transcript_dependencies,
             ));
-        }
-        if !intent.needs_transcript
-            && request.lyrics.mode == LyricsMode::Canonical
+        } else if request.lyrics.mode == LyricsMode::Canonical
             && (request.requested_artifacts.transcript || intent.needs_alignment)
         {
             nodes.push(node("transcript", "fusion.transcript", true, &[]));
         }
         if intent.needs_alignment {
             nodes.push(node(
-                "alignment-evidence",
+                "qwen-aligner",
                 "speech.align",
                 true,
                 &[&analysis_parent, "transcript"],
@@ -533,41 +427,21 @@ impl Planner {
                 "alignment",
                 "fusion.alignment",
                 true,
-                &["alignment-evidence"],
+                &["qwen-aligner"],
             ));
         }
         if intent.needs_pitch {
             nodes.push(node("pitch", "pitch.track", true, &[&analysis_parent]));
-            if run_secondary_pitch {
+            if run_fcpe {
                 nodes.push(node(
-                    "pitch-secondary",
-                    secondary_pitch_capability,
+                    "pitch-fcpe",
+                    "pitch.secondary.fcpe",
                     false,
-                    &[&analysis_parent, "pitch"],
+                    &[&analysis_parent],
                 ));
             }
         }
         if intent.needs_notes {
-            if run_game {
-                nodes.push(node(
-                    "game",
-                    "notes.game",
-                    boundary_owner == "game",
-                    &[&analysis_parent],
-                ));
-            }
-            if run_basic_pitch {
-                let mut basic_dependencies = vec![analysis_parent.as_str(), "pitch"];
-                if run_game {
-                    basic_dependencies.push("game");
-                }
-                nodes.push(node(
-                    "basic-pitch",
-                    "notes.basic_pitch",
-                    basic_pitch_required,
-                    &basic_dependencies,
-                ));
-            }
             if run_acoustic {
                 nodes.push(node(
                     "acoustic-dsp",
@@ -576,67 +450,36 @@ impl Planner {
                     &[&analysis_parent],
                 ));
             }
-            if run_rosvot {
-                let mut dependencies = vec![analysis_parent.as_str(), "alignment"];
-                if run_game {
-                    dependencies.push("game");
-                }
-                nodes.push(node("rosvot", "notes.rosvot", false, &dependencies));
+            for (node_id, _, capability) in &run_note_experts {
+                nodes.push(node(node_id, capability, true, &[&analysis_parent]));
             }
-            if run_stars_notes {
-                let mut dependencies = vec![analysis_parent.as_str(), "alignment"];
-                if run_game {
-                    dependencies.push("game");
-                }
-                nodes.push(node("stars", "notes.stars", false, &dependencies));
-            }
-            if run_stars_technique {
-                nodes.push(node(
-                    "stars-technique",
-                    "technique.analyze",
-                    false,
-                    &[&analysis_parent, "alignment"],
-                ));
-            }
-            if run_jbm555 {
-                nodes.push(node(
-                    "jbm555",
-                    "notes.jbm555",
-                    false,
-                    &["decode", &analysis_parent],
-                ));
+            for (node_id, _, capability) in &run_advanced_experts {
+                let expert_dependencies = if *capability == "technique.analyze"
+                    && run_advanced_experts
+                        .iter()
+                        .any(|(_, _, item)| *item == "notes.stars")
+                {
+                    vec!["stars"]
+                } else {
+                    vec![analysis_parent.as_str(), "pitch", "alignment"]
+                };
+                nodes.push(node(node_id, capability, true, &expert_dependencies));
             }
             let mut dependencies = Vec::new();
             if intent.needs_pitch {
                 dependencies.push("pitch");
             }
+            if run_fcpe {
+                dependencies.push("pitch-fcpe");
+            }
             if intent.needs_alignment {
                 dependencies.push("alignment");
-            }
-            if run_game {
-                dependencies.push("game");
             }
             if run_acoustic {
                 dependencies.push("acoustic-dsp");
             }
-            if run_secondary_pitch {
-                dependencies.push("pitch-secondary");
-            }
-            if run_basic_pitch {
-                dependencies.push("basic-pitch");
-            }
-            if run_rosvot {
-                dependencies.push("rosvot");
-            }
-            if run_stars_notes {
-                dependencies.push("stars");
-            }
-            if run_stars_technique {
-                dependencies.push("stars-technique");
-            }
-            if run_jbm555 {
-                dependencies.push("jbm555");
-            }
+            dependencies.extend(run_note_experts.iter().map(|(node_id, _, _)| *node_id));
+            dependencies.extend(run_advanced_experts.iter().map(|(node_id, _, _)| *node_id));
             nodes.push(node(
                 "singing-fusion",
                 "fusion.singing",
@@ -870,17 +713,6 @@ fn workflow_selects(
     })
 }
 
-fn workflow_selects_model(
-    workflow: Option<&WorkflowExecutionV1>,
-    model_id: &str,
-    profile: AnalysisProfile,
-    default_when_workflow_absent: bool,
-) -> bool {
-    workflow.map_or(default_when_workflow_absent, |workflow| {
-        workflow.should_schedule_model(model_id, profile)
-    })
-}
-
 #[derive(Debug)]
 struct AnalysisIntent {
     needs_vocal_analysis_input: bool,
@@ -1048,19 +880,56 @@ fn model_for_capability(capability: &str) -> Option<&'static str> {
         "audio.lead_isolate" => Some("melband_roformer_harmony"),
         "audio.denoise" => Some("melband_roformer_denoise_aufr33"),
         "audio.dereverb" => Some("melband_roformer_dereverb_anvuew"),
-        "speech.transcribe" => Some("qwen3_asr_1_7b"),
-        "speech.transcribe.challenger" => Some("firered_asr2_aed"),
-        "speech.align" => Some("qwen3_forced_aligner_0_6b"),
-        "pitch.track" => Some("rmvpe"),
+        "pitch.track" | "pitch.secondary.rmvpe" => Some("rmvpe"),
         "pitch.secondary" | "pitch.secondary.fcpe" => Some("fcpe"),
-        "pitch.secondary.rmvpe" => Some("rmvpe"),
-        "notes.game" => Some("game"),
+        "speech.transcribe" => Some("qwen3_asr_1_7b"),
+        "speech.align" => Some("qwen3_forced_aligner_0_6b"),
+        "notes.game" => Some("game_1_0_3_medium"),
         "notes.basic_pitch" => Some("basic_pitch"),
-        "notes.rosvot" => Some("rosvot"),
-        "notes.stars" | "technique.analyze" => Some("stars"),
         "notes.jbm555" => Some("jbm555_cectc_80"),
+        "notes.stars" | "technique.analyze" => Some("stars"),
+        "notes.rosvot" => Some("rosvot"),
         _ => None,
     }
+}
+
+fn scheduled_core_note_experts(
+    workflow: Option<&WorkflowExecutionV1>,
+    profile: AnalysisProfile,
+) -> Vec<(&'static str, &'static str, &'static str)> {
+    let Some(workflow) = workflow else {
+        return Vec::new();
+    };
+    [
+        ("basic-pitch", "basic_pitch", "notes.basic_pitch"),
+        ("game-small", "game_1_0_3_small", "notes.game"),
+        ("game-medium", "game_1_0_3_medium", "notes.game"),
+        ("game-large", "game_1_0_3_large", "notes.game"),
+        ("jbm555", "jbm555_cectc_80", "notes.jbm555"),
+    ]
+    .into_iter()
+    .filter(|(_, model_id, _)| workflow.should_schedule_model(model_id, profile))
+    .collect()
+}
+
+fn scheduled_advanced_experts(
+    workflow: Option<&WorkflowExecutionV1>,
+    profile: AnalysisProfile,
+) -> Vec<(&'static str, &'static str, &'static str)> {
+    let Some(workflow) = workflow else {
+        return Vec::new();
+    };
+    [
+        ("stars", "stars", "notes.stars"),
+        ("stars-technique", "stars", "technique.analyze"),
+        ("rosvot", "rosvot", "notes.rosvot"),
+    ]
+    .into_iter()
+    .filter(|(_, model_id, capability)| {
+        workflow.model_for_engine_capability(capability) == Some(*model_id)
+            && workflow.should_schedule(capability, profile)
+    })
+    .collect()
 }
 
 fn requested_outputs(request: &AnalyzeRequestV1) -> Vec<String> {
@@ -1122,28 +991,13 @@ fn quality_gates(profile: AnalysisProfile, nodes: &[ExecutionNode]) -> Vec<Strin
 fn fallback_policy() -> Vec<FallbackRule> {
     vec![
         FallbackRule {
-            capability: CapabilityId::from_static("pitch.track"),
-            behavior: "fail_without_explicit_validated_primary_f0_fallback".to_string(),
-            fingerprinted: true,
-        },
-        FallbackRule {
-            capability: CapabilityId::from_static("pitch.secondary"),
-            behavior: "continue_with_primary_rmvpe_as_ok_degraded".to_string(),
-            fingerprinted: true,
-        },
-        FallbackRule {
-            capability: CapabilityId::from_static("notes.basic_pitch"),
-            behavior: "continue_with_primary_game_as_ok_degraded".to_string(),
-            fingerprinted: true,
-        },
-        FallbackRule {
-            capability: CapabilityId::from_static("speech.transcribe.challenger"),
-            behavior: "continue_without_optional_transcript_challenger_as_ok_degraded".to_string(),
-            fingerprinted: true,
-        },
-        FallbackRule {
             capability: CapabilityId::from_static("audio.dereverb"),
             behavior: "continue_without_optional_cleanup_as_ok_degraded".to_string(),
+            fingerprinted: true,
+        },
+        FallbackRule {
+            capability: CapabilityId::from_static("pitch.secondary.fcpe"),
+            behavior: "continue_without_optional_secondary_pitch_as_ok_degraded".to_string(),
             fingerprinted: true,
         },
     ]

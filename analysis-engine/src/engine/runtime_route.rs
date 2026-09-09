@@ -1,24 +1,19 @@
+use super::{AnalysisEngine, EnginePlan, optional_execution_supported};
 use crate::artifact::{TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1};
 use crate::contract::{
-    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, LyricTokenV1, LyricsMode,
+    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, LyricTokenV1,
     ResolvedResourceProvenanceV1,
 };
+use crate::fusion::CanonicalLyrics;
 
 pub(super) fn cancelled(request: &AnalyzeRequestV1) -> EngineError {
     EngineError::new(EngineErrorCode::Cancelled, "analysis request was cancelled")
         .for_request(&request.request_id)
 }
 
-/// Joins caller lyric tokens with an explicit newline between every token
-/// (unlike `request_lyrics_text`, which drops all separators between CJK
-/// tokens for compact display/reference-comparison purposes). Downstream
-/// long-form alignment windowing (`alignment_text_units`) only recognizes
-/// line/word units via whitespace; joining CJK lyrics with no separator at
-/// all collapses an entire song into a single character run, forcing a much
-/// more fragile per-character split instead of the per-line split every
-/// other language already gets from its own inter-word spaces. Preserving
-/// line boundaries here does not change what text exists, only how the
-/// caller's own line tokens are concatenated for the aligner to consume.
+/// Joins caller lyric tokens with an explicit newline between every token.
+/// Unlike the compact text used for reference comparison, the canonical
+/// artifact preserves caller-authored line boundaries for later local stages.
 fn caller_transcript_text(tokens: &[LyricTokenV1]) -> String {
     tokens
         .iter()
@@ -62,31 +57,87 @@ pub(super) fn caller_transcript(request: &AnalyzeRequestV1) -> EngineResult<Tran
     Ok(artifact)
 }
 
-/// Per-line `{start, end}` seconds for `speech.align`'s `line_anchors`
-/// config, built only when every caller-canonical token carries its own
-/// known time range (a Timed LRC import) -- `None` for ASR-derived or
-/// untimed known lyrics, which fall back to the aligner's blind windowing.
-/// Anchoring each window to its own line's real time keeps one mistimed
-/// line's failure from cascading into every window after it (see
-/// `plan_alignment_segments_from_anchors` in the Qwen worker).
-pub(super) fn line_anchors_for_lyrics(
-    lyrics: &crate::contract::LyricsV1,
-) -> Option<serde_json::Value> {
-    if lyrics.mode != LyricsMode::Canonical || lyrics.tokens.is_empty() {
-        return None;
+pub(super) fn qwen_alignment_words(
+    transcript: &CanonicalLyrics,
+) -> EngineResult<Vec<serde_json::Value>> {
+    let units = if !transcript.tokens.is_empty() {
+        transcript
+            .tokens
+            .iter()
+            .enumerate()
+            .map(|(index, token)| {
+                (
+                    token
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| format!("aligned-word-{index}")),
+                    token.text.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let language = transcript
+            .language
+            .as_deref()
+            .unwrap_or("und")
+            .split(['-', '_'])
+            .next()
+            .unwrap_or("und")
+            .to_ascii_lowercase();
+        let character_units = matches!(language.as_str(), "zh" | "yue" | "ja" | "ko");
+        let texts = if character_units {
+            transcript
+                .text
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .map(|character| character.to_string())
+                .collect::<Vec<_>>()
+        } else {
+            transcript
+                .text
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        texts
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| (format!("aligned-word-{index}"), text))
+            .collect()
+    };
+    if units.is_empty() || units.iter().any(|(_, text)| text.trim().is_empty()) {
+        return Err(EngineError::new(
+            EngineErrorCode::MissingRequiredInput,
+            "Qwen forced alignment requires non-empty canonical transcript units",
+        )
+        .with_capability("speech.align"));
     }
-    let anchors = lyrics
-        .tokens
-        .iter()
-        .map(|token| {
-            let (start, end) = (token.start?, token.end?);
-            Some(serde_json::json!({
-                "start": start as f64 / f64::from(crate::contract::CANONICAL_TIMEBASE),
-                "end": end as f64 / f64::from(crate::contract::CANONICAL_TIMEBASE),
-            }))
+    Ok(units
+        .into_iter()
+        .map(|(id, text)| serde_json::json!({"id": id, "text": text}))
+        .collect())
+}
+
+pub(super) fn firered_language_applicable(
+    request_language: Option<&str>,
+    detected_language: Option<&str>,
+) -> bool {
+    let mut observed = request_language
+        .into_iter()
+        .chain(detected_language)
+        .map(|language| {
+            language
+                .split(['-', '_'])
+                .next()
+                .unwrap_or(language)
+                .to_ascii_lowercase()
         })
-        .collect::<Option<Vec<_>>>()?;
-    Some(serde_json::Value::Array(anchors))
+        .filter(|language| !language.is_empty() && language != "und")
+        .peekable();
+    if observed.peek().is_none() {
+        return true;
+    }
+    observed.any(|language| matches!(language.as_str(), "zh" | "yue" | "en"))
 }
 
 pub(super) fn request_lyrics_text(request: &AnalyzeRequestV1) -> String {
@@ -129,73 +180,85 @@ pub(super) fn fingerprint_request(request: &AnalyzeRequestV1) -> EngineResult<se
     Ok(value)
 }
 
-pub(super) fn roformer_backend(
+pub(super) struct RoformerRoute {
+    backend: &'static str,
+    device_class: Option<&'static str>,
+}
+
+pub(super) fn resolve_roformer_route(
     model: &uta_runtime_manager::ResolvedModel,
-) -> EngineResult<&'static str> {
-    match model.backend {
-        uta_runtime_manager::NativeBackend::OpenVino => Ok("openvino_gpu"),
-        uta_runtime_manager::NativeBackend::CpuReference => Ok("openvino_cpu"),
-        uta_runtime_manager::NativeBackend::Vulkan => Ok("ggml_vulkan"),
-        _ => Err(EngineError::new(
+    request: &AnalyzeRequestV1,
+) -> EngineResult<RoformerRoute> {
+    if model.backend != uta_runtime_manager::NativeBackend::Ggml
+        || model.runtime_id != "ggml_vulkan"
+    {
+        return Err(EngineError::new(
             EngineErrorCode::RuntimeResolutionFailed,
             format!(
-                "model {} resolved to a backend unsupported by the RoFormer route",
+                "model {} did not resolve to the GGML runtime",
                 model.model_id
             ),
-        )),
+        ));
     }
+    let (backend, device_class) = match request
+        .execution_policy
+        .requested_device_for(&model.model_id)
+    {
+        Some(uta_runtime_manager::NativeDeviceClass::Gpu) => ("ggml_vulkan", Some("gpu")),
+        Some(uta_runtime_manager::NativeDeviceClass::IntegratedGpu) => {
+            ("ggml_vulkan", Some("integrated_gpu"))
+        }
+        Some(uta_runtime_manager::NativeDeviceClass::Cpu) => ("ggml_cpu", Some("cpu")),
+        None => ("ggml_vulkan", None),
+    };
+    Ok(RoformerRoute {
+        backend,
+        device_class,
+    })
 }
 
-/// Maps the Settings device-class preference onto the "gpu" / "integrated_gpu"
-/// strings `uta-ggml-worker` resolves to a physical Vulkan device index.
-/// `NativeDeviceClass::Cpu` and any non-Vulkan backend return `None`: GGML
-/// RoFormer has no supported CPU route through this pipeline (CPU stays a
-/// manual diagnostic-only lane, never an implicit production path), and
-/// OpenVINO's own device string is unrelated to this preference.
-pub(super) fn ggml_vulkan_device_class(
-    backend: &str,
-    device: Option<uta_runtime_manager::NativeDeviceClass>,
-) -> Option<&'static str> {
-    if backend != "ggml_vulkan" {
-        return None;
+pub(super) fn roformer_dispatch_config(
+    route: &RoformerRoute,
+    model_path: &std::path::Path,
+    semantic_output: &str,
+) -> EngineResult<(&'static str, serde_json::Value)> {
+    let mut config = serde_json::json!({
+        "model_path": model_path,
+        "backend": route.backend,
+        "semantic_output": semantic_output,
+    });
+    if let Some(device_class) = route.device_class {
+        config["device_class"] = serde_json::Value::from(device_class);
     }
-    match device? {
-        uta_runtime_manager::NativeDeviceClass::Gpu => Some("gpu"),
-        uta_runtime_manager::NativeDeviceClass::IntegratedGpu => Some("integrated_gpu"),
-        uta_runtime_manager::NativeDeviceClass::Cpu => None,
-    }
+    Ok(("uta-ggml-worker", config))
 }
 
-pub(super) fn roformer_component(backend: &str) -> &'static str {
-    match backend {
-        "ggml_vulkan" => "uta-ggml-worker",
-        _ => "uta-openvino-worker",
-    }
-}
-
-pub(super) fn openvino_backend(
+pub(super) fn model_dispatch(
     model: &uta_runtime_manager::ResolvedModel,
-) -> EngineResult<&'static str> {
-    match model.backend {
-        uta_runtime_manager::NativeBackend::OpenVino => Ok("openvino_gpu"),
-        uta_runtime_manager::NativeBackend::CpuReference => Ok("openvino_cpu"),
-        _ => Err(EngineError::new(
-            EngineErrorCode::RuntimeResolutionFailed,
-            format!(
-                "model {} resolved to a backend that the OpenVINO worker cannot execute",
-                model.model_id
-            ),
-        )),
-    }
+    request: &AnalyzeRequestV1,
+    semantic_output: &str,
+) -> EngineResult<(&'static str, serde_json::Value)> {
+    let route = resolve_roformer_route(model, request)?;
+    let (component, mut config) =
+        roformer_dispatch_config(&route, &model.model_path, semantic_output)?;
+    config["model_artifacts"] = serde_json::to_value(&model.model_artifacts).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::InternalError,
+            format!("could not serialize resolved model artifacts: {error}"),
+        )
+    })?;
+    Ok((component, config))
 }
 
-pub(super) fn execution_device(backend: uta_runtime_manager::NativeBackend) -> &'static str {
-    match backend {
-        uta_runtime_manager::NativeBackend::OpenVino
-        | uta_runtime_manager::NativeBackend::Vulkan => "device:0",
-        uta_runtime_manager::NativeBackend::NativeDsp => "native",
-        uta_runtime_manager::NativeBackend::CpuReference => "diagnostic_cpu",
-    }
+pub(super) fn pitch_dispatch(
+    model: &uta_runtime_manager::ResolvedModel,
+    request: &AnalyzeRequestV1,
+) -> EngineResult<(&'static str, serde_json::Value)> {
+    model_dispatch(model, request, "pitch")
+}
+
+pub(super) fn execution_device(_backend: uta_runtime_manager::NativeBackend) -> &'static str {
+    "ggml"
 }
 
 pub(super) fn resource_provenance(
@@ -209,13 +272,69 @@ pub(super) fn resource_provenance(
         runtime_generation: resource.runtime_generation.clone(),
         runtime_recipe_digest: resource.runtime_recipe_digest.clone(),
         backend: match resource.backend {
-            uta_runtime_manager::NativeBackend::OpenVino => "openvino",
-            uta_runtime_manager::NativeBackend::Vulkan => "vulkan",
-            uta_runtime_manager::NativeBackend::NativeDsp => "native_dsp",
-            uta_runtime_manager::NativeBackend::CpuReference => "cpu_reference",
+            uta_runtime_manager::NativeBackend::Ggml => "ggml",
         }
         .to_string(),
         device: execution_device(resource.backend).to_string(),
+    }
+}
+
+impl AnalysisEngine {
+    pub(super) fn resolve_execution_resources(
+        &self,
+        request: &AnalyzeRequestV1,
+        plan: &EnginePlan,
+    ) -> EngineResult<(Vec<uta_runtime_manager::ResolvedModel>, Vec<String>)> {
+        let mut resolved = Vec::new();
+        let mut degraded = Vec::new();
+        for requirement in plan.requirements.resources.iter().filter(|requirement| {
+            requirement.required || optional_execution_supported(&requirement.reason)
+        }) {
+            let resource: uta_runtime_manager::ResourceRef =
+                requirement.resource.parse().map_err(|error| {
+                    EngineError::new(
+                        EngineErrorCode::RuntimeResolutionFailed,
+                        format!("invalid planned resource: {error}"),
+                    )
+                })?;
+            match resource.kind {
+                uta_runtime_manager::ResourceKind::Model => {
+                    match self.runtime_manager.resolve_model_with_backend(
+                        &resource.id,
+                        request.execution_policy.runtime_policy,
+                        request.execution_policy.requested_backend_for(&resource.id),
+                    ) {
+                        Ok(model) => resolved.push(model),
+                        Err(error) if !requirement.required => degraded.push(format!(
+                            "optional capability {} skipped: {}",
+                            requirement.reason, error
+                        )),
+                        Err(error) => return Err(EngineError::from(error)),
+                    }
+                }
+                uta_runtime_manager::ResourceKind::Tool => {
+                    let status = self
+                        .runtime_manager
+                        .status(&resource, request.execution_policy.runtime_policy)
+                        .map_err(EngineError::from)?;
+                    if !status.usable {
+                        return Err(EngineError::new(
+                            EngineErrorCode::WorkerUnavailable,
+                            format!("required execution tool is unavailable: {resource}"),
+                        )
+                        .with_resource(&resource));
+                    }
+                }
+                uta_runtime_manager::ResourceKind::Runtime
+                | uta_runtime_manager::ResourceKind::Bundle => {
+                    return Err(EngineError::new(
+                        EngineErrorCode::RuntimeResolutionFailed,
+                        format!("unsupported direct execution requirement: {resource}"),
+                    ));
+                }
+            }
+        }
+        Ok((resolved, degraded))
     }
 }
 
@@ -234,104 +353,6 @@ mod tests {
         }
     }
 
-    fn timed_token(id: &str, text: &str, start_seconds: f64, end_seconds: f64) -> LyricTokenV1 {
-        LyricTokenV1 {
-            start: Some((start_seconds * f64::from(crate::contract::CANONICAL_TIMEBASE)) as u64),
-            end: Some((end_seconds * f64::from(crate::contract::CANONICAL_TIMEBASE)) as u64),
-            ..token(id, text)
-        }
-    }
-
-    fn lyrics(mode: LyricsMode, tokens: Vec<LyricTokenV1>) -> crate::contract::LyricsV1 {
-        crate::contract::LyricsV1 {
-            mode,
-            language: None,
-            tokens,
-        }
-    }
-
-    #[test]
-    fn ggml_vulkan_device_class_only_applies_to_the_vulkan_backend() {
-        assert_eq!(
-            ggml_vulkan_device_class(
-                "ggml_vulkan",
-                Some(uta_runtime_manager::NativeDeviceClass::Gpu)
-            ),
-            Some("gpu")
-        );
-        assert_eq!(
-            ggml_vulkan_device_class(
-                "ggml_vulkan",
-                Some(uta_runtime_manager::NativeDeviceClass::IntegratedGpu)
-            ),
-            Some("integrated_gpu")
-        );
-        assert_eq!(ggml_vulkan_device_class("ggml_vulkan", None), None);
-        assert_eq!(
-            ggml_vulkan_device_class(
-                "openvino_gpu",
-                Some(uta_runtime_manager::NativeDeviceClass::Gpu)
-            ),
-            None,
-            "OpenVINO's device string is unrelated to this preference"
-        );
-        assert_eq!(
-            ggml_vulkan_device_class(
-                "ggml_vulkan",
-                Some(uta_runtime_manager::NativeDeviceClass::Cpu)
-            ),
-            None,
-            "GGML RoFormer has no supported CPU route through this pipeline"
-        );
-    }
-
-    #[test]
-    fn line_anchors_are_built_only_for_canonical_lyrics_with_every_token_timed() {
-        let all_timed = lyrics(
-            LyricsMode::Canonical,
-            vec![
-                timed_token("line-1", "first", 40.67, 47.16),
-                timed_token("line-2", "second", 167.18, 201.57),
-            ],
-        );
-        assert_eq!(
-            line_anchors_for_lyrics(&all_timed),
-            Some(serde_json::json!([
-                {"start": 40.67, "end": 47.16},
-                {"start": 167.18, "end": 201.57},
-            ]))
-        );
-
-        // ASR-derived transcripts (mode None/Reference) never carry anchors.
-        assert_eq!(
-            line_anchors_for_lyrics(&lyrics(LyricsMode::None, Vec::new())),
-            None
-        );
-        assert_eq!(
-            line_anchors_for_lyrics(&lyrics(
-                LyricsMode::Reference,
-                vec![timed_token("line-1", "first", 0.0, 1.0)]
-            )),
-            None
-        );
-
-        // A partially-timed set (e.g. known lyrics with no timing at all)
-        // must not produce a partial/misleading anchor list.
-        let partially_timed = lyrics(
-            LyricsMode::Canonical,
-            vec![
-                timed_token("line-1", "first", 40.67, 47.16),
-                token("line-2", "second"),
-            ],
-        );
-        assert_eq!(line_anchors_for_lyrics(&partially_timed), None);
-
-        assert_eq!(
-            line_anchors_for_lyrics(&lyrics(LyricsMode::Canonical, Vec::new())),
-            None
-        );
-    }
-
     #[test]
     fn caller_transcript_text_preserves_line_boundaries_for_cjk_lyrics() {
         let tokens = vec![
@@ -339,11 +360,7 @@ mod tests {
             token("line-2", "似水中月情迷着镜中花"),
         ];
         let text = caller_transcript_text(&tokens);
-        // A newline between lines, not the empty separator that previously
-        // collapsed every line into one character run and forced the
-        // long-form aligner into fragile per-character windowing instead of
-        // the much more robust per-line windowing every other language
-        // already gets from its own inter-word spaces.
+        // Canonical text retains the caller's line structure.
         assert_eq!(text, "风吹沙蝶恋花千古佳话\n似水中月情迷着镜中花");
         assert_eq!(text.lines().count(), 2);
     }
@@ -370,5 +387,41 @@ mod tests {
     #[test]
     fn caller_transcript_text_is_empty_for_no_tokens() {
         assert_eq!(caller_transcript_text(&[]), "");
+    }
+
+    #[test]
+    fn firered_is_limited_to_its_supported_language_families() {
+        assert!(firered_language_applicable(Some("zh-CN"), Some("zh")));
+        assert!(firered_language_applicable(Some("en"), None));
+        assert!(firered_language_applicable(None, Some("und")));
+        assert!(!firered_language_applicable(Some("ja"), Some("ja-JP")));
+        assert!(firered_language_applicable(Some("ja"), Some("yue")));
+    }
+
+    #[test]
+    fn qwen_alignment_units_preserve_caller_ids_and_segment_generated_cjk() {
+        let caller = CanonicalLyrics {
+            text: "sing now".to_string(),
+            language: Some("en".to_string()),
+            authority: crate::fusion::LyricsAuthority::CallerCanonical,
+            tokens: vec![crate::fusion::TranscriptTokenEvidence {
+                id: Some("line-1".to_string()),
+                text: "sing now".to_string(),
+                range: None,
+                confidence: None,
+            }],
+            confidence: None,
+            source_experts: vec!["caller".to_string()],
+            alternatives: Vec::new(),
+        };
+        assert_eq!(qwen_alignment_words(&caller).unwrap()[0]["id"], "line-1");
+
+        let mut generated = caller;
+        generated.text = "风吹沙".to_string();
+        generated.language = Some("zh".to_string());
+        generated.tokens.clear();
+        let units = qwen_alignment_words(&generated).unwrap();
+        assert_eq!(units.len(), 3);
+        assert_eq!(units[2]["text"], "沙");
     }
 }

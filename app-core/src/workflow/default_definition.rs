@@ -4,9 +4,8 @@ use crate::audio_model::{DEFAULT_BGM_MODEL_ID, DEFAULT_VOCAL_MODEL_ID};
 
 use super::validation::edge;
 use super::{
-    AnalyzerBinding, CapabilityId, ConditionalExecution, ExecutionPolicy, QualityMode,
-    WORKFLOW_SCHEMA_VERSION, WorkflowDefinition, WorkflowId, WorkflowNodeId, WorkflowNodeInstance,
-    WorkflowPortRef,
+    AnalyzerBinding, CapabilityId, ExecutionPolicy, QualityMode, WORKFLOW_SCHEMA_VERSION,
+    WorkflowDefinition, WorkflowId, WorkflowNodeId, WorkflowNodeInstance, WorkflowPortRef,
 };
 
 fn node(
@@ -56,13 +55,13 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             900,
         ),
     ];
-    nodes[1].separation_strategy = Some(super::SeparationStrategyV1::IndependentSpecialists);
+    nodes[1].separation_strategy = Some(super::SeparationStrategyV1::LeapDualOutput);
     // Separation is the expensive, stable Step 1 boundary. New workflows
     // reuse its lossless vocal/instrumental pair whenever source, models and
     // parameters still match; later analysis stages remain fresh by default.
     nodes[1].skip_if_unchanged = true;
     debug_assert_eq!(DEFAULT_VOCAL_MODEL_ID, "bs_roformer_leap_xe90_vocals");
-    debug_assert_eq!(DEFAULT_BGM_MODEL_ID, "bs_polarformer_public_instrumental");
+    debug_assert_eq!(DEFAULT_BGM_MODEL_ID, "bs_roformer_leap_xe90_vocals");
     let mut edges = vec![edge("source", "mix", "vocal_bgm_split", "audio")];
 
     nodes.push(node(
@@ -112,30 +111,30 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             "analysis.asr",
             Some("qwen3_asr_1_7b"),
             ExecutionPolicy::Always,
-            700,
+            760,
         ),
         node(
             "asr_firered",
             "analysis.asr",
             Some("firered_asr2_aed"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::OnDisagreement,
+                condition: super::ConditionalExecution::MaximumOnly,
             },
-            690,
+            755,
         ),
         node(
             "transcript_fusion",
             "fusion.transcript",
             None,
             ExecutionPolicy::Always,
-            600,
+            750,
         ),
         node(
-            "forced_alignment",
+            "align_qwen",
             "analysis.forced_alignment",
             Some("qwen3_forced_aligner_0_6b"),
             ExecutionPolicy::Always,
-            590,
+            740,
         ),
         node(
             "f0_rmvpe",
@@ -149,68 +148,68 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             "analysis.pitch_f0",
             Some("fcpe"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::DisagreementWindows,
+                condition: super::ConditionalExecution::MaximumOnly,
             },
             670,
         ),
         node(
-            "boundary_game",
+            "game_notes",
             "analysis.note_boundary",
-            Some("game"),
+            Some("game_1_0_3_medium"),
             ExecutionPolicy::Always,
             660,
         ),
         node(
-            "boundary_basic_pitch",
+            "basic_pitch_onsets",
             "analysis.note_boundary",
             Some("basic_pitch"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::OnDisagreement,
+                condition: super::ConditionalExecution::OnDisagreement,
             },
-            655,
+            650,
         ),
         node(
-            "boundary_rosvot",
+            "jbm555_notes",
             "analysis.note_boundary",
-            Some("rosvot"),
+            Some("jbm555_cectc_80"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::MaximumOnly,
-            },
-            645,
-        ),
-        node(
-            "boundary_stars",
-            "analysis.note_boundary",
-            Some("stars"),
-            ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::MaximumOnly,
+                condition: super::ConditionalExecution::MaximumOnly,
             },
             640,
         ),
         node(
-            "boundary_jbm555",
+            "stars_notes",
             "analysis.note_boundary",
-            Some("jbm555_cectc_80"),
+            Some("stars"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::MaximumOnly,
+                condition: super::ConditionalExecution::MaximumOnly,
             },
-            642,
+            630,
         ),
         node(
-            "technique_stars",
+            "stars_technique",
             "analysis.technique",
             Some("stars"),
             ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::MaximumOnly,
+                condition: super::ConditionalExecution::MaximumOnly,
             },
-            635,
+            620,
+        ),
+        node(
+            "rosvot_notes",
+            "analysis.note_boundary",
+            Some("rosvot"),
+            ExecutionPolicy::Conditional {
+                condition: super::ConditionalExecution::MaximumOnly,
+            },
+            610,
         ),
         node(
             "acoustic_dsp",
             "analysis.acoustic_dsp",
             None,
             ExecutionPolicy::Always,
-            650,
+            600,
         ),
         node(
             "evidence_fusion",
@@ -247,47 +246,33 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
     edges.extend([
         edge("asr_qwen", "transcript", "transcript_fusion", "evidence"),
         edge("asr_firered", "transcript", "transcript_fusion", "evidence"),
-        edge("transcript_fusion", "lyrics", "forced_alignment", "lyrics"),
+        edge("transcript_fusion", "lyrics", "align_qwen", "lyrics"),
+        edge("transcript_fusion", "lyrics", "canonical_track", "lyrics"),
+        edge("align_qwen", "alignment", "evidence_fusion", "alignment"),
         edge("f0_rmvpe", "pitch", "evidence_fusion", "pitch"),
         edge("f0_fcpe", "pitch", "evidence_fusion", "pitch"),
+        edge("game_notes", "boundaries", "evidence_fusion", "boundaries"),
         edge(
-            "boundary_game",
+            "basic_pitch_onsets",
             "boundaries",
             "evidence_fusion",
             "boundaries",
         ),
         edge(
-            "boundary_basic_pitch",
+            "jbm555_notes",
+            "boundaries",
+            "evidence_fusion",
+            "boundaries",
+        ),
+        edge("stars_notes", "boundaries", "evidence_fusion", "boundaries"),
+        edge(
+            "rosvot_notes",
             "boundaries",
             "evidence_fusion",
             "boundaries",
         ),
         edge(
-            "boundary_rosvot",
-            "boundaries",
-            "evidence_fusion",
-            "boundaries",
-        ),
-        edge(
-            "boundary_stars",
-            "boundaries",
-            "evidence_fusion",
-            "boundaries",
-        ),
-        edge(
-            "boundary_jbm555",
-            "boundaries",
-            "evidence_fusion",
-            "boundaries",
-        ),
-        edge(
-            "forced_alignment",
-            "alignment",
-            "evidence_fusion",
-            "alignment",
-        ),
-        edge(
-            "technique_stars",
+            "stars_technique",
             "techniques",
             "evidence_fusion",
             "techniques",
@@ -300,21 +285,20 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             "canonical_track",
             "candidates",
         ),
-        edge("transcript_fusion", "lyrics", "canonical_track", "lyrics"),
     ]);
 
     let analyzer_bindings = [
         "asr_qwen",
         "asr_firered",
-        "forced_alignment",
+        "align_qwen",
         "f0_rmvpe",
         "f0_fcpe",
-        "boundary_game",
-        "boundary_basic_pitch",
-        "boundary_rosvot",
-        "boundary_stars",
-        "boundary_jbm555",
-        "technique_stars",
+        "game_notes",
+        "basic_pitch_onsets",
+        "jbm555_notes",
+        "stars_notes",
+        "stars_technique",
+        "rosvot_notes",
         "acoustic_dsp",
     ]
     .into_iter()

@@ -1,0 +1,21 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3836,6 +3836,17 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device, uin
+         }
+     }
+ 
++    // Diagnostic partition sweep for Intel's M8 H64 path (Bc remains 16).
++    // Require at least one softmax column per lane. Full context is preserved.
++    if (intel_m8_h64 && result.subgroup_size <= 16) {
++        const char * partitions = std::getenv("UTA_STUDIO_GGML_FA_KEY_PARTITIONS");
++        if (partitions != nullptr && std::atoi(partitions) == 2) {
++            result.block_cols = coopmat_block_cols * 2;
++            result.row_split = 2;
++            result.workgroup_size = 2 * result.subgroup_size;
++        }
++    }
++
+     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit
+     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
+ 

@@ -143,7 +143,7 @@ pub fn analyze_acoustic_evidence(
         };
         carry.extend_from_slice(&bytes);
         let complete = carry.len() / 4 * 4;
-        for sample in carry[..complete].chunks_exact(4) {
+        for sample in carry[..complete].as_chunks::<4>().0 {
             let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
             if !value.is_finite() {
                 failure = Some("acoustic DSP decode contains non-finite samples".to_string());

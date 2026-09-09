@@ -741,80 +741,57 @@ mod tests {
     }
 
     #[test]
-    fn multi_model_separation_card_expands_to_one_dag_node_per_model_execution() {
+    fn dual_output_separation_has_one_dag_node_per_inference() {
         let workflow = wire(&app_core::default_workflow("song"));
         let graph = build_workflow_render_graph(&workflow, None, None, false);
-        let vocal = graph
-            .node(&AnalysisNodeId::new("vocal_bgm_split.vocal"))
-            .unwrap();
-        let instrumental = graph
-            .node(&AnalysisNodeId::new("vocal_bgm_split.instrumental"))
-            .unwrap();
-        assert_eq!(vocal.model_ids, ["bs_roformer_leap_xe90_vocals"]);
-        assert_eq!(
-            instrumental.model_ids,
-            ["bs_polarformer_public_instrumental"]
+        let separation = graph.node(&AnalysisNodeId::new("vocal_bgm_split")).unwrap();
+        assert_eq!(separation.model_ids, ["bs_roformer_leap_xe90_vocals"]);
+        assert!(
+            graph
+                .node(&AnalysisNodeId::new("vocal_bgm_split.vocal"))
+                .is_none()
         );
         assert!(
             graph
-                .node(&AnalysisNodeId::new("vocal_bgm_split"))
+                .node(&AnalysisNodeId::new("vocal_bgm_split.instrumental"))
                 .is_none()
         );
     }
 
     #[test]
-    fn parallel_experts_with_the_same_purpose_share_one_model_card() {
+    fn implemented_evidence_sources_have_one_card_each() {
         let workflow = wire(&app_core::default_workflow("song"));
         let graph = build_workflow_render_graph(&workflow, None, None, false);
 
-        let boundary = graph
+        let boundaries = graph
             .nodes
             .iter()
             .find(|node| node.capability_id.as_deref() == Some("analysis.note_boundary"))
-            .expect("the boundary experts own one grouped purpose card");
+            .expect("the note-boundary expert card is present");
         assert_eq!(
-            boundary.capability_id.as_deref(),
-            Some("analysis.note_boundary")
-        );
-        assert_eq!(boundary.members.len(), 5);
-        let models = boundary
-            .model_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            models,
-            std::collections::BTreeSet::from([
-                "game",
+            boundaries.model_ids,
+            [
                 "basic_pitch",
+                "game_1_0_3_medium",
+                "jbm555_cectc_80",
                 "rosvot",
                 "stars",
-                "jbm555_cectc_80"
-            ])
+            ]
         );
-        assert_eq!(
-            graph
-                .nodes
-                .iter()
-                .filter(|node| { node.capability_id.as_deref() == Some("analysis.note_boundary") })
-                .count(),
-            1
-        );
-
+        assert_eq!(boundaries.members.len(), 5);
         let pitch = graph
             .nodes
             .iter()
             .find(|node| node.capability_id.as_deref() == Some("analysis.pitch_f0"))
-            .expect("continuous-pitch experts share one purpose card");
-        assert_eq!(
-            pitch
-                .model_ids
-                .iter()
-                .map(String::as_str)
-                .collect::<std::collections::BTreeSet<_>>(),
-            std::collections::BTreeSet::from(["rmvpe", "fcpe"])
-        );
+            .expect("the continuous F0 evidence card is present");
+        assert_eq!(pitch.model_ids, ["fcpe", "rmvpe"]);
         assert_eq!(pitch.members.len(), 2);
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| { node.capability_id.as_deref() == Some("analysis.acoustic_dsp") })
+        );
     }
 
     #[test]
@@ -917,28 +894,18 @@ mod tests {
     }
 
     #[test]
-    fn independent_provider_routes_keep_independent_progress_and_failure_state() {
+    fn dual_output_route_has_one_shared_progress_and_failure_state() {
         let workflow = wire(&app_core::default_workflow("song"));
         let mut graph = build_workflow_render_graph(&workflow, None, None, false);
         let mut task = runtime_task(
-            json!([
-                runtime_route(Some("vocal_bgm_split.vocal"), "node_completed"),
-                runtime_route(Some("vocal_bgm_split.instrumental"), "node_failed")
-            ]),
-            "vocal_bgm_split.instrumental",
+            json!([runtime_route(Some("vocal_bgm_split"), "node_failed")]),
+            "vocal_bgm_split",
         );
         task.status = app_core::QueuedStatus::Queued;
         overlay_workflow_runtime(&mut graph, &task);
         assert_eq!(
             graph
-                .node(&AnalysisNodeId::new("vocal_bgm_split.vocal"))
-                .unwrap()
-                .state,
-            GraphNodeState::Complete
-        );
-        assert_eq!(
-            graph
-                .node(&AnalysisNodeId::new("vocal_bgm_split.instrumental"))
+                .node(&AnalysisNodeId::new("vocal_bgm_split"))
                 .unwrap()
                 .state,
             GraphNodeState::Failed
@@ -946,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn unplanned_separation_model_is_not_marked_complete() {
+    fn requested_vocal_runs_the_shared_dual_output_invocation() {
         let workflow = wire(&app_core::default_workflow("song"));
         let planned = [
             "audio.decode".to_string(),
@@ -957,19 +924,11 @@ mod tests {
         let graph = build_workflow_render_graph(&workflow, None, Some(&planned), true);
         assert_eq!(
             graph
-                .node(&AnalysisNodeId::new("vocal_bgm_split.vocal"))
+                .node(&AnalysisNodeId::new("vocal_bgm_split"))
                 .unwrap()
                 .state,
             GraphNodeState::Complete
         );
-        let instrumental = AnalysisNodeId::new("vocal_bgm_split.instrumental");
-        assert_eq!(
-            graph.node(&instrumental).unwrap().state,
-            GraphNodeState::NotRequested
-        );
-        assert!(graph.edges.iter().any(|edge| {
-            edge.to == instrumental && edge.role == RenderEdgeRole::InactiveBinding
-        }));
     }
 
     #[test]
@@ -1078,54 +1037,28 @@ mod tests {
     }
 
     #[test]
-    fn disabled_nodes_are_absent_without_ghost_edges_while_conditional_states_remain() {
-        let mut definition = app_core::default_workflow("song");
-        app_core::set_workflow_execution_policy(
-            &mut definition,
-            &app_core::WorkflowNodeId::new("boundary_stars"),
-            app_core::ExecutionPolicy::Disabled,
-        )
-        .unwrap();
-        let graph = build_workflow_render_graph(&wire(&definition), None, None, false);
-        assert!(graph.node(&AnalysisNodeId::new("boundary_stars")).is_none());
-        assert!(graph.edges.iter().all(|edge| {
-            edge.from.as_str() != "boundary_stars" && edge.to.as_str() != "boundary_stars"
-        }));
+    fn disabled_preprocessing_nodes_leave_no_ghost_edges() {
+        let graph = build_workflow_render_graph(
+            &wire(&app_core::default_workflow("song")),
+            None,
+            None,
+            false,
+        );
+        for disabled in ["lead_isolate", "vocal_cleanup_1", "vocal_dereverb_1"] {
+            assert!(graph.node(&AnalysisNodeId::new(disabled)).is_none());
+            assert!(
+                graph
+                    .edges
+                    .iter()
+                    .all(|edge| { edge.from.as_str() != disabled && edge.to.as_str() != disabled })
+            );
+        }
         let pitch = graph
             .nodes
             .iter()
             .find(|node| node.capability_id.as_deref() == Some("analysis.pitch_f0"))
             .unwrap();
-        assert_eq!(
-            pitch
-                .members
-                .iter()
-                .find(|member| member.id.as_str() == "f0_fcpe")
-                .unwrap()
-                .state,
-            GraphNodeState::Deferred
-        );
-        app_core::set_workflow_execution_policy(
-            &mut definition,
-            &app_core::WorkflowNodeId::new("boundary_stars"),
-            app_core::ExecutionPolicy::Conditional {
-                condition: app_core::ConditionalExecution::MaximumOnly,
-            },
-        )
-        .unwrap();
-        let restored = build_workflow_render_graph(&wire(&definition), None, None, false);
-        let boundary = restored
-            .nodes
-            .iter()
-            .find(|node| node.capability_id.as_deref() == Some("analysis.note_boundary"))
-            .expect("re-enabling restores the model inside its purpose card");
-        let stars = boundary
-            .members
-            .iter()
-            .find(|member| member.id.as_str() == "boundary_stars")
-            .unwrap();
-        assert_eq!(stars.model_ids, ["stars"]);
-        assert_eq!(stars.state, GraphNodeState::ProfileSkipped);
+        assert_eq!(pitch.model_ids, ["fcpe", "rmvpe"]);
         let terminal = graph
             .nodes
             .iter()

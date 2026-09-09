@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn setup_request_preserves_the_selected_backend_and_artifact() {
         let mut config = AppConfig {
-            compute_backend: Some("openvino".to_string()),
+            compute_backend: Some("ggml".to_string()),
             ..AppConfig::default()
         };
         let folders = setup_folders(
@@ -209,7 +209,7 @@ mod tests {
                 target: Some(app_core::ModelDownloadTarget::Pitch),
             },
         );
-        assert_eq!(folders.compute_backend, app_core::ComputeBackend::OpenVino);
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Ggml);
         assert_eq!(
             folders.model_target,
             Some(app_core::ModelDownloadTarget::Pitch)
@@ -217,7 +217,7 @@ mod tests {
 
         config.compute_backend = Some("vulkan".to_string());
         let folders = setup_folders(&config, SetupRequest { target: None });
-        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Vulkan);
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Ggml);
         assert_eq!(folders.model_target, None);
     }
 

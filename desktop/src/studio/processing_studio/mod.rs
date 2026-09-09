@@ -1030,44 +1030,17 @@ pub(crate) fn spawn_processing_studio(
                                     lane,
                                     font.clone(),
                                     theme,
-                                    "OPTIONAL TRANSCRIPTION",
+                                    "TRANSCRIPTION UNAVAILABLE",
                                 );
-                                lane.spawn(Node {
-                                    width: percent(100),
-                                    column_gap: px(5),
-                                    row_gap: px(5),
-                                    flex_wrap: FlexWrap::Wrap,
-                                    ..default()
-                                })
-                                .with_children(|adds| {
-                                    stage_header::optional_card_add_button(
-                                        adds,
-                                        font.clone(),
-                                        theme,
-                                        &stored.definition,
-                                        &vocal_tail,
-                                        app_core::OptionalWorkflowCardV1::FireRedTranscript,
-                                    );
-                                });
                                 spawn_wrapped_text(
                                     lane,
                                     font.clone(),
-                                    "Online lyric acquisition remains an explicit Song Detail action. Plan Preview never downloads or writes lyrics.",
+                                    "No transcription or forced-alignment model is currently implemented on the Rust GGML runtime. Plan Preview reports this capability gap explicitly.",
                                     7.0,
                                     theme.muted_foreground,
                                 );
                             } else if stage == 3 {
-                                let expert_cards = [
-                                    app_core::OptionalWorkflowCardV1::RmvpePitch,
-                                    app_core::OptionalWorkflowCardV1::FcpePitch,
-                                    app_core::OptionalWorkflowCardV1::GameBoundary,
-                                    app_core::OptionalWorkflowCardV1::BasicPitchBoundary,
-                                    app_core::OptionalWorkflowCardV1::RosvotBoundary,
-                                    app_core::OptionalWorkflowCardV1::StarsBoundary,
-                                    app_core::OptionalWorkflowCardV1::Jbm555Boundary,
-                                    app_core::OptionalWorkflowCardV1::StarsTechnique,
-                                    app_core::OptionalWorkflowCardV1::AcousticDsp,
-                                ];
+                                let expert_cards = [app_core::OptionalWorkflowCardV1::AcousticDsp];
                                 let missing_experts = expert_cards
                                     .into_iter()
                                     .filter(|card| {

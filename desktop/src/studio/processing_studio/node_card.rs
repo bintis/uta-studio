@@ -346,7 +346,8 @@ pub(super) fn spawn_node_card(
 ) {
     let expanded = context.selected && context.expanded;
     let (status, status_color) = node_execution_badge(&node.execution_policy);
-    let model_options = app_core::workflow_model_options(&node.capability_id);
+    let model_options =
+        app_core::workflow_model_options(&node.capability_id, node.model_id.as_deref());
     // First-tier collapsed identity is always the capability; the configured
     // provider/model is a weaker second-tier line below it (see
     // `secondary_label`) instead of being fused into one equal-weight title.
@@ -569,7 +570,7 @@ pub(super) fn spawn_node_card(
             if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
                 let strategy = node
                     .separation_strategy
-                    .unwrap_or(app_core::SeparationStrategyV1::IndependentSpecialists);
+                    .unwrap_or(app_core::SeparationStrategyV1::LeapDualOutput);
                 let descriptor = app_core::separation_strategy_descriptor(strategy);
                 spawn_wrapped_text(
                     card,
@@ -580,6 +581,13 @@ pub(super) fn spawn_node_card(
                         descriptor.executions.len()
                     ),
                     9.0,
+                    theme.muted_foreground,
+                );
+                spawn_wrapped_text(
+                    card,
+                    font.clone(),
+                    descriptor.description,
+                    7.5,
                     theme.muted_foreground,
                 );
                 if expanded {

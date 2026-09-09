@@ -81,10 +81,7 @@ impl fmt::Display for RuntimeResourceRefWireV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeBackendWireV1 {
-    OpenVino,
-    Vulkan,
-    NativeDsp,
-    CpuReference,
+    Ggml,
 }
 
 /// Device-class preference, orthogonal to `NativeBackendWireV1`. Hand-mirrors

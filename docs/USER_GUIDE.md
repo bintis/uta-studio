@@ -1,6 +1,6 @@
 # Uta! Studio User Guide / 用户说明书 / ユーザーガイド
 
-**Applies to:** Uta! Studio 0.8.3
+**Applies to:** Uta! Studio 0.8.4
 **Document revision:** 2026-08-24
 **License:** Documentation distributed with the GPL-3.0 project.
 
@@ -27,11 +27,11 @@ Uta! Studio does not move or delete source media. Generated stems, models, previ
 
 ### 2. Installation
 
-Download the package for your system from the project’s GitHub Releases page. Release 0.8.3 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
+Download the package for your system from the project’s GitHub Releases page. Release 0.8.4 provides Windows x86-64 ZIP, Debian, RPM, and portable Linux packages.
 
 #### Windows
 
-1. Download `uta-studio-0.8.3-x86_64-windows.zip`.
+1. Download `uta-studio-0.8.4-x86_64-windows.zip`.
 2. Extract the ZIP to a writable folder.
 3. Start `bin\uta-studio.exe` from the extracted folder.
 4. Keep the extracted files together; do not run only a copied executable without its packaged assets.
@@ -41,20 +41,20 @@ Windows 10/11 x86-64 is supported. Editor and library audition use the system WA
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.3-1_amd64.deb
+sudo apt install ./uta-studio_0.8.4-1_amd64.deb
 ```
 
 #### Fedora / RHEL-compatible systems
 
 ```sh
-sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.4-1.x86_64.rpm
 ```
 
 #### Portable Linux build
 
 ```sh
-chmod +x uta-studio-0.8.3-x86_64-linux.bin
-./uta-studio-0.8.3-x86_64-linux.bin
+chmod +x uta-studio-0.8.4-x86_64-linux.bin
+./uta-studio-0.8.4-x86_64-linux.bin
 ```
 
 The Linux desktop is Wayland-native. It does not enable an X11 backend or XWayland fallback.
@@ -100,7 +100,7 @@ Batch export requires a default export folder so files can be written without op
 
 Open **Settings → Models & runtime**.
 
-1. Select the acceleration target: CPU, NVIDIA CUDA, or Intel Arc where supported.
+1. Select GPU or integrated GPU for normal inference. CPU is an explicit experimental reference mode; GPU requests never fall back to it.
 2. Review **Runtime status**.
 3. Choose **Set up…** or **Reconfigure…**.
 4. Read the confirmation, including model size and license notices.
@@ -147,7 +147,7 @@ Uta! Studio executes an explicit node-based DAG. Generated files are typed **ana
 
 #### 01 · Vocal and BGM separation
 
-Runs independent vocal and BGM separation branches. Each branch selects its own separation model, followed by two ordered post-processing slots; each slot can be Off, denoise, or dereverb. The BGM output feeds chart construction directly, while the vocal output feeds pitch and lyrics analysis.
+Runs one selected dual-output separation strategy. Leap XE90 is the default; public PolarFormer is an explicit experiment. One inference publishes the vocal estimate and its instrumental residual, after which optional lead isolation, denoise, and dereverb can prepare analysis audio.
 
 Available choices include validated RoFormer vocal/BGM separation, lead isolation, denoise, and dereverb models. Catalog models are installed only from **Settings > Models & runtime** after you confirm the name, source, size, and license. Analysis stays local; existing chart data changes only after explicit re-analysis.
 
@@ -155,19 +155,19 @@ Use a balanced profile first. Memory-saving profiles reduce peak use; quality pr
 
 #### 02 · Lyrics transcription
 
-FireRedASR2-AED and Qwen3-ASR produce independent transcript evidence. Uta! Studio fuses their token evidence into Canonical Lyrics instead of silently choosing one complete transcript.
-
-A larger recognition model can improve difficult material but costs more memory and processing time. Confirm the selected model is installed on **Models & runtime**.
+Qwen3-ASR produces the generated transcript. When the language makes it applicable, FireRed runs as an optional challenger whose text is compared with the primary transcript rather than replacing it; if the challenger fails, the run continues and records the reason. Caller-provided and imported lyrics remain available as Canonical Lyrics and skip generated transcription entirely.
 
 #### 03 · Word timing and alignment
 
-The pinned Qwen3 Forced Aligner consumes Canonical Lyrics and selected lead-vocal audio. Its boundaries remain evidence until fusion and can be reviewed in the Editor.
-
-The optional NextFire MMS Karaoke model is separately licensed under AGPL-3.0 and is downloaded only after a dedicated confirmation. Use it only when its license and Japanese-specific behavior fit your project.
+The Qwen3 Forced Aligner produces word-level timing from the canonical transcript. It keeps an identity separate from ordinary transcription, and imported timing is never relabelled as generated alignment.
 
 #### 04 · Pitch analysis
 
-Extracts pitch evidence and MIDI note targets for chart authoring. The editor remains authoritative: inspect and correct notes instead of treating automatic output as final.
+RMVPE supplies the primary continuous-F0 evidence. Maximum mode also runs FCPE as a separate secondary F0 expert for agreement and disagreement evidence; it is not a fallback for RMVPE. The editor remains authoritative: inspect and correct notes instead of treating automatic output as final.
+
+#### 05 · Note and technique evidence
+
+GAME supplies the primary note and boundary evidence. Its small, medium, and large sizes are interchangeable choices on the note/boundary card in **Processing Studio**; medium is the default. Basic Pitch, JBM555, STARS, and ROSVOT are optional challengers that add evidence to fusion instead of replacing GAME; STARS additionally provides singing-technique evidence. STARS and ROSVOT are conditioned experts and run only when word timing and pitch evidence are both part of the run.
 
 #### Re-analysis rules
 
@@ -284,7 +284,7 @@ Include the application version, platform, selected runtime, relevant log excerp
 
 #### “Setup required” or missing model
 
-Open **Settings → Models & runtime**, press **Check again**, then install or repair the missing stage. Reconfigure after changing CPU/CUDA/Intel acceleration.
+Open **Settings → Models & runtime**, press **Check again**, then install or repair the missing stage. Reconfigure after changing the GGML GPU, integrated-GPU, or experimental CPU selection.
 
 #### Analysis button is disabled
 
@@ -469,11 +469,11 @@ Uta! Studio 不会移动或删除源媒体。生成的分轨、模型、预览�
 
 ### 2. 安装
 
-请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.3 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
+请在项目的 GitHub Releases 页面下载适合系统的安装包。0.8.4 版本提供 Windows x86-64 ZIP、Debian、RPM 和 Linux 便携包。
 
 #### Windows
 
-1. 下载 `uta-studio-0.8.3-x86_64-windows.zip`。
+1. 下载 `uta-studio-0.8.4-x86_64-windows.zip`。
 2. 将 ZIP 解压到可写文件夹。
 3. 从解压后的文件夹运行 `bin\uta-studio.exe`。
 4. 请保留包内文件的相对结构，不要只复制可执行文件单独运行。
@@ -483,20 +483,20 @@ Uta! Studio 正式支持 Windows 10/11 x86-64。编辑器和曲库试听使用�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.3-1_amd64.deb
+sudo apt install ./uta-studio_0.8.4-1_amd64.deb
 ```
 
 #### Fedora / RHEL 兼容系统
 
 ```sh
-sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.4-1.x86_64.rpm
 ```
 
 #### Linux 便携版
 
 ```sh
-chmod +x uta-studio-0.8.3-x86_64-linux.bin
-./uta-studio-0.8.3-x86_64-linux.bin
+chmod +x uta-studio-0.8.4-x86_64-linux.bin
+./uta-studio-0.8.4-x86_64-linux.bin
 ```
 
 Linux 桌面端原生使用 Wayland，不启用 X11 后端，也不回退到 XWayland。
@@ -542,7 +542,7 @@ Music/
 
 打开 **设置 → 模型与运行环境**。
 
-1. 选择加速目标：CPU、NVIDIA CUDA，或受支持时使用 Intel Arc。
+1. 正常推理请选择 GPU 或集成 GPU。CPU 仅是显式选择的实验参考模式；GPU 请求绝不会回退到 CPU。
 2. 查看**运行环境状态**。
 3. 选择**设置…**或**重新配置…**。
 4. 阅读确认信息，包括模型大小和许可证提示。
@@ -589,7 +589,7 @@ Uta! Studio 使用按节点执行的明确 DAG。生成文件是带类型的**�
 
 #### 01 · 人声与 BGM 分离
 
-人声与 BGM 使用彼此独立的分离分支。每个分支单独选择分离模型，之后有两个按顺序执行的后处理槽；每个槽可设为关闭、降噪或降回声。BGM 产物直接进入谱面构建，人声产物则进入音高与歌词分析。
+人声与 BGM 使用一个明确选择的双输出分离策略。默认使用 Leap XE90；公开 PolarFormer 仅作为显式实验选项。一次推理发布人声估计及其伴奏残差，随后可通过主唱隔离、降噪和去混响准备分析音频。
 
 可用选项包括经过验证的 RoFormer 人声/BGM 分离、主唱隔离、降噪和去混响模型。目录模型只能在 **设置 > 模型与运行环境** 中确认名称、来源、体积和许可后安装。分析保持本地运行；已有制谱数据只会在明确重新分析后改变。
 
@@ -597,19 +597,23 @@ Uta! Studio 使用按节点执行的明确 DAG。生成文件是带类型的**�
 
 #### 02 · 歌词转录
 
-FireRedASR2-AED 与 Qwen3-ASR 分别生成独立转写证据。Uta! Studio 在 token 层融合为 Canonical Lyrics，不会静默选择某个模型的整段结果。
+Qwen3-ASR 生成转写文本。当请求语言适用时，FireRed 会作为可选挑战者一同运行，其文本只用于与主转写对照，不会取代主转写；挑战者失败时分析继续进行并记录原因。调用者提供或导入的歌词仍可作为 Canonical Lyrics 使用，并完全跳过生成式转写。
 
 更大的识别模型可能改善困难素材，但会增加内存和处理时间。请在**模型与运行环境**中确认所选模型已安装。
 
 #### 03 · 单词时间与对齐
 
-固定版本的 Qwen3 Forced Aligner 消费 Canonical Lyrics 和选定的主唱音频。边界在融合前始终是证据，并可在编辑器中复核。
+Qwen3 强制对齐器根据 canonical 转写生成词级时间信息。它与普通转写保持独立身份；已导入的时间信息不会被改标为模型生成的对齐结果。
 
 NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确认后才会下载。请仅在其许可证和日语专用行为符合项目需求时使用。
 
 #### 04 · 音高分析
 
-提取谱面制作所需的音高依据与 MIDI 音符目标。编辑器中的人工结果始终具有最终权威性；请检查并修正音符，不要将自动结果直接视为成品。
+RMVPE 提供主要连续 F0 证据；Maximum 模式还会运行独立的 FCPE 次级 F0 专家，用于提供一致与分歧证据，而不是作为 RMVPE 的回退。编辑器中的人工结果始终具有最终权威性；请检查并修正音符，不要将自动结果直接视为成品。
+
+#### 05 · 音符与技巧证据
+
+GAME 提供主要音符与边界证据。small / medium / large 三种尺寸是 **Processing Studio** 中音符/边界卡片上的可互换选项，默认使用 medium。Basic Pitch、JBM555、STARS 和 ROSVOT 是可选挑战者，只向融合阶段补充证据，不会取代 GAME；STARS 还额外提供歌唱技巧证据。STARS 与 ROSVOT 是条件专家，只有当本次分析同时包含词级时间与音高证据时才会运行。
 
 #### 重新分析规则
 
@@ -726,7 +730,7 @@ NextFire MMS Karaoke 模型单独采用 AGPL-3.0 许可证，只有在专门确�
 
 #### 显示“需要设置”或模型缺失
 
-打开**设置 → 模型与运行环境**，选择**重新检查**，再安装或修复缺失阶段。切换 CPU/CUDA/Intel 加速后需要重新配置运行环境。
+打开**设置 → 模型与运行环境**，选择**重新检查**，再安装或修复缺失阶段。切换 GGML GPU、集成 GPU 或实验 CPU 模式后需要重新配置运行环境。
 
 #### 分析按钮不可用
 
@@ -911,11 +915,11 @@ Uta! Studio が元メディアを移動・削除することはありません�
 
 ### 2. インストール
 
-プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.3 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
+プロジェクトの GitHub Releases ページから、お使いの環境に合うパッケージをダウンロードしてください。0.8.4 では Windows x86-64 ZIP、Debian、RPM、Linux ポータブル版が提供されています。
 
 #### Windows
 
-1. `uta-studio-0.8.3-x86_64-windows.zip` をダウンロードします。
+1. `uta-studio-0.8.4-x86_64-windows.zip` をダウンロードします。
 2. ZIP を書き込み可能なフォルダーへ展開します。
 3. 展開先の `bin\uta-studio.exe` を起動します。
 4. パッケージ内の相対配置を保ち、実行ファイルだけを別の場所へコピーして起動しないでください。
@@ -925,20 +929,20 @@ Windows 10/11 x86-64 は正式対応です。エディターとライブラリ�
 #### Debian / Ubuntu
 
 ```sh
-sudo apt install ./uta-studio_0.8.3-1_amd64.deb
+sudo apt install ./uta-studio_0.8.4-1_amd64.deb
 ```
 
 #### Fedora / RHEL 互換環境
 
 ```sh
-sudo dnf install ./uta-studio-0.8.3-1.x86_64.rpm
+sudo dnf install ./uta-studio-0.8.4-1.x86_64.rpm
 ```
 
 #### Linux ポータブル版
 
 ```sh
-chmod +x uta-studio-0.8.3-x86_64-linux.bin
-./uta-studio-0.8.3-x86_64-linux.bin
+chmod +x uta-studio-0.8.4-x86_64-linux.bin
+./uta-studio-0.8.4-x86_64-linux.bin
 ```
 
 Linux デスクトップ版は Wayland ネイティブです。X11 バックエンドや XWayland フォールバックは有効にしていません。
@@ -984,7 +988,7 @@ Music/
 
 **設定 → モデルとランタイム**を開きます。
 
-1. CPU、NVIDIA CUDA、対応環境では Intel Arc からアクセラレーション先を選びます。
+1. 通常の推論では GPU または統合 GPU を選択します。CPU は明示的に選ぶ実験的な参照モードであり、GPU 要求から CPU へフォールバックしません。
 2. **ランタイム状態**を確認します。
 3. **セットアップ…**または**再構成…**を選びます。
 4. モデル容量とライセンスを含む確認内容を読みます。
@@ -1031,7 +1035,7 @@ Uta! Studio はノード単位で実行される明示的な DAG を使用しま
 
 #### 01 · ボーカルと BGM の分離
 
-ボーカルと BGM は独立した分離ブランチで処理します。各ブランチで分離モデルを個別に選び、その後に順番どおり実行される2つの後処理スロットを設定します。各スロットはオフ、ノイズ除去、残響除去から選べます。BGM 成果物は譜面構築へ直接渡り、ボーカル成果物はピッチ・歌詞解析へ渡ります。
+ボーカルと BGM には、明示的に選んだ1つのデュアル出力分離戦略を使います。既定は Leap XE90 で、公開 PolarFormer は明示的な実験オプションです。1回の推論でボーカル推定と伴奏残差を生成し、その後にリード分離、ノイズ除去、残響除去を任意で適用できます。
 
 検証済みの RoFormer ボーカル/BGM 分離、リード分離、ノイズ除去、残響除去モデルを利用できます。カタログモデルは **設定 > モデルとランタイム** で名前、出典、サイズ、ライセンスを確認したあとだけインストールできます。解析はローカルで行われ、既存譜面は明示的な再解析後にだけ変わります。
 
@@ -1039,19 +1043,23 @@ Uta! Studio はノード単位で実行される明示的な DAG を使用しま
 
 #### 02 · 歌詞文字起こし
 
-FireRedASR2-AED と Qwen3-ASR は独立した転写エビデンスを生成します。Uta! Studio は一方の全文を選ぶのではなく、token 単位で Canonical Lyrics に融合します。
+Qwen3-ASR が生成文字起こしを担当します。要求言語が該当する場合は FireRed が任意のチャレンジャーとして実行され、その結果は主文字起こしとの比較に使われるだけで置き換えは行いません。チャレンジャーが失敗しても解析は続行し、理由を記録します。利用者が提供・取り込みした歌詞は Canonical Lyrics として使用でき、生成的な文字起こしを完全に迂回します。
 
 大きい認識モデルは難しい素材を改善する場合がありますが、メモリと処理時間が増えます。**モデルとランタイム**で選択モデルがインストール済みか確認してください。
 
 #### 03 · 単語タイミングとアラインメント
 
-固定された Qwen3 Forced Aligner が Canonical Lyrics と選択したリードボーカル音声を処理します。境界は融合前のエビデンスとして保持され、エディターで確認できます。
+Qwen3 Forced Aligner が canonical 文字起こしから単語単位のタイミングを生成します。通常の文字起こしとは別のアイデンティティを保ち、取り込み済みのタイミングをモデル生成のアラインメントとして扱うことはありません。
 
 NextFire MMS Karaoke モデルは別途 AGPL-3.0 で提供され、専用確認後にのみダウンロードされます。ライセンスと日本語向け動作がプロジェクトに合う場合だけ使用してください。
 
 #### 04 · ピッチ解析
 
-譜面制作のためのピッチ根拠と MIDI ノート目標を抽出します。最終的な正解はエディターでの編集結果です。自動出力をそのまま完成品とせず、確認・修正してください。
+RMVPE が主となる連続 F0 エビデンスを生成します。Maximum モードでは、RMVPE のフォールバックではなく独立した補助 F0 エキスパートとして FCPE も実行し、一致・不一致の根拠を加えます。最終的な正解はエディターでの編集結果です。自動出力をそのまま完成品とせず、確認・修正してください。
+
+#### 05 · ノートと歌唱技巧のエビデンス
+
+GAME が主となるノートと境界のエビデンスを生成します。small／medium／large は **Processing Studio** のノート／境界カード上で切り替えられる選択肢で、既定は medium です。Basic Pitch、JBM555、STARS、ROSVOT は任意のチャレンジャーで、GAME を置き換えるのではなく融合へエビデンスを追加します。STARS は歌唱技巧のエビデンスも提供します。STARS と ROSVOT は条件付きエキスパートで、単語タイミングとピッチのエビデンスが同じ解析に含まれる場合のみ実行されます。
 
 #### 再解析の規則
 
@@ -1168,7 +1176,7 @@ UTF-8 UltraStar 1.1 テキストと同階層のメディアを書き出します
 
 #### 「セットアップが必要」またはモデル不足
 
-**設定 → モデルとランタイム**を開いて**再確認**し、不足ステージをインストールまたは修復します。CPU/CUDA/Intel を変更した場合はランタイムを再構成します。
+**設定 → モデルとランタイム**を開いて**再確認**し、不足ステージをインストールまたは修復します。GGML GPU、統合 GPU、または実験 CPU モードを変更した場合はランタイムを再構成します。
 
 #### 解析ボタンが無効
 

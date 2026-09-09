@@ -6,31 +6,18 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resource::{ModelId, ResourceKind, ResourceRef};
-use crate::runtime_lock::{
-    BASIC_PITCH_IR_MANIFEST_SHA256, BASIC_PITCH_SOURCE_SHA256, FCPE_IR_MANIFEST_SHA256,
-    FCPE_SOURCE_SHA256, FIRERED_IR_MANIFEST_SHA256, GAME_IR_MANIFEST_SHA256,
-    GGML_RUNTIME_RECIPE_SHA256, OPENVINO_WORKER_RECIPE_SHA256, RMVPE_GGUF_CONVERSION_RECIPE_SHA256,
-    RMVPE_GGUF_SHA256, RMVPE_GGUF_SIZE_BYTES, RMVPE_SOURCE_SHA256,
-    ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256, ROFORMER_DENOISE_IR_MANIFEST_SHA256,
-    ROFORMER_DEREVERB_CONVERSION_RECIPE_SHA256, ROFORMER_DEREVERB_IR_MANIFEST_SHA256,
-    ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256, ROFORMER_HARMONY_IR_MANIFEST_SHA256,
-    ROFORMER_INST_V2_CONVERSION_RECIPE_SHA256, ROFORMER_INST_V2_IR_MANIFEST_SHA256,
-    ROSVOT_CONVERSION_RECIPE_SHA256, ROSVOT_IR_MANIFEST_SHA256, STARS_CONVERSION_RECIPE_SHA256,
-    STARS_IR_MANIFEST_SHA256, native_runtime_lock, runtime_recipe_digest,
-};
+use crate::runtime_lock::{FCPE_GGUF_SHA256, FCPE_GGUF_SIZE_BYTES, GGML_RUNTIME_RECIPE_SHA256};
 use crate::state::ValidationState;
 
-mod candidates;
+pub const RUNTIME_CATALOG_VERSION: &str = "ggml";
+const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
 
-pub const RUNTIME_CATALOG_VERSION: &str = "runtime-manager-p0-a-v1";
-
+/// Model execution is uniformly owned by GGML. Hardware selection is carried
+/// separately by [`NativeDeviceClass`]; it is not a second model runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeBackend {
-    OpenVino,
-    Vulkan,
-    NativeDsp,
-    CpuReference,
+    Ggml,
 }
 
 impl FromStr for NativeBackend {
@@ -38,21 +25,16 @@ impl FromStr for NativeBackend {
 
     fn from_str(value: &str) -> RuntimeManagerResult<Self> {
         match value {
-            "openvino" => Ok(Self::OpenVino),
-            "vulkan" | "ggml_vulkan" => Ok(Self::Vulkan),
-            "native_dsp" => Ok(Self::NativeDsp),
-            "cpu_reference" | "openvino_cpu" => Ok(Self::CpuReference),
+            "ggml" | "ggml_vulkan" | "vulkan" => Ok(Self::Ggml),
             other => Err(RuntimeManagerError::new(
                 "invalid_backend",
-                format!("unknown native backend: {other}"),
+                format!("unknown execution backend: {other}"),
             )),
         }
     }
 }
 
-/// Device-class preference, orthogonal to `NativeBackend`. Captured through
-/// the process boundary; Runtime Manager does not yet enumerate multiple
-/// physical devices, so this does not change device selection on its own.
+/// Device-class preference for a GGML execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeDeviceClass {
@@ -159,6 +141,12 @@ pub struct LicenseInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelArtifactSpec {
+    pub name: String,
+    pub filename: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCatalogEntry {
     pub id: ModelId,
     pub display_name: String,
@@ -166,6 +154,10 @@ pub struct ModelCatalogEntry {
     pub capabilities: Vec<String>,
     pub source: SourceIdentity,
     pub license: LicenseInfo,
+    /// Complete, named runtime file set. `model` is the graph/weight artifact;
+    /// sidecars are explicit peers rather than paths guessed by workers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_artifacts: Vec<ModelArtifactSpec>,
     pub acquisition: Vec<AcquisitionSpec>,
     pub dependencies: Vec<ResourceRef>,
     pub backends: Vec<BackendCapability>,
@@ -197,8 +189,6 @@ pub struct RuntimeCatalogEntry {
     pub backends: Vec<BackendCapability>,
     pub acquisition: Vec<AcquisitionSpec>,
     pub executable_component_id: String,
-    /// Static P0 capability declaration, owned with the shipped worker recipe.
-    /// A worker hello/capabilities handshake may replace this in a later phase.
     #[serde(default)]
     pub supported_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,8 +230,10 @@ pub struct NativeModelRuntime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceCatalog {
-    pub schema_version: u32,
-    pub catalog_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_version: Option<String>,
     pub models: BTreeMap<String, ModelCatalogEntry>,
     pub runtimes: BTreeMap<String, RuntimeCatalogEntry>,
     pub tools: BTreeMap<String, ToolCatalogEntry>,
@@ -251,23 +243,16 @@ pub struct ResourceCatalog {
 impl ResourceCatalog {
     pub fn default_catalog() -> RuntimeManagerResult<Self> {
         let mut catalog = Self {
-            schema_version: 1,
-            catalog_version: RUNTIME_CATALOG_VERSION.to_string(),
+            schema_version: None,
+            catalog_version: None,
             models: BTreeMap::new(),
             runtimes: BTreeMap::new(),
             tools: BTreeMap::new(),
             bundles: BTreeMap::new(),
         };
-        catalog.add_default_runtimes()?;
-        catalog.add_default_models()?;
-        catalog.add_openvino_cpu_reference_routes();
-        catalog.add_ggml_roformer_routes()?;
-        catalog.add_fcpe_native_route()?;
-        catalog.add_basic_pitch_native_route()?;
-        catalog.add_firered_native_route()?;
-        catalog.add_stars_native_route()?;
-        catalog.add_rosvot_native_route()?;
-        catalog.add_default_tools_and_bundles()?;
+        catalog.add_runtimes()?;
+        catalog.add_models()?;
+        catalog.add_tools_and_bundles()?;
         Ok(catalog)
     }
 
@@ -329,1162 +314,98 @@ impl ResourceCatalog {
             .collect()
     }
 
-    fn add_openvino_cpu_reference_routes(&mut self) {
-        for model in self.models.values_mut().filter(|model| {
-            model
-                .backends
-                .iter()
-                .any(|capability| capability.backend == NativeBackend::OpenVino)
-        }) {
-            if !model
-                .backends
-                .iter()
-                .any(|capability| capability.backend == NativeBackend::CpuReference)
-            {
-                model.backends.push(BackendCapability {
-                    backend: NativeBackend::CpuReference,
-                    validation: ValidationState::Experimental,
-                    evidence_id: Some("validation:openvino-ir-explicit-cpu-reference".to_string()),
-                });
-            }
-        }
-    }
-
-    fn add_ggml_roformer_routes(&mut self) -> RuntimeManagerResult<()> {
-        const ROFORMER_MODELS: [&str; 4] = [
-            "melband_roformer_inst_v2",
-            "melband_roformer_harmony",
-            "melband_roformer_denoise_aufr33",
-            "melband_roformer_dereverb_anvuew",
-        ];
-        for model_id in ROFORMER_MODELS {
-            let model = self
-                .models
-                .get_mut(model_id)
-                .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing RoFormer model"))?;
-            model.backends.clear();
-            model.backends.push(BackendCapability {
-                backend: NativeBackend::Vulkan,
-                validation: ValidationState::ProductionPinned,
-                evidence_id: Some(
-                    "validation:ggml-roformer-fullsong-serial-2026-08-24".to_string(),
-                ),
-            });
-            model.pinned_backend = Some(NativeBackend::Vulkan);
-            model.dependencies.clear();
-            model
-                .dependencies
-                .push(ResourceRef::runtime("ggml_vulkan_v1")?);
-            model.runtime_recipe_digest = Some(GGML_RUNTIME_RECIPE_SHA256.to_string());
-            let (artifact, installed_bytes) = ggml_roformer_artifact(model_id);
-            model.source.converted_artifact = Some(artifact);
-            model.estimated_installed_bytes = Some(installed_bytes);
-            model.acquisition = vec![acquisition(
-                AcquisitionMethod::LocalImport,
-                "explicit import of the exact catalog-pinned GGUF",
-            )];
-        }
-        Ok(())
-    }
-
-    /// Wires the already-built, previously-unwired `uta-fcpe-worker` native
-    /// CPU DSP engine (`native-inference/fcpe`) into the catalog as `fcpe`'s
-    /// default route. Validated this run: a real 12 s clip and a real full
-    /// 354.9 s song both completed cleanly on the exact pinned
-    /// `fcpe-f32.gguf`, producing 35,489 finite, in-range (77-636 Hz) F0
-    /// frames with no crash -- CPU-only, so there is no Arc B580 GPU driver
-    /// risk in this route at all, unlike the OpenVINO GPU route it replaces
-    /// as default.
-    fn add_fcpe_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self
-            .models
-            .get_mut("fcpe")
-            .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing fcpe model"))?;
-        model.backends.push(BackendCapability {
-            backend: NativeBackend::NativeDsp,
-            validation: ValidationState::ProductionPinned,
-            evidence_id: Some("validation:fcpe-native-ggml-fullsong-2026-09-03".to_string()),
-        });
-        model.pinned_backend = Some(NativeBackend::NativeDsp);
-        model
-            .dependencies
-            .push(ResourceRef::runtime("fcpe_native_v1")?);
-        Ok(())
-    }
-
-    /// Wires the newly-built `uta-basic-pitch-worker` native CPU engine
-    /// (`native-inference/basic-pitch`) into the catalog as `basic_pitch`'s
-    /// default route. This is a from-scratch reimplementation of the
-    /// CQT + harmonic-stacking + small CNN architecture (no GGML/ONNX
-    /// runtime involved) against a from-scratch GGUF conversion of the
-    /// pinned ONNX weights. Validated this run: bit-exact parity (max diff
-    /// ~5e-4, mean ~1e-5 on a 0-1 scale, 100% contour-class match) against
-    /// this catalog's real cached OpenVINO GPU production evidence across
-    /// all 26,340 frames of the accepted 305.8s full-song fixture, plus a
-    /// clean full run with no crash -- CPU-only, so there is no Arc B580
-    /// GPU driver risk in this route at all, unlike the OpenVINO GPU route
-    /// it replaces as default. Along the way, two real bugs were caught and
-    /// fixed by this validation rather than shipped silently: a missing
-    /// BatchNormalization stage between the CQT and harmonic stacking, and
-    /// this repository's own "note_max"/"onset_max" evidence contract
-    /// being swapped relative to the source model's own output ordering
-    /// (matched to the already-established OpenVINO worker's contract, not
-    /// the model source's naming -- see native-inference/basic-pitch/src/
-    /// engine.rs for the full account).
-    fn add_basic_pitch_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self
-            .models
-            .get_mut("basic_pitch")
-            .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing basic_pitch model"))?;
-        model.backends.push(BackendCapability {
-            backend: NativeBackend::NativeDsp,
-            validation: ValidationState::ProductionPinned,
-            evidence_id: Some("validation:basic-pitch-native-ggml-fullsong-2026-09-03".to_string()),
-        });
-        model.pinned_backend = Some(NativeBackend::NativeDsp);
-        model
-            .dependencies
-            .push(ResourceRef::runtime("basic_pitch_native_v1")?);
-        Ok(())
-    }
-
-    /// Wires the newly-built `uta-firered-worker` native CPU engine
-    /// (`native-inference/firered`) into the catalog as
-    /// `firered_asr2_aed`'s default route. This is a from-scratch
-    /// reimplementation (Conformer encoder + greedy Transformer decoder,
-    /// `gemm`-backed matmuls, no GPU dependency) of the official
-    /// FireRedTeam checkpoint (https://huggingface.co/FireRedTeam/
-    /// FireRedASR2-AED, Apache-2.0) -- not the third-party INT8 ONNX export
-    /// the OpenVINO route uses. Validated this run against the canonical
-    /// `hello_zh.wav` fixture (exact "你好世界" match, byte-identical to a
-    /// genuine PyTorch F32 reference forward pass) and the same 305.8s
-    /// full-song fixture used elsewhere in this catalog. See
-    /// `native-inference/firered/src/engine.rs` for the full account,
-    /// including a real FP16-precision bug this validation caught and
-    /// reverted (weights are F32, not FP16).
-    fn add_firered_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self.models.get_mut("firered_asr2_aed").ok_or_else(|| {
-            RuntimeManagerError::invalid_catalog("missing firered_asr2_aed model")
-        })?;
-        model.backends.push(BackendCapability {
-            backend: NativeBackend::NativeDsp,
-            validation: ValidationState::ProductionPinned,
-            evidence_id: Some("validation:firered-native-ggml-fullsong-2026-09-03".to_string()),
-        });
-        model.pinned_backend = Some(NativeBackend::NativeDsp);
-        model
-            .dependencies
-            .push(ResourceRef::runtime("firered_native_v1")?);
-        Ok(())
-    }
-
-    /// Wires the newly-built `uta-stars-worker` native CPU engine
-    /// (`native-inference/stars`) into the catalog as an additional,
-    /// **not yet promoted** `stars` route. This is a from-scratch
-    /// reimplementation of STARS's full 5-stage pipeline (U-Net +
-    /// Conformer-MoE prosody extractors, VQ codebooks, cross-attention
-    /// style aligner, Viterbi phoneme alignment, technique/style heads)
-    /// plus a native port of RMVPE (reusing the same pinned `rmvpe-f32.gguf`
-    /// the standalone `rmvpe` model already ships) for pitch annotation --
-    /// see `native-inference/stars/src/engine.rs` for the full architecture
-    /// account, cross-referenced against both the pinned reference source
-    /// and the real checkpoint's own tensor shapes.
-    ///
-    /// Left at `BenchmarkCandidate` (not `ProductionPinned`, no
-    /// `pinned_backend`) rather than defaulted: this route has been
-    /// validated to load the real checkpoint's 1,345 tensors under their
-    /// exact expected shapes and to run all five stages end-to-end without
-    /// crashing on synthetic input, but has **not** been validated against
-    /// a genuine PyTorch reference forward pass the way `fcpe`/
-    /// `basic_pitch`/`firered_asr2_aed` were before their own promotion --
-    /// STARS's reference is a full research repo (not a standalone
-    /// script), so building that comparison harness is separate follow-up
-    /// work. Until that lands, `stars` remains selectable only under
-    /// `RuntimePolicy::Benchmark`/`Experimental`, matching this catalog's
-    /// established "validate before promoting" discipline.
-    fn add_stars_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self
-            .models
-            .get_mut("stars")
-            .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing stars model"))?;
-        model.backends.push(BackendCapability {
-            backend: NativeBackend::NativeDsp,
-            validation: ValidationState::BenchmarkCandidate,
-            evidence_id: Some(
-                "validation:stars-native-ggml-synthetic-smoke-2026-09-04".to_string(),
-            ),
-        });
-        model
-            .dependencies
-            .push(ResourceRef::runtime("stars_native_v1")?);
-        Ok(())
-    }
-
-    /// Wires the newly-built `uta-rosvot-worker` native CPU engine
-    /// (`native-inference/rosvot`) into the catalog as an additional, **not
-    /// yet promoted** `rosvot` route. ROSVOT is architecturally simpler than
-    /// STARS -- a single shared U-Net+Conformer backbone, no VQ codebooks,
-    /// no technique/style heads, no G2P/Viterbi (word boundaries arrive as a
-    /// direct model input from TimedTranscript rather than being predicted)
-    /// -- and reuses `native-inference/stars`'s own building-block module
-    /// (`crate::layers`) and its native RMVPE port verbatim. See
-    /// `native-inference/rosvot/src/engine.rs` for the full architecture
-    /// account, cross-referenced against both the pinned reference source
-    /// and the real checkpoint's own tensor shapes.
-    ///
-    /// Left at `BenchmarkCandidate` for the same reason as `stars`: real
-    /// checkpoint weights (245 tensors) load under their exact expected
-    /// shapes and the full frame+pitch pipeline runs end-to-end without
-    /// crashing on synthetic input, but it has not yet been cross-checked
-    /// against a genuine PyTorch reference forward pass.
-    fn add_rosvot_native_route(&mut self) -> RuntimeManagerResult<()> {
-        let model = self
-            .models
-            .get_mut("rosvot")
-            .ok_or_else(|| RuntimeManagerError::invalid_catalog("missing rosvot model"))?;
-        model.backends.push(BackendCapability {
-            backend: NativeBackend::NativeDsp,
-            validation: ValidationState::BenchmarkCandidate,
-            evidence_id: Some(
-                "validation:rosvot-native-ggml-synthetic-smoke-2026-09-04".to_string(),
-            ),
-        });
-        model
-            .dependencies
-            .push(ResourceRef::runtime("rosvot_native_v1")?);
-        Ok(())
-    }
-
-    fn add_default_runtimes(&mut self) -> RuntimeManagerResult<()> {
-        use NativeBackend::*;
-        use ValidationState::*;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "openvino_2026_3".to_string(),
-            display_name: "OpenVINO 2026.3 Worker".to_string(),
-            purpose: "Pinned OpenVINO CPU/GPU inference worker".to_string(),
-            backends: vec![BackendCapability {
-                // The OpenVINO GPU path is the one that caused this host's
-                // documented crash (docs/KEY_CONCLUSIONS.md:30) and it is no
-                // longer the default route for any model in this catalog.
-                // Kept selectable only under explicit experimental opt-in.
-                backend: OpenVino,
-                validation: Experimental,
-                evidence_id: Some("validation:openvino-worker-pinned".to_string()),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "openvino_2026_3".to_string(),
-            supported_models: [
-                "firered_asr2_aed",
-                "fcpe",
-                "game",
-                "basic_pitch",
-                "stars",
-                "rosvot",
-                "bs_polarformer_public_instrumental",
-                "jbm555_cectc_80",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "ggml_vulkan_v1".to_string(),
-            display_name: "GGML Vulkan Worker".to_string(),
-            purpose: "Manifest-pinned GGUF Vulkan inference for RoFormer and RMVPE models"
-                .to_string(),
-            backends: vec![BackendCapability {
-                backend: Vulkan,
-                validation: ProductionPinned,
-                evidence_id: Some(
-                    "validation:ggml-roformer-fullsong-serial-2026-08-24".to_string(),
-                ),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker and pinned local runtime",
-            )],
-            executable_component_id: "ggml_vulkan_v1".to_string(),
-            supported_models: [
+    fn add_runtimes(&mut self) -> RuntimeManagerResult<()> {
+        self.insert_runtime(ggml_runtime(
+            "ggml_vulkan",
+            "GGML model runtime",
+            "uta-ggml-worker",
+            &[
                 "bs_roformer_leap_xe90_vocals",
-                "melband_roformer_inst_v2",
+                "bs_roformer_leap_xe90_instrumental",
+                "bs_polarformer_public_instrumental",
                 "melband_roformer_harmony",
                 "melband_roformer_denoise_aufr33",
                 "melband_roformer_dereverb_anvuew",
-                "bs_polarformer_public_instrumental",
                 "rmvpe",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            recipe_digest: Some(GGML_RUNTIME_RECIPE_SHA256.to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "qwen_asr_runtime".to_string(),
-            display_name: "Qwen ASR Vulkan Runtime".to_string(),
-            purpose: "Pinned Vulkan GGML runtime for Qwen3 ASR".to_string(),
-            backends: vec![BackendCapability {
-                backend: Vulkan,
-                validation: ProductionPinned,
-                evidence_id: Some("validation:qwen-runtime-validation".to_string()),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "qwen_asr_runtime".to_string(),
-            supported_models: vec!["qwen3_asr_1_7b".to_string()],
-            recipe_digest: Some(
-                runtime_recipe_digest("qwen3_asr_1_7b")
-                    .map_err(RuntimeManagerError::invalid_catalog)?,
-            ),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "qwen_align_runtime".to_string(),
-            display_name: "Qwen Forced Aligner Vulkan Runtime".to_string(),
-            purpose: "Pinned Vulkan GGML runtime for Qwen3 forced alignment".to_string(),
-            backends: vec![BackendCapability {
-                backend: Vulkan,
-                validation: ProductionPinned,
-                evidence_id: Some(
-                    "validation:qwen-runtime-validation#aligner-static-closure".to_string(),
-                ),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "qwen_align_runtime".to_string(),
-            supported_models: vec!["qwen3_forced_aligner_0_6b".to_string()],
-            recipe_digest: Some(
-                runtime_recipe_digest("qwen3_forced_aligner_0_6b")
-                    .map_err(RuntimeManagerError::invalid_catalog)?,
-            ),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "game_native_v1".to_string(),
-            display_name: "GAME Native Runtime".to_string(),
-            purpose: "Native worker runtime for GAME GGUF extraction".to_string(),
-            backends: vec![
-                BackendCapability {
-                    // A wgpu/Vulkan `GpuTensor` implementation of the `Tensor`
-                    // trait (native-inference/game/src/core/tensor/gpu/) lands
-                    // the same real model graph on GPU. Validated with an
-                    // exact-seed CPU/GPU parity run (21/21 notes identical,
-                    // max MIDI delta 7.6e-6 -- f32 rounding noise) and a clean
-                    // full-song (354.9s) run with no crash/kernel fault, both
-                    // on the same host that previously crashed on this
-                    // capability's OpenVINO counterpart. Promoted to
-                    // ProductionPinned and made the default route on that
-                    // basis; see the `game` model entry's `pinned_backend`.
-                    backend: Vulkan,
-                    validation: ProductionPinned,
-                    evidence_id: Some(
-                        "validation:game-native-gguf-vulkan-fullsong-2026-09-03".to_string(),
-                    ),
-                },
-                BackendCapability {
-                    backend: CpuReference,
-                    validation: ProductionPinned,
-                    evidence_id: Some("validation:game-native-gguf-cpu-2026-09-03".to_string()),
-                },
+                "fcpe",
+                "basic_pitch",
+                "game_1_0_3_small",
+                "game_1_0_3_medium",
+                "game_1_0_3_large",
+                "jbm555_cectc_80",
+                "stars",
+                "rosvot",
+                "firered_asr2_aed",
+                "qwen3_asr_1_7b",
+                "qwen3_forced_aligner_0_6b",
             ],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "game_native_v1".to_string(),
-            supported_models: vec!["game".to_string()],
-            recipe_digest: Some("game-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "jbm555_native_v1".to_string(),
-            display_name: "JBM555 Native Runtime".to_string(),
-            purpose: "Native worker runtime for JBM555 Japanese note expert GGUF inference"
-                .to_string(),
-            backends: vec![
-                BackendCapability {
-                    // `native-inference/jbm555` (`uta-jbm-worker`) is a
-                    // hand-written CPU engine (gemm/rayon, no wgpu/Vulkan
-                    // dependency at all) -- it was previously mislabeled
-                    // `Vulkan` here even though it never touches a GPU.
-                    // Relabeled to `NativeDsp` to match what actually runs;
-                    // this does not change its ProductionPinned status,
-                    // which the prior evidence run already established.
-                    backend: NativeDsp,
-                    validation: ProductionPinned,
-                    evidence_id: Some("validation:jbm555-native-gguf-2026-09-03".to_string()),
-                },
-                BackendCapability {
-                    backend: CpuReference,
-                    validation: ProductionPinned,
-                    evidence_id: Some("validation:jbm555-native-gguf-cpu-2026-09-03".to_string()),
-                },
-            ],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "jbm555_native_v1".to_string(),
-            supported_models: vec!["jbm555_cectc_80".to_string()],
-            recipe_digest: Some("jbm555-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "fcpe_native_v1".to_string(),
-            display_name: "FCPE Native Runtime".to_string(),
-            purpose: "Native CPU worker runtime for FCPE GGUF pitch inference".to_string(),
-            backends: vec![BackendCapability {
-                // `native-inference/fcpe` (`uta-fcpe-worker`) existed as a
-                // complete, unwired CPU DSP engine (gemm/rayon/rustfft, no
-                // GPU dependency). Wired in and validated this run: a real
-                // 12s clip and a real full 354.9s song both completed
-                // cleanly against the pinned `fcpe-f32.gguf`, producing
-                // 35,489 finite, in-range F0 frames with no crash.
-                backend: NativeDsp,
-                validation: ProductionPinned,
-                evidence_id: Some("validation:fcpe-native-ggml-fullsong-2026-09-03".to_string()),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "fcpe_native_v1".to_string(),
-            supported_models: vec!["fcpe".to_string()],
-            recipe_digest: Some("fcpe-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "basic_pitch_native_v1".to_string(),
-            display_name: "Basic Pitch Native Runtime".to_string(),
-            purpose: "Native CPU worker runtime for Basic Pitch GGUF onset/contour inference"
-                .to_string(),
-            backends: vec![BackendCapability {
-                // `native-inference/basic-pitch` (`uta-basic-pitch-worker`)
-                // is a from-scratch CPU reimplementation (gemm/rayon, no
-                // GPU dependency) of the CQT + harmonic-stacking + small
-                // CNN architecture, built and validated this run: bit-exact
-                // parity against real cached OpenVINO GPU production
-                // evidence across all 26,340 frames of the accepted 305.8s
-                // full-song fixture (max diff ~5e-4, mean ~1e-5), plus a
-                // clean full run with no crash. See the `basic_pitch`
-                // model entry's matching note for what that validation
-                // caught along the way.
-                backend: NativeDsp,
-                validation: ProductionPinned,
-                evidence_id: Some(
-                    "validation:basic-pitch-native-ggml-fullsong-2026-09-03".to_string(),
-                ),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "basic_pitch_native_v1".to_string(),
-            supported_models: vec!["basic_pitch".to_string()],
-            recipe_digest: Some("basic-pitch-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "firered_native_v1".to_string(),
-            display_name: "FireRed Native Runtime".to_string(),
-            purpose: "Native CPU worker runtime for FireRedASR2-AED windowed transcription"
-                .to_string(),
-            backends: vec![BackendCapability {
-                // `native-inference/firered` (`uta-firered-worker`) is a
-                // from-scratch CPU reimplementation (Conformer encoder +
-                // greedy Transformer decoder, gemm-backed matmuls, no GPU
-                // dependency) of the official FireRedTeam checkpoint
-                // (huggingface.co/FireRedTeam/FireRedASR2-AED, Apache-2.0),
-                // built and validated this run: exact "你好世界" match on
-                // the canonical `hello_zh.wav` fixture (byte-identical to a
-                // genuine PyTorch F32 reference forward pass), plus a clean
-                // full run on the accepted 305.8s full-song fixture with no
-                // crash. An FP16 weight-storage attempt was tried first and
-                // reverted after it flipped a real greedy-decoding decision
-                // on the canonical fixture; weights are F32.
-                backend: NativeDsp,
-                validation: ProductionPinned,
-                evidence_id: Some("validation:firered-native-ggml-fullsong-2026-09-03".to_string()),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "firered_native_v1".to_string(),
-            supported_models: vec!["firered_asr2_aed".to_string()],
-            recipe_digest: Some("firered-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "stars_native_v1".to_string(),
-            display_name: "STARS Native Runtime".to_string(),
-            purpose: "Native CPU worker runtime for STARS singing transcription and style analysis"
-                .to_string(),
-            backends: vec![BackendCapability {
-                // `native-inference/stars` (`uta-stars-worker`) is a
-                // from-scratch CPU reimplementation of STARS's full 5-stage
-                // pipeline plus a native RMVPE port for pitch annotation, no
-                // GPU dependency. Confirmed this run: the real checkpoint's
-                // 1,345 tensors load under their exact expected shapes and
-                // all five stages run end-to-end without crashing on
-                // synthetic input -- not yet cross-checked against a
-                // genuine PyTorch reference forward pass (see the matching
-                // `stars` model entry's note), so kept at
-                // `BenchmarkCandidate` rather than promoted.
-                backend: NativeDsp,
-                validation: BenchmarkCandidate,
-                evidence_id: Some(
-                    "validation:stars-native-ggml-synthetic-smoke-2026-09-04".to_string(),
-                ),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "stars_native_v1".to_string(),
-            supported_models: vec!["stars".to_string()],
-            recipe_digest: Some("stars-native-recipe-v1".to_string()),
-        })?;
-        self.insert_runtime(RuntimeCatalogEntry {
-            id: "rosvot_native_v1".to_string(),
-            display_name: "ROSVOT Native Runtime".to_string(),
-            purpose: "Native CPU worker runtime for ROSVOT singing note transcription".to_string(),
-            backends: vec![BackendCapability {
-                // `native-inference/rosvot` (`uta-rosvot-worker`) is a
-                // from-scratch CPU reimplementation of ROSVOT's shared
-                // U-Net+Conformer frame/pitch pipeline plus the same native
-                // RMVPE port `uta-stars-worker` uses, no GPU dependency.
-                // Confirmed this run: the real checkpoint's 245 tensors load
-                // under their exact expected shapes and the full pipeline
-                // runs end-to-end without crashing on synthetic input -- not
-                // yet cross-checked against a genuine PyTorch reference
-                // forward pass (see the matching `rosvot` model entry's
-                // note), so kept at `BenchmarkCandidate` rather than
-                // promoted.
-                backend: NativeDsp,
-                validation: BenchmarkCandidate,
-                evidence_id: Some(
-                    "validation:rosvot-native-ggml-synthetic-smoke-2026-09-04".to_string(),
-                ),
-            }],
-            acquisition: vec![acquisition(
-                AcquisitionMethod::Bundled,
-                "packaged native worker",
-            )],
-            executable_component_id: "rosvot_native_v1".to_string(),
-            supported_models: vec!["rosvot".to_string()],
-            recipe_digest: Some("rosvot-native-recipe-v1".to_string()),
-        })?;
+            GGML_RUNTIME_RECIPE_SHA256,
+        ))?;
         Ok(())
     }
 
-    fn add_default_models(&mut self) -> RuntimeManagerResult<()> {
-        use NativeBackend::*;
-        use ValidationState::*;
-        for model in candidates::task_23_models()? {
-            self.insert_model(model)?;
-        }
-        let roformer = [
-            (
-                "melband_roformer_inst_v2",
-                "MelBand-RoFormer Inst V2",
-                "audio.extract_instrumental",
-            ),
+    fn add_models(&mut self) -> RuntimeManagerResult<()> {
+        self.insert_model(leap_model()?)?;
+        self.insert_model(leap_instrumental_model()?)?;
+        self.insert_model(polarformer_model()?)?;
+        for (id, name, purpose, capability, source) in [
             (
                 "melband_roformer_harmony",
                 "MelBand-RoFormer Lead Isolation",
+                "Lead-vocal extraction with vocal residual",
                 "audio.lead_isolate",
+                roformer_source("melband_roformer_harmony"),
             ),
             (
                 "melband_roformer_denoise_aufr33",
                 "MelBand-RoFormer Denoise",
+                "44.1 kHz stereo vocal denoise",
                 "audio.denoise",
+                roformer_source("melband_roformer_denoise_aufr33"),
             ),
             (
                 "melband_roformer_dereverb_anvuew",
                 "MelBand-RoFormer Dereverb",
+                "44.1 kHz stereo vocal dereverb",
                 "audio.dereverb",
+                roformer_source("melband_roformer_dereverb_anvuew"),
             ),
-        ];
-        for (id, display_name, capability) in roformer {
-            let (mut source, license, estimated_download_bytes) = roformer_source(id);
-            if id == "melband_roformer_inst_v2" {
-                source.converted_artifact = Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_explicit_cpu_gpu_islands".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: ROFORMER_INST_V2_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: ROFORMER_INST_V2_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                });
-                self.insert_model(ModelCatalogEntry {
-                    id: ModelId::new(id)?,
-                    display_name: display_name.to_string(),
-                    purpose: "Exact-context 44.1 kHz stereo instrumental extraction".to_string(),
-                    capabilities: vec![capability.to_string()],
-                    source,
-                    license,
-                    acquisition: vec![acquisition(
-                        AcquisitionMethod::LocalImport,
-                        "explicit import of the accepted 33-island Inst V2 OpenVINO generation",
-                    )],
-                    dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![BackendCapability {
-                        backend: OpenVino,
-                        validation: BenchmarkCandidate,
-                        evidence_id: Some(
-                            "validation:inst-v2-exact-context-split-openvino".to_string(),
-                        ),
-                    }],
-                    pinned_backend: Some(OpenVino),
-                    estimated_download_bytes,
-                    estimated_installed_bytes: Some(1_583_142_000),
-                    recipe_digest: catalog_recipe_digest(id),
-                    runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-                })?;
-                continue;
-            }
-            if id == "melband_roformer_harmony" {
-                source.converted_artifact = Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_explicit_cpu_gpu_islands_dual_residual".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: ROFORMER_HARMONY_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: ROFORMER_HARMONY_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                });
-                self.insert_model(ModelCatalogEntry {
-                    id: ModelId::new(id)?,
-                    display_name: display_name.to_string(),
-                    purpose: "Exact 44.1 kHz all-vocals lead isolation yielding LeadVocal and VocalResidual".to_string(),
-                    capabilities: vec![capability.to_string()],
-                    source,
-                    license,
-                    acquisition: vec![acquisition(
-                        AcquisitionMethod::LocalImport,
-                        "explicit import of the accepted Karaoke OpenVINO neural island and dual-output residual contract",
-                    )],
-                    dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![BackendCapability {
-                        backend: OpenVino,
-                        validation: BenchmarkCandidate,
-                        evidence_id: Some(
-                            "validation:harmony-karaoke-dual-residual-openvino".to_string(),
-                        ),
-                    }],
-                    pinned_backend: Some(OpenVino),
-                    estimated_download_bytes,
-                    estimated_installed_bytes: Some(914_688_155),
-                    recipe_digest: catalog_recipe_digest(id),
-                    runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-                })?;
-                continue;
-            }
-            if id == "melband_roformer_denoise_aufr33" {
-                source.converted_artifact = Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_melband_neural_island".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: ROFORMER_DENOISE_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: ROFORMER_DENOISE_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                });
-                self.insert_model(ModelCatalogEntry {
-                    id: ModelId::new(id)?,
-                    display_name: display_name.to_string(),
-                    purpose: "Exact 44.1 kHz stereo dry-stem cleanup".to_string(),
-                    capabilities: vec![capability.to_string()],
-                    source,
-                    license,
-                    acquisition: vec![acquisition(
-                        AcquisitionMethod::LocalImport,
-                        "explicit import of the accepted R03 OpenVINO neural island and exact Denoise config",
-                    )],
-                    dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![BackendCapability {
-                        backend: OpenVino,
-                        validation: BenchmarkCandidate,
-                        evidence_id: Some(
-                            "validation:r03b-roformer-denoise-native-integration".to_string(),
-                        ),
-                    }],
-                    pinned_backend: Some(OpenVino),
-                    estimated_download_bytes,
-                    estimated_installed_bytes: Some(914_692_150),
-                    recipe_digest: catalog_recipe_digest(id),
-                    runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-                })?;
-                continue;
-            }
-            if id == "melband_roformer_dereverb_anvuew" {
-                source.converted_artifact = Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_melband_neural_island".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: ROFORMER_DEREVERB_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: ROFORMER_DEREVERB_CONVERSION_RECIPE_SHA256
-                        .to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                });
-                self.insert_model(ModelCatalogEntry {
-                    id: ModelId::new(id)?,
-                    display_name: display_name.to_string(),
-                    purpose: "Exact 44.1 kHz stereo noreverb-stem cleanup (checkpoint may remove additional content)".to_string(),
-                    capabilities: vec![capability.to_string()],
-                    source,
-                    license,
-                    acquisition: vec![acquisition(
-                        AcquisitionMethod::LocalImport,
-                        "explicit import of the accepted R04 OpenVINO neural island and exact Dereverb config",
-                    )],
-                    dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-                    backends: vec![BackendCapability {
-                        backend: OpenVino,
-                        validation: BenchmarkCandidate,
-                        evidence_id: Some(
-                            "validation:roformer-dereverb-native-integration".to_string(),
-                        ),
-                    }],
-                    pinned_backend: Some(OpenVino),
-                    estimated_download_bytes,
-                    estimated_installed_bytes: Some(914_694_000),
-                    recipe_digest: catalog_recipe_digest(id),
-                    runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-                })?;
-                continue;
-            }
+        ] {
+            self.insert_model(ggml_model(
+                id,
+                name,
+                purpose,
+                &[capability],
+                source.0,
+                source.1,
+                "ggml_vulkan",
+                source.2,
+                Some(457_008_736),
+                GGML_RUNTIME_RECIPE_SHA256,
+            )?)?;
         }
-
-        self.insert_optional_openvino_expert(
-            "firered_asr2_aed",
-            "FireRed ASR2 AED",
-            "Optional deterministic windowed transcript challenger over fixed IR buckets",
-            "speech.transcribe.challenger",
-            SourceIdentity {
-                repository: Some(
-                    "https://huggingface.co/42ailab/FireRedASR2-AED-ONNX".to_string(),
-                ),
-                revision: Some(
-                    "13f950858934f7b6a0d3ce52bae65af0dc022258".to_string(),
-                ),
-                filename: None,
-                sha256: None,
-                source_format: Some("split_int8_onnx".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/FireRedTeam/FireRedASR2S".to_string(),
-                    revision: Some(
-                        "4e7d9aaf4482a47cec1724807026b9b151926eb5".to_string(),
-                    ),
-                    license_id: "Apache-2.0".to_string(),
-                }),
-                artifacts: vec![
-                    source_artifact(
-                        "encoder.int8.onnx",
-                        "0fe4038f5e5cd340171535b7b5f2e184482e90e22aeb2ed0f7abe81af10783f9",
-                    ),
-                    source_artifact(
-                        "decoder.int8.onnx",
-                        "aeef22670d95aa90d78a1927242c2a6e4fbb8b44c1af8d3ae988c46fd67ae833",
-                    ),
-                    source_artifact(
-                        "ctc.int8.onnx",
-                        "8881d31c17bca30a7972299d5395daaa6424da6328a818ba496719c3118c32b4",
-                    ),
-                    source_artifact(
-                        "cmvn.ark",
-                        "6efba6105429d1630c05d818d956bfe4edfad37a04b3b27bb5a029b9adb37945",
-                    ),
-                    source_artifact(
-                        "tokens.txt",
-                        "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b",
-                    ),
-                ],
-                converted_artifact: Some(openvino_artifact(
-                    "openvino_ir_v11_smoke_buckets",
-                    FIRERED_IR_MANIFEST_SHA256,
-                )),
-            },
-            LicenseInfo {
-                status: "apache-2.0".to_string(),
-                source_attribution: "FireRedTeam/FireRedASR2S canonical project; selected executable graphs are the community 42ailab/ManySpeech ONNX conversion, not an official FireRedTeam binary".to_string(),
-                source_page: Some("https://huggingface.co/42ailab/FireRedASR2-AED-ONNX/tree/13f950858934f7b6a0d3ce52bae65af0dc022258".to_string()),
-            },
-            ValidationState::Experimental,
-            "validation:firered-openvino-worker-windowed-v1",
-        )?;
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new("rmvpe")?,
-            display_name: "RMVPE".to_string(),
-            purpose: "Primary continuous F0 tracking".to_string(),
-            capabilities: vec!["pitch.track".to_string()],
-            source: SourceIdentity {
-                repository: Some("https://huggingface.co/lj1995/VoiceConversionWebUI".to_string()),
-                revision: Some("e6d0c1a17da07c33557852f9dfa2bd44cc75737d".to_string()),
-                filename: Some("rmvpe.onnx".to_string()),
-                sha256: Some(RMVPE_SOURCE_SHA256.to_string()),
-                source_format: Some("onnx".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/Dream-High/RMVPE".to_string(),
-                    revision: None,
-                    license_id: "Apache-2.0".to_string(),
-                }),
-                artifacts: Vec::new(),
-                converted_artifact: Some(ConvertedArtifactIdentity {
-                    format: "gguf_f32".to_string(),
-                    manifest_filename: "rmvpe-f32.gguf".to_string(),
-                    manifest_sha256: RMVPE_GGUF_SHA256.to_string(),
-                    conversion_recipe_sha256: RMVPE_GGUF_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "ggml_vulkan_v1".to_string(),
-                    runtime_version: "2".to_string(),
-                    runtime_commit: "8c63e70982c95ceb862e3a1073a2c1beef75d60a".to_string(),
-                }),
-            },
-            license: LicenseInfo {
-                status: "mit".to_string(),
-                source_attribution:
-                    "lj1995/VoiceConversionWebUI rmvpe.onnx distribution; Dream-High/RMVPE algorithm lineage is separately Apache-2.0"
-                        .to_string(),
-                source_page: Some(
-                    "https://huggingface.co/lj1995/VoiceConversionWebUI/blob/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/rmvpe.onnx"
-                        .to_string(),
-                ),
-            },
-            acquisition: vec![acquisition(
-                AcquisitionMethod::LocalImport,
-                "explicit import of the F32 RMVPE GGUF converted from the exact ONNX source",
-            )],
-            dependencies: vec![ResourceRef::runtime("ggml_vulkan_v1")?],
-            backends: vec![BackendCapability {
-                backend: Vulkan,
-                validation: ProductionPinned,
-                evidence_id: Some("validation:rmvpe-ggml-vulkan-port-2026-09-02".to_string()),
-            }],
-            pinned_backend: Some(Vulkan),
-            estimated_download_bytes: None,
-            estimated_installed_bytes: Some(RMVPE_GGUF_SIZE_BYTES),
-            recipe_digest: catalog_recipe_digest("rmvpe"),
-            runtime_recipe_digest: Some(GGML_RUNTIME_RECIPE_SHA256.to_string()),
-        })?;
-        self.insert_optional_openvino_expert(
-            "fcpe",
-            "FCPE",
-            "Optional deterministic windowed secondary continuous-F0 disagreement expert",
-            "pitch.secondary",
-            SourceIdentity {
-                repository: Some("https://huggingface.co/gzivdo/fcpe-onnx".to_string()),
-                revision: Some(
-                    "5800a2b1944967f55bb0bfeb9718cb749f809310".to_string(),
-                ),
-                filename: Some("fcpe.onnx".to_string()),
-                sha256: Some(FCPE_SOURCE_SHA256.to_string()),
-                source_format: Some("onnx".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/CNChTu/FCPE".to_string(),
-                    revision: Some(
-                        "6a149c1afb1c7e7821b71869dfb31ad50c95b516".to_string(),
-                    ),
-                    license_id: "MIT".to_string(),
-                }),
-                artifacts: vec![source_artifact("fcpe.onnx", FCPE_SOURCE_SHA256)],
-                converted_artifact: Some(openvino_artifact(
-                    "openvino_ir_v11",
-                    FCPE_IR_MANIFEST_SHA256,
-                )),
-            },
-            LicenseInfo {
-                status: "mit".to_string(),
-                source_attribution: "CNChTu/FCPE canonical project; selected fcpe.onnx is the explicitly unofficial gzivdo community export".to_string(),
-                source_page: Some("https://huggingface.co/gzivdo/fcpe-onnx/tree/5800a2b1944967f55bb0bfeb9718cb749f809310".to_string()),
-            },
-            ValidationState::Experimental,
-            "validation:fcpe-windowed-schema3-secondary-f0",
-        )?;
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new("game")?,
-            display_name: "GAME".to_string(),
-            purpose: "Primary singing note and boundary expert".to_string(),
-            capabilities: vec!["notes.game".to_string()],
-            source: SourceIdentity {
-                repository: Some("https://github.com/openvpi/GAME.git".to_string()),
-                revision: Some("475a8ee781fe8cca980b3b12fbe6c80c768a813a".to_string()),
-                filename: Some("manifest.json".to_string()),
-                sha256: Some(GAME_IR_MANIFEST_SHA256.to_string()),
-                source_format: Some("openvino_ir_v11_static_chunked_estimator_buckets".to_string()),
-                ..SourceIdentity::default()
-            },
-            license: LicenseInfo {
-                status: "cc-by-nc-sa-4.0-explicit-acceptance".to_string(),
-                source_attribution: "openvpi GAME 1.0.3 medium model".to_string(),
-                source_page: Some(
-                    "https://github.com/openvpi/GAME/releases/tag/v1.0.3".to_string(),
-                ),
-            },
-            acquisition: vec![AcquisitionSpec {
-                method: AcquisitionMethod::LocalImport,
-                label:
-                    "pinned GAME OpenVINO IR directory produced by the audited conversion recipe"
-                        .to_string(),
-                license_id: Some("cc-by-nc-sa-4.0".to_string()),
-            }],
-            dependencies: vec![
-                ResourceRef::runtime("openvino_2026_3")?,
-                ResourceRef::runtime("game_native_v1")?,
-            ],
-            backends: vec![
-                BackendCapability {
-                    // The OpenVINO GPU route is the one that produced this
-                    // host's documented black-screen crash. Kept only as an
-                    // experimental fallback now that the native Vulkan route
-                    // is the default.
-                    backend: OpenVino,
-                    validation: Experimental,
-                    evidence_id: Some(
-                        "validation:game-stitching-repaired-fullsong-2026-08-24".to_string(),
-                    ),
-                },
-                BackendCapability {
-                    // See the matching note on `game_native_v1`'s Vulkan
-                    // capability above for what this evidence covers.
-                    backend: Vulkan,
-                    validation: ProductionPinned,
-                    evidence_id: Some(
-                        "validation:game-native-gguf-vulkan-fullsong-2026-09-03".to_string(),
-                    ),
-                },
-            ],
-            pinned_backend: Some(Vulkan),
-            estimated_download_bytes: None,
-            estimated_installed_bytes: Some(209_892_667),
-            recipe_digest: catalog_recipe_digest("game"),
-            runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-        })?;
-        self.insert_optional_openvino_expert(
-            "basic_pitch",
-            "Basic Pitch",
-            "Optional reference-overlap windowed onset/contour activation challenger",
-            "notes.basic_pitch",
-            SourceIdentity {
-                repository: Some(
-                    "https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models".to_string(),
-                ),
-                revision: Some(
-                    "327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763".to_string(),
-                ),
-                filename: Some("nmp.onnx".to_string()),
-                sha256: Some(BASIC_PITCH_SOURCE_SHA256.to_string()),
-                source_format: Some("onnx".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/spotify/basic-pitch".to_string(),
-                    revision: Some(
-                        "fa5997af0a8210982619003269994a1be25eddf3".to_string(),
-                    ),
-                    license_id: "Apache-2.0".to_string(),
-                }),
-                artifacts: vec![source_artifact("nmp.onnx", BASIC_PITCH_SOURCE_SHA256)],
-                converted_artifact: Some(openvino_artifact(
-                    "openvino_ir_v11",
-                    BASIC_PITCH_IR_MANIFEST_SHA256,
-                )),
-            },
-            LicenseInfo {
-                status: "apache-2.0".to_string(),
-                source_attribution: "Spotify Basic Pitch canonical project; selected nmp.onnx is the AEmotionStudio mirror of Spotify ONNX bytes".to_string(),
-                source_page: Some("https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models/tree/327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763".to_string()),
-            },
-            ValidationState::Experimental,
-            "validation:basic-pitch-reference-overlap-schema3",
-        )?;
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new("stars")?,
-            display_name: "STARS Chinese P1".to_string(),
-            purpose: "Optional lyric-conditioned note, technique, and style evidence".to_string(),
-            capabilities: vec!["notes.stars".to_string(), "technique.analyze".to_string()],
-            source: SourceIdentity {
-                repository: Some("https://huggingface.co/verstar/STARS".to_string()),
-                revision: Some("744a7ad02e1d788452293cd903ea6a933f7862c4".to_string()),
-                filename: Some("model_ckpt_steps_200000.ckpt".to_string()),
-                sha256: Some("9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c".to_string()),
-                source_format: Some("pytorch_checkpoint".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/gwx314/STARS".to_string(),
-                    revision: Some("f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167".to_string()),
-                    license_id: "MIT".to_string(),
-                }),
-                artifacts: vec![
-                    source_artifact(
-                        "model_ckpt_steps_200000.ckpt",
-                        "9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c",
-                    ),
-                    source_artifact(
-                        "stars_chinese.yaml",
-                        "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d10a459e4e7e91",
-                    ),
-                ],
-                converted_artifact: Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_conditioned_segmented_p1".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: STARS_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: STARS_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                }),
-            },
-            license: LicenseInfo {
-                status: "checkpoint-license-unresolved".to_string(),
-                source_attribution: "gwx314/STARS MIT source; verstar/STARS Chinese checkpoint rights are tracked separately".to_string(),
-                source_page: Some("https://huggingface.co/verstar/STARS/tree/744a7ad02e1d788452293cd903ea6a933f7862c4".to_string()),
-            },
-            acquisition: vec![acquisition(
-                AcquisitionMethod::LocalImport,
-                "explicit import of the pinned conditioned STARS P1 OpenVINO generation",
-            )],
-            dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-            backends: vec![BackendCapability {
-                backend: OpenVino,
-                validation: Experimental,
-                evidence_id: Some("validation:stars-p0-split-gpu-parity".to_string()),
-            }],
-            pinned_backend: None,
-            estimated_download_bytes: None,
-            estimated_installed_bytes: Some(528_000_000),
-            recipe_digest: catalog_recipe_digest("stars"),
-            runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-        })?;
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new("rosvot")?,
-            display_name: "ROSVOT P0".to_string(),
-            purpose: "Optional TimedTranscript-conditioned singing note evidence".to_string(),
-            capabilities: vec!["notes.rosvot".to_string()],
-            source: SourceIdentity {
-                repository: Some("https://github.com/RickyL-2000/ROSVOT".to_string()),
-                revision: Some("3c8332bf43adae35f6e4d64971862f2f6139b310".to_string()),
-                filename: Some("rosvot".to_string()),
-                sha256: Some("7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb".to_string()),
-                source_format: Some("pytorch_checkpoint".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: "https://github.com/RickyL-2000/ROSVOT".to_string(),
-                    revision: Some("3c8332bf43adae35f6e4d64971862f2f6139b310".to_string()),
-                    license_id: "MIT".to_string(),
-                }),
-                artifacts: vec![
-                    source_artifact(
-                        "rosvot",
-                        "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb",
-                    ),
-                    source_artifact(
-                        "config.yaml",
-                        "2ad2cb756623418c471b7dc2f56175cce88b69a70b4a2c354fa1a78525aa54e2",
-                    ),
-                    source_artifact(
-                        "source-manifest.json",
-                        "5ee3fe4d8f166da11ab0f1fbbc67fbd37e4ab906544d504876c7ebb60b0b32c8",
-                    ),
-                ],
-                converted_artifact: Some(ConvertedArtifactIdentity {
-                    format: "openvino_ir_v11_conditioned_segmented".to_string(),
-                    manifest_filename: "manifest.json".to_string(),
-                    manifest_sha256: ROSVOT_IR_MANIFEST_SHA256.to_string(),
-                    conversion_recipe_sha256: ROSVOT_CONVERSION_RECIPE_SHA256.to_string(),
-                    runtime_id: "openvino_2026_3".to_string(),
-                    runtime_version: "2026.3.0".to_string(),
-                    runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-                }),
-            },
-            license: LicenseInfo {
-                status: "checkpoint-license-unresolved".to_string(),
-                source_attribution: "RickyL-2000/ROSVOT MIT source; selected checkpoint rights are tracked separately".to_string(),
-                source_page: Some("https://github.com/RickyL-2000/ROSVOT/tree/3c8332bf43adae35f6e4d64971862f2f6139b310".to_string()),
-            },
-            acquisition: vec![acquisition(
-                AcquisitionMethod::LocalImport,
-                "explicit import of the pinned TimedTranscript-conditioned ROSVOT OpenVINO generation",
-            )],
-            dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-            backends: vec![BackendCapability {
-                backend: OpenVino,
-                validation: Experimental,
-                evidence_id: Some("validation:rosvot-p0-split-gpu-parity".to_string()),
-            }],
-            pinned_backend: None,
-            estimated_download_bytes: None,
-            estimated_installed_bytes: Some(410_000_000),
-            recipe_digest: catalog_recipe_digest("rosvot"),
-            runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-        })?;
-
-        let runtime_lock = native_runtime_lock().map_err(RuntimeManagerError::invalid_catalog)?;
-        let asr = &runtime_lock.components.qwen3_asr_1_7b;
-        self.insert_qwen_model(
-            "qwen3_asr_1_7b",
-            "Qwen3-ASR-1.7B",
-            "Baseline transcript expert",
-            "speech.transcribe",
-            "qwen_asr_runtime",
-            SourceIdentity {
-                repository: Some(asr.gguf_repository.clone()),
-                revision: Some(asr.gguf_repository_revision.clone()),
-                filename: Some(asr.gguf_file.clone()),
-                sha256: Some(asr.gguf_sha256.clone()),
-                source_format: Some("gguf".to_string()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: asr.source_model_repository.clone(),
-                    revision: Some(asr.source_model_revision.clone()),
-                    license_id: "apache-2.0".to_string(),
-                }),
-                ..SourceIdentity::default()
-            },
-            AcquisitionMethod::ManagedDownload,
-            runtime_recipe_digest("qwen3_asr_1_7b")
-                .map_err(RuntimeManagerError::invalid_catalog)?,
-        )?;
-        let align = &runtime_lock.components.qwen3_forced_aligner_0_6b;
-        self.insert_qwen_model(
-            "qwen3_forced_aligner_0_6b",
-            "Qwen3 Forced Aligner 0.6B",
-            "Baseline forced alignment expert",
-            "speech.align",
-            "qwen_align_runtime",
-            SourceIdentity {
-                repository: Some(align.model_repository.clone()),
-                revision: Some(align.model_revision.clone()),
-                filename: Some(align.source_file.clone()),
-                sha256: Some(align.source_sha256.clone()),
-                source_format: Some(align.source_format.clone()),
-                algorithm: Some(AlgorithmIdentity {
-                    repository: align.model_repository.clone(),
-                    revision: Some(align.model_revision.clone()),
-                    license_id: align.source_license.clone(),
-                }),
-                artifacts: vec![source_artifact(&align.source_file, &align.source_sha256)],
-                converted_artifact: Some(ConvertedArtifactIdentity {
-                    format: align.gguf_format.clone(),
-                    manifest_filename: align.gguf_file.clone(),
-                    manifest_sha256: align.gguf_sha256.clone(),
-                    conversion_recipe_sha256: align.conversion_recipe_digest.clone(),
-                    runtime_id: "qwen_align_runtime".to_string(),
-                    runtime_version: align.runtime_commit.clone(),
-                    runtime_commit: align.runtime_commit.clone(),
-                }),
-            },
-            AcquisitionMethod::LocalImport,
-            runtime_recipe_digest("qwen3_forced_aligner_0_6b")
-                .map_err(RuntimeManagerError::invalid_catalog)?,
-        )?;
+        self.insert_model(rmvpe_model()?)?;
+        self.insert_model(fcpe_model()?)?;
+        self.insert_model(basic_pitch_model()?)?;
+        for variant in ["small", "medium", "large"] {
+            self.insert_model(game_model(variant)?)?;
+        }
+        self.insert_model(jbm555_model()?)?;
+        self.insert_model(stars_model()?)?;
+        self.insert_model(rosvot_model()?)?;
+        self.insert_model(firered_model()?)?;
+        self.insert_model(qwen_asr_model()?)?;
+        self.insert_model(qwen_aligner_model()?)?;
         Ok(())
     }
 
-    fn add_default_tools_and_bundles(&mut self) -> RuntimeManagerResult<()> {
+    fn add_tools_and_bundles(&mut self) -> RuntimeManagerResult<()> {
         self.tools.insert(
             "ffmpeg".to_string(),
             ToolCatalogEntry {
                 id: "ffmpeg".to_string(),
                 display_name: "FFmpeg".to_string(),
-                purpose: "Audio decode/encode utility where explicitly supported".to_string(),
+                purpose: "Audio decode and encode utility".to_string(),
                 acquisition: vec![
                     acquisition(AcquisitionMethod::Bundled, "packaged ffmpeg"),
                     acquisition(
@@ -1499,12 +420,30 @@ impl ResourceCatalog {
             ToolCatalogEntry {
                 id: crate::external_tool::FUSION_AGENT_ADAPTER_ID.to_string(),
                 display_name: "Fusion Agent Adapter".to_string(),
-                purpose: "Verified external adapter for bounded AI candidate-path selection"
-                    .to_string(),
+                purpose: "External adapter for bounded AI candidate-path selection".to_string(),
                 acquisition: vec![acquisition(
                     AcquisitionMethod::ExternalTool,
-                    "explicit verified Uta Fusion Agent Adapter executable",
+                    "explicit Uta Fusion Agent Adapter executable",
                 )],
+            },
+        );
+        let baseline = [
+            "bs_roformer_leap_xe90_vocals",
+            "qwen3_asr_1_7b",
+            "qwen3_forced_aligner_0_6b",
+            "rmvpe",
+            "game_1_0_3_medium",
+        ]
+        .into_iter()
+        .map(ResourceRef::model)
+        .collect::<Result<Vec<_>, _>>()?;
+        self.bundles.insert(
+            "engine-fast".to_string(),
+            BundleCatalogEntry {
+                id: "engine-fast".to_string(),
+                display_name: "GGML analysis baseline".to_string(),
+                purpose: "Currently implemented GGML analysis resources".to_string(),
+                dependencies: baseline,
             },
         );
         self.bundles.insert(
@@ -1512,10 +451,11 @@ impl ResourceCatalog {
             BundleCatalogEntry {
                 id: "roformer".to_string(),
                 display_name: "RoFormer family".to_string(),
-                purpose: "Convenience dependency set; not an inference identity".to_string(),
+                purpose: "GGML RoFormer separation resources".to_string(),
                 dependencies: [
                     "bs_roformer_leap_xe90_vocals",
-                    "melband_roformer_inst_v2",
+                    "bs_roformer_leap_xe90_instrumental",
+                    "bs_polarformer_public_instrumental",
                     "melband_roformer_harmony",
                     "melband_roformer_denoise_aufr33",
                     "melband_roformer_dereverb_anvuew",
@@ -1525,205 +465,700 @@ impl ResourceCatalog {
                 .collect::<Result<Vec<_>, _>>()?,
             },
         );
-        self.bundles.insert(
-            "engine-fast".to_string(),
-            BundleCatalogEntry {
-                id: "engine-fast".to_string(),
-                display_name: "Engine Fast baseline resources".to_string(),
-                purpose: "Convenience set for the first Analysis Engine path".to_string(),
-                dependencies: [
-                    "bs_roformer_leap_xe90_vocals",
-                    "melband_roformer_harmony",
-                    "qwen3_asr_1_7b",
-                    "qwen3_forced_aligner_0_6b",
-                    "rmvpe",
-                    "game",
-                ]
-                .into_iter()
-                .map(ResourceRef::model)
-                .collect::<Result<Vec<_>, _>>()?,
-            },
-        );
         Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn insert_optional_openvino_expert(
-        &mut self,
-        id: &str,
-        display_name: &str,
-        purpose: &str,
-        capability: &str,
-        source: SourceIdentity,
-        license: LicenseInfo,
-        validation: ValidationState,
-        evidence_id: &str,
-    ) -> RuntimeManagerResult<()> {
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new(id)?,
-            display_name: display_name.to_string(),
-            purpose: purpose.to_string(),
-            capabilities: vec![capability.to_string()],
-            source,
-            license,
-            acquisition: vec![acquisition(
-                AcquisitionMethod::LocalImport,
-                "explicit import of the exact verified fixed-window OpenVINO IR directory",
-            )],
-            dependencies: vec![ResourceRef::runtime("openvino_2026_3")?],
-            backends: vec![BackendCapability {
-                backend: NativeBackend::OpenVino,
-                validation,
-                evidence_id: Some(evidence_id.to_string()),
-            }],
-            // No caller of this helper currently has a non-OpenVINO route,
-            // so there is nothing safe to default to; callers that gain one
-            // (see `add_fcpe_native_route`) override this afterward.
-            pinned_backend: None,
-            estimated_download_bytes: None,
-            estimated_installed_bytes: None,
-            recipe_digest: catalog_recipe_digest(id),
-            runtime_recipe_digest: Some(OPENVINO_WORKER_RECIPE_SHA256.to_string()),
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn insert_qwen_model(
-        &mut self,
-        id: &str,
-        display_name: &str,
-        purpose: &str,
-        capability: &str,
-        runtime_id: &str,
-        source: SourceIdentity,
-        acquisition_method: AcquisitionMethod,
-        recipe_digest: String,
-    ) -> RuntimeManagerResult<()> {
-        self.insert_model(ModelCatalogEntry {
-            id: ModelId::new(id)?,
-            display_name: display_name.to_string(),
-            purpose: purpose.to_string(),
-            capabilities: vec![capability.to_string()],
-            license: qwen_model_license(&source),
-            source,
-            acquisition: vec![acquisition(
-                acquisition_method,
-                match acquisition_method {
-                    AcquisitionMethod::ManagedDownload => "pinned Qwen recipe",
-                    AcquisitionMethod::LocalImport => "pinned local import recipe",
-                    _ => "acquisition recipe has not been audited",
-                },
-            )],
-            dependencies: vec![ResourceRef::runtime(runtime_id)?],
-            backends: vec![BackendCapability {
-                backend: NativeBackend::Vulkan,
-                validation: ValidationState::ProductionPinned,
-                evidence_id: Some(if id == "qwen3_forced_aligner_0_6b" {
-                    "validation:qwen-runtime-validation#aligner-static-closure".to_string()
-                } else {
-                    "validation:qwen-runtime-validation".to_string()
-                }),
-            }],
-            pinned_backend: Some(NativeBackend::Vulkan),
-            estimated_download_bytes: (id == "qwen3_asr_1_7b").then_some(1_319_830_496),
-            estimated_installed_bytes: (id == "qwen3_asr_1_7b").then_some(1_319_830_496),
-            recipe_digest: recipe_digest.clone(),
-            runtime_recipe_digest: Some(recipe_digest),
-        })
     }
 
     fn insert_model(&mut self, entry: ModelCatalogEntry) -> RuntimeManagerResult<()> {
         let id = entry.id.as_str().to_string();
         if self.models.insert(id.clone(), entry).is_some() {
             return Err(RuntimeManagerError::invalid_catalog(format!(
-                "duplicate model id: {id}"
+                "duplicate model id {id}"
             )));
         }
         Ok(())
     }
 
     fn insert_runtime(&mut self, entry: RuntimeCatalogEntry) -> RuntimeManagerResult<()> {
-        if self.runtimes.insert(entry.id.clone(), entry).is_some() {
-            return Err(RuntimeManagerError::invalid_catalog("duplicate runtime id"));
+        let id = entry.id.clone();
+        if self.runtimes.insert(id.clone(), entry).is_some() {
+            return Err(RuntimeManagerError::invalid_catalog(format!(
+                "duplicate runtime id {id}"
+            )));
         }
         Ok(())
     }
 }
 
-fn catalog_recipe_digest(resource_id: &str) -> String {
-    let recipe_version = match resource_id {
-        "rmvpe" => "runtime-manager-rmvpe-gguf-identity-v3",
-        "melband_roformer_denoise_aufr33" => {
-            "runtime-manager-roformer-denoise-openvino-identity-v1"
-        }
-        "melband_roformer_dereverb_anvuew" => {
-            "runtime-manager-roformer-dereverb-openvino-identity-v1"
-        }
-        "qwen3_forced_aligner_0_6b" => "runtime-manager-qwen-aligner-identity-v2",
-        "firered_asr2_aed" | "fcpe" | "basic_pitch" => {
-            "runtime-manager-optional-openvino-identity-v2"
-        }
-        _ => RUNTIME_CATALOG_VERSION,
-    };
-    format!(
-        "{:x}",
-        Sha256::digest(format!("{recipe_version}:{resource_id}").as_bytes())
+fn backend() -> BackendCapability {
+    BackendCapability {
+        backend: NativeBackend::Ggml,
+        validation: ValidationState::ProductionPinned,
+        evidence_id: Some("validation:ggml-runtime".to_string()),
+    }
+}
+
+fn ggml_runtime(
+    id: &str,
+    name: &str,
+    component: &str,
+    models: &[&str],
+    recipe: &str,
+) -> RuntimeCatalogEntry {
+    RuntimeCatalogEntry {
+        id: id.to_string(),
+        display_name: name.to_string(),
+        purpose: "Rust-hosted, local GGML execution".to_string(),
+        backends: vec![backend()],
+        acquisition: vec![acquisition(
+            AcquisitionMethod::Bundled,
+            "packaged Rust GGML worker",
+        )],
+        executable_component_id: component.to_string(),
+        supported_models: models.iter().map(|model| (*model).to_string()).collect(),
+        recipe_digest: Some(recipe.to_string()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ggml_model(
+    id: &str,
+    name: &str,
+    purpose: &str,
+    capabilities: &[&str],
+    source: SourceIdentity,
+    license: LicenseInfo,
+    runtime: &str,
+    download_bytes: Option<u64>,
+    installed_bytes: Option<u64>,
+    runtime_recipe: &str,
+) -> RuntimeManagerResult<ModelCatalogEntry> {
+    let primary_filename = source
+        .converted_artifact
+        .as_ref()
+        .map(|artifact| artifact.manifest_filename.clone())
+        .or_else(|| source.filename.clone())
+        .ok_or_else(|| {
+            RuntimeManagerError::invalid_catalog(format!(
+                "GGML model {id} has no runtime artifact filename"
+            ))
+        })?;
+    Ok(ModelCatalogEntry {
+        id: ModelId::new(id)?,
+        display_name: name.to_string(),
+        purpose: purpose.to_string(),
+        capabilities: capabilities
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        source,
+        license,
+        runtime_artifacts: vec![ModelArtifactSpec {
+            name: "model".to_string(),
+            filename: primary_filename,
+        }],
+        acquisition: vec![acquisition(
+            if matches!(
+                id,
+                "bs_roformer_leap_xe90_vocals" | "bs_roformer_leap_xe90_instrumental"
+            ) {
+                AcquisitionMethod::ManagedDownload
+            } else {
+                AcquisitionMethod::LocalImport
+            },
+            "GGUF model for the pinned GGML runtime",
+        )],
+        dependencies: vec![ResourceRef::runtime(runtime)?],
+        backends: vec![backend()],
+        pinned_backend: Some(NativeBackend::Ggml),
+        estimated_download_bytes: download_bytes,
+        estimated_installed_bytes: installed_bytes,
+        recipe_digest: catalog_recipe_digest(id),
+        runtime_recipe_digest: Some(runtime_recipe.to_string()),
+    })
+}
+
+fn leap_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "bs_roformer_leap_xe90_vocals",
+        "BS-RoFormer Leap XE90",
+        "Single-pass GuideVocals and Instrumental-residual extraction",
+        &["audio.extract_vocals", "audio.extract_instrumental"],
+        SourceIdentity {
+            repository: Some("scragnog/HOT-Step-CPP-SuperSep".to_string()),
+            revision: Some("440487b8300dcd61453cc52ec244a38150b03456".to_string()),
+            filename: Some("bs_leap_xe_voc-F32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://huggingface.co/pcunwa/BS-Roformer-Leap".to_string(),
+                revision: Some("4e47d6662ae82eaa8b4ac4329fe66099a843b48e".to_string()),
+                license_id: "source-attribution".to_string(),
+            }),
+            // The author's own checkpoint at that revision, named exactly, so
+            // the GGUF this entry installs can be traced to a public file
+            // rather than only to the repository that repackaged it.
+            //
+            // Verified on 2026-09-10 rather than assumed. The installed GGUF
+            // and this checkpoint hold the same 66,845,708 weights: identical
+            // element count, identical sum 15098.179294, identical sum of
+            // magnitudes 2604152.1378, and identical minimum -3.006065 and
+            // maximum 3.201639, the last three being independent of tensor
+            // naming and of the dimension order a GGUF conversion applies.
+            // The copy in noblebarkrr/mvsepless_resources as
+            // bs_roformer/bs_leap_xe_voc_unwa.ckpt is byte-identical to this
+            // one, same size and same digest.
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "Xe/bs_leap_xe_voc.ckpt".to_string(),
+                sha256: "b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d"
+                    .to_string(),
+            }],
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "informational".to_string(),
+            source_attribution: "pcunwa BS-RoFormer Leap; public GGUF by scragnog".to_string(),
+            source_page: Some("https://huggingface.co/scragnog/HOT-Step-CPP-SuperSep".to_string()),
+        },
+        "ggml_vulkan",
+        Some(267_433_600),
+        Some(267_433_600),
+        GGML_RUNTIME_RECIPE_SHA256,
     )
 }
 
-fn source_artifact(filename: &str, sha256: &str) -> SourceArtifactIdentity {
-    SourceArtifactIdentity {
-        filename: filename.to_string(),
-        sha256: sha256.to_string(),
-    }
+fn leap_instrumental_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "bs_roformer_leap_xe90_instrumental",
+        "BS-RoFormer Leap XE90 Instrumental",
+        "Single-pass direct Instrumental and vocal-residual extraction",
+        &["audio.extract_vocals", "audio.extract_instrumental"],
+        SourceIdentity {
+            repository: Some("scragnog/HOT-Step-CPP-SuperSep".to_string()),
+            revision: Some("440487b8300dcd61453cc52ec244a38150b03456".to_string()),
+            filename: Some("bs_leap_xe_inst-F32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://huggingface.co/pcunwa/BS-Roformer-Leap".to_string(),
+                revision: Some("4e47d6662ae82eaa8b4ac4329fe66099a843b48e".to_string()),
+                license_id: "source-attribution".to_string(),
+            }),
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "Xe/bs_leap_xe_inst.ckpt".to_string(),
+                sha256: "33ee9415f491d257fa7a79f6e92a80d647bc71ed622bfef9a137b6e4250307d3"
+                    .to_string(),
+            }],
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "informational".to_string(),
+            source_attribution: "pcunwa BS-RoFormer Leap; public GGUF by scragnog".to_string(),
+            source_page: Some("https://huggingface.co/scragnog/HOT-Step-CPP-SuperSep".to_string()),
+        },
+        "ggml_vulkan",
+        Some(267_433_600),
+        Some(267_433_600),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
 }
 
-fn openvino_artifact(format: &str, manifest_sha256: &str) -> ConvertedArtifactIdentity {
-    ConvertedArtifactIdentity {
-        format: format.to_string(),
-        manifest_filename: "manifest.json".to_string(),
-        manifest_sha256: manifest_sha256.to_string(),
-        // The historical fixed-window manifests did not record a reproducible
-        // conversion recipe. Keep that absence distinct from artifact identity.
-        conversion_recipe_sha256: String::new(),
-        runtime_id: "openvino_2026_3".to_string(),
-        runtime_version: "2026.3.0".to_string(),
-        runtime_commit: "8a17657b995fd3b4a52f8484acfcf2bb61214623".to_string(),
-    }
+fn polarformer_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "bs_polarformer_public_instrumental",
+        "BS-PolarFormer Public",
+        "Experimental single-pass GuideVocals and Instrumental-residual extraction",
+        &["audio.extract_vocals", "audio.extract_instrumental"],
+        SourceIdentity {
+            repository: Some("bgkb/bs_polarformer".to_string()),
+            revision: Some("9158719ee2173edd480a735764627526506fe4af".to_string()),
+            filename: Some("model-fp16.gguf".to_string()),
+            source_format: Some("gguf-f16".to_string()),
+            converted_artifact: Some(ConvertedArtifactIdentity {
+                format: "gguf_f16".to_string(),
+                manifest_filename: "model-fp16.gguf".to_string(),
+                manifest_sha256: "f5e40ac0dc7487a0c2ccb247e5b948cd6f2c7aaf46a2994023606e1e800ed2c1"
+                    .to_string(),
+                conversion_recipe_sha256: String::new(),
+                runtime_id: "ggml_vulkan".to_string(),
+                runtime_version: "1".to_string(),
+                runtime_commit: GGML_COMMIT.to_string(),
+            }),
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "mit".to_string(),
+            source_attribution: "bgkb public BS-PolarFormer model".to_string(),
+            source_page: Some("https://huggingface.co/bgkb/bs_polarformer".to_string()),
+        },
+        "ggml_vulkan",
+        None,
+        Some(204_237_408),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
 }
 
-fn ggml_roformer_artifact(model_id: &str) -> (ConvertedArtifactIdentity, u64) {
-    let (sha256, size_bytes) = match model_id {
+fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
+    let (repository, revision, filename, source_sha, bytes, attribution, page, gguf_sha) = match id
+    {
+        "melband_roformer_harmony" => (
+            "https://github.com/TRvlvr/model_repo",
+            "all_public_uvr_models",
+            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+            "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813",
+            913_096_801,
+            "aufr33 + viperx MelBand RoFormer Karaoke",
+            "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models",
+            "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
+        ),
         "melband_roformer_denoise_aufr33" => (
+            "poiqazwsx/melband-roformer-denoise",
+            "4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9",
+            "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
+            "7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de",
+            913_097_300,
+            "aufr33 MelBand RoFormer denoise",
+            "https://huggingface.co/poiqazwsx/melband-roformer-denoise",
             "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
-            457_008_736,
         ),
         "melband_roformer_dereverb_anvuew" => (
+            "anvuew/dereverb_mel_band_roformer",
+            "cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06",
+            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+            "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
+            913_107_578,
+            "anvuew MelBand RoFormer dereverb",
+            "https://huggingface.co/anvuew/dereverb_mel_band_roformer",
             "f850fb2460099df356676ce37ba48875e3c75726d7a848b42d75ff6015955ac7",
-            457_008_736,
         ),
-        "melband_roformer_inst_v2" => (
-            "e2b39b979e2413af172bad88a6b0a324a54d47fbca6622083f7f3817b9046897",
-            787_918_656,
-        ),
-        "melband_roformer_harmony" => (
-            "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
-            457_008_736,
-        ),
-        _ => unreachable!("shipped GGML RoFormer id"),
+        _ => unreachable!("known RoFormer id"),
     };
     (
-        ConvertedArtifactIdentity {
-            format: "gguf_f16".to_string(),
-            manifest_filename: "model-fp16.gguf".to_string(),
-            manifest_sha256: sha256.to_string(),
-            conversion_recipe_sha256: String::new(),
-            runtime_id: "ggml_vulkan_v1".to_string(),
-            runtime_version: "1".to_string(),
-            runtime_commit: "8c63e70982c95ceb862e3a1073a2c1beef75d60a".to_string(),
+        SourceIdentity {
+            repository: Some(repository.to_string()),
+            revision: Some(revision.to_string()),
+            filename: Some(filename.to_string()),
+            sha256: Some(source_sha.to_string()),
+            source_format: Some("ckpt".to_string()),
+            converted_artifact: Some(ConvertedArtifactIdentity {
+                format: "gguf_f16".to_string(),
+                manifest_filename: "model-fp16.gguf".to_string(),
+                manifest_sha256: gguf_sha.to_string(),
+                conversion_recipe_sha256: String::new(),
+                runtime_id: "ggml_vulkan".to_string(),
+                runtime_version: "1".to_string(),
+                runtime_commit: GGML_COMMIT.to_string(),
+            }),
+            ..SourceIdentity::default()
         },
-        size_bytes,
+        LicenseInfo {
+            status: "informational".to_string(),
+            source_attribution: attribution.to_string(),
+            source_page: Some(page.to_string()),
+        },
+        Some(bytes),
     )
+}
+
+fn rmvpe_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "rmvpe",
+        "RMVPE",
+        "Continuous F0 tracking",
+        &["pitch.track"],
+        SourceIdentity {
+            filename: Some("rmvpe-f32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "informational".to_string(),
+            source_attribution: "RMVPE model".to_string(),
+            source_page: None,
+        },
+        "ggml_vulkan",
+        None,
+        Some(361_625_344),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn fcpe_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "fcpe",
+        "FCPE",
+        "Secondary continuous-F0 disagreement expert",
+        &["pitch.secondary", "pitch.secondary.fcpe"],
+        SourceIdentity {
+            repository: Some("https://huggingface.co/gzivdo/fcpe-onnx".to_string()),
+            revision: Some("5800a2b1944967f55bb0bfeb9718cb749f809310".to_string()),
+            filename: Some("fcpe.onnx".to_string()),
+            sha256: Some(
+                "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0"
+                    .to_string(),
+            ),
+            source_format: Some("onnx".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/CNChTu/FCPE".to_string(),
+                revision: Some("6a149c1afb1c7e7821b71869dfb31ad50c95b516".to_string()),
+                license_id: "MIT".to_string(),
+            }),
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "fcpe.onnx".to_string(),
+                sha256:
+                    "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0"
+                        .to_string(),
+            }],
+            converted_artifact: Some(ConvertedArtifactIdentity {
+                format: "gguf_f32".to_string(),
+                manifest_filename: "fcpe-f32.gguf".to_string(),
+                manifest_sha256: FCPE_GGUF_SHA256.to_string(),
+                conversion_recipe_sha256:
+                    "bbb1173ef2aadda4240a6132b5b254be692a48235cfd46bfae146c3a9df0b8fc"
+                        .to_string(),
+                runtime_id: "ggml_vulkan".to_string(),
+                runtime_version: "1".to_string(),
+                runtime_commit: GGML_COMMIT.to_string(),
+            }),
+        },
+        LicenseInfo {
+            status: "mit".to_string(),
+            source_attribution: "CNChTu/FCPE canonical project; gzivdo community ONNX export"
+                .to_string(),
+            source_page: Some(
+                "https://huggingface.co/gzivdo/fcpe-onnx/tree/5800a2b1944967f55bb0bfeb9718cb749f809310"
+                    .to_string(),
+            ),
+        },
+        "ggml_vulkan",
+        None,
+        Some(FCPE_GGUF_SIZE_BYTES),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn basic_pitch_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "basic_pitch",
+        "Basic Pitch",
+        "Optional onset and activation evidence",
+        &["notes.basic_pitch"],
+        SourceIdentity {
+            repository: Some(
+                "https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models".to_string(),
+            ),
+            revision: Some("327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763".to_string()),
+            filename: Some("basic-pitch-f32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/spotify/basic-pitch".to_string(),
+                revision: Some("fa5997af0a8210982619003269994a1be25eddf3".to_string()),
+                license_id: "Apache-2.0".to_string(),
+            }),
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "nmp.onnx".to_string(),
+                sha256: "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
+                    .to_string(),
+            }],
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "apache-2.0".to_string(),
+            source_attribution:
+                "Spotify Basic Pitch; selected source bytes are from the AEmotionStudio mirror"
+                    .to_string(),
+            source_page: Some(
+                "https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models/tree/327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763"
+                    .to_string(),
+            ),
+        },
+        "ggml_vulkan",
+        None,
+        Some(144_512),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn game_model(variant: &str) -> RuntimeManagerResult<ModelCatalogEntry> {
+    let (id, name, filename, bytes) = match variant {
+        "small" => (
+            "game_1_0_3_small",
+            "GAME 1.0.3 Small",
+            "game-small-f32.gguf",
+            50_734_944,
+        ),
+        "medium" => (
+            "game_1_0_3_medium",
+            "GAME 1.0.3 Medium",
+            "game-medium-f32.gguf",
+            199_584_064,
+        ),
+        "large" => (
+            "game_1_0_3_large",
+            "GAME 1.0.3 Large",
+            "game-large-f32.gguf",
+            396_034_784,
+        ),
+        _ => return Err(RuntimeManagerError::invalid_catalog("unknown GAME variant")),
+    };
+    ggml_model(
+        id,
+        name,
+        "Primary singing note and boundary evidence",
+        &["notes.game"],
+        SourceIdentity {
+            repository: Some("https://github.com/openvpi/GAME".to_string()),
+            revision: Some("475a8ee781fe8cca980b3b12fbe6c80c768a813a".to_string()),
+            filename: Some(filename.to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/openvpi/GAME".to_string(),
+                revision: Some("475a8ee781fe8cca980b3b12fbe6c80c768a813a".to_string()),
+                license_id: "CC-BY-NC-SA-4.0".to_string(),
+            }),
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "cc-by-nc-sa-4.0".to_string(),
+            source_attribution: format!("openvpi GAME 1.0.3 {variant} model"),
+            source_page: Some("https://github.com/openvpi/GAME/releases/tag/v1.0.3".to_string()),
+        },
+        "ggml_vulkan",
+        None,
+        Some(bytes),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn jbm555_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "jbm555_cectc_80",
+        "JBM555 CE-CTC 80",
+        "Japanese mix-and-vocal conditioned note evidence",
+        &["notes.jbm555"],
+        SourceIdentity {
+            repository: Some("https://github.com/york135/CECTC_baseline_APSIPA25".to_string()),
+            revision: Some("d1352eda1ea69d94cf7b1b06bf0b003d874b389a".to_string()),
+            filename: Some("jbm555-cectc80-f32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "informational".to_string(),
+            source_attribution: "york135 CE-CTC baseline for APSIPA 2025".to_string(),
+            source_page: Some("https://github.com/york135/CECTC_baseline_APSIPA25".to_string()),
+        },
+        "ggml_vulkan",
+        None,
+        Some(3_981_024),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn stars_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    let mut model = ggml_model(
+        "stars",
+        "STARS Chinese P1",
+        "Timed-transcript-conditioned note, technique, and style evidence",
+        &["notes.stars", "technique.analyze"],
+        SourceIdentity {
+            repository: Some("https://huggingface.co/verstar/STARS".to_string()),
+            revision: Some("744a7ad02e1d788452293cd903ea6a933f7862c4".to_string()),
+            filename: Some("stars-f32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/gwx314/STARS".to_string(),
+                revision: Some("f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167".to_string()),
+                license_id: "MIT".to_string(),
+            }),
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "model_ckpt_steps_200000.ckpt".to_string(),
+                sha256: "9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c"
+                    .to_string(),
+            }],
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "checkpoint-license-unresolved".to_string(),
+            source_attribution:
+                "gwx314/STARS MIT source; verstar/STARS checkpoint provenance is recorded separately"
+                    .to_string(),
+            source_page: Some(
+                "https://huggingface.co/verstar/STARS/tree/744a7ad02e1d788452293cd903ea6a933f7862c4"
+                    .to_string(),
+            ),
+        },
+        "ggml_vulkan",
+        None,
+        Some(201_133_440),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )?;
+    model.dependencies.insert(0, ResourceRef::model("rmvpe")?);
+    Ok(model)
+}
+
+fn rosvot_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    let mut model = ggml_model(
+        "rosvot",
+        "ROSVOT P0",
+        "Timed-transcript-conditioned singing note evidence",
+        &["notes.rosvot"],
+        SourceIdentity {
+            repository: Some("https://github.com/RickyL-2000/ROSVOT".to_string()),
+            revision: Some("3c8332bf43adae35f6e4d64971862f2f6139b310".to_string()),
+            filename: Some("rosvot-f32.gguf".to_string()),
+            source_format: Some("gguf-f32".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/RickyL-2000/ROSVOT".to_string(),
+                revision: Some("3c8332bf43adae35f6e4d64971862f2f6139b310".to_string()),
+                license_id: "MIT".to_string(),
+            }),
+            artifacts: vec![SourceArtifactIdentity {
+                filename: "rosvot".to_string(),
+                sha256: "7501fb5f913d971c2f51bcb3063b930027b03206581820a4d2bfdc394c9c3fcb"
+                    .to_string(),
+            }],
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "checkpoint-license-unresolved".to_string(),
+            source_attribution:
+                "RickyL-2000/ROSVOT MIT source; selected checkpoint provenance is recorded separately"
+                    .to_string(),
+            source_page: Some(
+                "https://github.com/RickyL-2000/ROSVOT/tree/3c8332bf43adae35f6e4d64971862f2f6139b310"
+                    .to_string(),
+            ),
+        },
+        "ggml_vulkan",
+        None,
+        Some(48_196_032),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )?;
+    model.dependencies.insert(0, ResourceRef::model("rmvpe")?);
+    Ok(model)
+}
+
+fn firered_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    let mut model = ggml_model(
+        "firered_asr2_aed",
+        "FireRedASR2-AED",
+        "Optional Mandarin, dialect, English, code-switching, and singing transcript challenger",
+        &["speech.transcribe.challenger"],
+        SourceIdentity {
+            repository: Some("https://huggingface.co/FireRedTeam/FireRedASR2-AED".to_string()),
+            revision: Some("2304afed56eacfee6256dee5937ed22ffa0b64ec".to_string()),
+            filename: Some("model.pth.tar".to_string()),
+            source_format: Some("pytorch-checkpoint".to_string()),
+            algorithm: Some(AlgorithmIdentity {
+                repository: "https://github.com/FireRedTeam/FireRedASR2S".to_string(),
+                revision: Some("4e7d9aaf4482a47cec1724807026b9b151926eb5".to_string()),
+                license_id: "Apache-2.0".to_string(),
+            }),
+            artifacts: vec![
+                SourceArtifactIdentity {
+                    filename: "cmvn.ark".to_string(),
+                    sha256: "6efba6105429d1630c05d818d956bfe4edfad37a04b3b27bb5a029b9adb37945"
+                        .to_string(),
+                },
+                SourceArtifactIdentity {
+                    filename: "dict.txt".to_string(),
+                    sha256: "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b"
+                        .to_string(),
+                },
+            ],
+            converted_artifact: Some(ConvertedArtifactIdentity {
+                format: "gguf_f32".to_string(),
+                manifest_filename: "firered-f32.gguf".to_string(),
+                // The container GGML can open. The historical converter wrote
+                // PyTorch dimension order, which `cargo xtask gguf firered`
+                // rewrites; pinning the pre-migration digest here meant the
+                // catalog pinned a file the runtime refuses to load.
+                manifest_sha256:
+                    "7724d4f01ac8c208670be968cef236b73f4276eddd0de8f85441b56bb6e9d132"
+                        .to_string(),
+                conversion_recipe_sha256: String::new(),
+                runtime_id: "ggml_vulkan".to_string(),
+                runtime_version: "1".to_string(),
+                runtime_commit: GGML_COMMIT.to_string(),
+            }),
+            ..SourceIdentity::default()
+        },
+        LicenseInfo {
+            status: "apache-2.0".to_string(),
+            source_attribution: "FireRedTeam FireRedASR2-AED canonical checkpoint".to_string(),
+            source_page: Some(
+                "https://huggingface.co/FireRedTeam/FireRedASR2-AED/tree/2304afed56eacfee6256dee5937ed22ffa0b64ec"
+                    .to_string(),
+            ),
+        },
+        "ggml_vulkan",
+        None,
+        Some(4_686_998_595),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )?;
+    model.runtime_artifacts = vec![
+        ModelArtifactSpec {
+            name: "model".to_string(),
+            filename: "firered-f32.gguf".to_string(),
+        },
+        ModelArtifactSpec {
+            name: "cmvn".to_string(),
+            filename: "cmvn.ark".to_string(),
+        },
+        ModelArtifactSpec {
+            name: "tokens".to_string(),
+            filename: "dict.txt".to_string(),
+        },
+    ];
+    Ok(model)
+}
+
+fn qwen_asr_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "qwen3_asr_1_7b",
+        "Qwen3-ASR 1.7B",
+        "Primary singing transcription",
+        &["speech.transcribe"],
+        SourceIdentity {
+            repository: Some("https://huggingface.co/Qwen/Qwen3-ASR-1.7B".to_string()),
+            revision: Some("7278e1e70fe206f11671096ffdd38061171dd6e5".to_string()),
+            filename: Some("Qwen3-ASR-1.7B-F16.gguf".to_string()),
+            source_format: Some("gguf-f16".to_string()),
+            ..SourceIdentity::default()
+        },
+        qwen_license("Qwen/Qwen3-ASR-1.7B"),
+        "ggml_vulkan",
+        None,
+        Some(4_083_087_904),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn qwen_aligner_model() -> RuntimeManagerResult<ModelCatalogEntry> {
+    ggml_model(
+        "qwen3_forced_aligner_0_6b",
+        "Qwen3 Forced Aligner 0.6B",
+        "Word-level forced alignment",
+        &["speech.align"],
+        SourceIdentity {
+            repository: Some("https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf".to_string()),
+            revision: Some("c07281df297b9905d24a508279258cccf987a064".to_string()),
+            filename: Some("Qwen3-ForcedAligner-0.6B-F16.gguf".to_string()),
+            source_format: Some("gguf-f16".to_string()),
+            ..SourceIdentity::default()
+        },
+        qwen_license("Qwen/Qwen3-ForcedAligner-0.6B-hf"),
+        "ggml_vulkan",
+        None,
+        Some(1_842_216_416),
+        GGML_RUNTIME_RECIPE_SHA256,
+    )
+}
+
+fn qwen_license(repository: &str) -> LicenseInfo {
+    LicenseInfo {
+        status: "apache-2.0".to_string(),
+        source_attribution: "Qwen canonical model weights converted locally to GGUF".to_string(),
+        source_page: Some(format!("https://huggingface.co/{repository}")),
+    }
 }
 
 fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
@@ -1734,79 +1169,8 @@ fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
     }
 }
 
-fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
-    let (repository, revision, filename, sha256, bytes, attribution, source_page) = match id {
-        "melband_roformer_inst_v2" => (
-            "pcunwa/Mel-Band-Roformer-Inst",
-            "f86cd9e99d63eb9499b00fca424bc4ed8a8aeaba",
-            "melband_roformer_inst_v2.ckpt",
-            "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2",
-            1_574_477_088,
-            "Unwa MelBand RoFormer Inst V2",
-            "https://huggingface.co/pcunwa/Mel-Band-Roformer-Inst",
-        ),
-        "melband_roformer_harmony" => (
-            "https://github.com/TRvlvr/model_repo",
-            "all_public_uvr_models",
-            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
-            "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813",
-            913_096_801,
-            "aufr33 + viperx MelBand RoFormer Karaoke / UVR public catalog",
-            "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models",
-        ),
-        "melband_roformer_denoise_aufr33" => (
-            "poiqazwsx/melband-roformer-denoise",
-            "4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9",
-            "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
-            "7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de",
-            913_097_300,
-            "aufr33 MelBand RoFormer denoise",
-            "https://huggingface.co/poiqazwsx/melband-roformer-denoise",
-        ),
-        "melband_roformer_dereverb_anvuew" => (
-            "anvuew/dereverb_mel_band_roformer",
-            "cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06",
-            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
-            "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
-            913_107_578,
-            "anvuew MelBand RoFormer dereverb",
-            "https://huggingface.co/anvuew/dereverb_mel_band_roformer",
-        ),
-        _ => unreachable!("shipped RoFormer id"),
-    };
-    (
-        SourceIdentity {
-            repository: Some(repository.to_string()),
-            revision: Some(revision.to_string()),
-            filename: Some(filename.to_string()),
-            sha256: Some(sha256.to_string()),
-            source_format: Some("ckpt".to_string()),
-            ..SourceIdentity::default()
-        },
-        LicenseInfo {
-            status: "review_recorded_user_download".to_string(),
-            source_attribution: attribution.to_string(),
-            source_page: Some(source_page.to_string()),
-        },
-        Some(bytes),
-    )
-}
-
-fn qwen_model_license(source: &SourceIdentity) -> LicenseInfo {
-    LicenseInfo {
-        status: "apache-2.0".to_string(),
-        source_attribution: if source.algorithm.is_some() {
-            "Qwen canonical model weights and converted GGUF artifact".to_string()
-        } else {
-            "Qwen model weights".to_string()
-        },
-        source_page: source
-            .algorithm
-            .as_ref()
-            .map(|identity| &identity.repository)
-            .or(source.repository.as_ref())
-            .map(|repository| format!("https://huggingface.co/{repository}")),
-    }
+fn catalog_recipe_digest(id: &str) -> String {
+    format!("{:x}", Sha256::digest(format!("catalog:{id}").as_bytes()))
 }
 
 #[cfg(test)]
@@ -1814,569 +1178,128 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rmvpe_identity_revision_does_not_change_other_catalog_recipes() {
-        let unrelated = "unrelated-resource";
+    fn leap_traces_its_weights_to_the_author_s_public_checkpoint() {
+        let leap = leap_model().unwrap();
+        let algorithm = leap.source.algorithm.as_ref().unwrap();
         assert_eq!(
-            catalog_recipe_digest(unrelated),
-            format!(
-                "{:x}",
-                Sha256::digest(format!("{RUNTIME_CATALOG_VERSION}:{unrelated}").as_bytes())
-            )
+            algorithm.repository,
+            "https://huggingface.co/pcunwa/BS-Roformer-Leap"
         );
         assert_eq!(
-            catalog_recipe_digest("rmvpe"),
-            format!(
-                "{:x}",
-                Sha256::digest(b"runtime-manager-rmvpe-gguf-identity-v3:rmvpe")
-            )
+            algorithm.revision.as_deref(),
+            Some("4e47d6662ae82eaa8b4ac4329fe66099a843b48e")
+        );
+        let checkpoint = leap
+            .source
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.filename == "Xe/bs_leap_xe_voc.ckpt")
+            .expect("the upstream checkpoint is named");
+        assert_eq!(
+            checkpoint.sha256,
+            "b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d"
+        );
+        // Naming the checkpoint must not disturb what resolution installs.
+        assert_eq!(
+            leap.source.filename.as_deref(),
+            Some("bs_leap_xe_voc-F32.gguf")
         );
     }
 
     #[test]
-    fn catalog_contains_initial_required_resources() {
+    fn catalog_contains_every_implemented_ggml_model() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        for model in [
-            "bs_roformer_leap_xe90_vocals",
-            "bs_polarformer_public_instrumental",
+        assert_eq!(catalog.models.len(), 18);
+        assert_eq!(catalog.runtimes.len(), 1);
+        for model in catalog.models.values() {
+            assert_eq!(model.backends, vec![backend()]);
+            assert_eq!(model.pinned_backend, Some(NativeBackend::Ggml));
+            assert!(
+                model
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency == &ResourceRef::runtime("ggml_vulkan").unwrap())
+            );
+        }
+        assert_eq!(
+            catalog
+                .runtime("ggml_vulkan")
+                .unwrap()
+                .supported_models
+                .len(),
+            catalog.models.len()
+        );
+        for id in [
+            "basic_pitch",
+            "game_1_0_3_small",
+            "game_1_0_3_medium",
+            "game_1_0_3_large",
             "jbm555_cectc_80",
-            "melband_roformer_inst_v2",
-            "melband_roformer_harmony",
-            "melband_roformer_denoise_aufr33",
-            "melband_roformer_dereverb_anvuew",
+            "stars",
+            "rosvot",
             "firered_asr2_aed",
             "qwen3_asr_1_7b",
             "qwen3_forced_aligner_0_6b",
-            "rmvpe",
-            "fcpe",
-            "game",
-            "basic_pitch",
-            "stars",
-            "rosvot",
         ] {
-            assert!(catalog.models.contains_key(model), "{model}");
+            assert!(catalog.model(id).is_some(), "{id}");
         }
-        for runtime in ["openvino_2026_3", "qwen_asr_runtime", "qwen_align_runtime"] {
-            assert!(catalog.runtimes.contains_key(runtime), "{runtime}");
-        }
-        assert!(catalog.tools.contains_key("ffmpeg"));
-        assert!(catalog.tools.contains_key("fusion_agent_adapter"));
-        assert!(catalog.bundles.contains_key("roformer"));
     }
 
     #[test]
-    fn roformer_sources_are_independent_and_exactly_pinned() {
+    fn firered_declares_its_complete_named_artifact_set() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let expected = [
-            (
-                "melband_roformer_inst_v2",
-                "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2",
-            ),
-            (
-                "melband_roformer_harmony",
-                "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813",
-            ),
-            (
-                "melband_roformer_denoise_aufr33",
-                "7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de",
-            ),
-            (
-                "melband_roformer_dereverb_anvuew",
-                "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
-            ),
-        ];
-        for (id, sha256) in expected {
-            let model = catalog.model(id).unwrap();
-            assert_eq!(model.source.sha256.as_deref(), Some(sha256));
-            assert_eq!(model.pinned_backend, Some(NativeBackend::Vulkan));
-            assert_eq!(
-                model.dependencies,
-                [ResourceRef::runtime("ggml_vulkan_v1").unwrap()]
-            );
-            assert_eq!(model.backends.len(), 1);
-            assert!(model.backends.iter().all(|backend| {
-                backend.backend == NativeBackend::Vulkan
-                    && backend.validation == ValidationState::ProductionPinned
-            }));
-            assert_eq!(
-                model.runtime_recipe_digest.as_deref(),
-                Some(GGML_RUNTIME_RECIPE_SHA256)
-            );
-        }
-        let leap = catalog.model("bs_roformer_leap_xe90_vocals").unwrap();
-        assert_eq!(leap.source.sha256, None);
-        assert_eq!(leap.pinned_backend, Some(NativeBackend::Vulkan));
+        let model = catalog.model("firered_asr2_aed").unwrap();
         assert_eq!(
-            catalog
-                .model("melband_roformer_inst_v2")
-                .unwrap()
-                .source
-                .revision
-                .as_deref(),
-            Some("f86cd9e99d63eb9499b00fca424bc4ed8a8aeaba")
+            model
+                .runtime_artifacts
+                .iter()
+                .map(|artifact| (artifact.name.as_str(), artifact.filename.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("model", "firered-f32.gguf"),
+                ("cmvn", "cmvn.ark"),
+                ("tokens", "dict.txt"),
+            ]
         );
-        assert_eq!(
-            catalog
-                .model("melband_roformer_dereverb_anvuew")
-                .unwrap()
-                .source
-                .revision
-                .as_deref(),
-            Some("cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06")
-        );
-        let bundle = catalog.bundles.get("roformer").unwrap();
-        assert_eq!(bundle.dependencies.len(), expected.len() + 1);
-        assert!(expected.iter().all(|(id, _)| {
-            bundle
-                .dependencies
-                .contains(&ResourceRef::model(*id).unwrap())
-        }));
     }
 
     #[test]
-    fn acquisition_and_worker_capabilities_are_truthful() {
+    fn conditioned_models_declare_rmvpe_dependency() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let roformer = catalog.model("bs_roformer_leap_xe90_vocals").unwrap();
-        assert_eq!(roformer.source.sha256, None);
-        assert!(
-            roformer
-                .acquisition
-                .iter()
-                .all(|spec| spec.method == AcquisitionMethod::ManagedDownload)
-        );
-        assert_eq!(roformer.pinned_backend, Some(NativeBackend::Vulkan));
-        assert_eq!(
-            roformer.source.filename.as_deref(),
-            Some("bs_leap_xe_voc-F32.gguf")
-        );
-        let align = catalog.model("qwen3_forced_aligner_0_6b").unwrap();
-        assert!(
-            align
-                .acquisition
-                .iter()
-                .any(|spec| spec.method == AcquisitionMethod::LocalImport)
-        );
-        assert_eq!(
-            align.source.sha256.as_deref(),
-            Some("00568245ceca5af1991d28562a75fe1ddc9bfeb041c27fda66947ea05c47fb86")
-        );
-        assert_eq!(align.source.filename.as_deref(), Some("model.safetensors"));
-        let converted = align.source.converted_artifact.as_ref().unwrap();
-        assert_eq!(
-            converted.manifest_sha256,
-            "c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b"
-        );
-        assert_eq!(
-            converted.conversion_recipe_sha256,
-            "ffd8a575238c81823509e2a7bf645bf9bb5d38db2903bc3306648afd619b42d6"
-        );
-        assert!(align.backends.iter().all(|backend| {
-            backend.validation == ValidationState::ProductionPinned
-                && backend.evidence_id.as_deref()
-                    == Some("validation:qwen-runtime-validation#aligner-static-closure")
-        }));
-        let asr = catalog.model("qwen3_asr_1_7b").unwrap();
-        assert_eq!(
-            asr.source.revision.as_deref(),
-            Some("92282af1610a2db19d66f2bef1e260f5deca782d")
-        );
-        assert_eq!(
-            asr.source.sha256.as_deref(),
-            Some("b7afe3674f653fa84f712ed2440353c6e7cf7f93697fef76b05a26538b24844e")
-        );
-        assert_eq!(
-            asr.source
-                .algorithm
-                .as_ref()
-                .and_then(|identity| identity.revision.as_deref()),
-            Some("7278e1e70fe206f11671096ffdd38061171dd6e5")
-        );
-        let rmvpe = catalog.model("rmvpe").unwrap();
-        assert_eq!(
-            rmvpe.source.repository.as_deref(),
-            Some("https://huggingface.co/lj1995/VoiceConversionWebUI")
-        );
-        assert_eq!(
-            rmvpe.source.revision.as_deref(),
-            Some("e6d0c1a17da07c33557852f9dfa2bd44cc75737d")
-        );
-        assert_eq!(rmvpe.source.filename.as_deref(), Some("rmvpe.onnx"));
-        assert_eq!(rmvpe.source.sha256.as_deref(), Some(RMVPE_SOURCE_SHA256));
-        assert_eq!(rmvpe.source.source_format.as_deref(), Some("onnx"));
-        let converted = rmvpe.source.converted_artifact.as_ref().unwrap();
-        assert_eq!(converted.format, "gguf_f32");
-        assert_eq!(converted.manifest_filename, "rmvpe-f32.gguf");
-        assert_eq!(converted.manifest_sha256, RMVPE_GGUF_SHA256);
-        assert_eq!(
-            converted.conversion_recipe_sha256,
-            RMVPE_GGUF_CONVERSION_RECIPE_SHA256
-        );
-        assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
-        assert_eq!(converted.runtime_version, "2");
-        assert_eq!(
-            converted.runtime_commit,
-            "8c63e70982c95ceb862e3a1073a2c1beef75d60a"
-        );
-        assert_ne!(rmvpe.source.sha256, Some(converted.manifest_sha256.clone()));
-        assert_eq!(rmvpe.license.status, "mit");
-        assert_eq!(
-            rmvpe.source.algorithm.as_ref().unwrap().license_id,
-            "Apache-2.0"
-        );
-        assert!(
-            rmvpe
-                .acquisition
-                .iter()
-                .any(|spec| spec.method == AcquisitionMethod::LocalImport)
-        );
-        assert!(rmvpe.backends.iter().any(|backend| {
-            backend.backend == NativeBackend::Vulkan
-                && backend.validation == ValidationState::ProductionPinned
-        }));
-        assert!(
-            rmvpe
-                .backends
-                .iter()
-                .all(|backend| backend.backend != NativeBackend::OpenVino)
-        );
-        let game = catalog.model("game").unwrap();
-        assert_eq!(game.source.sha256.as_deref(), Some(GAME_IR_MANIFEST_SHA256));
-        assert!(game.acquisition.iter().any(|spec| {
-            spec.method == AcquisitionMethod::LocalImport
-                && spec.license_id.as_deref() == Some("cc-by-nc-sa-4.0")
-        }));
-        for (id, capability, manifest, recipe) in [
-            (
-                "stars",
-                "notes.stars",
-                STARS_IR_MANIFEST_SHA256,
-                STARS_CONVERSION_RECIPE_SHA256,
-            ),
-            (
-                "rosvot",
-                "notes.rosvot",
-                ROSVOT_IR_MANIFEST_SHA256,
-                ROSVOT_CONVERSION_RECIPE_SHA256,
-            ),
-        ] {
+        for id in ["stars", "rosvot"] {
             let model = catalog.model(id).unwrap();
-            if id == "stars" {
-                assert_eq!(model.capabilities, [capability, "technique.analyze"]);
-            } else {
-                assert_eq!(model.capabilities, [capability]);
-            }
             assert!(
                 model
-                    .acquisition
-                    .iter()
-                    .all(|spec| spec.method == AcquisitionMethod::LocalImport)
+                    .dependencies
+                    .contains(&ResourceRef::model("rmvpe").unwrap())
             );
-            // stars/rosvot have no native (Vulkan/NativeDsp) route yet, so
-            // there is nothing safe to default to under Production policy
-            // -- OpenVINO is the crash-prone GPU route this catalog no
-            // longer selects by default anywhere.
-            assert_eq!(model.pinned_backend, None);
-            assert!(model.backends.iter().any(|backend| {
-                backend.backend == NativeBackend::OpenVino
-                    && backend.validation == ValidationState::Experimental
-            }));
-            assert!(model.backends.iter().any(|backend| {
-                backend.backend == NativeBackend::CpuReference
-                    && backend.validation == ValidationState::Experimental
-            }));
-            let converted = model.source.converted_artifact.as_ref().unwrap();
-            assert_eq!(converted.manifest_sha256, manifest);
-            assert_eq!(converted.conversion_recipe_sha256, recipe);
-            assert_eq!(
-                converted.format,
-                if id == "stars" {
-                    "openvino_ir_v11_conditioned_segmented_p1"
-                } else {
-                    "openvino_ir_v11_conditioned_segmented"
-                }
-            );
-        }
-        let stars = catalog.model("stars").unwrap();
-        assert_eq!(
-            stars.source.sha256.as_deref(),
-            Some("9159dd37516918448b0815ed86e1e3976d39c3044117da78db0ef65d1941db3c")
-        );
-        assert!(stars.source.artifacts.iter().all(|artifact| artifact.sha256
-            != "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2"));
-        let openvino = catalog.runtime("openvino_2026_3").unwrap();
-        assert!(
-            openvino
-                .supported_models
-                .iter()
-                .any(|model| model == "game")
-        );
-        assert!(
-            !openvino
-                .supported_models
-                .iter()
-                .any(|model| model == "rmvpe")
-        );
-        let ggml = catalog.runtime("ggml_vulkan_v1").unwrap();
-        assert!(ggml.supported_models.iter().any(|model| model == "rmvpe"));
-        for model in ["stars", "rosvot"] {
-            assert!(openvino.supported_models.iter().any(|value| value == model));
         }
     }
 
     #[test]
-    fn every_roformer_is_ggml_only_and_openvino_cannot_resolve_it() {
+    fn leap_strategies_declare_both_outputs_on_one_model() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
-        let openvino = catalog.runtime("openvino_2026_3").unwrap();
         for model_id in [
             "bs_roformer_leap_xe90_vocals",
-            "melband_roformer_inst_v2",
-            "melband_roformer_harmony",
-            "melband_roformer_denoise_aufr33",
-            "melband_roformer_dereverb_anvuew",
+            "bs_roformer_leap_xe90_instrumental",
         ] {
-            let model = catalog.model(model_id).unwrap();
-            assert_eq!(model.pinned_backend, Some(NativeBackend::Vulkan));
+            let leap = catalog.model(model_id).unwrap();
             assert_eq!(
-                model.dependencies,
-                [ResourceRef::runtime("ggml_vulkan_v1").unwrap()]
+                leap.capabilities,
+                ["audio.extract_vocals", "audio.extract_instrumental"]
             );
-            assert_eq!(model.backends.len(), 1);
-            assert!(model.backends.iter().all(|backend| {
-                backend.backend == NativeBackend::Vulkan
-                    && backend.validation == ValidationState::ProductionPinned
-            }));
-            if model_id != "bs_roformer_leap_xe90_vocals" {
-                let converted = model.source.converted_artifact.as_ref().unwrap();
-                assert_eq!(converted.format, "gguf_f16");
-                assert_eq!(converted.runtime_id, "ggml_vulkan_v1");
-            }
-            assert!(
-                !model
-                    .capabilities
-                    .iter()
-                    .any(|capability| capability == "audio.lead_partition")
-            );
-            assert!(!openvino.supported_models.contains(&model_id.to_string()));
         }
-    }
-
-    #[test]
-    fn optional_openvino_experts_preserve_source_converted_and_policy_identity() {
-        let catalog = ResourceCatalog::default_catalog().unwrap();
-        let expected = [
-            (
-                "firered_asr2_aed",
-                "speech.transcribe.challenger",
-                "https://huggingface.co/42ailab/FireRedASR2-AED-ONNX",
-                "13f950858934f7b6a0d3ce52bae65af0dc022258",
-                None,
-                FIRERED_IR_MANIFEST_SHA256,
-                "https://github.com/FireRedTeam/FireRedASR2S",
-                "Apache-2.0",
-                ValidationState::Experimental,
-            ),
-            (
-                "fcpe",
-                "pitch.secondary",
-                "https://huggingface.co/gzivdo/fcpe-onnx",
-                "5800a2b1944967f55bb0bfeb9718cb749f809310",
-                Some(FCPE_SOURCE_SHA256),
-                FCPE_IR_MANIFEST_SHA256,
-                "https://github.com/CNChTu/FCPE",
-                "MIT",
-                ValidationState::Experimental,
-            ),
-            (
-                "basic_pitch",
-                "notes.basic_pitch",
-                "https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models",
-                "327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763",
-                Some(BASIC_PITCH_SOURCE_SHA256),
-                BASIC_PITCH_IR_MANIFEST_SHA256,
-                "https://github.com/spotify/basic-pitch",
-                "Apache-2.0",
-                ValidationState::Experimental,
-            ),
-        ];
-        for (
-            id,
-            capability,
-            repository,
-            revision,
-            source_sha256,
-            manifest_sha256,
-            algorithm_repository,
-            algorithm_license,
-            expected_validation,
-        ) in expected
-        {
-            let model = catalog.model(id).unwrap();
-            assert_eq!(model.capabilities, [capability]);
-            assert_eq!(model.source.repository.as_deref(), Some(repository));
-            assert_eq!(model.source.revision.as_deref(), Some(revision));
-            assert_eq!(model.source.sha256.as_deref(), source_sha256);
-            assert!(!model.source.artifacts.is_empty());
-            let algorithm = model.source.algorithm.as_ref().unwrap();
-            assert_eq!(algorithm.repository, algorithm_repository);
-            assert_eq!(algorithm.license_id, algorithm_license);
-            let converted = model.source.converted_artifact.as_ref().unwrap();
-            assert_eq!(converted.manifest_sha256, manifest_sha256);
-            assert!(converted.conversion_recipe_sha256.is_empty());
-            assert_ne!(model.source.sha256.as_deref(), Some(manifest_sha256));
-            assert!(
-                model
-                    .acquisition
-                    .iter()
-                    .any(|spec| { spec.method == AcquisitionMethod::LocalImport })
-            );
-            // fcpe, basic_pitch, and firered_asr2_aed now all have real,
-            // wired native CPU DSP routes and are the default.
-            assert_eq!(model.pinned_backend, Some(NativeBackend::NativeDsp));
-            assert!(
-                model
-                    .backends
-                    .iter()
-                    .all(|backend| backend.evidence_id.is_some())
-            );
-            assert!(model.backends.iter().any(|backend| {
-                backend.backend == NativeBackend::OpenVino
-                    && backend.validation == expected_validation
-            }));
-            assert!(model.backends.iter().any(|backend| {
-                backend.backend == NativeBackend::CpuReference
-                    && backend.validation == ValidationState::Experimental
-            }));
-        }
+        let instrumental = catalog.model("bs_roformer_leap_xe90_instrumental").unwrap();
         assert_eq!(
-            catalog
-                .model("firered_asr2_aed")
-                .unwrap()
+            instrumental.source.filename.as_deref(),
+            Some("bs_leap_xe_inst-F32.gguf")
+        );
+        assert!(
+            instrumental
                 .source
                 .artifacts
-                .len(),
-            5
-        );
-    }
-
-    #[test]
-    fn every_openvino_ir_model_has_explicit_cpu_only_diagnostics() {
-        let catalog = ResourceCatalog::default_catalog().unwrap();
-        let mut ir_models = 0;
-        for model in catalog.models.values().filter(|model| {
-            model
-                .backends
                 .iter()
-                .any(|backend| backend.backend == NativeBackend::OpenVino)
-        }) {
-            ir_models += 1;
-            assert!(model.backends.iter().any(|backend| {
-                backend.backend == NativeBackend::CpuReference
-                    && backend.validation == ValidationState::Experimental
-            }));
-        }
-        assert_eq!(ir_models, 8);
-        for qwen in ["qwen3_asr_1_7b", "qwen3_forced_aligner_0_6b"] {
-            assert!(
-                catalog
-                    .model(qwen)
-                    .unwrap()
-                    .backends
-                    .iter()
-                    .all(|backend| { backend.backend != NativeBackend::CpuReference })
-            );
-        }
-    }
-
-    #[test]
-    fn accepted_routes_are_production_pinned_or_explicitly_experimental() {
-        let catalog = ResourceCatalog::default_catalog().unwrap();
-        let effective_models = catalog
-            .models
-            .values()
-            .filter(|model| !model.backends.is_empty())
-            .collect::<Vec<_>>();
-        assert_eq!(effective_models.len(), 16);
-        // `rosvot` has no native (Vulkan/NativeDsp) route yet at all.
-        // `stars` now has one (`stars_native_v1`), but it is deliberately
-        // left at `BenchmarkCandidate` (not promoted/defaulted) pending
-        // validation against a genuine PyTorch reference forward pass --
-        // see `add_stars_native_route`'s doc comment. Both are the
-        // intentional exception -- no `ProductionPinned` default backend at
-        // all -- rather than a bug to paper over; OpenVINO remains their
-        // only `ProductionPinned`-eligible-in-principle backend, and
-        // OpenVINO is Experimental everywhere in this catalog now (it is
-        // the route that caused this host's documented crash).
-        let no_production_default_yet = ["stars", "rosvot"];
-        for model in effective_models {
-            if no_production_default_yet.contains(&model.id.as_str()) {
-                assert_eq!(model.pinned_backend, None, "{}", model.id.as_str());
-                assert!(
-                    model.backends.iter().all(|capability| {
-                        capability.validation != ValidationState::ProductionPinned
-                    }),
-                    "{}",
-                    model.id.as_str()
-                );
-                continue;
-            }
-            let pinned = model
-                .pinned_backend
-                .expect("every model with a native route must declare its default backend");
-            assert!(
-                model.backends.iter().any(|capability| {
-                    capability.backend == pinned
-                        && capability.validation == ValidationState::ProductionPinned
-                }),
-                "{}",
-                model.id.as_str()
-            );
-            assert!(
-                model.backends.iter().all(|capability| {
-                    capability.backend != NativeBackend::CpuReference
-                        || capability.validation == ValidationState::Experimental
-                }),
-                "{}",
-                model.id.as_str()
-            );
-        }
-        for runtime in catalog.runtimes.values() {
-            if runtime.id == "openvino_2026_3" {
-                // The OpenVINO worker infrastructure itself still runs; it
-                // is downgraded to Experimental because no model defaults
-                // to it any more, not because the worker is broken.
-                assert!(
-                    runtime
-                        .backends
-                        .iter()
-                        .all(|capability| capability.validation == ValidationState::Experimental),
-                    "{}",
-                    runtime.id
-                );
-                continue;
-            }
-            if matches!(runtime.id.as_str(), "stars_native_v1" | "rosvot_native_v1") {
-                // Deliberately not yet promoted -- see
-                // `add_stars_native_route`/`add_rosvot_native_route`'s doc
-                // comments: these routes load real weights and run
-                // end-to-end, but have not been cross-checked against a
-                // genuine PyTorch reference forward pass, so they stay at
-                // BenchmarkCandidate.
-                assert!(
-                    runtime.backends.iter().all(|capability| {
-                        capability.validation == ValidationState::BenchmarkCandidate
-                    }),
-                    "{}",
-                    runtime.id
-                );
-                continue;
-            }
-            assert!(
-                runtime.backends.iter().all(|capability| {
-                    capability.backend == NativeBackend::CpuReference
-                        || capability.validation == ValidationState::ProductionPinned
-                }),
-                "{}",
-                runtime.id
-            );
-        }
+                .any(|artifact| artifact.filename == "Xe/bs_leap_xe_inst.ckpt")
+        );
     }
 }

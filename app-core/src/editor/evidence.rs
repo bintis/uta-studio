@@ -14,8 +14,6 @@ pub enum EvidenceKind {
     FcpeF0,
     GameBoundary,
     BasicPitchOnset,
-    QwenWordBoundary,
-    FireRedWordBoundary,
     StarsTechnique,
     FusionConfidence,
     Disagreement,
@@ -219,7 +217,7 @@ struct SingingHardBoundaryWireV1 {
 
 #[cfg(test)]
 #[derive(Serialize)]
-struct SingingCandidatePoolDigestWireV2<'a> {
+struct SingingCandidatePoolDigestWireV1<'a> {
     schema_version: u32,
     candidates: &'a [SingingCandidateWireV1],
     hard_boundaries: &'a SingingHardBoundarySetWireV1,
@@ -1302,8 +1300,8 @@ mod tests {
             candidate("alternative", 880.0, None, None),
         ];
         let hard_boundaries = SingingHardBoundarySetWireV1::default();
-        let candidate_pool = SingingCandidatePoolDigestWireV2 {
-            schema_version: 2,
+        let candidate_pool = SingingCandidatePoolDigestWireV1 {
+            schema_version: 1,
             candidates: &candidates,
             hard_boundaries: &hard_boundaries,
         };
@@ -1351,8 +1349,8 @@ mod tests {
             serde_json::from_value(value["candidate_evidence"].clone()).unwrap();
         let hard_boundaries: SingingHardBoundarySetWireV1 =
             serde_json::from_value(value["candidate_hard_boundaries"].clone()).unwrap();
-        let pool = SingingCandidatePoolDigestWireV2 {
-            schema_version: 2,
+        let pool = SingingCandidatePoolDigestWireV1 {
+            schema_version: 1,
             candidates: &candidates,
             hard_boundaries: &hard_boundaries,
         };

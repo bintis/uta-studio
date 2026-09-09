@@ -1,0 +1,29 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3817,12 +3817,25 @@
+     result.block_rows = coopmat_block_rows;
+     result.block_cols = coopmat_block_cols * num_subgroups;
+     result.row_split = num_subgroups;
+     result.subgroup_size = device->subgroup_size;
++    // H64 has only sixteen vec4 output columns. Avoid half-empty SIMD32 rows.
++    const bool intel_m8_h64 = device->architecture == vk_device_architecture::INTEL_XE2 &&
++                              fa_m == 8 && hsk == 64 && hsv == 64 && f32acc &&
++                              k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16;
++    if (intel_m8_h64 && device->subgroup_size_control &&
++        device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16 &&
++        std::getenv("UTA_STUDIO_GGML_FA_SG32") == nullptr) {
++        result.subgroup_size = 16;
++    }
+     result.workgroup_size = num_subgroups * result.subgroup_size;
+ 
+     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit
+     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
+ 
+     result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
++    // Explicit development comparison; does not change other devices or types.
++    if (intel_m8_h64 && std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") != nullptr) {
++        result.shmem_staging = 1;
++    }
+ 
+     return result;

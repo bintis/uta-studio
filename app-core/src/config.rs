@@ -46,21 +46,35 @@ pub struct AppConfig {
     /// per-model routes and never treats this as permission to fall back.
     pub compute_backend: Option<String>,
     /// Global device-class preference (`cpu`, `gpu`, `integrated_gpu`),
-    /// orthogonal to `compute_backend`'s runtime choice. Captured and
-    /// forwarded to the Engine; Runtime Manager does not yet enumerate
-    /// multiple physical devices, so this does not change device selection
-    /// until that resolver support exists.
+    /// orthogonal to `compute_backend`'s runtime choice. CPU is an explicit
+    /// experimental lane; GPU selections never authorize CPU fallback.
     #[serde(default)]
     pub default_device_class: Option<String>,
+    /// Uses every enumerated GPU instead of one, and overlaps work that the
+    /// analysis graph does not order. A chunked model splits its chunks across
+    /// the available GPUs in proportion to their measured throughput, and
+    /// independent graph nodes run at the same time on different GPUs.
+    ///
+    /// This changes only which hardware runs an already-pinned route. It never
+    /// selects a different model, backend or precision, and it does not make
+    /// CPU a production lane: CPU stays the explicitly selected reference lane
+    /// and continues to do only the frontend, decode and post-processing work
+    /// that already runs there.
+    #[serde(default)]
+    pub turbo_acceleration: Option<bool>,
+    /// Threads the explicitly selected CPU reference lane may use. Absent
+    /// keeps the packaged GGML default, which is four regardless of how many
+    /// the machine has. This does not make CPU a production lane; it only
+    /// stops the reference lane from leaving most of the machine idle.
+    #[serde(default)]
+    pub cpu_thread_count: Option<u32>,
     /// Explicit model-specific backend choices. Missing entries use Runtime
     /// Manager's pinned route and never imply fallback.
     #[serde(default)]
     pub model_backend_overrides: BTreeMap<String, String>,
     /// Explicit model-specific device-class preference (`cpu`, `gpu`,
     /// `integrated_gpu`), orthogonal to `model_backend_overrides`'s runtime
-    /// choice. Captured and forwarded to the Engine; Runtime Manager does not
-    /// yet enumerate multiple physical devices, so this does not change
-    /// device selection until that resolver support exists.
+    /// choice. CPU must be selected directly and is never a fallback.
     #[serde(default)]
     pub model_device_overrides: BTreeMap<String, String>,
     /// Human-readable operator guidance retained in JSON because JSON has no
@@ -87,7 +101,7 @@ fn default_data_path_option() -> Option<PathBuf> {
 }
 
 fn default_model_backend_note() -> String {
-    "Intel XPU recommendation: choose Vulkan / GGML for the five RoFormer models; that worker uses the tested serial/no-async path. Keep other models on their pinned backend unless validated separately. CPU is an explicit diagnostic route, never a fallback."
+    "All packaged inference models use GGML. CPU is an explicit experimental reference mode; GPU and integrated-GPU requests never fall back to it."
         .to_string()
 }
 
@@ -104,6 +118,8 @@ impl Default for AppConfig {
             window_opacity_percent: None,
             compute_backend: None,
             default_device_class: None,
+            turbo_acceleration: None,
+            cpu_thread_count: None,
             model_backend_overrides: BTreeMap::new(),
             model_device_overrides: BTreeMap::new(),
             model_backend_note: default_model_backend_note(),
@@ -132,27 +148,20 @@ impl AppConfig {
         if self.data_path.is_none() {
             self.data_path = Some(Self::default_data_path());
         }
-        // `native_dsp` is intentionally excluded here: it is a valid
-        // per-model override (not every model has a native DSP path) but
-        // `compile_analyze_request_v1` rejects it as a *global* backend
-        // choice, so accepting it here would persist a config that then
-        // fails every analysis request.
         self.compute_backend = Some(
             match self.compute_backend.as_deref() {
-                Some("openvino") => "openvino",
-                Some("vulkan") => "vulkan",
-                Some("diagnostic_cpu") => "diagnostic_cpu",
+                Some("ggml" | "ggml_vulkan" | "vulkan") => "ggml",
                 _ => "auto",
             }
             .to_string(),
         );
         self.model_backend_overrides.retain(|model_id, backend| {
             !model_id.trim().is_empty()
-                && matches!(
-                    backend.as_str(),
-                    "openvino" | "vulkan" | "native_dsp" | "diagnostic_cpu"
-                )
+                && matches!(backend.as_str(), "ggml" | "ggml_vulkan" | "vulkan")
         });
+        for backend in self.model_backend_overrides.values_mut() {
+            *backend = "ggml".to_string();
+        }
         self.model_device_overrides.retain(|model_id, device| {
             !model_id.trim().is_empty()
                 && matches!(device.as_str(), "cpu" | "gpu" | "integrated_gpu")
@@ -163,6 +172,12 @@ impl AppConfig {
             .is_some_and(|device| matches!(device, "cpu" | "gpu" | "integrated_gpu"))
         {
             self.default_device_class = None;
+        }
+        if self
+            .cpu_thread_count
+            .is_some_and(|threads| threads == 0 || threads > 1024)
+        {
+            self.cpu_thread_count = None;
         }
         if self.model_backend_note.trim().is_empty() {
             self.model_backend_note = default_model_backend_note();
@@ -416,11 +431,11 @@ mod tests {
                 .model_backend_overrides
                 .get("bs_roformer_leap_xe90_vocals")
                 .map(String::as_str),
-            Some("vulkan")
+            Some("ggml")
         );
         assert!(!repaired.model_backend_overrides.contains_key("rmvpe"));
-        assert!(repaired.model_backend_note.contains("Intel XPU"));
-        assert!(repaired.model_backend_note.contains("serial/no-async"));
+        assert!(repaired.model_backend_note.contains("GGML"));
+        assert!(repaired.model_backend_note.contains("never fall back"));
     }
 
     #[test]
@@ -434,6 +449,10 @@ mod tests {
                 (
                     "melband_roformer_harmony".to_string(),
                     "integrated_gpu".to_string(),
+                ),
+                (
+                    "melband_roformer_denoise_aufr33".to_string(),
+                    "cpu".to_string(),
                 ),
                 ("rmvpe".to_string(), "quantum_accelerator".to_string()),
             ]),
@@ -454,7 +473,48 @@ mod tests {
                 .map(String::as_str),
             Some("integrated_gpu")
         );
+        assert_eq!(
+            repaired
+                .model_device_overrides
+                .get("melband_roformer_denoise_aufr33")
+                .map(String::as_str),
+            Some("cpu")
+        );
         assert!(!repaired.model_device_overrides.contains_key("rmvpe"));
+    }
+
+    #[test]
+    fn cpu_thread_count_is_optional_and_bounded() {
+        assert_eq!(AppConfig::default().cpu_thread_count, None);
+        let chosen = AppConfig {
+            cpu_thread_count: Some(16),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(chosen.cpu_thread_count, Some(16));
+        for invalid in [0, 1025] {
+            let cleared = AppConfig {
+                cpu_thread_count: Some(invalid),
+                ..AppConfig::default()
+            }
+            .with_defaults();
+            assert_eq!(cleared.cpu_thread_count, None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn turbo_acceleration_is_off_until_the_operator_turns_it_on() {
+        assert_eq!(AppConfig::default().turbo_acceleration, None);
+        let enabled = AppConfig {
+            turbo_acceleration: Some(true),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(enabled.turbo_acceleration, Some(true));
+        // It is a hardware-usage choice, so it must not disturb the pinned
+        // route or reintroduce CPU as a production lane.
+        assert!(enabled.model_backend_overrides.is_empty());
+        assert_eq!(enabled.default_device_class, None);
     }
 
     #[test]
@@ -478,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn global_compute_backend_rejects_native_dsp_which_is_only_a_valid_model_override() {
+    fn global_compute_backend_rejects_removed_backend_values() {
         let config = AppConfig {
             compute_backend: Some("native_dsp".to_string()),
             ..AppConfig::default()

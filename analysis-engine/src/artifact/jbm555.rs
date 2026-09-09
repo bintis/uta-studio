@@ -11,7 +11,7 @@ use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 
 pub const JBM555_MODEL_ID: &str = "jbm555_cectc_80";
 pub const JBM555_FRONTEND_PROFILE: &str =
-    "jbm555-native-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2-v1";
+    "jbm555-rust-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2-v1";
 pub const JBM555_DECODE_PROFILE: &str = "jbm555-cectc-onset0.32-offset0.70-v1";
 pub const JBM555_ONSET_THRESHOLD: f32 = 0.32;
 pub const JBM555_OFFSET_THRESHOLD: f32 = 0.70;
@@ -90,6 +90,7 @@ impl Jbm555EvidenceV1 {
             || self.model_id != JBM555_MODEL_ID
             || self.source_duration == 0
             || identities.iter().any(|identity| !valid_identity(identity))
+            || !matches!(self.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
             || self.frontend_profile != JBM555_FRONTEND_PROFILE
             || self.decode_profile != JBM555_DECODE_PROFILE
             || (self.onset_threshold - JBM555_ONSET_THRESHOLD).abs() > f32::EPSILON
@@ -241,7 +242,7 @@ mod tests {
             conversion_identity: "conversion-identity".to_string(),
             model_generation: "model-generation".to_string(),
             runtime_identity: "runtime-manifest".to_string(),
-            backend: "openvino_cpu".to_string(),
+            backend: "ggml_vulkan".to_string(),
             source_start: 1_000_000,
             source_duration: 500_000,
             mix_audio_identity: "mix-a".to_string(),
@@ -304,6 +305,13 @@ mod tests {
             first_identity,
             changed_vocal.input_dependency_identity().unwrap()
         );
+    }
+
+    #[test]
+    fn stale_native_backend_alias_is_rejected() {
+        let mut evidence = evidence();
+        evidence.backend = "jbm555_native".to_string();
+        assert!(evidence.validate().is_err());
     }
 
     #[test]

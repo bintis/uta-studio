@@ -3,13 +3,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
-
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerCommand {
     Run {
-        protocol: u32,
         task_id: String,
         node_id: String,
         model_id: String,
@@ -19,21 +16,20 @@ pub enum WorkerCommand {
         config: serde_json::Value,
     },
     Cancel {
-        protocol: u32,
         task_id: String,
     },
-    Quit {
-        protocol: u32,
-    },
+    Quit,
+    /// Enumerate the machine's usable GGML devices. Enumeration never creates a
+    /// logical device or submits work, so this is safe to ask of a worker that
+    /// has not been given a task.
+    Devices,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerFrame<'a> {
     Ready {
-        protocol: u32,
         component: &'a str,
-        runtime_recipe_digest: &'a str,
     },
     Progress {
         task_id: &'a str,
@@ -60,14 +56,22 @@ pub enum WorkerFrame<'a> {
         message: &'a str,
         retryable: bool,
     },
+    Devices {
+        devices: &'a [DeviceReport],
+    },
 }
 
-pub fn command_protocol(command: &WorkerCommand) -> u32 {
-    match command {
-        WorkerCommand::Run { protocol, .. }
-        | WorkerCommand::Cancel { protocol, .. }
-        | WorkerCommand::Quit { protocol } => *protocol,
-    }
+/// One enumerated GGML device, as the control plane sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceReport {
+    /// Index this device has in the loaded GGML runtime. It is the worker's
+    /// address for the device and is only meaningful within one runtime build.
+    pub ggml_index: usize,
+    pub name: String,
+    pub description: String,
+    /// `cpu`, `discrete_gpu` or `integrated_gpu`, matching the `device_class`
+    /// a `run` command accepts.
+    pub kind: String,
 }
 
 pub fn emit(frame: WorkerFrame<'_>) -> Result<(), String> {
@@ -75,4 +79,35 @@ pub fn emit(frame: WorkerFrame<'_>) -> Result<(), String> {
     serde_json::to_writer(&mut stdout, &frame).map_err(|error| error.to_string())?;
     stdout.write_all(b"\n").map_err(|error| error.to_string())?;
     stdout.flush().map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_devices_command_parses_without_protocol_field() {
+        let command: WorkerCommand = serde_json::from_str(r#"{"type":"devices"}"#).unwrap();
+        assert!(matches!(command, WorkerCommand::Devices));
+    }
+
+    #[test]
+    fn a_device_report_names_the_class_a_run_command_accepts() {
+        let devices = [DeviceReport {
+            ggml_index: 0,
+            name: "Vulkan0".to_string(),
+            description: "Intel(R) Arc(tm) B580 Graphics".to_string(),
+            kind: "discrete_gpu".to_string(),
+        }];
+        let encoded = serde_json::to_string(&WorkerFrame::Devices { devices: &devices }).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded["type"], "devices");
+        assert_eq!(decoded["devices"][0]["kind"], "discrete_gpu");
+        assert_eq!(decoded["devices"][0]["ggml_index"], 0);
+    }
+
+    #[test]
+    fn an_unknown_command_type_is_rejected_rather_than_defaulted() {
+        assert!(serde_json::from_str::<WorkerCommand>(r#"{"type":"reboot"}"#).is_err());
+    }
 }

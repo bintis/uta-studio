@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::artifact::{
     AcousticEvidenceV1, AdvancedNoteEvidenceV1, AlignmentArtifactV1, AlignmentItemV1,
-    BasicPitchEvidenceV3, GameEvidenceV1, PitchEvidenceV03, TechniqueEvidenceV1,
+    BasicPitchEvidenceV1, GameEvidenceV1, PitchEvidenceV03, TechniqueEvidenceV1,
     TimedNoteExpertEvidenceV1, TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1,
 };
 use crate::contract::{
@@ -376,7 +376,7 @@ pub fn fuse_alignment_stage(
     for artifact in evidence {
         if artifact.contract != "uta.analysis-engine.alignment"
             || artifact.version != 1
-            || normalized(&artifact.transcript) != normalized(&transcript.text)
+            || compact_normalized(&artifact.transcript) != compact_normalized(&transcript.text)
             || artifact.source_expert.trim().is_empty()
         {
             return Err(output_error(
@@ -629,7 +629,7 @@ fn provenance(
     alignment: &AlignmentArtifactV1,
     pitch: Option<&PitchEvidenceV03>,
     fcpe: Option<&PitchEvidenceV03>,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     boundary: &BoundaryEvidenceSet,
     acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
@@ -712,7 +712,7 @@ fn provenance(
         result.push(EvidenceProvenance {
             expert_id: "basic_pitch".to_string(),
             task: ExpertTask::Onset,
-            model_hash: Some(evidence.model_manifest_sha256.clone()),
+            model_hash: None,
             runtime_identity: Some(evidence.runtime_manifest_sha256.clone()),
             calibration_version: None,
             correlation_group: None,
@@ -796,7 +796,7 @@ fn context_boundary_constraints(
     words: &[CanonicalWordBoundary],
     f0_curve: &[F0Point],
     pitch_owner: &str,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     acoustic: Option<&AcousticEvidenceV1>,
 ) -> Vec<BoundaryConstraintEvidenceV1> {
     let mut constraints = Vec::new();
@@ -967,7 +967,7 @@ pub fn execute_singing_fusion_stage_with_timed_notes(
     words: &[CanonicalWordBoundary],
     pitch_evidence: Option<&PitchEvidenceV03>,
     fcpe_evidence: Option<&PitchEvidenceV03>,
-    basic_pitch_evidence: Option<&BasicPitchEvidenceV3>,
+    basic_pitch_evidence: Option<&BasicPitchEvidenceV1>,
     game: Option<&GameEvidenceV1>,
     acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
@@ -1113,7 +1113,7 @@ pub fn execute_singing_fusion_stage(
     words: &[CanonicalWordBoundary],
     pitch_evidence: Option<&PitchEvidenceV03>,
     fcpe_evidence: Option<&PitchEvidenceV03>,
-    basic_pitch_evidence: Option<&BasicPitchEvidenceV3>,
+    basic_pitch_evidence: Option<&BasicPitchEvidenceV1>,
     game: Option<&GameEvidenceV1>,
     acoustic: Option<&AcousticEvidenceV1>,
     advanced_notes: &[AdvancedNoteEvidenceV1],
@@ -1215,7 +1215,7 @@ fn range_distance(left: crate::fusion::TimeRange, right: crate::fusion::TimeRang
     if left.end <= right.start {
         right.start - left.end
     } else if right.end <= left.start {
-        left.start - right.end
+        left.start.saturating_sub(right.end)
     } else {
         0
     }

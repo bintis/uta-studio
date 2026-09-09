@@ -468,7 +468,6 @@ impl NativeEditor {
                 app_core::EvidenceKind::FusionConfidence,
                 app_core::EvidenceKind::FusedF0,
                 app_core::EvidenceKind::Disagreement,
-                app_core::EvidenceKind::QwenWordBoundary,
             ]
             .into_iter()
             .collect(),

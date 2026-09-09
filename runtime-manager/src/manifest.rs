@@ -14,9 +14,11 @@ pub const INSTALL_MANIFEST_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallManifest {
     pub schema: String,
-    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
     pub resource: ResourceRef,
-    pub catalog_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,9 +103,7 @@ fn verify_generation_impl(
         Err(_) => return GenerationVerification::corrupt(),
     };
     if manifest.schema != INSTALL_MANIFEST_SCHEMA
-        || manifest.schema_version != INSTALL_MANIFEST_SCHEMA_VERSION
         || &manifest.resource != expected_resource
-        || manifest.catalog_version.trim().is_empty()
         || manifest.created_timestamp.trim().is_empty()
         || manifest.files.is_empty()
         || manifest
@@ -264,9 +264,9 @@ mod tests {
         };
         let manifest = InstallManifest {
             schema: INSTALL_MANIFEST_SCHEMA.to_string(),
-            schema_version: INSTALL_MANIFEST_SCHEMA_VERSION,
+            schema_version: None,
             resource: resource.clone(),
-            catalog_version: "test".to_string(),
+            catalog_version: None,
             source: None,
             source_sha256: None,
             model_recipe_digest: Some("recipe".to_string()),

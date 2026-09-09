@@ -603,7 +603,7 @@ mod execution_status_tests {
     }
 
     #[test]
-    fn split_presentation_nodes_report_their_independent_models() {
+    fn dual_output_presentation_nodes_report_the_shared_model() {
         let snapshot = app_core::compile_workflow(&app_core::default_workflow("song")).unwrap();
         let workflow = app_core::WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
         let (vocal, vocal_capability, _) =
@@ -617,7 +617,7 @@ mod execution_status_tests {
         );
         assert_eq!(
             presentation_model(instrumental, instrumental_capability).as_deref(),
-            Some("bs_polarformer_public_instrumental")
+            Some("bs_roformer_leap_xe90_vocals")
         );
     }
 

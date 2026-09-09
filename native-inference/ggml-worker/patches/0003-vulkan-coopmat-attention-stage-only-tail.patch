@@ -1,0 +1,31 @@
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -275,7 +275,10 @@
+             if (SHMEM_STAGING == 0) {
+             // For quants we always need to dequant into kvsh; for f16/bf16 we can load
+             // directly from global memory when alignment / bounds allow it.
+-            const bool stage_k = USE_DECODE_K || KV_bounds_check || d * 16 + 16 > HSK;
++            // Clamp describes the whole dispatch, not this block. An unaligned
++            // sequence has only one partial block; do not stage every full block
++            // (and synchronize twice per contraction tile) because of its tail.
++            const bool stage_k = USE_DECODE_K || (KV_bounds_check && (j >= KV / Bc || ((HSK | HSV) & 15) != 0 || ((k_stride | v_stride) & 7) != 0)) || d * 16 + 16 > HSK;
+             if (stage_k) {
+                 barrier();
+                 [[unroll]] for (uint32_t idx = 0; idx < Bc * MatBr / 4; idx += gl_WorkGroupSize.x) {
+@@ -450,7 +453,7 @@
+             if (SHMEM_STAGING == 0) {
+             // For quants we always preload via kvsh. For f16/bf16 we only preload when
+             // alignment / bounds force it (otherwise we coopMatLoad direct from data_vv4).
+-            const bool stage_v = USE_DECODE_V || KV_bounds_check;
++            const bool stage_v = USE_DECODE_V || (KV_bounds_check && (j >= KV / Bc || ((HSK | HSV) & 15) != 0 || ((k_stride | v_stride) & 7) != 0));
+             if (stage_v) {
+                 [[unroll]] for (uint32_t i = 0; i < v_loads_per_thread; ++i) {
+                     const uint idx = i * gl_WorkGroupSize.x + tid;
+@@ -499,5 +502,5 @@
+                         if (SHMEM_STAGING == 0) {
+-                        if (!USE_DECODE_V && !KV_bounds_check) {
++                        if (!USE_DECODE_V && (!KV_bounds_check || (j < KV / Bc && ((HSK | HSV) & 15) == 0 && ((k_stride | v_stride) & 7) == 0))) {
+                             // F16/BF16 values can be loaded directly from global memory
+                             const uint v_tile_row = j * Bc + kv_chunk * MatK;
+                             const uint v_tile_offset = v_offset / 4 + v_tile_row * v_stride / 4 + hsv_offset / 4;

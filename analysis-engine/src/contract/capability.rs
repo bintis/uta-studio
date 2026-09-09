@@ -55,22 +55,22 @@ pub fn capability_registry() -> Vec<CapabilityDescriptor> {
         ("audio.lead_partition", false, false),
         ("audio.denoise", false, true),
         ("audio.dereverb", false, true),
-        ("speech.transcribe", true, true),
+        ("speech.transcribe", false, true),
         ("speech.transcribe.challenger", false, true),
-        ("speech.align", true, true),
+        ("speech.align", false, true),
         ("pitch.track", true, true),
         ("pitch.secondary", false, true),
         ("pitch.secondary.rmvpe", false, true),
         ("pitch.secondary.fcpe", false, true),
-        ("notes.game", true, true),
+        ("notes.game", false, true),
         ("notes.basic_pitch", false, true),
         ("notes.rosvot", false, true),
         ("notes.stars", false, true),
         ("notes.jbm555", false, true),
         ("technique.analyze", false, true),
         ("analysis.acoustic_dsp", true, true),
-        ("fusion.transcript", true, true),
-        ("fusion.alignment", true, true),
+        ("fusion.transcript", false, true),
+        ("fusion.alignment", false, true),
         ("fusion.singing", true, true),
         ("fusion.candidate_graph", true, true),
         ("finalize.vocal_chart", true, true),
@@ -153,32 +153,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn advanced_note_experts_and_technique_require_timed_transcript() {
-        let capabilities = capability_registry();
-        for id in ["notes.rosvot", "notes.stars"] {
-            let capability = capabilities
-                .iter()
-                .find(|capability| capability.id.as_str() == id)
-                .unwrap();
-            assert_eq!(
-                capability.input_semantic_types,
-                ["analysis_ready_lead", "timed_transcript"]
-            );
-            assert_eq!(
-                capability.output_semantic_types,
-                ["note_candidate_evidence"]
-            );
-        }
-        let technique = capabilities
-            .iter()
-            .find(|capability| capability.id.as_str() == "technique.analyze")
+    fn firered_challenger_is_implemented_but_never_baseline_required() {
+        let capability = capability_registry()
+            .into_iter()
+            .find(|capability| capability.id.as_str() == "speech.transcribe.challenger")
             .unwrap();
-        assert!(technique.implementation_exists);
-        assert!(!technique.baseline_required);
-        assert_eq!(
-            technique.input_semantic_types,
-            ["analysis_ready_lead", "timed_transcript"]
-        );
+        assert!(!capability.baseline_required);
+        assert!(capability.implementation_exists);
+        assert!(capability.runtime_policy_satisfied);
     }
 
     #[test]
@@ -215,23 +197,34 @@ mod tests {
     }
 
     #[test]
-    fn implemented_optional_executors_are_not_reported_as_missing() {
+    fn rust_ggml_and_local_dsp_capabilities_are_reported_as_implemented() {
         let capabilities = capability_registry();
         for id in [
+            "audio.extract_vocals",
+            "audio.extract_instrumental",
+            "audio.lead_isolate",
+            "audio.denoise",
             "audio.dereverb",
-            "speech.transcribe.challenger",
+            "pitch.track",
             "pitch.secondary",
+            "pitch.secondary.rmvpe",
+            "pitch.secondary.fcpe",
+            "speech.transcribe",
+            "speech.align",
+            "notes.game",
             "notes.basic_pitch",
+            "notes.rosvot",
+            "notes.stars",
+            "notes.jbm555",
+            "technique.analyze",
+            "analysis.acoustic_dsp",
         ] {
             let capability = capabilities
                 .iter()
                 .find(|capability| capability.id.as_str() == id)
                 .unwrap();
-            assert!(!capability.baseline_required, "{id} must remain optional");
-            assert!(
-                capability.implementation_exists,
-                "{id} has an Engine executor and must not be reported as unimplemented"
-            );
+            assert!(capability.implementation_exists, "{id}");
+            assert!(capability.runtime_policy_satisfied, "{id}");
         }
     }
 }

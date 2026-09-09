@@ -1,0 +1,30 @@
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -111,3 +111,15 @@
+     barrier();
+ 
++    // The scaled, rounded Q tile is invariant across all KV blocks. Test its
++    // register residency separately from the query-row blocking policy.
++    coopmat<FLOAT_TYPE, gl_ScopeSubgroup, 16, MatBr, gl_MatrixUseB> cached_query[Br / MatBr][HSK_pad / 16];
++    const bool reuse_query = MatBc == 8 && HSK == 64 && HSV == 64;
++    if (reuse_query) {
++        [[unroll]] for (uint32_t query_tile = 0; query_tile < Br / MatBr; ++query_tile) {
++            [[unroll]] for (uint32_t depth_tile = 0; depth_tile < HSK_pad / 16; ++depth_tile) {
++                coopMatLoad(cached_query[query_tile][depth_tile], Qf, query_tile * MatBr * qstride + depth_tile * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
++            }
++        }
++    }
++
+     O_TYPEV4 Of[rows_per_thread][d_per_thread];
+@@ -321,4 +333,8 @@
+             [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBr; ++br_tile) {
+-                coopMatLoad(QMat, Qf, br_tile * MatBr * qstride + d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
+-                SfMat[br_tile] = coopMatMulAdd(KMat, QMat, SfMat[br_tile]);
++                if (reuse_query) {
++                    SfMat[br_tile] = coopMatMulAdd(KMat, cached_query[br_tile][d], SfMat[br_tile]);
++                } else {
++                    coopMatLoad(QMat, Qf, br_tile * MatBr * qstride + d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
++                    SfMat[br_tile] = coopMatMulAdd(KMat, QMat, SfMat[br_tile]);
++                }
+             }

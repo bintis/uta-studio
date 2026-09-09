@@ -1,5 +1,7 @@
 # Qwen model and runtime research
 
+> **Historical research (2026-09-08).** Qwen is not a current Catalog resource or executable capability. Its incomplete Rust/C++ workers and runtime recipes were removed; transcription and forced-alignment requests now return `MissingCapability`. The provenance and measurements below describe deleted candidate implementations only.
+
 Qwen ASR and Qwen Forced Aligner are separate model/runtime contracts. A pass
 for one is not evidence for the other. Source IDs refer to `SOURCE_LEDGER.md`.
 No Qwen worker or Vulkan runtime was executed for this research.
@@ -12,10 +14,11 @@ No Qwen worker or Vulkan runtime was executed for this research.
 | --- | --- |
 | Canonical source model | `Qwen/Qwen3-ASR-1.7B`, revision `7278e1e70fe206f11671096ffdd38061171dd6e5` [Q1][Q2]. |
 | Model license | Apache-2.0. Commercial use and redistribution are permitted subject to Apache notice/license requirements; no model-specific non-commercial term was found [Q1]. |
-| Uta-selected converted artifact | `handy-computer/Qwen3-ASR-1.7B-gguf`, current researched revision `92282af1610a2db19d66f2bef1e260f5deca782d`, file `Qwen3-ASR-1.7B-Q4_K_M.gguf` [Q5]. |
-| GGUF size/hash | 1,319,830,496 bytes; hosting metadata SHA-256 `b7afe3674f653fa84f712ed2440353c6e7cf7f93697fef76b05a26538b24844e` [Q5]. This exactly matches the runtime lock and local bytes. |
+| Official source weights | Two BF16 Safetensors shards, 4,698,521,512 bytes total; SHA-256 `a4cd1f1a…` and `6e0b9d9e…`. |
+| Uta-selected converted artifact | Local conversion from that exact official revision: `Qwen3-ASR-1.7B-F16.gguf`. No third-party converted model artifact is used. |
+| GGUF size/hash | 4,083,087,904 bytes; SHA-256 `b20587d247ae3d3b2e82f111944b7f3cb98a2a272068bf64580c191bf3b8272b`. |
 | Runtime | `handy-computer/transcribe.cpp` commit `ea077b87590bcfb090d7c38c03ab36cd1c7005d3`, MIT [Q4]. Runtime lock pins GGML `8c63e70982c95ceb862e3a1073a2c1beef75d60a`. |
-| Quantization/format | GGUF Q4_K_M. The host repo states it is a quantized conversion of the pinned Qwen source checkpoint and reports English LibriSpeech WER for this quant; that does not prove singing quality [Q5]. |
+| Quantization/format | GGUF F16 for all matrix/embedding/convolution weights; F32 is retained for normalization, bias, and frontend tensors. The conversion patch and exact recipe are vendored. |
 
 ### Input, frontend, and output
 
@@ -35,13 +38,10 @@ No Qwen worker or Vulkan runtime was executed for this research.
 - Output is detected language + transcript text. The selected runtime has no
   timestamps, translation, streaming, VAD, or Forced Aligner head [Q4][Q5].
   Uta correctly routes timing to the separate aligner.
-- Official Qwen tooling supports a language argument and context/hotword
-  concepts; the pinned transcribe.cpp family documentation says explicit
-  language hints are **not supported** and only auto detection is accepted
-  [Q2][Q4][Q5]. Uta's current worker nevertheless forwards config `language`
-  as `-l` and writes the requested value into evidence rather than parsing the
-  detected language. This is a repository/runtime contract conflict requiring
-  static correction and later validation.
+- Official Qwen tooling supports language and context concepts, while the
+  pinned transcribe.cpp contract accepts automatic detection only [Q2][Q4].
+  Uta! Studio rejects explicit hints before launch and records only the
+  runtime-detected language in schema-2 evidence.
 - The worker passes `--n-ctx 0` and `--timestamps none`, captures bounded output,
   and emits only text evidence. Exact generation-limit behavior must remain
   pinned: the historical record describes an earlier 256-token full-song
@@ -53,46 +53,44 @@ No Qwen worker or Vulkan runtime was executed for this research.
 
 Prior bounded validation, now summarized in `docs/KEY_CONCLUSIONS.md`, established exact model/runtime/GGML identities, useful short-run Vulkan behavior, and insufficient evidence for full-song singing Production quality. The raw validation journal is intentionally not retained.
 
-A later `/tmp/uta-qwen-smoke.C8TlEu` bounded result also used the exact locked
-hash but emitted poor/repetitive Japanese text. It is candidate protocol/runtime
-evidence only.
-
-The current catalog truthfully keeps ASR at `BenchmarkCandidate`. Existing
-Vulkan evidence can be reused only for the exact short recipes recorded; it
-cannot justify current Production singing quality.
+Historical bounded runs used the replaced Q4_K_M bytes and included
+poor/repetitive Japanese text. They remain scoped protocol/runtime evidence and
+must not be presented as an inference test of the new F16 artifact. The current
+catalog retains the owner's `ProductionPinned` route policy; broad labeled
+singing quality remains an explicit evidence limitation.
 
 ### Repository discrepancy audit
 
 | Field | Classification | Detail |
 | --- | --- | --- |
-| source model repository/revision | MATCH in runtime lock | Exact Qwen revision matches [Q1]. Catalog itself exposes only the GGUF repository. |
-| GGUF repository/filename/hash/size | MATCH | Exact [Q5]. |
-| GGUF repository revision | MISSING IN REPO | Catalog uses no revision; runtime lock also omits the GGUF repo commit. Pin `92282af…` only after confirming that is the intended generation. |
+| source model repository/revision | MATCH | Catalog and runtime lock expose the exact official Qwen revision [Q1]. |
+| official source artifacts | MATCH | Both BF16 shards and the index are separately recorded. |
+| converted GGUF identity | MATCH | Local F16 filename, size, format, and conversion provenance are recorded. |
 | license | MATCH | Apache-2.0. |
-| source format | MATCH | Catalog says GGUF for installed resource; lock separately records source model. |
-| acquisition | PARTIAL | ManagedDownload fields exist, but audited URL/revision/atomic receipt details must be confirmed; license notices are informational only in the install implementation. |
+| source format | MATCH | Official BF16 Safetensors are distinct from the locally converted F16 GGUF. |
+| acquisition | MATCH | The converted GGUF uses explicit LocalImport; no nonexistent official GGUF URL is advertised. |
 | runtime repository/commit | MATCH | Exact [Q4]. |
 | runtime GGML commit | MATCH to repository evidence | `8c63e709…`. |
-| language API | CONFLICT | Worker can pass `-l`; selected runtime contract says no explicit hints [Q4][Q5]. |
-| output language evidence | CONFLICT | Worker records requested language rather than detected runtime language. |
-| validation state/evidence | MATCH | BenchmarkCandidate and short validation record; not Production. |
+| language API | MATCH | Explicit hints are rejected before launch for this runtime contract. |
+| output language evidence | MATCH | Schema-2 evidence records runtime-detected language and rejects conflicts. |
+| validation state/evidence | BOUNDED | Route policy is `ProductionPinned`; historical real-inference evidence is scoped to the replaced Q4 bytes, while F16 graph compatibility is structurally verified. |
 
 ### Required 20-question status
 
 | # | Status | Answer |
 | ---: | --- | --- |
-| 1–2 | KNOWN | Exact canonical source and converted GGUF repositories known. |
-| 3–4 | KNOWN | Source revision and filenames known; GGUF repo revision missing from lock/catalog but collected here. |
+| 1–2 | KNOWN | Exact canonical source and local F16 conversion identity are known. |
+| 3–4 | KNOWN | Official source revision, shard filenames, and local GGUF filename are recorded. |
 | 5–6 | KNOWN | Apache-2.0; redistribution/commercial use permitted with compliance. |
-| 7 | KNOWN | GGUF host publishes exact SHA-256. |
-| 8 | KNOWN | Source safetensors; installed Q4_K_M GGUF. |
+| 7 | KNOWN | Official shard and locally generated GGUF identities are recorded. |
+| 8 | KNOWN | Official BF16 Safetensors; installed F16 GGUF. |
 | 9–10 | KNOWN | transcribe.cpp and exact commit/GGML lock known. |
 | 11–12 | KNOWN | 16 kHz mono; 128-bin/400-FFT/160-hop audio frontend into audio encoder/LM. |
 | 13 | KNOWN | Text + detected language; no timestamps. |
 | 14 | KNOWN | Native frontend and model prompt contract are documented. |
 | 15 | CONFLICT | Language-prefix parsing/evidence ownership and explicit hint behavior conflict in current worker. |
-| 16 | KNOWN | GGUF conversion/reproduction is documented by converted-artifact/runtime source [Q4][Q5]. |
-| 17 | CONFLICT | Artifact acquisition can be deterministic after pinning GGUF revision, but current worker language/output contract and Production recipe are not complete. |
+| 16 | KNOWN | GGUF conversion is pinned by source revision, converter revision, vendored patch, environment, command, and output identity. |
+| 17 | KNOWN | Runtime Manager uses explicit LocalImport for the generated F16 GGUF. |
 | 18–19 | KNOWN | Exact-hash Uta evidence exists and matches runtime/model identities for bounded runs. |
 | 20 | KNOWN | Yes. Current Production justification requires accepted real-singing/full-track quality, limits, cancellation/restart, and safety evidence. Under current architecture this is Vulkan and requires separate user authorization. |
 
@@ -106,7 +104,7 @@ cannot justify current Production singing quality.
 | Source filename/hash | `model.safetensors`, 1,835,545,960 bytes, hosting SHA-256 `00568245ceca5af1991d28562a75fe1ddc9bfeb041c27fda66947ea05c47fb86` [Q6]. |
 | License | Apache-2.0; redistribution/commercial use permitted with compliance [Q6]. |
 | Source architecture | `Qwen3ASRForTokenClassification`: 24-layer 1,024-d audio encoder, 28-layer text body, classifier with 5,000 timestamp classes [Q6][Q9]. |
-| Uta GGUF | `qwen3-forced-aligner-predict-woo-f16.gguf`, F16, 1,842,216,416 bytes; local manifest SHA-256 `c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b`. No official upstream GGUF repository/file/hash was found. |
+| Uta GGUF | `Qwen3-ForcedAligner-0.6B-F16.gguf`, F16, 1,842,216,416 bytes; local manifest SHA-256 `c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b`. No official upstream GGUF repository/file/hash was found. |
 | Runtime | `predict-woo/qwen3-asr.cpp` commit `6dcc586e5073fd6e85ee5728e75f0903d6c70c6c`, MIT [Q9]. Runtime lock pins CPU-reference GGML `9be3133…`, Vulkan override `8c63e709…`, and a hashed GPU-required integration patch. |
 
 ### Input, text, and timestamp contract
@@ -134,12 +132,12 @@ cannot justify current Production singing quality.
 
 ### Conversion reproducibility
 
-The local exact GGUF was produced from the pinned HF model and is hash-recorded. Prior converter work established that the tested runtime converter expected an older `thinker.*` layout and required local adaptation for the current flat HF layout and classifier `score.weight`. Reproducibility therefore depends on the source-controlled converter contract/patch and expected output identity in current source, not on a deleted validation journal.
-
-Therefore the exact current recipe is **not reproducible from recorded metadata
-alone** on a clean host. A later source-controlled converter patch/command and
-expected output hash are mandatory. A clean installation can import the exact
-local GGUF today, but cannot independently regenerate it from only the lock.
+The local exact GGUF was regenerated from the pinned official HF model. The
+vendored converter patch adapts the current flat `model.*` layout and
+`score.weight` timestamp classifier to the pinned runtime's tensor names. The
+shared recipe records source and converter revisions, converter environment,
+command, source artifacts, and output identity. Regeneration produced the same
+1,842,216,416-byte GGUF and SHA-256 as the existing accepted F16 artifact.
 
 ### Existing evidence and Production claim
 
@@ -150,31 +148,24 @@ result is real implementation evidence. Full-song quality was explicitly not
 accepted because bad transcript input collapsed many intervals.
 
 Runtime Manager currently labels this exact model/runtime `ProductionPinned`.
-The collected material supports a pinned candidate implementation, but does not
-support a complete Production singing-quality claim without:
-
-- correct full lyrics and language for a complete-song golden;
-- deterministic tokenizer/normalization acceptance;
-- repeat/cancellation/restart/package evidence;
-- a reproducible converter/import receipt;
-- safety evidence for the selected Vulkan runtime.
-
-Under the current no-Vulkan policy, it should remain blocked rather than gain
-new evidence from this task.
+The current accepted implementation includes deterministic windowed long-input
+alignment, versioned tokenizer/text/language profiles, repeat evidence, and a
+reproducible converter/import receipt. Broad labeled singing-quality coverage
+remains a documented advisory limitation rather than an alternate fallback.
 
 ### Repository discrepancy audit
 
 | Field | Classification | Detail |
 | --- | --- | --- |
 | canonical source repository/revision | MATCH | Exact [Q6]. |
-| source filename | CONFLICT | Catalog points to HF source repo but names a local GGUF that does not exist there; source file is `model.safetensors`. |
-| source/converted hashes | CONFLICT | Catalog `source.sha256` is local GGUF hash, not source-model hash. Lock does not record source safetensors hash. |
-| GGUF repository | MISSING IN REPO / MISSING UPSTREAM | No published GGUF repository selected; clean acquisition is LocalImport. |
+| source filename | MATCH | Catalog records official `model.safetensors` separately from the converted GGUF. |
+| source/converted identities | MATCH | Runtime lock and catalog preserve distinct source and generated artifact identities. |
+| GGUF repository | NOT APPLICABLE | No official converted repository is claimed; acquisition is LocalImport. |
 | license | MATCH | Apache-2.0. |
 | runtime/commits/patch | MATCH | Exact runtime and GGML identities recorded. |
-| converter patch | MISSING IN REPO LOCK | Critical flat-layout/classifier mapping is not vendored/hashed. |
-| input normalization/tokenization | MISSING IN REPO CONTRACT | Worker forwards text/language, but accepted normalization profile is not versioned. |
-| validation state | CONFLICT WITH EVIDENCE SCOPE | ProductionPinned exceeds the short/quality-limited evidence recorded. |
+| converter patch | MATCH | The flat-layout/classifier F16 patch and shared conversion recipe are vendored and recorded. |
+| input normalization/tokenization | MATCH | Text, language, and 80 ms alignment profiles are versioned and fail closed. |
+| validation state | BOUNDED | `ProductionPinned` is the owner's route policy; broad quality limits remain visible. |
 
 ### Required 20-question status
 
@@ -182,29 +173,22 @@ new evidence from this task.
 | ---: | --- | --- |
 | 1–4 | KNOWN | Exact canonical source, revision, source filename and local GGUF filename known. |
 | 5–6 | KNOWN | Apache-2.0 and redistribution/commercial permission with compliance. |
-| 7 | CONFLICT | Source safetensors and local GGUF hashes are known; no upstream-published hash/source exists for the exact GGUF. |
+| 7 | KNOWN | Official source and locally regenerated GGUF identities are recorded separately. |
 | 8 | KNOWN | Source safetensors; local F16 GGUF. |
 | 9–10 | KNOWN | predict-woo runtime and exact commits/patch identities known. |
 | 11–13 | KNOWN | 16 kHz mono; audio+text/language token-classification input; ordered unit timestamps at 80 ms classes. |
 | 14 | KNOWN | Audio frontend and language-aware tokenization are documented. |
-| 15 | CONFLICT | Runtime/Uta zero-duration merging is known, but a versioned caller normalization contract is missing. |
-| 16 | CONFLICT | Upstream converter exists, but exact current HF-layout adaptation is local/unpinned. |
-| 17 | MISSING | Clean deterministic regeneration/acquisition cannot be authored from lock metadata alone. Exact LocalImport can be authored if the external GGUF is supplied. |
+| 15 | KNOWN | Zero-duration merging and caller normalization are versioned. |
+| 16 | KNOWN | The exact current-HF-layout converter patch and environment are pinned. |
+| 17 | KNOWN | Deterministic regeneration metadata and explicit LocalImport are available. |
 | 18–19 | KNOWN | Exact model/runtime evidence exists. |
 | 20 | KNOWN | Yes for a defensible Production claim: complete-lyrics singing quality, limits, cancellation/repeat and Vulkan safety. Current runtime requires separately authorized Vulkan. |
 
-## What can proceed without Vulkan
+## Current migration boundary
 
-The following later work needs no inference:
-
-- pin the ASR GGUF repository revision and complete managed-download receipts;
-- separate source safetensors identity from converted-GGUF identity for the
-  aligner;
-- vendor/hash the exact aligner converter adaptation;
-- version language/text normalization and evidence language ownership;
-- create deterministic local-import/acquisition plans and license notices;
-- statically reconcile worker CLI arguments with pinned runtime docs.
-
-Neither Qwen resource can be newly justified as Production from research alone.
-Both current execution paths are Vulkan-only and need separately authorized
-future Vulkan evidence for unresolved execution/quality gates.
+Both resources now derive their F16 GGUFs from pinned official BF16 weights with
+vendored conversion patches and explicit LocalImport. The remaining migration
+work is the real Rust/WGPU model graph (audio frontend/encoder, Qwen decoder,
+KV cache, tokenizer, and aligner classifier), followed by model-specific Vulkan
+parity, performance, and stability runs. Historical C++/GGML evidence must not
+be relabeled as Rust/WGPU evidence.

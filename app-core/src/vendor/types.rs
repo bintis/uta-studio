@@ -18,18 +18,14 @@ pub enum SetupStep {
 pub enum ComputeBackend {
     #[default]
     Auto,
-    OpenVino,
-    Vulkan,
-    DiagnosticCpu,
+    Ggml,
 }
 
 impl ComputeBackend {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::OpenVino => "openvino",
-            Self::Vulkan => "vulkan",
-            Self::DiagnosticCpu => "diagnostic_cpu",
+            Self::Ggml => "ggml",
         }
     }
 }
@@ -39,14 +35,7 @@ impl ComputeBackend {
 #[serde(rename_all = "snake_case")]
 pub enum ModelDownloadTarget {
     RoFormer,
-    FireRed,
-    QwenAsr,
-    QwenAlign,
     Pitch,
-    Fcpe,
-    Game,
-    Stars,
-    BasicPitch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -116,10 +105,7 @@ pub struct AnalysisRuntimeStatus {
     pub ready: bool,
     pub runtime_contract_current: bool,
     pub ffmpeg_available: bool,
-    pub openvino_runtime_available: bool,
-    pub ggml_vulkan_runtime_available: bool,
-    pub qwen_asr_runtime_available: bool,
-    pub qwen_align_runtime_available: bool,
+    pub ggml_runtime_available: bool,
     pub pitch_model_available: bool,
     pub selected_models_available: bool,
     pub selected_models: Vec<String>,

@@ -1,0 +1,43 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3840,3 +3840,11 @@
+     result.workgroup_size = num_subgroups * result.subgroup_size;
+ 
++    if (intel_m8_h64) {
++        const char * query_rows = std::getenv("UTA_STUDIO_GGML_FA_QUERY_ROWS");
++        const uint32_t requested_rows = query_rows ? std::atoi(query_rows) : 32;
++        if (requested_rows == 16 || requested_rows == 32 || requested_rows == 64) {
++            result.block_rows = requested_rows;
++        }
++    }
++
+     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -266,3 +266,6 @@
+-        coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> SfMat = coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++        coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> SfMat[Br / MatBr];
++        [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBr; ++br_tile) {
++            SfMat[br_tile] = coopmat<ACC_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++        }
+         coopmat<FLOAT_TYPE, gl_ScopeSubgroup, MatBc, 16, gl_MatrixUseA> KMat;
+         coopmat<FLOAT_TYPE, gl_ScopeSubgroup, 16, MatBr, gl_MatrixUseB> QMat;
+@@ -318,8 +321,11 @@
+-            coopMatLoad(QMat, Qf, d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
+-
+-            SfMat = coopMatMulAdd(KMat, QMat, SfMat);
++            [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBr; ++br_tile) {
++                coopMatLoad(QMat, Qf, br_tile * MatBr * qstride + d * 16 / 4, qstride, gl_CooperativeMatrixLayoutColumnMajor);
++                SfMat[br_tile] = coopMatMulAdd(KMat, QMat, SfMat[br_tile]);
++            }
+         }
+ 
+-        uint coord = gl_SubgroupID * MatBc * sfshstride;
+-        coopMatStore(SfMat, sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
++        [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBr; ++br_tile) {
++            uint coord = gl_SubgroupID * MatBc * sfshstride + br_tile * MatBr / 4;
++            coopMatStore(SfMat[br_tile], sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
++        }
+         barrier();

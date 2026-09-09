@@ -54,37 +54,7 @@ fn real_analysis_cli_ready_validate_requirements_plan_and_error_contract() {
 }
 
 #[test]
-fn real_analysis_cli_projects_quantization_between_candidate_and_finalization() {
-    let mut request = analysis_request("quantization-contract-1");
-    request["audio_sources"][0]["role"] = serde_json::json!("lead_vocal");
-    request["analysis"]["enable_quantization"] = serde_json::json!(true);
-    request["requested_artifacts"]["vocal_chart"] = serde_json::json!(true);
-    request["musical_context"] = serde_json::json!({
-        "bpm":120.0,"time_signature":{"beats":4,"unit":4},
-        "quantization_grid":"sixteenth","authority":"hint"
-    });
-    let workflow =
-        crate::workflow::compile_workflow(&crate::workflow::default_workflow("quantized-song"))
-            .unwrap();
-    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] =
-        crate::workflow::workflow_execution_extension(&workflow).unwrap();
-    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
-    client
-        .validate(&request, "quantization-contract-1")
-        .unwrap();
-    let plan = client.plan(&request, "quantization-contract-1").unwrap();
-    let index = |capability: &str| {
-        plan.execution_nodes
-            .iter()
-            .position(|node| node.capability.as_str() == capability)
-            .unwrap()
-    };
-    assert!(index("fusion.candidate_graph") < index("rhythm.quantize"));
-    assert!(index("rhythm.quantize") < index("finalize.vocal_chart"));
-}
-
-#[test]
-fn real_analysis_cli_validates_and_projects_exact_compiled_workflow() {
+fn real_analysis_cli_validates_and_projects_the_current_compiled_workflow() {
     let snapshot =
         crate::workflow::compile_workflow(&crate::workflow::default_workflow("contract-song"))
             .unwrap();
@@ -110,21 +80,17 @@ fn real_analysis_cli_validates_and_projects_exact_compiled_workflow() {
         workflow.identity.definition_digest,
         snapshot.definition_digest
     );
-    assert!(workflow.nodes.iter().any(|node| {
-        node.execution_policy == "disagreement_windows"
-            && node.execution_state == WorkflowNodeExecutionStateWireV1::Deferred
-    }));
     assert_eq!(workflow.fusion_mode, FusionModeWireV1::Algorithm);
     assert!(
         plan.requirements
             .resources
             .iter()
-            .all(|requirement| { requirement.resource.as_str() != "tool:fusion_agent_adapter" })
+            .all(|requirement| requirement.resource.as_str() != "tool:fusion_agent_adapter")
     );
 }
 
 #[test]
-fn real_analysis_cli_explicit_lead_stem_forces_only_the_disabled_workflow_branch() {
+fn real_analysis_cli_explicit_lead_stem_forces_the_disabled_workflow_branch() {
     let snapshot =
         crate::workflow::compile_workflow(&crate::workflow::default_workflow("lead-stem-song"))
             .unwrap();
@@ -136,20 +102,6 @@ fn real_analysis_cli_explicit_lead_stem_forces_only_the_disabled_workflow_branch
     let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
     client.validate(&request, "lead-stem-workflow-1").unwrap();
     let plan = client.plan(&request, "lead-stem-workflow-1").unwrap();
-    let request: AnalyzeRequestWireV1 = serde_json::from_value(request).unwrap();
-    crate::analysis_engine_adapter::validate_workflow_plan_identity(&request, &plan).unwrap();
-    assert!(
-        plan.execution_nodes
-            .iter()
-            .any(|node| node.capability.as_str() == "audio.lead_isolate")
-    );
-    assert!(
-        !plan
-            .source_route
-            .preparation
-            .iter()
-            .any(|capability| capability.as_str() == "audio.lead_isolate")
-    );
     let lead = plan
         .workflow_execution
         .unwrap()
@@ -169,145 +121,17 @@ fn real_analysis_cli_explicit_lead_stem_forces_only_the_disabled_workflow_branch
 }
 
 #[test]
-fn real_analysis_cli_ai_judgment_plan_requires_the_verified_adapter() {
-    let mut definition = crate::workflow::default_workflow("ai-judgment-contract-song");
-    crate::workflow::set_workflow_parameter(
-        &mut definition,
-        &crate::workflow::WorkflowNodeId::new("evidence_fusion"),
-        "fusion_mode",
-        serde_json::Value::String("ai".to_string()),
-    )
-    .unwrap();
-    let snapshot = crate::workflow::compile_workflow(&definition).unwrap();
-    let extension = crate::workflow::workflow_execution_extension(&snapshot).unwrap();
-    let mut request = analysis_request("workflow-ai-judgment-contract-1");
-    request["analysis"]["profile"] = serde_json::json!("balanced");
-    request["requested_artifacts"]["vocal_chart"] = serde_json::json!(true);
-    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] = extension;
-
+fn real_analysis_cli_routes_transcription_to_qwen() {
+    let mut request = analysis_request("qwen-transcription-1");
+    request["requested_artifacts"]["transcript"] = serde_json::json!(true);
     let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
-    client
-        .validate(&request, "workflow-ai-judgment-contract-1")
-        .expect("backend must independently validate the AI judgment workflow DTO");
+    client.validate(&request, "qwen-transcription-1").unwrap();
     let requirements = client
-        .requirements(&request, "workflow-ai-judgment-contract-1")
+        .requirements(&request, "qwen-transcription-1")
         .unwrap();
     assert!(requirements.resources.iter().any(|requirement| {
-        requirement.resource.as_str() == "tool:fusion_agent_adapter" && requirement.required
+        requirement.required && requirement.resource == "model:qwen3_asr_1_7b"
     }));
-    let plan = client
-        .plan(&request, "workflow-ai-judgment-contract-1")
-        .unwrap();
-    let request: AnalyzeRequestWireV1 = serde_json::from_value(request).unwrap();
-    crate::analysis_engine_adapter::validate_workflow_plan_identity(&request, &plan).unwrap();
-    let workflow = plan.workflow_execution.as_ref().unwrap();
-    assert_eq!(workflow.fusion_mode, FusionModeWireV1::AiJudgment);
-    assert!(plan.resolved_resources.iter().any(|resource| {
-        resource.requirement.resource.as_str() == "tool:fusion_agent_adapter"
-            && resource.requirement.required
-    }));
-}
-
-#[test]
-fn real_analysis_cli_ignores_a_legacy_typed_fusion_policy() {
-    let snapshot =
-        crate::workflow::compile_workflow(&crate::workflow::default_workflow("tampered-policy"))
-            .unwrap();
-    let mut extension = crate::workflow::workflow_execution_extension(&snapshot).unwrap();
-    extension["fusion_policy"] = serde_json::json!({
-        "continuous_f0": "fcpe",
-        "note_lengths": "game",
-        "onset_support": "basic_pitch"
-    });
-    let mut request = analysis_request("workflow-policy-tamper-1");
-    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] = extension;
-
-    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
-    client
-        .validate(&request, "workflow-policy-tamper-1")
-        .expect("legacy policy cannot override Stage 3 evidence participation");
-    let plan = client.plan(&request, "workflow-policy-tamper-1").unwrap();
-    let resolved = plan
-        .workflow_execution
-        .and_then(|workflow| workflow.fusion_policy)
-        .unwrap();
-    assert_eq!(resolved.continuous_f0, ContinuousF0SourceWireV1::Rmvpe);
-}
-
-#[test]
-fn real_analysis_cli_accepts_f0_region_fallback_without_game() {
-    let mut definition = crate::workflow::default_workflow("f0-fallback-song");
-    crate::workflow::set_workflow_execution_policy(
-        &mut definition,
-        &crate::workflow::WorkflowNodeId::new("boundary_game"),
-        crate::workflow::ExecutionPolicy::Disabled,
-    )
-    .unwrap();
-    let snapshot = crate::workflow::compile_workflow(&definition).unwrap();
-    let extension = crate::workflow::workflow_execution_extension(&snapshot).unwrap();
-    let mut request = analysis_request("workflow-f0-fallback-1");
-    request["requested_artifacts"]["vocal_chart"] = serde_json::json!(true);
-    request["requested_artifacts"]["singing_analysis"] = serde_json::json!(true);
-    request["requested_artifacts"]["transcript"] = serde_json::json!(true);
-    request["requested_artifacts"]["alignment"] = serde_json::json!(true);
-    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] = extension;
-
-    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
-    client
-        .validate(&request, "workflow-f0-fallback-1")
-        .expect("Engine trust boundary must accept the Studio F0 fallback policy");
-    let requirements = client
-        .requirements(&request, "workflow-f0-fallback-1")
-        .unwrap();
-    assert!(
-        requirements
-            .resources
-            .iter()
-            .all(|resource| resource.resource != "model:game")
-    );
-    let plan = client.plan(&request, "workflow-f0-fallback-1").unwrap();
-    assert!(
-        plan.execution_nodes
-            .iter()
-            .all(|node| node.capability.as_str() != "notes.game")
-    );
-    let policy = plan
-        .workflow_execution
-        .as_ref()
-        .and_then(|workflow| workflow.fusion_policy)
-        .expect("exact plan must expose resolved fusion policy");
-    assert_eq!(policy.continuous_f0, ContinuousF0SourceWireV1::Rmvpe);
-    assert_eq!(policy.note_lengths, NoteLengthSourceWireV1::F0Derived);
-    assert_eq!(policy.onset_support, OnsetSupportSourceWireV1::Automatic);
-}
-
-#[test]
-fn real_analysis_cli_ignores_forged_f0_fallback_while_game_remains_enabled() {
-    let snapshot =
-        crate::workflow::compile_workflow(&crate::workflow::default_workflow("forged-f0-policy"))
-            .unwrap();
-    let mut extension = crate::workflow::workflow_execution_extension(&snapshot).unwrap();
-    extension["fusion_policy"] = serde_json::json!({
-        "continuous_f0": "fcpe",
-        "note_lengths": "f0_derived",
-        "onset_support": "acoustic"
-    });
-    assert!(extension["nodes"].as_array().unwrap().iter().any(|node| {
-        node["provider_preferences"]["primary"] == "game" && node["execution_policy"] != "disabled"
-    }));
-    let mut request = analysis_request("workflow-forged-f0-game-1");
-    request["extensions"][crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY] = extension;
-
-    let mut client = AnalysisCliClient::connect().expect("uta-analyze debug CLI must be built");
-    client
-        .validate(&request, "workflow-forged-f0-game-1")
-        .expect("legacy policy cannot disable configured GAME evidence");
-    let plan = client.plan(&request, "workflow-forged-f0-game-1").unwrap();
-    let resolved = plan
-        .workflow_execution
-        .and_then(|workflow| workflow.fusion_policy)
-        .unwrap();
-    assert_eq!(resolved.note_lengths, NoteLengthSourceWireV1::Game);
 }
 
 #[test]

@@ -21,13 +21,11 @@ pub const WORKFLOW_EXECUTION_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowContinuousF0SourceWireV1 {
     Rmvpe,
-    Fcpe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNoteLengthSourceWireV1 {
-    Game,
     F0Derived,
 }
 
@@ -36,7 +34,6 @@ pub enum WorkflowNoteLengthSourceWireV1 {
 pub enum WorkflowOnsetSupportSourceWireV1 {
     Automatic,
     Acoustic,
-    BasicPitch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -407,7 +404,7 @@ mod tests {
     use crate::workflow::{compile_workflow, default_workflow};
 
     #[test]
-    fn default_wire_preserves_truthful_baselines_and_conditional_experts() {
+    fn default_wire_preserves_truthful_implemented_routes() {
         let snapshot = compile_workflow(&default_workflow("song-a")).unwrap();
         let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
         let node = |id: &str| {
@@ -419,16 +416,8 @@ mod tests {
         assert_eq!(node("lead_isolate").execution_policy, "disabled");
         assert_eq!(node("vocal_cleanup_1").execution_policy, "disabled");
         assert_eq!(node("vocal_dereverb_1").execution_policy, "disabled");
-        assert_eq!(node("asr_qwen").execution_policy, "always");
-        assert_eq!(node("asr_firered").execution_policy, "on_disagreement");
-        assert_eq!(node("f0_fcpe").execution_policy, "disagreement_windows");
-        assert_eq!(
-            node("boundary_stars").capability_id,
-            "analysis.note_boundary"
-        );
-        assert_eq!(node("boundary_stars").execution_policy, "maximum_only");
-        assert_eq!(node("technique_stars").capability_id, "analysis.technique");
-        assert_eq!(node("technique_stars").execution_policy, "maximum_only");
+        assert_eq!(node("f0_rmvpe").execution_policy, "always");
+        assert_eq!(node("acoustic_dsp").execution_policy, "always");
         assert_eq!(wire.fusion_policy, None);
         assert!(wire.bindings.iter().any(|binding| {
             binding.execution_active
@@ -469,36 +458,30 @@ mod tests {
             .unwrap();
         assert_eq!(
             separation.provider_preferences.instrumental.as_deref(),
-            Some("bs_polarformer_public_instrumental")
+            Some("bs_roformer_leap_xe90_vocals")
         );
-        assert_eq!(separation.execution_invocations.len(), 2);
+        assert_eq!(separation.execution_invocations.len(), 1);
         assert_eq!(
             separation.execution_invocations[0].invocation_id,
-            "vocal_bgm_split.vocal"
+            "vocal_bgm_split"
         );
         assert_eq!(
             separation.execution_invocations[0].provider_id,
             "bs_roformer_leap_xe90_vocals"
         );
         assert_eq!(
-            separation.execution_invocations[1].invocation_id,
-            "vocal_bgm_split.instrumental"
+            separation.execution_invocations[0].capabilities,
+            ["audio.extract_vocals", "audio.extract_instrumental"]
         );
         assert_eq!(
-            separation.execution_invocations[1].provider_id,
-            "bs_polarformer_public_instrumental"
+            separation.execution_invocations[0].output_ports,
+            ["vocal", "instrumental"]
         );
     }
 
     #[test]
     fn wire_never_authors_a_typed_fusion_policy() {
-        let mut definition = default_workflow("song-a");
-        crate::workflow::set_workflow_execution_policy(
-            &mut definition,
-            &crate::workflow::WorkflowNodeId::new("boundary_game"),
-            crate::workflow::ExecutionPolicy::Disabled,
-        )
-        .unwrap();
+        let definition = default_workflow("song-a");
         let snapshot = compile_workflow(&definition).unwrap();
         let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
         assert_eq!(wire.fusion_policy, None);

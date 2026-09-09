@@ -44,70 +44,12 @@ impl StorePaths {
         let executable_directory = std::env::current_exe()
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
-        for (runtime_id, variable, executable_name) in [
-            (
-                "openvino_2026_3",
-                "UTA_STUDIO_OPENVINO_RUNTIME_PATH",
-                "uta-openvino-worker",
-            ),
-            (
-                "ggml_vulkan_v1",
-                "UTA_STUDIO_GGML_RUNTIME_PATH",
-                "uta-ggml-worker",
-            ),
-            (
-                "qwen_asr_runtime",
-                "UTA_STUDIO_QWEN_ASR_RUNTIME_PATH",
-                "uta-qwen-asr-worker",
-            ),
-            (
-                "qwen_align_runtime",
-                "UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH",
-                "uta-qwen-align-worker",
-            ),
-            (
-                "game_native_v1",
-                "UTA_STUDIO_GAME_RUNTIME_PATH",
-                "uta-game-worker",
-            ),
-            (
-                "jbm555_native_v1",
-                "UTA_STUDIO_JBM_RUNTIME_PATH",
-                "uta-jbm-worker",
-            ),
-            (
-                "fcpe_native_v1",
-                "UTA_STUDIO_FCPE_RUNTIME_PATH",
-                "uta-fcpe-worker",
-            ),
-            (
-                "basic_pitch_native_v1",
-                "UTA_STUDIO_BASIC_PITCH_RUNTIME_PATH",
-                "uta-basic-pitch-worker",
-            ),
-            (
-                "firered_native_v1",
-                "UTA_STUDIO_FIRERED_RUNTIME_PATH",
-                "uta-firered-worker",
-            ),
-            (
-                "stars_native_v1",
-                "UTA_STUDIO_STARS_RUNTIME_PATH",
-                "uta-stars-worker",
-            ),
-            (
-                "rosvot_native_v1",
-                "UTA_STUDIO_ROSVOT_RUNTIME_PATH",
-                "uta-rosvot-worker",
-            ),
-        ] {
-            let configured = std::env::var_os(variable).map(PathBuf::from);
-            let packaged = executable_directory
-                .as_deref()
-                .and_then(|directory| sibling_executable(directory, executable_name));
-            if let Some(path) = configured.or(packaged) {
-                paths = paths.with_runtime_override(runtime_id, path);
-            }
+        let configured = std::env::var_os("UTA_STUDIO_GGML_RUNTIME_PATH").map(PathBuf::from);
+        let packaged = executable_directory
+            .as_deref()
+            .and_then(|directory| sibling_executable(directory, "uta-ggml-worker"));
+        if let Some(path) = configured.or(packaged) {
+            paths = paths.with_runtime_override("ggml_vulkan", path);
         }
         if let Some(path) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH").map(PathBuf::from) {
             paths = paths.with_tool_override("ffmpeg", path);
@@ -166,21 +108,35 @@ impl StorePaths {
             "melband_roformer_harmony" => {
                 ("melband_roformer_karaoke_aufr33_viperx", "model-fp16.gguf")
             }
-            "melband_roformer_inst_v2"
-            | "melband_roformer_denoise_aufr33"
+            "bs_roformer_leap_xe90_instrumental" => (model_id, "bs_leap_xe_inst-F32.gguf"),
+            "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
             | "bs_polarformer_public_instrumental" => (model_id, "model-fp16.gguf"),
             "rmvpe" => (model_id, "rmvpe-f32.gguf"),
-            "game" => (model_id, "game-medium-f32.gguf"),
-            "jbm555_cectc_80" => ("jbm555", "jbm555-cectc80-f32.gguf"),
             "fcpe" => (model_id, "fcpe-f32.gguf"),
             "basic_pitch" => (model_id, "basic-pitch-f32.gguf"),
+            "game_1_0_3_small" => ("game", "game-small-f32.gguf"),
+            "game_1_0_3_medium" => ("game", "game-medium-f32.gguf"),
+            "game_1_0_3_large" => ("game", "game-large-f32.gguf"),
+            "jbm555_cectc_80" => ("jbm555", "jbm555-cectc80-f32.gguf"),
+            "stars" => (model_id, "stars-f32.gguf"),
+            "rosvot" => (model_id, "rosvot-f32.gguf"),
+            "firered_asr2_aed" => (model_id, "firered-f32.gguf"),
+            "qwen3_asr_1_7b" => (model_id, "Qwen3-ASR-1.7B-F16.gguf"),
+            "qwen3_forced_aligner_0_6b" => (model_id, "Qwen3-ForcedAligner-0.6B-F16.gguf"),
             _ => return None,
         };
         self.ggml_models_root
             .as_ref()
             .map(|root| root.join(directory).join(filename))
-            .filter(|path| path.is_file())
+            .filter(|path| {
+                path.is_file()
+                    && (model_id != "firered_asr2_aed"
+                        || path.parent().is_some_and(|directory| {
+                            directory.join("cmvn.ark").is_file()
+                                && directory.join("dict.txt").is_file()
+                        }))
+            })
     }
 
     pub fn with_runtime_override(
@@ -490,6 +446,46 @@ mod tests {
                 .ggml_model_path("rmvpe")
                 .as_deref(),
             Some(model.as_path())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn leap_instrumental_uses_its_semantic_f32_filename() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-leap-instrumental-path-test-{}",
+            std::process::id()
+        ));
+        let model = root.join("bs_roformer_leap_xe90_instrumental/bs_leap_xe_inst-F32.gguf");
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, b"fixture").unwrap();
+        assert_eq!(
+            StorePaths::default()
+                .with_ggml_models_root(&root)
+                .ggml_model_path("bs_roformer_leap_xe90_instrumental")
+                .as_deref(),
+            Some(model.as_path())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn firered_legacy_layout_requires_model_and_both_named_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-firered-artifact-set-test-{}",
+            std::process::id()
+        ));
+        let directory = root.join("firered_asr2_aed");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("firered-f32.gguf"), b"model").unwrap();
+        let paths = StorePaths::default().with_ggml_models_root(&root);
+        assert!(paths.ggml_model_path("firered_asr2_aed").is_none());
+        std::fs::write(directory.join("cmvn.ark"), b"cmvn").unwrap();
+        assert!(paths.ggml_model_path("firered_asr2_aed").is_none());
+        std::fs::write(directory.join("dict.txt"), b"tokens").unwrap();
+        assert_eq!(
+            paths.ggml_model_path("firered_asr2_aed").as_deref(),
+            Some(directory.join("firered-f32.gguf").as_path())
         );
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -523,7 +523,7 @@ pub fn run_fusion_agent(
     cancellation: &CancellationToken,
 ) -> EngineResult<FusionAgentDecisionV1> {
     let pool = SingingFusionEvidence {
-        schema_version: 2,
+        schema_version: 1,
         candidates: candidates.to_vec(),
         hard_boundaries: HardBoundarySetV1::default(),
     };
@@ -1021,7 +1021,7 @@ mod tests {
     fn agent_request_and_digest_include_exact_pool_hard_boundaries() {
         let candidates = vec![candidate("a", 0.0, 0.5), candidate("b", 0.5, 1.0)];
         let pool = SingingFusionEvidence {
-            schema_version: 2,
+            schema_version: 1,
             candidates: candidates.clone(),
             hard_boundaries: HardBoundarySetV1 {
                 boundaries: vec![HardBoundaryV1 {
@@ -1094,7 +1094,7 @@ mod tests {
         );
 
         let candidate_only_pool = SingingFusionEvidence {
-            schema_version: 2,
+            schema_version: 1,
             candidates,
             hard_boundaries: HardBoundarySetV1::default(),
         };

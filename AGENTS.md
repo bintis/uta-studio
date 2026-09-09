@@ -2,16 +2,31 @@
 
 These rules are mandatory repository-wide.
 
+## Agent execution (GPT-6)
+
+- Carry an authorized task through implementation, relevant verification, and handoff. Resolve routine choices from context; ask only when missing information materially changes the outcome or an existing permission boundary requires it. Continue independent work while awaiting an answer.
+- Reuse authorization already given in the conversation within its stated scope. Before requesting approval, complete the authorized preparation so the user can review a concrete result. Explain the exact action and rule that requires approval.
+- For substantial work, keep a short plan tied to observable outcomes and revise it when evidence changes. Handle small edits directly.
+- Preserve the objective, user corrections, authorization scope, completed work, and remaining blockers across context compaction. Resume from current files and recorded evidence rather than restarting completed work.
+- Delegate bounded, independent subtasks when parallel agents can materially improve speed or review quality. Give each agent clear scope and ownership; integrate and verify their results. Handle tightly coupled or small work locally.
+- Batch independent searches and reads; run dependent edits and checks in order. Prefer targeted source inspection over repeatedly loading broad repository context.
+- Inspect the working-tree state before editing and preserve existing user changes. A dirty tree is normal working context; build on relevant edits without reverting unrelated work.
+- Use the task index and current design links below to locate relevant code and evidence. Update existing durable records when task status or accepted conclusions change; keep transient progress in the conversation.
+- Match verification to affected behavior and risk, using the relevant test matrix in `docs/engineering-constraints.md`. After required checks pass, expand testing only for a new change, failure, or unresolved concern. For documentation-only edits, review the diff, links, and applicable repository checks without building the application.
+- Distinguish inspected code, executed tests, and measured runtime behavior in the handoff. Report unavailable checks and concrete blockers without treating unexecuted work as passing.
+- Communicate concisely in the user's language: state the result, material changes, verification, and remaining issues. During longer work, report meaningful findings and next steps.
+
 ## Scope and architecture
 
 - `tasks/remaining-models/STATE.md` is the durable model/task index; `docs/KEY_CONCLUSIONS.md` summarizes accepted conclusions. Do not recreate deleted historical logs or reopen completed work without a current source/test blocker.
-- Post-model cards 15–20, 20A, and follow-up 21D are `READY`; 17A is `SKIPPED_ALREADY_CLOSED`. Card 21 is `NEEDS_REVIEW` because the newly approved AI-judgment fusion design postdates audit revision 4, and follow-up 21E is `PENDING` until Runtime Manager tool ownership/provenance/privacy/UI convergence is implemented.
+- Read current card statuses, dependencies, and next actions from `tasks/remaining-models/STATE.md`; this instruction file does not duplicate its changing status snapshot.
 - `docs/design/README.md` and its current linked architecture documents are authoritative over earlier monolithic/refactor assumptions.
 - Studio communicates with packaged `uta-analyze` / `uta-runtime` machine protocols only. Never import `uta_analysis_engine::` or `uta_runtime_manager::` into `app-core/**` or `desktop/**`.
 - Reserve `docs/agent-tasks/FINAL_REPOSITORY_ACCEPTANCE.md`, whole-workspace checks, and Nix packaging for the later explicit release pass.
 
 ## Identity
 
+- New variable names must not contain digits. Protocol, schema, worker, component, and runtime identifiers must use stable unnumbered names; never rename an identifier to provide version-control behavior. Evolve behavior through the stable name and explicit capability or structure checks instead of numbered contracts.
 - Use **Uta! Studio** consistently in code, copy, paths, environment variables, styles, docs, package metadata, and protocols.
 - `icon.png` is the canonical logo; derive platform icons from it.
 - Before handoff, scan case-insensitively for disallowed project names outside Git metadata and generated dependency/build directories; the result must be empty.
@@ -59,3 +74,10 @@ These rules are mandatory repository-wide.
 - Verify editor audio with a real chart and continuous audition, a running/unmuted stream, and PipeWire quantum/xrun inspection. Do not judge playback during a high-parallelism build.
 
 See `docs/engineering-constraints.md` for rationale and the test matrix.
+
+## RoFormer change and operation records
+
+- Per the user's 2026-09-07 direction, commit each independent authorized code change separately. Before an implementation, build, check, or experiment, persist the operation and its corresponding commit; before executing changed code, commit that change.
+- Use `tools/record-operation.py` to save the complete command, cwd, commit and dirty status, declared inputs/outputs, stdin, boot ID and timestamps before launch. Keep Rust/native commands inside `bash dev.sh`. Record child execution intent and completion separately.
+- A missing completion record means the outcome is unknown, not that execution never started. Process success does not establish post-exit host stability. Never invent a historical commit or launch record for an earlier unrecorded step.
+- Keep unrelated user changes intact. Do not add a clean-tree gate, hash verification, frozen baseline or automatic retries to implement these records. See `docs/ROFORMER_OPERATION_RECORDING.md`.

@@ -44,10 +44,7 @@ pub fn run_doctor(manager: &RuntimeManager) -> DoctorReport {
         Ok(lock) => DiagnosticCheck {
             id: "runtime_lock".to_string(),
             severity: DiagnosticSeverity::Ok,
-            message: format!(
-                "runtime lock {} parsed ({})",
-                lock.document_version, lock.status
-            ),
+            message: format!("runtime lock parsed ({})", lock.status),
             path: None,
         },
         Err(error) => DiagnosticCheck {
@@ -128,25 +125,6 @@ pub fn run_doctor(manager: &RuntimeManager) -> DoctorReport {
             path: executable,
         });
     }
-
-    let openvino = manager
-        .catalog()
-        .runtime("openvino_2026_3")
-        .and_then(|runtime| crate::platform::executable_for_runtime(runtime, paths));
-    checks.push(DiagnosticCheck {
-        id: "openvino_gpu".to_string(),
-        severity: if openvino.is_some() && !gpu_devices.is_empty() {
-            DiagnosticSeverity::Ok
-        } else {
-            DiagnosticSeverity::Warning
-        },
-        message: if openvino.is_some() && !gpu_devices.is_empty() {
-            "OpenVINO worker and a GPU device are visible; smoke verifies execution".to_string()
-        } else {
-            "OpenVINO GPU prerequisites are incomplete".to_string()
-        },
-        path: openvino,
-    });
 
     checks.push(store_permission_check(paths.store_root.as_deref()));
     checks.push(free_disk_check(paths.store_root.as_deref()));

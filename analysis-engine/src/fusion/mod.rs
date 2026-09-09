@@ -234,7 +234,7 @@ mod tests {
             dependencies: Vec::new(),
         };
         let fused = fuse_transcripts(&[
-            hypothesis("qwen", "sing now"),
+            hypothesis("caller", "sing now"),
             hypothesis("challenger", "sing loud"),
         ])
         .unwrap();
@@ -250,7 +250,7 @@ mod tests {
             text: "sing".to_string(),
             range: range(1.0, 1.5),
             confidence: None,
-            expert_id: "qwen-align".to_string(),
+            expert_id: "caller-align".to_string(),
             correlation_group: None,
             dependencies: Vec::new(),
         }])

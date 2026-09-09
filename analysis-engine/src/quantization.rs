@@ -439,7 +439,7 @@ mod tests {
                     confidence: Some(0.9),
                 }],
                 confidence: Some(0.9),
-                source_experts: vec!["qwen".to_string()],
+                source_experts: vec!["caller".to_string()],
                 alternatives: Vec::new(),
             },
             words: vec![

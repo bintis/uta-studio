@@ -14,6 +14,7 @@ mapfile -t matches < <(
         --exclude-dir=target \
         --exclude-dir=node_modules \
         --exclude-dir=result \
+        --exclude-dir=test-artifacts \
         --exclude='*.zip' \
         || true
 )

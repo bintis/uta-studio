@@ -5,25 +5,25 @@
 
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
-
-use super::worker_tasks::{run_native_task, run_openvino_cleanup, typed_worker_output};
+use super::worker_tasks::{run_ggml_cleanup, typed_worker_output};
 use super::*;
+use crate::execution::{NativeTask, SupervisedWorker, WorkerExpectation};
 
 pub(super) struct DenoiseTask<'a> {
     pub(super) model_path: &'a Path,
     pub(super) executable: &'a Path,
     pub(super) runtime_recipe_digest: Option<&'a str>,
-    pub(super) backend: &'a str,
-    /// Resolved Settings device-class preference ("gpu" / "integrated_gpu"),
-    /// already filtered to `None` unless `backend == "ggml_vulkan"` by
-    /// `ggml_vulkan_device_class`. `None` keeps today's implicit device 0.
-    pub(super) device_class: Option<&'static str>,
+    pub(super) route: RoformerRoute,
     pub(super) ffmpeg: &'a Path,
     pub(super) input: &'a Path,
     pub(super) output_root: &'a Path,
     pub(super) source_duration: u64,
     pub(super) task_id: &'a str,
+}
+
+pub(super) struct DualSeparationOutput {
+    pub(super) vocals: SeparationOutput,
+    pub(super) instrumental: SeparationOutput,
 }
 
 pub(super) struct LeadIsolationOutput {
@@ -162,232 +162,16 @@ pub(super) fn publish_candidate_artifacts(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_advanced_note_challenger(
-    model: &uta_runtime_manager::ResolvedModel,
-    analysis_input: &Path,
-    output_root: &Path,
-    words: &[crate::fusion::CanonicalWordBoundary],
-    source_start: u64,
-    source_duration: u64,
-    include_technique: bool,
-    cancellation: &CancellationToken,
-) -> EngineResult<AdvancedNoteEvidenceV1> {
-    let model_id = model.model_id.as_str();
-    if !matches!(model_id, "stars" | "rosvot") || (include_technique && model_id != "stars") {
-        return Err(EngineError::new(
-            EngineErrorCode::InvalidContract,
-            "advanced-note route rejects baseline or technique substitution",
-        ));
-    }
-    let word_config = words
-        .iter()
-        .map(|word| {
-            serde_json::json!({
-                "id": word.word_id,
-                "text": word.text,
-                "start": word.range.start,
-                "duration": word.range.end - word.range.start
-            })
-        })
-        .collect::<Vec<_>>();
-    let timed_transcript_generation = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&serde_json::json!({
-                "schema": "uta.timed-transcript/1",
-                "source_start": source_start,
-                "source_duration": source_duration,
-                "words": &word_config
-            }))
-            .map_err(|error| {
-                EngineError::new(
-                    EngineErrorCode::InternalError,
-                    format!("could not fingerprint TimedTranscript: {error}"),
-                )
-            })?
-        )
-    );
-    let directory = create_task_dir(output_root, &format!("worker/{model_id}"))?;
-    let task_capability = if include_technique {
-        "technique.analyze".to_string()
-    } else {
-        format!("notes.{model_id}")
-    };
-    let outputs = if model.backend == uta_runtime_manager::NativeBackend::NativeDsp {
-        // Both native workers bundle their own copy of the RMVPE weights
-        // alongside their own GGUF (mirroring how the OpenVINO route
-        // bundles `shared/annotation-rmvpe-t256.*` inside the same STARS/
-        // ROSVOT model package rather than depending on the
-        // separately-catalogued standalone `rmvpe` model) -- so the path is
-        // derived from the resolved model's own directory, not a second
-        // model resolution.
-        let model_dir = if model.model_path.is_dir() {
-            model.model_path.clone()
-        } else {
-            model
-                .model_path
-                .parent()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| {
-                    EngineError::new(
-                        EngineErrorCode::RuntimeResolutionFailed,
-                        "resolved advanced-note model path has no parent directory",
-                    )
-                })?
-        };
-        let rmvpe_model_path = model_dir.join("rmvpe-f32.gguf");
-        if !rmvpe_model_path.is_file() {
-            return Err(EngineError::new(
-                EngineErrorCode::RuntimeResolutionFailed,
-                "native advanced-note route is missing its bundled RMVPE weights",
-            ));
-        }
-        let component = match model_id {
-            "stars" => "uta-stars-worker",
-            "rosvot" => "uta-rosvot-worker",
-            _ => unreachable!("model_id is checked against stars|rosvot above"),
-        };
-        let mut config = serde_json::json!({
-            "model_path": model.model_path,
-            "rmvpe_model_path": rmvpe_model_path,
-            "model_generation": model.generation,
-            "source_start": source_start,
-            "source_duration": source_duration,
-            "timed_transcript_generation": timed_transcript_generation,
-            "words": word_config,
-        });
-        if model_id == "stars" {
-            config["include_technique"] = serde_json::json!(include_technique);
-        }
-        run_native_task(
-            model,
-            component,
-            &format!("task-{model_id}"),
-            &task_capability,
-            analysis_input,
-            &directory,
-            config,
-            cancellation,
-        )?
-    } else {
-        let device = match model.backend {
-            uta_runtime_manager::NativeBackend::CpuReference => "cpu",
-            uta_runtime_manager::NativeBackend::OpenVino => {
-                match std::env::var("UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE") {
-                    Ok(value) if value.eq_ignore_ascii_case("cpu") => "cpu",
-                    Ok(value) if value.eq_ignore_ascii_case("gpu") => "gpu",
-                    Ok(_) => {
-                        return Err(EngineError::new(
-                            EngineErrorCode::InvalidContract,
-                            "UTA_STUDIO_ADVANCED_NOTE_DIAGNOSTIC_DEVICE must be cpu or gpu",
-                        ));
-                    }
-                    Err(std::env::VarError::NotPresent) => "gpu",
-                    Err(error) => {
-                        return Err(EngineError::new(
-                            EngineErrorCode::InvalidContract,
-                            format!("advanced-note diagnostic device is invalid: {error}"),
-                        ));
-                    }
-                }
-            }
-            _ => {
-                return Err(EngineError::new(
-                    EngineErrorCode::RuntimeResolutionFailed,
-                    "advanced-note route requires an OpenVINO IR backend",
-                ));
-            }
-        };
-        run_native_task(
-            model,
-            "uta-openvino-worker",
-            &format!("task-{model_id}"),
-            &task_capability,
-            analysis_input,
-            &directory,
-            serde_json::json!({
-                "model_path": model.model_path,
-                "model_generation": model.generation,
-                "source_start": source_start,
-                "source_duration": source_duration,
-                "timed_transcript_generation": timed_transcript_generation,
-                "words": word_config,
-                "device": device,
-                "include_technique": include_technique
-            }),
-            cancellation,
-        )?
-    };
-    let evidence = parse_advanced_note_evidence(
-        typed_worker_output(&outputs, "advanced_note_evidence")?,
-        model_id,
-    )?;
-    let transcript_generation_matches = evidence.dependencies.iter().any(|dependency| {
-        dependency.kind == DependencyKind::TimedTranscript
-            && dependency.generation == timed_transcript_generation
-    });
-    if evidence.model_generation != model.generation || !transcript_generation_matches {
-        return Err(EngineError::new(
-            EngineErrorCode::OutputValidationFailed,
-            "advanced-note evidence generation does not match its resolved model or TimedTranscript lease",
-        ));
-    }
-    Ok(evidence)
-}
-
 pub(super) fn optional_execution_supported(capability: &str) -> bool {
     matches!(
         capability,
         "pitch.secondary"
             | "pitch.secondary.rmvpe"
             | "pitch.secondary.fcpe"
-            | "notes.game"
-            | "notes.basic_pitch"
             | "speech.transcribe.challenger"
             | "audio.denoise"
             | "audio.dereverb"
-            | "notes.rosvot"
-            | "notes.stars"
-            | "technique.analyze"
     )
-}
-
-pub(super) fn execution_policy_for(
-    workflow: Option<&WorkflowExecutionV1>,
-    capability: &str,
-    default: WorkflowExecutionPolicyV1,
-) -> WorkflowExecutionPolicyV1 {
-    match workflow {
-        Some(workflow) => workflow
-            .policy_for_engine_capability(capability)
-            .unwrap_or(default),
-        None => default,
-    }
-}
-
-pub(super) fn execution_policy_for_model(
-    workflow: Option<&WorkflowExecutionV1>,
-    model_id: &str,
-    default: WorkflowExecutionPolicyV1,
-) -> WorkflowExecutionPolicyV1 {
-    match workflow {
-        Some(workflow) => workflow.policy_for_model(model_id).unwrap_or(default),
-        None => default,
-    }
-}
-
-pub(super) fn record_schedule_skip(
-    degraded_reasons: &mut Vec<String>,
-    capability: &str,
-    reason: ScheduleSkipReason,
-) {
-    if reason == ScheduleSkipReason::WindowedInputUnsupported {
-        degraded_reasons.push(format!(
-            "optional capability {capability} was not scheduled: {}",
-            reason.message()
-        ));
-    }
 }
 
 pub(super) fn workflow_cleanup_steps(
@@ -649,31 +433,125 @@ pub(super) fn resolved_model<'a>(
         })
 }
 
-pub(super) fn run_openvino_vocals(
+pub(super) fn run_ggml_dual_separation(
     task: &DenoiseTask<'_>,
+    model_id: &str,
     cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "bs_roformer_leap_xe90_vocals",
-            role: crate::contract::AudioRole::GuideVocals,
-            node_id: "audio.extract_vocals",
+) -> EngineResult<DualSeparationOutput> {
+    let directory = create_task_dir(task.output_root, "worker/vocal-instrumental")?;
+    let semantic_output = if model_id == "bs_roformer_leap_xe90_instrumental" {
+        "instrumental+vocal_residual"
+    } else {
+        "vocal+instrumental_residual"
+    };
+    let (component, config) =
+        roformer_dispatch_config(&task.route, task.model_path, semantic_output)?;
+    let outputs = SupervisedWorker::run(
+        task.executable,
+        &WorkerExpectation {
+            component: component.to_string(),
+            runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+        },
+        &NativeTask {
+            task_id: task.task_id.to_string(),
+            node_id: "audio.separate_vocal_bgm".to_string(),
             presentation_node_id: None,
-            semantic_output: "guide_vocals",
-            artifact: "guide_vocals",
-            worker_directory: "worker/guide-vocals",
-            destination: "stems/guide_vocals.flac",
+            model_id: model_id.to_string(),
+            input_artifacts: vec![task.input.to_path_buf()],
+            output_dir: directory.clone(),
+            config,
+            timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,
-    )
+        |_| {},
+    )?;
+    if outputs.len() != 2 {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "GGML separator must publish exactly vocal and instrumental FLAC outputs",
+        ));
+    }
+    let vocal = typed_worker_output(&outputs, "guide_vocals")?.to_path_buf();
+    let instrumental = typed_worker_output(&outputs, "instrumental")?.to_path_buf();
+    for (artifact, path) in [("guide_vocals", &vocal), ("instrumental", &instrumental)] {
+        if outputs
+            .iter()
+            .find(|output| output.artifact == artifact)
+            .is_none_or(|output| output.media_type != "audio/flac")
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::OutputValidationFailed,
+                format!("GGML separator output {artifact} is not lossless FLAC"),
+            ));
+        }
+        let facts = decode_audio(task.ffmpeg, artifact, path)?.facts;
+        if facts.sample_rate != 44_100
+            || facts.channels != 2
+            || facts.frame_count == 0
+            || facts.duration.abs_diff(task.source_duration) > 2_000
+        {
+            return Err(EngineError::new(
+                EngineErrorCode::TimelineInvalid,
+                format!("GGML separator output {artifact} did not preserve the source timeline"),
+            ));
+        }
+    }
+    let stems = task.output_root.join("stems");
+    std::fs::create_dir_all(&stems).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not create separation stem directory: {error}"),
+        )
+    })?;
+    let vocal_relative = PathBuf::from("stems/guide_vocals.flac");
+    let instrumental_relative = PathBuf::from("stems/instrumental.flac");
+    let vocal_destination = task.output_root.join(&vocal_relative);
+    let instrumental_destination = task.output_root.join(&instrumental_relative);
+    if vocal_destination.exists() || instrumental_destination.exists() {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "GGML separation stem target already exists",
+        ));
+    }
+    std::fs::rename(&vocal, &vocal_destination).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not atomically publish vocal stem: {error}"),
+        )
+    })?;
+    std::fs::rename(&instrumental, &instrumental_destination).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not atomically publish instrumental stem: {error}"),
+        )
+    })?;
+    std::fs::remove_dir_all(&directory).map_err(|error| {
+        EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            format!("could not clean GGML separation worker directory: {error}"),
+        )
+    })?;
+    Ok(DualSeparationOutput {
+        vocals: SeparationOutput {
+            role: crate::contract::AudioRole::GuideVocals,
+            artifact: artifact_ref_for_existing(task.output_root, &vocal_relative, "audio/flac")?,
+        },
+        instrumental: SeparationOutput {
+            role: crate::contract::AudioRole::Instrumental,
+            artifact: artifact_ref_for_existing(
+                task.output_root,
+                &instrumental_relative,
+                "audio/flac",
+            )?,
+        },
+    })
 }
 
-pub(super) fn run_openvino_denoise(
+pub(super) fn run_ggml_denoise(
     task: &DenoiseTask<'_>,
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
+    run_ggml_cleanup(
         task,
         &CleanupSpec {
             model_id: "melband_roformer_denoise_aufr33",
@@ -689,11 +567,11 @@ pub(super) fn run_openvino_denoise(
     )
 }
 
-pub(super) fn run_openvino_dereverb(
+pub(super) fn run_ggml_dereverb(
     task: &DenoiseTask<'_>,
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
+    run_ggml_cleanup(
         task,
         &CleanupSpec {
             model_id: "melband_roformer_dereverb_anvuew",
@@ -709,82 +587,21 @@ pub(super) fn run_openvino_dereverb(
     )
 }
 
-pub(super) fn run_openvino_instrumental(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "bs_polarformer_public_instrumental",
-            role: crate::contract::AudioRole::Instrumental,
-            node_id: "audio.extract_instrumental",
-            presentation_node_id: None,
-            semantic_output: "instrumental",
-            artifact: "instrumental",
-            worker_directory: "worker/instrumental",
-            destination: "stems/instrumental.flac",
-        },
-        cancellation,
-    )
-}
-
-/// MelBand-RoFormer Inst V2, retained as a selectable instrumental
-/// alternative to PolarFormer (Task 23 policy: PolarFormer is not chosen as
-/// instrumental truth solely by qualification).
-pub(super) fn run_openvino_inst_v2(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "melband_roformer_inst_v2",
-            role: crate::contract::AudioRole::Instrumental,
-            node_id: "audio.extract_instrumental",
-            presentation_node_id: None,
-            semantic_output: "instrumental",
-            artifact: "instrumental",
-            worker_directory: "worker/instrumental",
-            destination: "stems/instrumental.flac",
-        },
-        cancellation,
-    )
-}
-
-/// PolarFormer's raw trained stem is vocals (config.yaml's
-/// `training.target_instrument: vocals`); this publishes that stem directly
-/// as GuideVocals rather than the mix-minus-vocals residual that
-/// `run_openvino_instrumental` derives from the same underlying invocation.
-pub(super) fn run_openvino_polarformer_vocals(
-    task: &DenoiseTask<'_>,
-    cancellation: &CancellationToken,
-) -> EngineResult<SeparationOutput> {
-    run_openvino_cleanup(
-        task,
-        &CleanupSpec {
-            model_id: "bs_polarformer_public_instrumental",
-            role: crate::contract::AudioRole::GuideVocals,
-            node_id: "audio.extract_vocals",
-            presentation_node_id: None,
-            semantic_output: "guide_vocals",
-            artifact: "guide_vocals",
-            worker_directory: "worker/guide-vocals",
-            destination: "stems/guide_vocals.flac",
-        },
-        cancellation,
-    )
-}
-
-pub(super) fn run_openvino_harmony(
+pub(super) fn run_ggml_harmony(
     task: &DenoiseTask<'_>,
     cancellation: &CancellationToken,
 ) -> EngineResult<LeadIsolationOutput> {
     let directory = create_task_dir(task.output_root, "worker/lead-isolate")?;
+    let (component, mut config) = roformer_dispatch_config(
+        &task.route,
+        task.model_path,
+        "lead_vocal+backing_vocal_residual",
+    )?;
+    config["input_semantics"] = serde_json::json!("all_vocals");
     let outputs = SupervisedWorker::run(
         task.executable,
         &WorkerExpectation {
-            component: roformer_component(task.backend).to_string(),
+            component: component.to_string(),
             runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
         },
         &NativeTask {
@@ -794,18 +611,7 @@ pub(super) fn run_openvino_harmony(
             model_id: "melband_roformer_harmony".to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
-            config: {
-                let mut config = serde_json::json!({
-                    "model_path": task.model_path,
-                    "backend": task.backend,
-                    "input_semantics": "all_vocals",
-                    "semantic_output": "lead_vocal+backing_vocal_residual"
-                });
-                if let Some(device_class) = task.device_class {
-                    config["device_class"] = serde_json::Value::from(device_class);
-                }
-                config
-            },
+            config,
             timeout: Duration::from_secs(4 * 60 * 60),
         },
         cancellation,
@@ -890,7 +696,7 @@ pub(super) fn run_openvino_harmony(
     })
 }
 
-pub(super) fn run_openvino_workflow_cleanup(
+pub(super) fn run_ggml_workflow_cleanup(
     task: &DenoiseTask<'_>,
     analysis_node: &str,
     denoise: bool,
@@ -933,7 +739,7 @@ pub(super) fn run_openvino_workflow_cleanup(
             destination: &destination,
         }
     };
-    run_openvino_cleanup(task, &spec, cancellation)
+    run_ggml_cleanup(task, &spec, cancellation)
 }
 
 #[cfg(test)]
@@ -1025,8 +831,11 @@ mod tests {
     }
 
     #[test]
-    fn optional_game_execution_is_resolved_before_the_engine_reaches_its_node() {
-        assert!(optional_execution_supported("notes.game"));
+    fn only_wired_ggml_optional_execution_is_supported() {
+        assert!(optional_execution_supported("pitch.secondary.rmvpe"));
+        assert!(optional_execution_supported("speech.transcribe.challenger"));
+        assert!(optional_execution_supported("audio.denoise"));
+        assert!(!optional_execution_supported("notes.game"));
     }
 
     #[test]

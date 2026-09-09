@@ -270,8 +270,8 @@ pub struct ExecutionPolicyWireV1 {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, super::NativeBackendWireV1>,
     /// Global device-class preference, orthogonal to `requested_backend`.
-    /// Captured and validated by the Engine; Runtime Manager does not yet
-    /// enumerate multiple physical devices per backend.
+    /// Forwarded by the Engine to the GGML worker, which selects a matching
+    /// physical device or fails without CPU fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_device: Option<super::DeviceClassWireV1>,
     /// Model-specific device-class choices, same precedence as
@@ -394,13 +394,11 @@ pub enum WorkflowNodeExecutionStateWireV1 {
 #[serde(rename_all = "snake_case")]
 pub enum ContinuousF0SourceWireV1 {
     Rmvpe,
-    Fcpe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteLengthSourceWireV1 {
-    Game,
     F0Derived,
 }
 
@@ -409,7 +407,6 @@ pub enum NoteLengthSourceWireV1 {
 pub enum OnsetSupportSourceWireV1 {
     Automatic,
     Acoustic,
-    BasicPitch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

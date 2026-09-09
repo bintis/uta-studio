@@ -132,15 +132,8 @@ impl AnalyzeRequestV1 {
         if self.execution_policy.model_backend_overrides.len() > 128 {
             return Err(invalid("model backend override count exceeds the v1 limit"));
         }
-        for (model_id, backend) in &self.execution_policy.model_backend_overrides {
+        for model_id in self.execution_policy.model_backend_overrides.keys() {
             validate_identifier(model_id, "model backend override id")?;
-            if independently_pinned_vulkan_model(model_id)
-                && *backend != uta_runtime_manager::NativeBackend::Vulkan
-            {
-                return Err(invalid(format!(
-                    "{model_id} keeps its independently pinned Vulkan backend"
-                )));
-            }
         }
         if self.analysis.enable_quantization {
             if !self.requested_artifacts.vocal_chart {
@@ -611,13 +604,12 @@ pub struct ExecutionPolicyV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_backend: Option<uta_runtime_manager::NativeBackend>,
     /// Per-model backend choices take precedence and remain fail-closed.
-    /// Qwen and every RoFormer keep their independently pinned Vulkan runtime.
+    /// Each model keeps independently pinned artifact and runtime provenance.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, uta_runtime_manager::NativeBackend>,
     /// Explicit global device-class preference, orthogonal to
-    /// `requested_backend`. Captured and validated; Runtime Manager does not
-    /// yet enumerate multiple physical devices per backend, so this does not
-    /// change device selection until that resolver support exists.
+    /// `requested_backend`. The Engine passes this class to the GGML worker,
+    /// which selects a matching physical device or fails without CPU fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_device: Option<uta_runtime_manager::NativeDeviceClass>,
     /// Per-model device-class choices, same precedence rule as
@@ -629,7 +621,7 @@ pub struct ExecutionPolicyV1 {
 impl Default for ExecutionPolicyV1 {
     fn default() -> Self {
         Self {
-            runtime_policy: RuntimePolicy::Experimental,
+            runtime_policy: RuntimePolicy::Production,
             requested_backend: None,
             model_backend_overrides: BTreeMap::new(),
             requested_device: None,
@@ -643,9 +635,6 @@ impl ExecutionPolicyV1 {
         &self,
         model_id: &str,
     ) -> Option<uta_runtime_manager::NativeBackend> {
-        if independently_pinned_vulkan_model(model_id) {
-            return None;
-        }
         self.model_backend_overrides
             .get(model_id)
             .copied()
@@ -661,20 +650,6 @@ impl ExecutionPolicyV1 {
             .copied()
             .or(self.requested_device)
     }
-}
-
-fn independently_pinned_vulkan_model(model_id: &str) -> bool {
-    matches!(
-        model_id,
-        "qwen3_asr_1_7b"
-            | "qwen3_forced_aligner_0_6b"
-            | "bs_roformer_leap_xe90_vocals"
-            | "melband_roformer_inst_v2"
-            | "melband_roformer_harmony"
-            | "melband_roformer_denoise_aufr33"
-            | "melband_roformer_dereverb_anvuew"
-            | "rmvpe"
-    )
 }
 
 fn validate_identifier(value: &str, label: &str) -> EngineResult<()> {
@@ -754,50 +729,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn model_backend_override_precedes_global_and_pinned_vulkan_models_ignore_both() {
+    fn ggml_backend_selection_applies_globally_and_per_model() {
         let mut policy = ExecutionPolicyV1 {
-            requested_backend: Some(uta_runtime_manager::NativeBackend::OpenVino),
+            requested_backend: Some(uta_runtime_manager::NativeBackend::Ggml),
             ..ExecutionPolicyV1::default()
         };
+        assert_eq!(
+            policy.requested_backend_for("rmvpe"),
+            Some(uta_runtime_manager::NativeBackend::Ggml)
+        );
         policy.model_backend_overrides.insert(
-            "fcpe".to_string(),
-            uta_runtime_manager::NativeBackend::CpuReference,
+            "bs_roformer_leap_xe90_vocals".to_string(),
+            uta_runtime_manager::NativeBackend::Ggml,
         );
         assert_eq!(
-            policy.requested_backend_for("fcpe"),
-            Some(uta_runtime_manager::NativeBackend::CpuReference)
-        );
-        for model_id in [
-            "qwen3_asr_1_7b",
-            "bs_roformer_leap_xe90_vocals",
-            "melband_roformer_inst_v2",
-            "melband_roformer_denoise_aufr33",
-            "melband_roformer_dereverb_anvuew",
-            "rmvpe",
-        ] {
-            assert_eq!(policy.requested_backend_for(model_id), None);
-        }
-    }
-
-    #[test]
-    fn independently_pinned_openvino_override_is_rejected() {
-        let mut request = valid_request(AudioRole::OriginalMix);
-        request.execution_policy.model_backend_overrides.insert(
-            "melband_roformer_denoise_aufr33".to_string(),
-            uta_runtime_manager::NativeBackend::OpenVino,
-        );
-        assert_eq!(
-            request.validate().unwrap_err().code,
-            EngineErrorCode::InvalidContract
-        );
-        request.execution_policy.model_backend_overrides.clear();
-        request.execution_policy.model_backend_overrides.insert(
-            "rmvpe".to_string(),
-            uta_runtime_manager::NativeBackend::OpenVino,
-        );
-        assert_eq!(
-            request.validate().unwrap_err().code,
-            EngineErrorCode::InvalidContract
+            policy.requested_backend_for("bs_roformer_leap_xe90_vocals"),
+            Some(uta_runtime_manager::NativeBackend::Ggml)
         );
     }
 

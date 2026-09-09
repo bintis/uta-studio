@@ -10,53 +10,43 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::events::begin_node_for_presentation;
 
-const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(test))]
-const OPENVINO_PROCESS_QUIESCENCE: Duration = Duration::from_secs(10);
+const GGML_PROCESS_QUIESCENCE: Duration = Duration::from_secs(10);
 #[cfg(test)]
-const OPENVINO_PROCESS_QUIESCENCE: Duration = Duration::ZERO;
-const OPENVINO_GATE_POLL: Duration = Duration::from_millis(25);
+const GGML_PROCESS_QUIESCENCE: Duration = Duration::ZERO;
+const GGML_GATE_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
-struct OpenVinoGate {
+struct GgmlGate {
     last_exit: Option<Instant>,
 }
 
-struct OpenVinoLease {
-    gate: MutexGuard<'static, OpenVinoGate>,
+struct GgmlLease {
+    gate: MutexGuard<'static, GgmlGate>,
 }
 
-impl Drop for OpenVinoLease {
+impl Drop for GgmlLease {
     fn drop(&mut self) {
         self.gate.last_exit = Some(Instant::now());
     }
 }
 
-fn uses_non_qwen_accelerator_worker(expectation: &WorkerExpectation) -> bool {
-    matches!(
-        expectation.component.as_str(),
-        "uta-openvino-worker"
-            | "uta-ggml-worker"
-            | "uta-game-worker"
-            | "uta-jbm-worker"
-            | "uta-fcpe-worker"
-            | "uta-basic-pitch-worker"
-            | "uta-firered-worker"
-    )
+fn uses_ggml_worker(expectation: &WorkerExpectation) -> bool {
+    expectation.component == "uta-ggml-worker"
 }
 
-fn acquire_openvino_lease(
+fn acquire_ggml_lease(
     expectation: &WorkerExpectation,
     cancellation: &CancellationToken,
-) -> EngineResult<Option<OpenVinoLease>> {
-    if !uses_non_qwen_accelerator_worker(expectation) {
+) -> EngineResult<Option<GgmlLease>> {
+    if !uses_ggml_worker(expectation) {
         return Ok(None);
     }
-    static GATE: OnceLock<Mutex<OpenVinoGate>> = OnceLock::new();
-    let gate = GATE.get_or_init(|| Mutex::new(OpenVinoGate::default()));
+    static GATE: OnceLock<Mutex<GgmlGate>> = OnceLock::new();
+    let gate = GATE.get_or_init(|| Mutex::new(GgmlGate::default()));
     let mut guard = loop {
         if cancellation.is_cancelled() {
             return Err(EngineError::new(
@@ -67,11 +57,11 @@ fn acquire_openvino_lease(
         match gate.try_lock() {
             Ok(guard) => break guard,
             Err(TryLockError::Poisoned(error)) => break error.into_inner(),
-            Err(TryLockError::WouldBlock) => std::thread::sleep(OPENVINO_GATE_POLL),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(GGML_GATE_POLL),
         }
     };
     if let Some(last_exit) = guard.last_exit {
-        let deadline = last_exit + OPENVINO_PROCESS_QUIESCENCE;
+        let deadline = last_exit + GGML_PROCESS_QUIESCENCE;
         while Instant::now() < deadline {
             if cancellation.is_cancelled() {
                 return Err(EngineError::new(
@@ -80,15 +70,13 @@ fn acquire_openvino_lease(
                 ));
             }
             std::thread::sleep(
-                OPENVINO_GATE_POLL.min(deadline.saturating_duration_since(Instant::now())),
+                GGML_GATE_POLL.min(deadline.saturating_duration_since(Instant::now())),
             );
         }
     }
-    // The lease remains held through process shutdown, preventing another
-    // in-process analysis job from creating a concurrent non-Qwen OpenVINO or
-    // GGML/Vulkan context.
+    // Keep GGML Vulkan work serialized through process shutdown.
     guard.last_exit = None;
-    Ok(Some(OpenVinoLease { gate: guard }))
+    Ok(Some(GgmlLease { gate: guard }))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -170,16 +158,12 @@ impl SupervisedWorker {
                 format!("could not authorize worker output directory: {error}"),
             )
         })?;
-        let _openvino_lease = acquire_openvino_lease(expectation, cancellation)?;
+        let _ggml_lease = acquire_ggml_lease(expectation, cancellation)?;
         let mut process = WorkerProcess::spawn(executable)?;
         let deadline = Instant::now() + task.timeout;
         let ready = process.next_frame(deadline, cancellation)?;
         match ready {
-            WorkerFrame::Ready {
-                protocol,
-                component,
-                ..
-            } if protocol == PROTOCOL_VERSION && component == expectation.component => {}
+            WorkerFrame::Ready { component } if component == expectation.component => {}
             WorkerFrame::Ready { .. } => {
                 return Err(EngineError::new(
                     EngineErrorCode::WorkerProtocolMismatch,
@@ -195,7 +179,6 @@ impl SupervisedWorker {
         }
 
         process.send(&WorkerCommand::Run {
-            protocol: PROTOCOL_VERSION,
             task_id: &task.task_id,
             node_id: &task.node_id,
             model_id: &task.model_id,
@@ -291,9 +274,7 @@ impl SupervisedWorker {
                             "worker completed without a successful typed artifact",
                         ));
                     }
-                    process.send(&WorkerCommand::Quit {
-                        protocol: PROTOCOL_VERSION,
-                    })?;
+                    process.send(&WorkerCommand::Quit)?;
                     process.wait_for_exit(SHUTDOWN_TIMEOUT)?;
                     lifecycle.complete();
                     return Ok(outputs);
@@ -393,7 +374,6 @@ fn protocol_error(message: &str) -> EngineError {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorkerCommand<'a> {
     Run {
-        protocol: u32,
         task_id: &'a str,
         node_id: &'a str,
         model_id: &'a str,
@@ -401,19 +381,14 @@ enum WorkerCommand<'a> {
         output_dir: &'a Path,
         config: &'a serde_json::Value,
     },
-    Quit {
-        protocol: u32,
-    },
+    Quit,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorkerFrame {
     Ready {
-        protocol: u32,
         component: String,
-        #[serde(default, rename = "runtime_recipe_digest")]
-        _runtime_recipe_digest: Option<String>,
     },
     Progress {
         task_id: String,
@@ -690,15 +665,13 @@ mod tests {
     }
 
     #[test]
-    fn non_qwen_accelerator_workers_use_the_process_quiescence_gate() {
-        for component in ["uta-openvino-worker", "uta-ggml-worker", "uta-game-worker"] {
-            assert!(uses_non_qwen_accelerator_worker(&WorkerExpectation {
-                component: component.to_string(),
-                runtime_recipe_digest: None,
-            }));
-        }
-        assert!(!uses_non_qwen_accelerator_worker(&WorkerExpectation {
-            component: "uta-qwen-asr-worker".to_string(),
+    fn ggml_worker_uses_the_process_quiescence_gate() {
+        assert!(uses_ggml_worker(&WorkerExpectation {
+            component: "uta-ggml-worker".to_string(),
+            runtime_recipe_digest: None,
+        }));
+        assert!(!uses_ggml_worker(&WorkerExpectation {
+            component: "other-worker".to_string(),
             runtime_recipe_digest: None,
         }));
     }
@@ -764,7 +737,7 @@ mod tests {
         let executable = worker_script(
             &root,
             &format!(
-                "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-1\",\"fraction\":0.5,\"message\":\"running\",\"work_units_completed\":2,\"work_units_total\":4}}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-1\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-1\",\"status\":\"ok\"}}'\nread quit",
+                "printf '%s\\n' '{{\"type\":\"ready\",\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n' '{{\"type\":\"progress\",\"task_id\":\"task-1\",\"fraction\":0.5,\"message\":\"running\",\"work_units_completed\":2,\"work_units_total\":4}}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-1\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-1\",\"status\":\"ok\"}}'\nread quit",
                 output.display(),
                 output.display()
             ),
@@ -809,7 +782,7 @@ mod tests {
         let executable = worker_script(
             &root,
             &format!(
-                "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"other-recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-metadata\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-metadata\",\"status\":\"ok\"}}'\nread quit",
+                "printf '%s\\n' '{{\"type\":\"ready\",\"component\":\"fixture-worker\",\"runtime_recipe_digest\":\"other-recipe\"}}'\nread command\nprintf evidence > '{}'\nprintf '%s\\n%s\\n' '{{\"type\":\"output\",\"task_id\":\"task-metadata\",\"artifact\":\"pitch_evidence\",\"path\":\"{}\",\"media_type\":\"application/json\"}}' '{{\"type\":\"done\",\"task_id\":\"task-metadata\",\"status\":\"ok\"}}'\nread quit",
                 output.display(),
                 output.display()
             ),
@@ -856,7 +829,7 @@ mod tests {
             let executable = worker_script(
                 &root,
                 &format!(
-                    "printf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\"}}'\nread command\nprintf '%s\\n' '{frames}'\nsleep 1"
+                    "printf '%s\\n' '{{\"type\":\"ready\",\"component\":\"fixture-worker\"}}'\nread command\nprintf '%s\\n' '{frames}'\nsleep 1"
                 ),
             );
             let task = NativeTask {
@@ -897,7 +870,7 @@ mod tests {
         std::fs::write(&input, b"input").unwrap();
         let executable = worker_script(
             &root,
-            "printf '%s\\n' '{\"type\":\"ready\",\"protocol\":1,\"component\":\"fixture-worker\"}'\nread command\nsleep 30",
+            "printf '%s\\n' '{\"type\":\"ready\",\"component\":\"fixture-worker\"}'\nread command\nsleep 30",
         );
         let task = NativeTask {
             task_id: "task-cancel".to_string(),

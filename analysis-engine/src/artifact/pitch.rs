@@ -10,20 +10,6 @@ const MAX_FRAMES: usize = 4 * 60 * 60 * 100;
 #[cfg(test)]
 const RMVPE_SOURCE_SHA256: &str =
     "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd";
-#[cfg(test)]
-const RMVPE_MANIFEST_SHA256: &str =
-    "cdaf2775d8e17796daad2415bdaf7b3c915c4142fd92587c023e8d7b1b3d39fb";
-#[cfg(test)]
-const RMVPE_BIN_SHA256: &str = "d284ea1b4a0908072b6f0a5a1298cb510a65752db7a287e48da6eab1246be67b";
-#[cfg(test)]
-const FCPE_SOURCE_SHA256: &str = "b7e4f3871b10641869b7ac5a2d56ed94deb37552c0336d77e17ad6e66760adf0";
-#[cfg(test)]
-const FCPE_MANIFEST_SHA256: &str =
-    "bd356b9d018bbf55f7b87bbc8e4a712496b587a306249c941ff30beb5d548df6";
-#[cfg(test)]
-const FCPE_XML_SHA256: &str = "9941d7251ff0bdedc7875cabd40c30c2c60db00b36a617c9e957044d669bc237";
-#[cfg(test)]
-const FCPE_BIN_SHA256: &str = "6b6c62535552181c9efe305837af09a2a8987585ce368b2c522242b59676f824";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchEvidenceV03 {
@@ -45,12 +31,7 @@ struct RmvpeEvidence {
     schema_version: u32,
     model_id: String,
     source_model_sha256: String,
-    #[serde(default)]
-    model_manifest_sha256: Option<String>,
-    #[serde(default)]
-    model_bin_sha256: Option<String>,
-    #[serde(default)]
-    model_gguf_sha256: Option<String>,
+    model_gguf_sha256: String,
     runtime_manifest_sha256: String,
     backend: String,
     timeline_step_ms: u32,
@@ -82,23 +63,9 @@ pub fn parse_rmvpe_pitch(
             .map_err(|error| invalid(format!("could not read RMVPE evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
-    let backend_identity_valid = match raw.schema_version {
-        1 => {
-            matches!(raw.backend.as_str(), "openvino_gpu" | "openvino_cpu")
-                && raw.model_manifest_sha256.is_some()
-                && raw.model_bin_sha256.is_some()
-                && raw.model_gguf_sha256.is_none()
-        }
-        2 => {
-            raw.backend == "ggml_vulkan"
-                && raw.model_manifest_sha256.is_none()
-                && raw.model_bin_sha256.is_none()
-                && raw.model_gguf_sha256.is_some()
-        }
-        _ => false,
-    };
-    if !backend_identity_valid
+    if raw.schema_version != 1
         || raw.model_id != "rmvpe"
+        || !matches!(raw.backend.as_str(), "ggml_vulkan" | "ggml_cpu")
         || raw.timeline_step_ms == 0
         || raw.sample_rate == 0
         || raw.frames.is_empty()
@@ -135,22 +102,11 @@ pub fn parse_rmvpe_pitch(
         "source_sha256".to_string(),
         serde_json::json!(raw.source_model_sha256),
     );
-    if let Some(manifest) = raw.model_manifest_sha256 {
-        model.insert("manifest_sha256".to_string(), serde_json::json!(manifest));
-    }
-    let weights = raw
-        .model_gguf_sha256
-        .or(raw.model_bin_sha256)
-        .ok_or_else(|| invalid("RMVPE evidence omitted its backend-specific weight identity"))?;
-    model.insert("weights_sha256".to_string(), serde_json::json!(weights));
     model.insert(
-        "artifact_format".to_string(),
-        serde_json::json!(if raw.schema_version == 2 {
-            "gguf_f32"
-        } else {
-            "openvino_ir"
-        }),
+        "weights_sha256".to_string(),
+        serde_json::json!(raw.model_gguf_sha256),
     );
+    model.insert("artifact_format".to_string(), serde_json::json!("gguf_f32"));
     model.insert(
         "runtime_manifest_sha256".to_string(),
         serde_json::json!(raw.runtime_manifest_sha256),
@@ -187,13 +143,10 @@ pub fn parse_rmvpe_pitch(
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FcpeEvidenceV2 {
+struct FcpeEvidence {
     schema_version: u32,
     model_id: String,
-    source_model_sha256: String,
-    model_manifest_sha256: String,
-    model_xml_sha256: String,
-    model_bin_sha256: String,
+    model_gguf_size_bytes: u64,
     runtime_manifest_sha256: String,
     backend: String,
     timeline_step_ms: u32,
@@ -220,17 +173,15 @@ pub fn parse_fcpe_pitch(
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
         return Err(invalid("FCPE evidence size is invalid"));
     }
-    let raw: FcpeEvidenceV2 = serde_json::from_slice(
+    let raw: FcpeEvidence = serde_json::from_slice(
         &std::fs::read(path)
             .map_err(|error| invalid(format!("could not read FCPE evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("FCPE evidence JSON is invalid: {error}")))?;
-    if raw.schema_version != 3
+    if raw.schema_version != 1
         || raw.model_id != "fcpe"
-        || !matches!(
-            raw.backend.as_str(),
-            "openvino_gpu" | "openvino_cpu" | "ggml_native"
-        )
+        || raw.model_gguf_size_bytes != 43_309_760
+        || !matches!(raw.backend.as_str(), "ggml_vulkan" | "ggml_cpu")
         || raw.timeline_step_ms != 10
         || raw.sample_rate != 16_000
         || raw.window_samples != 32_000
@@ -266,21 +217,10 @@ pub fn parse_fcpe_pitch(
     let mut model = BTreeMap::new();
     model.insert("id".to_string(), serde_json::json!(raw.model_id));
     model.insert(
-        "source_sha256".to_string(),
-        serde_json::json!(raw.source_model_sha256),
+        "weights_bytes".to_string(),
+        serde_json::json!(raw.model_gguf_size_bytes),
     );
-    model.insert(
-        "manifest_sha256".to_string(),
-        serde_json::json!(raw.model_manifest_sha256),
-    );
-    model.insert(
-        "xml_sha256".to_string(),
-        serde_json::json!(raw.model_xml_sha256),
-    );
-    model.insert(
-        "weights_sha256".to_string(),
-        serde_json::json!(raw.model_bin_sha256),
-    );
+    model.insert("artifact_format".to_string(), serde_json::json!("gguf_f32"));
     model.insert(
         "runtime_manifest_sha256".to_string(),
         serde_json::json!(raw.runtime_manifest_sha256),
@@ -334,10 +274,9 @@ mod tests {
                 "schema_version": 1,
                 "model_id": "rmvpe",
                 "source_model_sha256": RMVPE_SOURCE_SHA256,
-                "model_manifest_sha256": RMVPE_MANIFEST_SHA256,
-                "model_bin_sha256": RMVPE_BIN_SHA256,
+                "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
                 "runtime_manifest_sha256": "d".repeat(64),
-                "backend": "openvino_gpu",
+                "backend": "ggml_cpu",
                 "timeline_step_ms": 10,
                 "sample_rate": 16000,
                 "frames": [
@@ -369,7 +308,7 @@ mod tests {
         std::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 1,
                 "model_id": "rmvpe",
                 "source_model_sha256": RMVPE_SOURCE_SHA256,
                 "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
@@ -397,19 +336,72 @@ mod tests {
     }
 
     #[test]
-    fn parses_fcpe_without_fabricating_confidence() {
+    fn rejects_retired_rmvpe_backend_identity() {
+        let path = std::env::temp_dir().join(format!("uta-rmvpe-wgpu-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "model_id": "rmvpe",
+                "source_model_sha256": RMVPE_SOURCE_SHA256,
+                "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
+                "runtime_manifest_sha256": "d".repeat(64),
+                "backend": "wgpu_vulkan",
+                "timeline_step_ms": 10,
+                "sample_rate": 16000,
+                "frames": [
+                    {"time":0.0,"hz":220.3,"confidence":0.88,"voiced":true},
+                    {"time":0.01,"hz":120.0,"confidence":0.01,"voiced":false}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(parse_rmvpe_pitch(&path, 0, 10_000).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_retired_fcpe_shape() {
         let path = std::env::temp_dir().join(format!("uta-fcpe-{}.json", std::process::id()));
         std::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 3,
+                "schema_version": 1,
                 "model_id": "fcpe",
-                "source_model_sha256": FCPE_SOURCE_SHA256,
-                "model_manifest_sha256": FCPE_MANIFEST_SHA256,
-                "model_xml_sha256": FCPE_XML_SHA256,
-                "model_bin_sha256": FCPE_BIN_SHA256,
+                "source_model_sha256": "a".repeat(64),
+                "model_manifest_sha256": "b".repeat(64),
+                "model_xml_sha256": "c".repeat(64),
+                "model_bin_sha256": "d".repeat(64),
                 "runtime_manifest_sha256": "e".repeat(64),
-                "backend": "openvino_gpu",
+                "backend": "wgpu_vulkan",
+                "timeline_step_ms": 10,
+                "sample_rate": 16000,
+                "window_samples": 32000,
+                "window_hop_samples": 32000,
+                "frames": [
+                    {"time":0.0,"hz":523.4293},
+                    {"time":0.01,"hz":null}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(parse_fcpe_pitch(&path, 0, 10_000).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_rust_ggml_fcpe_with_truthful_size_identity() {
+        let path = std::env::temp_dir().join(format!("uta-fcpe-ggml-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "model_id": "fcpe",
+                "model_gguf_size_bytes": 43_309_760,
+                "runtime_manifest_sha256": "e".repeat(64),
+                "backend": "ggml_cpu",
                 "timeline_step_ms": 10,
                 "sample_rate": 16000,
                 "window_samples": 32000,
@@ -423,8 +415,13 @@ mod tests {
         )
         .unwrap();
         let evidence = parse_fcpe_pitch(&path, 0, 10_000).unwrap();
-        assert_eq!(evidence.frequency_hz, [Some(523.4293_f32 as f64), None]);
         assert_eq!(evidence.confidence, [None, None]);
+        assert_eq!(evidence.model["backend"], "ggml_cpu");
+        assert_eq!(evidence.model["artifact_format"], "gguf_f32");
+        assert_eq!(evidence.model["weights_bytes"], 43_309_760);
+        assert!(!evidence.model.contains_key("source_sha256"));
+        assert!(!evidence.model.contains_key("weights_sha256"));
+        assert!(!evidence.model.contains_key("manifest_sha256"));
         std::fs::remove_file(path).unwrap();
     }
 }

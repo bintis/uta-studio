@@ -1,31 +1,54 @@
 {
-  "schema_version": 2,
-  "component": "uta-ggml-worker",
-  "worker_protocol": "native-ggml-vulkan-v1",
+  "component": "uta-ggml-runtime",
+  "rust_binding": "ggml-c-abi",
   "ggml": {
-    "repository": "ggerganov/ggml",
+    "repository": "ggml-org/ggml",
     "commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
-    "backend": "vulkan",
-    "device": 0,
-    "cpu_fallback": false
+    "shared_libraries_only": true,
+    "backends": [
+      "vulkan",
+      "cpu_experimental"
+    ],
+    "cpu_backend_built": true,
+    "cpu_fallback": false,
+    "local_patches": [
+      {
+        "file": "native-inference/ggml-worker/patches/0001-vulkan-keep-f32-matmul-in-f32.patch",
+        "sha256": "a261f78f446a891d609653e4c8ed8efc2b8c97fac4793a33dee8aa1afb4e2f2c",
+        "scope": "ggml Vulkan backend only",
+        "reason": "Upstream builds pipeline_matmul_f32 from the coopmat or fp16 shader family, whose FLOAT_TYPE is float16_t, so an F32 x F32 matmul runs on F16-rounded operands. Uta! Studio's audio graphs are F32 end to end and decode greedily, so that changes output. This rebuilds only that pipeline from the scalar _fp32 shaders. UTA_STUDIO_GGML_F32_MATMUL=promote restores the upstream pipeline for the callers that have measured the trade and accepted it; absent is exact."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0002-vulkan-flash-attention-on-8x16x16-coopmat.patch",
+        "sha256": "feec3e869669b101ae9e7b78ab74f9612c3f384a86ce6dfaa9feef6db0f8ed5b",
+        "scope": "ggml Vulkan backend only",
+        "reason": "GGML's cooperative-matrix flash attention is gated on a 16x16x16 shape, so on Intel Xe, which reports only 8x16x16 through VK_KHR_cooperative_matrix, attention always falls back to the scalar shader and never reaches the matrix engine. Attention is about two thirds of a separation pass. M is the MatBc tile constant in flash_attn_cm1.comp, so this adds an M=8 build of the same shader and selects it where that is the only shape the device has. It also makes that shader honour GGML_PREC_F32 in the PV accumulator, which upstream leaves in float16_t; without that the coopmat path moves a separated stem by about 1e-2 relative RMS."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0003-vulkan-coopmat-attention-stage-only-tail.patch",
+        "sha256": "cadbceca51a82e21162aeb305ade39bd035868e3ad207c6a88ada2b9ebc46ef5",
+        "scope": "ggml Vulkan cooperative-matrix attention backend only",
+        "reason": "An unaligned key count used to force shared-memory staging for every key block, with two workgroup barriers per QK contraction tile. Full F16/BF16 blocks may load directly; only the final partial block needs the existing guarded staging. Quantized decoding, partial head dimensions, attention context and accumulator precision are unchanged."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0004-vulkan-intel-h64-attention-subgroups.patch",
+        "sha256": "301d9769410296859469b60b3df51c1ff8bfa307a148f38ac810be2c87be018b",
+        "scope": "Intel Xe2 M8 cooperative attention with F16 K/V, H64 and F32 accumulation only",
+        "reason": "Use a supported 16-lane subgroup for the sixteen vec4 output columns rather than leave half a 32-lane row group inactive. Keep Br=16, Bc=32, four subgroups, full context and F32 accumulators. UTA_STUDIO_GGML_FA_SG32 restores the prior subgroup and UTA_STUDIO_GGML_FA_STAGE_KV explicitly tests full shared-memory staging for development comparisons."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0005-vulkan-coopmat-attention-query-tiles.patch",
+        "sha256": "677dc08f3be4af08b335f86d21c9c85602de138b8bde166ee93185a65e8301a2",
+        "scope": "Cooperative attention query tiling; larger tiles selected only for Intel Xe2 F16 H64 F32-accumulator attention",
+        "reason": "Reuse each K matrix load across multiple sixteen-query tiles instead of launching a new workgroup per sixteen queries. The default experiment uses 32 queries; UTA_STUDIO_GGML_FA_QUERY_ROWS accepts 16, 32 or 64 for recorded comparisons. Key context, masks, query layout and accumulator precision are unchanged."
+      }
+    ]
   },
-  "engines": {
-    "roformer": {
-      "source": "native-inference/roformer",
-      "batch_size": 1,
-      "serial_pipeline": true,
-      "vulkan_async": false
-    },
-    "rmvpe": {
-      "source": "native-inference/rmvpe",
-      "sample_rate": 16000,
-      "channels": 1,
-      "gru_chunk_frames": 128,
-      "batch_size": 1,
-      "serial_pipeline": true,
-      "vulkan_async": false
-    }
+  "model_execution": {
+    "owner": "native-inference/ggml-runtime",
+    "language": "rust",
+    "model_specific_native_libraries": false,
+    "model_specific_executables": false
   },
-  "model_format": "gguf",
   "downloads_on_launch": false
 }

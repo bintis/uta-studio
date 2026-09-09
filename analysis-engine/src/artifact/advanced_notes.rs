@@ -384,11 +384,11 @@ pub fn parse_advanced_note_evidence(
     };
     let capability_identity_valid = if expected_model == "stars" {
         let capabilities_valid = match evidence.capabilities.as_slice() {
-            [notes] => notes == capability,
+            [capability_id] => capability_id == capability || capability_id == "technique.analyze",
             [notes, technique] => notes == capability && technique == "technique.analyze",
             _ => false,
         };
-        evidence.schema_version == 2 && evidence.capability.is_none() && capabilities_valid
+        evidence.schema_version == 1 && evidence.capability.is_none() && capabilities_valid
     } else {
         evidence.schema_version == 1
             && evidence.capability.as_deref() == Some(capability)
@@ -397,10 +397,7 @@ pub fn parse_advanced_note_evidence(
     if !capability_identity_valid
         || evidence.model_id != expected_model
         || evidence.upstream_commit != commit
-        || !matches!(
-            evidence.backend.as_str(),
-            "openvino_gpu" | "openvino_cpu" | "openvino_gpu_cpu_staged" | "ggml_native"
-        )
+        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
         || evidence.word_boundary_source != "timed_transcript"
         || evidence.frame_step_num != 128
@@ -662,12 +659,12 @@ mod tests {
                 .push(serde_json::json!({"kind":"chinese_g2p","generation":G2P_ASSET_SHA256}));
         }
         serde_json::json!({
-            "schema_version":if model == "stars" { 2 } else { 1 },"model_id":model,
+            "schema_version":1,"model_id":model,
             "capability":if model == "stars" { None::<String> } else { Some(capability.to_string()) },
             "capabilities":if model == "stars" { vec![capability] } else { Vec::<&str>::new() },
             "upstream_commit":commit,"checkpoint_sha256":checkpoint,"config_sha256":config,
             "model_generation":"b".repeat(64),"runtime_manifest_sha256":"a".repeat(64),
-            "backend":"openvino_gpu","shared_frontend_profile":FRONTEND_PROFILE,
+            "backend":"ggml_vulkan","shared_frontend_profile":FRONTEND_PROFILE,
             "shared_frontend_generation":"c".repeat(64),
             "annotation_rmvpe_sha256":ANNOTATION_RMVPE,
             "word_boundary_source":"timed_transcript","g2p_profile":g2p,
@@ -714,11 +711,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_stars_backend_is_explicitly_accepted() {
+    fn retired_stars_backend_is_rejected() {
         let mut value = fixture("stars");
         value["backend"] = serde_json::json!("openvino_gpu_cpu_staged");
         let path = write(&value);
-        assert!(parse_advanced_note_evidence(&path, "stars").is_ok());
+        assert!(parse_advanced_note_evidence(&path, "stars").is_err());
         std::fs::remove_file(path).unwrap();
     }
 

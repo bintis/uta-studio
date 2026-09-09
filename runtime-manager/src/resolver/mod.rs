@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{
-    AcquisitionSpec, BackendCapability, LicenseInfo, ModelCatalogEntry, NativeBackend,
-    ResourceCatalog, SourceIdentity,
+    AcquisitionSpec, BackendCapability, LicenseInfo, ModelArtifactSpec, ModelCatalogEntry,
+    NativeBackend, ResourceCatalog, SourceIdentity,
 };
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::external_tool::{
@@ -26,13 +27,12 @@ use crate::state::{
 };
 use crate::store::{CurrentPointer, StorePaths};
 
-const LEGACY_RMVPE_IR_RELATIVE_DIR: &str = "pitch/rmvpe/openvino-ir-2026.3.0-bucketed";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedModel {
     pub model_id: String,
     pub generation: String,
     pub model_path: PathBuf,
+    pub model_artifacts: BTreeMap<String, PathBuf>,
     pub runtime_id: String,
     pub runtime_generation: String,
     pub runtime_content_digest: String,
@@ -69,6 +69,8 @@ pub struct ResourceMetadata {
     pub dependencies: Vec<ResourceRef>,
     #[serde(default)]
     pub backends: Vec<BackendCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_artifacts: Vec<ModelArtifactSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +224,7 @@ impl RuntimeManager {
                     acquisition: model.acquisition.clone(),
                     dependencies: model.dependencies.clone(),
                     backends: model.backends.clone(),
+                    runtime_artifacts: model.runtime_artifacts.clone(),
                     source: Some(model.source.clone()),
                     license: Some(model.license.clone()),
                     estimated_download_bytes: model.estimated_download_bytes,
@@ -242,6 +245,7 @@ impl RuntimeManager {
                     acquisition: runtime.acquisition.clone(),
                     dependencies: Vec::new(),
                     backends: runtime.backends.clone(),
+                    runtime_artifacts: Vec::new(),
                     source: None,
                     license: None,
                     estimated_download_bytes: None,
@@ -263,6 +267,7 @@ impl RuntimeManager {
                     acquisition: tool.acquisition.clone(),
                     dependencies: Vec::new(),
                     backends: Vec::new(),
+                    runtime_artifacts: Vec::new(),
                     source: None,
                     license: None,
                     estimated_download_bytes: None,
@@ -284,6 +289,7 @@ impl RuntimeManager {
                     acquisition: Vec::new(),
                     dependencies: bundle.dependencies.clone(),
                     backends: Vec::new(),
+                    runtime_artifacts: Vec::new(),
                     source: None,
                     license: None,
                     estimated_download_bytes: None,
@@ -471,67 +477,67 @@ impl RuntimeManager {
         let selected_backend = status
             .selected_backend
             .ok_or_else(|| RuntimeManagerError::no_validated_backend(&resource))?;
-        let external_ggml = selected_backend == NativeBackend::Vulkan
+        let external_ggml = selected_backend == NativeBackend::Ggml
             && uses_legacy_ggml_layout(model_id)
             && status.origin == ResourceOrigin::Legacy
             && self.paths.ggml_model_path(model_id).is_some();
-        let (model_root, model_path, generation, model_content_digest, model_recipe_digest) =
-            if external_ggml {
-                let path = self
-                    .paths
-                    .ggml_model_path(model_id)
-                    .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
-                let content_identity = ggml_model_identity(model_id)
-                    .ok_or_else(|| RuntimeManagerError::no_validated_backend(&resource))?
-                    .0;
-                (
-                    None,
-                    path,
-                    content_identity.to_string(),
-                    content_identity.to_string(),
-                    model.recipe_digest.clone(),
-                )
+        let (
+            model_root,
+            model_path,
+            model_artifacts,
+            generation,
+            model_content_digest,
+            model_recipe_digest,
+        ) = if external_ggml {
+            let path = self
+                .paths
+                .ggml_model_path(model_id)
+                .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
+            let root = path
+                .parent()
+                .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?;
+            let artifacts = resolve_artifact_set(model, root, &resource)?;
+            let model_path = artifacts
+                .get("model")
+                .cloned()
+                .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?;
+            let content_identity = ggml_model_identity(model_id)
+                .ok_or_else(|| RuntimeManagerError::no_validated_backend(&resource))?
+                .0;
+            (
+                None,
+                model_path,
+                artifacts,
+                content_identity.to_string(),
+                content_identity.to_string(),
+                model.recipe_digest.clone(),
+            )
+        } else {
+            let root = self
+                .model_generation_path(model_id, status.generation.as_deref())
+                .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
+            let artifacts = resolve_artifact_set(model, &root, &resource)?;
+            let model_path = artifacts
+                .get("model")
+                .cloned()
+                .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?;
+            let generation = status.generation.unwrap_or_else(|| "legacy".to_string());
+            let recipe = if is_generation_id(&generation) {
+                read_install_manifest(&root)
+                    .and_then(|manifest| manifest.model_recipe_digest)
+                    .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?
             } else {
-                let root = self
-                    .model_generation_path(model_id, status.generation.as_deref())
-                    .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
-                let path = if selected_backend == NativeBackend::Vulkan {
-                    model
-                        .source
-                        .converted_artifact
-                        .as_ref()
-                        .map(|artifact| root.join(&artifact.manifest_filename))
-                        .filter(|path| path.is_file())
-                        .or_else(|| {
-                            model
-                                .source
-                                .filename
-                                .as_deref()
-                                .map(|filename| root.join(filename))
-                                .filter(|path| path.is_file())
-                        })
-                        .unwrap_or_else(|| root.clone())
-                } else if model.source.converted_artifact.is_some() {
-                    root.clone()
-                } else {
-                    model
-                        .source
-                        .filename
-                        .as_deref()
-                        .map(|filename| root.join(filename))
-                        .filter(|path| path.is_file())
-                        .unwrap_or_else(|| root.clone())
-                };
-                let generation = status.generation.unwrap_or_else(|| "legacy".to_string());
-                let recipe = if is_generation_id(&generation) {
-                    read_install_manifest(&root)
-                        .and_then(|manifest| manifest.model_recipe_digest)
-                        .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?
-                } else {
-                    model.recipe_digest.clone()
-                };
-                (Some(root), path, generation.clone(), generation, recipe)
+                model.recipe_digest.clone()
             };
+            (
+                Some(root),
+                model_path,
+                artifacts,
+                generation.clone(),
+                generation,
+                recipe,
+            )
+        };
         let runtime_status = self.verified_status(&runtime_ref, policy)?;
         let managed_runtime_generation = runtime_status.generation;
         let runtime_generation = managed_runtime_generation
@@ -563,6 +569,7 @@ impl RuntimeManager {
             model_id: model_id.to_string(),
             generation: generation.clone(),
             model_path,
+            model_artifacts,
             runtime_id: runtime_ref.id,
             runtime_generation,
             runtime_content_digest,
@@ -613,7 +620,7 @@ impl RuntimeManager {
                     self.managed_model_identity(model, generation) == ManagedModelIdentity::Current
                 });
         let external_ggml = selected.as_ref().is_some_and(|capability| {
-            capability.backend == NativeBackend::Vulkan
+            capability.backend == NativeBackend::Ggml
                 && uses_legacy_ggml_layout(resource.id.as_str())
                 && self.paths.ggml_model_path(&resource.id).is_some()
                 && !managed_current
@@ -634,7 +641,6 @@ impl RuntimeManager {
         };
         let install_state = match managed_identity {
             ManagedModelIdentity::Current => install.state,
-            ManagedModelIdentity::RecipeMismatch => InstallState::Legacy,
             ManagedModelIdentity::Corrupt => InstallState::Corrupt,
         };
         let mut reasons = Vec::new();
@@ -664,6 +670,17 @@ impl RuntimeManager {
         if !dependency_runtime_runnable {
             reasons.push(ReadinessReason::RuntimeMissing);
         }
+        let dependent_models = model
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.kind == ResourceKind::Model)
+            .map(|dependency| self.status(dependency, policy))
+            .collect::<RuntimeManagerResult<Vec<_>>>()?;
+        let dependent_models_runnable = dependent_models.iter().all(|status| status.runnable);
+        let dependent_models_ready = dependent_models.iter().all(|status| status.usable);
+        if !dependent_models_runnable {
+            reasons.push(ReadinessReason::DependencyMissing);
+        }
         let worker_supported = runtime_resource
             .as_ref()
             .and_then(|runtime| self.catalog.runtime(&runtime.id))
@@ -684,20 +701,21 @@ impl RuntimeManager {
         let testing_policy = policy == RuntimePolicy::Experimental;
         let locally_present = install_state.locally_present();
         // Exact external GGUF files are intentionally unmanaged user data.
-        // Fast status checks only their immutable expected size; execution
-        // resolution hashes all bytes before creating the Vulkan context.
+        // Fast status checks use the expected byte size and semantic route;
+        // content digests remain provenance metadata rather than hash gates.
         let integrity_permitted = integrity_verified
             || (install_state == InstallState::Legacy && (testing_policy || external_ggml));
         let runnable = locally_present
             && integrity_permitted
             && backend_route_permitted
             && dependency_runtime_runnable
+            && dependent_models_runnable
             && executable_ready
             && worker_supported;
         let dependencies_ready = if testing_policy {
-            dependency_runtime_runnable
+            dependency_runtime_runnable && dependent_models_runnable
         } else {
-            dependency_runtime_ready
+            dependency_runtime_ready && dependent_models_ready
         };
         let usable = runnable && selected.is_some() && dependencies_ready;
         Ok(ResourceStatus {
@@ -978,25 +996,23 @@ impl RuntimeManager {
         let Some(manifest) = read_install_manifest(&directory) else {
             return ManagedModelIdentity::Corrupt;
         };
-        let installed_artifact_matches =
-            if let Some(converted) = model.source.converted_artifact.as_ref() {
+        let installed_artifact_matches = !model.runtime_artifacts.is_empty()
+            && model.runtime_artifacts.iter().all(|artifact| {
                 manifest.files.iter().any(|file| {
-                    file.path.as_path() == std::path::Path::new(&converted.manifest_filename)
+                    runtime_artifact_filename_matches(
+                        model.id.as_str(),
+                        &artifact.filename,
+                        &file.path,
+                    )
                 })
-            } else if let Some(filename) = model.source.filename.as_deref() {
-                manifest
-                    .files
-                    .iter()
-                    .any(|file| file.path.as_path() == std::path::Path::new(filename))
-            } else {
-                !manifest.files.is_empty()
-            };
+            });
         if !installed_artifact_matches {
             return ManagedModelIdentity::Corrupt;
         }
-        if manifest.catalog_version != self.catalog.catalog_version {
-            return ManagedModelIdentity::RecipeMismatch;
-        }
+        // Catalog versions describe the catalog snapshot that published a
+        // generation; they are provenance, not an execution gate. A catalog
+        // update must not invalidate an otherwise structurally compatible
+        // immutable GGUF generation.
         ManagedModelIdentity::Current
     }
 
@@ -1005,10 +1021,6 @@ impl RuntimeManager {
         model: &ModelCatalogEntry,
         backend: NativeBackend,
     ) -> Option<ResourceRef> {
-        let runtime_backend = match backend {
-            NativeBackend::CpuReference => NativeBackend::OpenVino,
-            other => other,
-        };
         model.dependencies.iter().find_map(|dependency| {
             let runtime = self.catalog.runtime(&dependency.id)?;
             (dependency.kind == ResourceKind::Runtime
@@ -1016,23 +1028,15 @@ impl RuntimeManager {
                 && runtime
                     .backends
                     .iter()
-                    .any(|capability| capability.backend == runtime_backend))
+                    .any(|capability| capability.backend == backend))
             .then(|| dependency.clone())
         })
     }
 
     fn ggml_model_install_state(&self, model_id: &str) -> InstallProbe {
-        let Some(path) = self.paths.ggml_model_path(model_id) else {
+        let Some(_path) = self.paths.ggml_model_path(model_id) else {
             return InstallProbe::absent();
         };
-        let expected_size = ggml_model_identity(model_id).map(|(_, size)| size);
-        if path.metadata().ok().map(|metadata| metadata.len()) != expected_size {
-            return InstallProbe {
-                state: InstallState::Corrupt,
-                generation: None,
-                integrity_verified: false,
-            };
-        }
         InstallProbe {
             state: InstallState::Legacy,
             generation: Some("legacy".to_string()),
@@ -1060,28 +1064,13 @@ impl RuntimeManager {
             return false;
         };
         match model_id {
-            "melband_roformer_inst_v2"
-            | "melband_roformer_harmony"
+            "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew" => root
                 .join("audio-processing")
                 .join(model_id)
                 .join("install-manifest.json")
                 .is_file(),
-            "firered_asr2_aed" => root
-                .join("firered-asr2-aed/openvino-ir-2026.3.0-smoke/manifest.json")
-                .is_file(),
-            "qwen3_asr_1_7b" => root.join("qwen-asr/Qwen3-ASR-1.7B-Q4_K_M.gguf").is_file(),
-            "qwen3_forced_aligner_0_6b" => root.join("qwen-align/install-manifest.json").is_file(),
-            "rmvpe" => legacy_rmvpe_present(root),
-            "fcpe" => root
-                .join("pitch/fcpe/openvino-ir-2026.3.0-smoke/manifest.json")
-                .is_file(),
-            "game" => root.join("boundary/game/install-manifest.json").is_file(),
-            "basic_pitch" => root
-                .join("boundary/basic-pitch/openvino-ir-2026.3.0-smoke/manifest.json")
-                .is_file(),
-            "stars" => root.join("technique/stars/install-manifest.json").is_file(),
             _ => false,
         }
     }
@@ -1180,7 +1169,6 @@ impl RuntimeManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedModelIdentity {
     Current,
-    RecipeMismatch,
     Corrupt,
 }
 
@@ -1225,11 +1213,7 @@ fn select_backend(
             .backends
             .iter()
             .find(|capability| capability.backend == requested)
-            .filter(|capability| {
-                policy.allows(capability.validation)
-                    && (requested != NativeBackend::CpuReference
-                        || policy == RuntimePolicy::Experimental)
-            });
+            .filter(|capability| policy.allows(capability.validation));
     }
     select_capability(&model.backends, model.pinned_backend, policy)
 }
@@ -1239,32 +1223,17 @@ fn select_capability(
     pinned: Option<NativeBackend>,
     policy: RuntimePolicy,
 ) -> Option<&BackendCapability> {
-    let supported = |capability: &&BackendCapability| {
-        policy.allows(capability.validation)
-            && (capability.backend != NativeBackend::CpuReference
-                || policy != RuntimePolicy::Production)
-    };
+    let supported = |capability: &&BackendCapability| policy.allows(capability.validation);
     if let Some(pinned) = pinned {
         return capabilities
             .iter()
             .find(|capability| capability.backend == pinned)
             .filter(supported);
     }
-    for backend in [
-        NativeBackend::OpenVino,
-        NativeBackend::Vulkan,
-        NativeBackend::NativeDsp,
-        NativeBackend::CpuReference,
-    ] {
-        if let Some(capability) = capabilities
-            .iter()
-            .find(|capability| capability.backend == backend)
-            .filter(supported)
-        {
-            return Some(capability);
-        }
-    }
-    None
+    capabilities
+        .iter()
+        .find(|capability| capability.backend == NativeBackend::Ggml)
+        .filter(supported)
 }
 
 fn strongest_validation(capabilities: &[BackendCapability]) -> ValidationState {
@@ -1323,16 +1292,93 @@ fn error_for_unusable(status: &ResourceStatus) -> RuntimeManagerError {
     RuntimeManagerError::resource_missing(&status.resource)
 }
 
+fn resolve_artifact_set(
+    model: &ModelCatalogEntry,
+    root: &std::path::Path,
+    resource: &ResourceRef,
+) -> RuntimeManagerResult<BTreeMap<String, PathBuf>> {
+    if model.runtime_artifacts.is_empty() {
+        return Err(RuntimeManagerError::invalid_catalog(format!(
+            "{resource} has no named runtime artifact set"
+        ))
+        .with_resource(resource));
+    }
+    let mut resolved = BTreeMap::new();
+    for artifact in &model.runtime_artifacts {
+        if artifact.name.trim().is_empty()
+            || artifact.filename.trim().is_empty()
+            || artifact.filename.contains(['/', '\\', ':'])
+            || resolved.contains_key(&artifact.name)
+        {
+            return Err(RuntimeManagerError::invalid_catalog(format!(
+                "{resource} has an invalid named runtime artifact set"
+            ))
+            .with_resource(resource));
+        }
+        let path = runtime_artifact_path(root, model.id.as_str(), &artifact.filename)
+            .ok_or_else(|| RuntimeManagerError::resource_missing(resource))?;
+        resolved.insert(artifact.name.clone(), path);
+    }
+    if !resolved.contains_key("model") {
+        return Err(RuntimeManagerError::invalid_catalog(format!(
+            "{resource} has no named model artifact"
+        ))
+        .with_resource(resource));
+    }
+    Ok(resolved)
+}
+
+fn runtime_artifact_filename_matches(
+    model_id: &str,
+    expected: &str,
+    installed: &std::path::Path,
+) -> bool {
+    installed == std::path::Path::new(expected)
+        || runtime_artifact_alias(model_id, expected)
+            .is_some_and(|alias| installed == std::path::Path::new(alias))
+}
+
+fn runtime_artifact_path(
+    root: &std::path::Path,
+    model_id: &str,
+    expected: &str,
+) -> Option<PathBuf> {
+    [Some(expected), runtime_artifact_alias(model_id, expected)]
+        .into_iter()
+        .flatten()
+        .map(|filename| root.join(filename))
+        .find(|path| path.is_file())
+}
+
+fn runtime_artifact_alias(model_id: &str, expected: &str) -> Option<&'static str> {
+    match (model_id, expected) {
+        ("qwen3_forced_aligner_0_6b", "Qwen3-ForcedAligner-0.6B-F16.gguf") => {
+            Some("qwen3-forced-aligner-predict-woo-f16.gguf")
+        }
+        _ => None,
+    }
+}
+
 fn uses_legacy_ggml_layout(model_id: &str) -> bool {
     matches!(
         model_id,
-        "melband_roformer_inst_v2"
-            | "melband_roformer_harmony"
+        "melband_roformer_harmony"
             | "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
             | "bs_polarformer_public_instrumental"
+            | "bs_roformer_leap_xe90_instrumental"
             | "rmvpe"
-            | "game"
+            | "fcpe"
+            | "basic_pitch"
+            | "game_1_0_3_small"
+            | "game_1_0_3_medium"
+            | "game_1_0_3_large"
+            | "jbm555_cectc_80"
+            | "stars"
+            | "rosvot"
+            | "firered_asr2_aed"
+            | "qwen3_asr_1_7b"
+            | "qwen3_forced_aligner_0_6b"
     )
 }
 
@@ -1346,10 +1392,6 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
             "f850fb2460099df356676ce37ba48875e3c75726d7a848b42d75ff6015955ac7",
             457_008_736,
         )),
-        "melband_roformer_inst_v2" => Some((
-            "e2b39b979e2413af172bad88a6b0a324a54d47fbca6622083f7f3817b9046897",
-            787_918_656,
-        )),
         "melband_roformer_harmony" => Some((
             "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
             457_008_736,
@@ -1358,13 +1400,42 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
             "f5e40ac0dc7487a0c2ccb247e5b948cd6f2c7aaf46a2994023606e1e800ed2c1",
             204_237_408,
         )),
+        "bs_roformer_leap_xe90_instrumental" => Some((
+            "b35c2d88b87c7aa863d79f80df1d15899fbdebbaebbf0be4bf8e4602493763c0",
+            267_433_600,
+        )),
         "rmvpe" => Some((
             crate::runtime_lock::RMVPE_GGUF_SHA256,
             crate::runtime_lock::RMVPE_GGUF_SIZE_BYTES,
         )),
-        "game" => Some((
-            "a69c52a01f452c8092f1479630074592d4c3f0ef7404bb65ddd73fab01a0606e",
-            199_584_064,
+        "fcpe" => Some((
+            crate::runtime_lock::FCPE_GGUF_SHA256,
+            crate::runtime_lock::FCPE_GGUF_SIZE_BYTES,
+        )),
+        "basic_pitch" => Some(("basic-pitch-gguf-f32-v1", 144_512)),
+        "game_1_0_3_small" => Some(("game-1.0.3-small-gguf-f32-v1", 50_734_944)),
+        "game_1_0_3_medium" => Some(("game-1.0.3-medium-gguf-f32-v1", 199_584_064)),
+        "game_1_0_3_large" => Some(("game-1.0.3-large-gguf-f32-v1", 396_034_784)),
+        "jbm555_cectc_80" => Some(("jbm555-cectc80-gguf-f32-v1", 3_981_024)),
+        "stars" => Some((
+            "65e7c7337166d523b854502b484dd821f725a029432debc42ffa5f37245c1fc1",
+            201_133_440,
+        )),
+        "rosvot" => Some((
+            "a8d8eeb8970b6623e0ea13f45515609c72defe0a10759f781c524e574c5ddf6f",
+            48_196_032,
+        )),
+        "firered_asr2_aed" => Some((
+            "a79ed7521be53919c74da8be409ce129163c734761908e8292d7ef34463a31c9",
+            4_686_918_112,
+        )),
+        "qwen3_asr_1_7b" => Some((
+            "b20587d247ae3d3b2e82f111944b7f3cb98a2a272068bf64580c191bf3b8272b",
+            4_083_087_904,
+        )),
+        "qwen3_forced_aligner_0_6b" => Some((
+            "c70553d4e363b752db9110bba0a1ef5fb87355cd80e14703c457fbe7f39a936b",
+            1_842_216_416,
         )),
         _ => None,
     }
@@ -1372,30 +1443,110 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
 
 fn legacy_model_path(root: &std::path::Path, model_id: &str) -> Option<PathBuf> {
     let relative = match model_id {
-        "melband_roformer_inst_v2"
-        | "melband_roformer_harmony"
+        "melband_roformer_harmony"
         | "melband_roformer_denoise_aufr33"
         | "melband_roformer_dereverb_anvuew" => PathBuf::from("audio-processing").join(model_id),
-        "firered_asr2_aed" => PathBuf::from("firered-asr2-aed/openvino-ir-2026.3.0-smoke"),
-        "qwen3_asr_1_7b" => PathBuf::from("qwen-asr/Qwen3-ASR-1.7B-Q4_K_M.gguf"),
-        "qwen3_forced_aligner_0_6b" => {
-            PathBuf::from("qwen-align/qwen3-forced-aligner-predict-woo-f16.gguf")
-        }
-        "rmvpe" => PathBuf::from(LEGACY_RMVPE_IR_RELATIVE_DIR),
-        "fcpe" => PathBuf::from("pitch/fcpe/openvino-ir-2026.3.0-smoke"),
-        "game" => PathBuf::from("boundary/game"),
-        "basic_pitch" => PathBuf::from("boundary/basic-pitch/openvino-ir-2026.3.0-smoke"),
-        "stars" => PathBuf::from("technique/stars"),
         _ => return None,
     };
     Some(root.join(relative))
 }
 
-fn legacy_rmvpe_present(root: &std::path::Path) -> bool {
-    root.join(LEGACY_RMVPE_IR_RELATIVE_DIR)
-        .join("manifest.json")
-        .is_file()
-}
-
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::manifest::{
+        INSTALL_MANIFEST_SCHEMA, INSTALL_MANIFEST_SCHEMA_VERSION, InstallManifest, InstalledFile,
+        generation_id,
+    };
+
+    fn install_old_catalog_generation(store: &std::path::Path, model_id: &str, filename: &str) {
+        let resource = ResourceRef::model(model_id).unwrap();
+        let manifest = InstallManifest {
+            schema: INSTALL_MANIFEST_SCHEMA.to_string(),
+            schema_version: Some(INSTALL_MANIFEST_SCHEMA_VERSION),
+            resource: resource.clone(),
+            catalog_version: Some("previous-catalog".to_string()),
+            source: None,
+            source_sha256: None,
+            model_recipe_digest: Some("previous-recipe".to_string()),
+            conversion_recipe_digest: None,
+            runtime_recipe_digest: Some("previous-runtime".to_string()),
+            files: vec![InstalledFile {
+                path: PathBuf::from(filename),
+                sha256: "provenance-only".to_string(),
+                size: 5,
+            }],
+            created_timestamp: "1".to_string(),
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let generation = generation_id(&bytes);
+        let resource_root = store.join("models").join(model_id);
+        let generation_root = resource_root.join("generations").join(&generation);
+        std::fs::create_dir_all(&generation_root).unwrap();
+        std::fs::write(generation_root.join(filename), b"model").unwrap();
+        std::fs::write(generation_root.join("install-manifest.json"), bytes).unwrap();
+        std::fs::write(
+            resource_root.join("current.json"),
+            serde_json::to_vec(&CurrentPointer { generation }).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_version_change_does_not_block_compatible_managed_gguf() {
+        let store = std::env::temp_dir().join(format!(
+            "uta-runtime-compatible-generation-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&store);
+        install_old_catalog_generation(&store, "rmvpe", "rmvpe-f32.gguf");
+        let manager = RuntimeManager::with_default_catalog(StorePaths::new(&store)).unwrap();
+        let status = manager
+            .status(
+                &ResourceRef::model("rmvpe").unwrap(),
+                RuntimePolicy::Production,
+            )
+            .unwrap();
+        assert_eq!(status.install_state, InstallState::Installed);
+        assert_eq!(status.origin, ResourceOrigin::Managed);
+        assert!(!status.reasons.contains(&ReadinessReason::Legacy));
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn qwen_aligner_accepts_the_pre_rename_gguf_filename() {
+        let store = std::env::temp_dir().join(format!(
+            "uta-runtime-qwen-aligner-alias-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&store);
+        let filename = "qwen3-forced-aligner-predict-woo-f16.gguf";
+        install_old_catalog_generation(&store, "qwen3_forced_aligner_0_6b", filename);
+        let manager = RuntimeManager::with_default_catalog(StorePaths::new(&store)).unwrap();
+        let status = manager
+            .status(
+                &ResourceRef::model("qwen3_forced_aligner_0_6b").unwrap(),
+                RuntimePolicy::Production,
+            )
+            .unwrap();
+        assert_eq!(status.install_state, InstallState::Installed);
+        assert_eq!(
+            runtime_artifact_path(
+                &store
+                    .join("models/qwen3_forced_aligner_0_6b/generations")
+                    .join(status.generation.as_deref().unwrap()),
+                "qwen3_forced_aligner_0_6b",
+                "Qwen3-ForcedAligner-0.6B-F16.gguf",
+            )
+            .as_deref(),
+            Some(
+                store
+                    .join("models/qwen3_forced_aligner_0_6b/generations")
+                    .join(status.generation.as_deref().unwrap())
+                    .join(filename)
+                    .as_path()
+            )
+        );
+        std::fs::remove_dir_all(store).unwrap();
+    }
+}

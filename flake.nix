@@ -46,7 +46,7 @@
             zlib
           ];
 
-          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker -p uta-openvino-worker -p uta-qwen-worker -p uta-game-worker -p uta-jbm-worker -p uta-fcpe-worker -p uta-basic-pitch-worker -p uta-firered-worker -p uta-stars-worker -p uta-rosvot-worker --features uta-game-worker/gpu,uta-jbm-worker/gpu,uta-fcpe-worker/gpu,uta-basic-pitch-worker/gpu,uta-firered-worker/gpu,uta-stars-worker/gpu,uta-rosvot-worker/gpu";
+          cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker";
 
           commonArgs = {
             inherit pname version src cargoExtraArgs;
@@ -108,51 +108,11 @@
               install -Dm644 target/release/uta-fusion-agent-claude.uta-fusion-adapter.json \
                 $out/bin/uta-fusion-agent-claude.uta-fusion-adapter.json
               install -Dm755 target/release/uta-analyze $out/bin/.uta-analyze-unwrapped
-              install -Dm755 target/release/uta-openvino-worker $out/bin/uta-openvino-worker
               install -Dm755 target/release/uta-ggml-worker $out/bin/uta-ggml-worker
-              install -Dm755 target/release/uta-qwen-asr-worker $out/bin/uta-qwen-asr-worker
-              install -Dm755 target/release/uta-qwen-align-worker $out/bin/uta-qwen-align-worker
-              install -Dm755 target/release/uta-game-worker $out/bin/uta-game-worker
-              install -Dm755 target/release/uta-jbm-worker $out/bin/uta-jbm-worker
-              install -Dm755 target/release/uta-fcpe-worker $out/bin/uta-fcpe-worker
-              install -Dm755 target/release/uta-basic-pitch-worker $out/bin/uta-basic-pitch-worker
-              install -Dm755 target/release/uta-firered-worker $out/bin/uta-firered-worker
-              install -Dm755 target/release/uta-stars-worker $out/bin/uta-stars-worker
-              install -Dm755 target/release/uta-rosvot-worker $out/bin/uta-rosvot-worker
-              install -Dm644 native-inference/openvino-worker/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/openvino-worker-THIRD_PARTY_NOTICES.md
-              install -Dm644 native-inference/game/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/game-worker-THIRD_PARTY_NOTICES.md
-              install -Dm755 native-inference/openvino-worker/build-openvino-runtime.sh \
-                $out/share/uta-studio/native-inference/openvino-worker/build-openvino-runtime.sh
-              install -Dm644 native-inference/openvino-worker/runtime-recipe.json \
-                $out/share/uta-studio/native-inference/openvino-worker/runtime-recipe.json
-              install -Dm644 native-inference/openvino-worker/runtime-recipe-ze-experimental.json \
-                $out/share/uta-studio/native-inference/openvino-worker/runtime-recipe-ze-experimental.json
-              install -Dm644 native-inference/openvino-worker/tools/convert-model.cpp \
-                $out/share/uta-studio/native-inference/openvino-worker/tools/convert-model.cpp
-              install -Dm644 native-inference/roformer/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/ggml-roformer-THIRD_PARTY_NOTICES.md
               install -Dm755 native-inference/ggml-worker/build-ggml-runtime.sh \
                 $out/share/uta-studio/native-inference/ggml-worker/build-ggml-runtime.sh
               install -Dm644 native-inference/ggml-worker/runtime-recipe.json \
                 $out/share/uta-studio/native-inference/ggml-worker/runtime-recipe.json
-              mkdir -p $out/share/uta-studio/native-inference/roformer
-              cp -R native-inference/roformer/. $out/share/uta-studio/native-inference/roformer/
-              install -Dm644 native-inference/rmvpe/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/ggml-rmvpe-THIRD_PARTY_NOTICES.md
-              mkdir -p $out/share/uta-studio/native-inference/rmvpe
-              cp -R native-inference/rmvpe/. $out/share/uta-studio/native-inference/rmvpe/
-              install -Dm644 native-inference/qwen-worker/THIRD_PARTY_NOTICES.md \
-                $out/share/uta-studio/licenses/qwen-worker-THIRD_PARTY_NOTICES.md
-              install -Dm755 native-inference/qwen-worker/build-qwen-engines.sh \
-                $out/share/uta-studio/native-inference/qwen-worker/build-qwen-engines.sh
-              install -Dm755 native-inference/qwen-worker/install-local-qwen-assets.sh \
-                $out/share/uta-studio/native-inference/qwen-worker/install-local-qwen-assets.sh
-              install -Dm644 native-inference/qwen-worker/patches/predict-woo-require-gpu.patch \
-                $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-require-gpu.patch
-              install -Dm644 native-inference/qwen-worker/patches/predict-woo-fix-alignment-json-buffer-truncation.patch \
-                $out/share/uta-studio/native-inference/qwen-worker/patches/predict-woo-fix-alignment-json-buffer-truncation.patch
               install -Dm644 icon.png $out/share/uta-studio/icon.png
               install -Dm644 desktop/assets/fonts/NotoSansCJKsc-Regular.otf \
                 $out/share/uta-studio/desktop/assets/fonts/NotoSansCJKsc-Regular.otf
@@ -168,17 +128,7 @@
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               runtimeWrapperArgs=(
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg
-                --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker
-                --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker
-                --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker
-                --set UTA_STUDIO_GAME_RUNTIME_PATH $out/bin/uta-game-worker
-                --set UTA_STUDIO_JBM_RUNTIME_PATH $out/bin/uta-jbm-worker
-                --set UTA_STUDIO_FCPE_RUNTIME_PATH $out/bin/uta-fcpe-worker
-                --set UTA_STUDIO_BASIC_PITCH_RUNTIME_PATH $out/bin/uta-basic-pitch-worker
-                --set UTA_STUDIO_FIRERED_RUNTIME_PATH $out/bin/uta-firered-worker
-                --set UTA_STUDIO_STARS_RUNTIME_PATH $out/bin/uta-stars-worker
-                --set UTA_STUDIO_ROSVOT_RUNTIME_PATH $out/bin/uta-rosvot-worker
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}"
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
               )
@@ -189,17 +139,7 @@
                 --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg \
                 --set UTA_STUDIO_ANALYSIS_CLI_PATH $out/bin/uta-analyze \
                 --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
-                --set UTA_STUDIO_OPENVINO_RUNTIME_PATH $out/bin/uta-openvino-worker \
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker \
-                --set UTA_STUDIO_QWEN_ASR_RUNTIME_PATH $out/bin/uta-qwen-asr-worker \
-                --set UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH $out/bin/uta-qwen-align-worker \
-                --set UTA_STUDIO_GAME_RUNTIME_PATH $out/bin/uta-game-worker \
-                --set UTA_STUDIO_JBM_RUNTIME_PATH $out/bin/uta-jbm-worker \
-                --set UTA_STUDIO_FCPE_RUNTIME_PATH $out/bin/uta-fcpe-worker \
-                --set UTA_STUDIO_BASIC_PITCH_RUNTIME_PATH $out/bin/uta-basic-pitch-worker \
-                --set UTA_STUDIO_FIRERED_RUNTIME_PATH $out/bin/uta-firered-worker \
-                --set UTA_STUDIO_STARS_RUNTIME_PATH $out/bin/uta-stars-worker \
-                --set UTA_STUDIO_ROSVOT_RUNTIME_PATH $out/bin/uta-rosvot-worker \
                 --set WINIT_UNIX_BACKEND wayland \
                 --set __EGL_VENDOR_LIBRARY_DIRS /run/opengl-driver/share/glvnd/egl_vendor.d \
                 --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${gstPluginPath}" \
@@ -268,17 +208,7 @@
               export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
-              export UTA_STUDIO_OPENVINO_RUNTIME_PATH="$PWD/target/debug/uta-openvino-worker"
               export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
-              export UTA_STUDIO_QWEN_ASR_RUNTIME_PATH="$PWD/target/debug/uta-qwen-asr-worker"
-              export UTA_STUDIO_QWEN_ALIGN_RUNTIME_PATH="$PWD/target/debug/uta-qwen-align-worker"
-              export UTA_STUDIO_GAME_RUNTIME_PATH="$PWD/target/debug/uta-game-worker"
-              export UTA_STUDIO_JBM_RUNTIME_PATH="$PWD/target/debug/uta-jbm-worker"
-              export UTA_STUDIO_FCPE_RUNTIME_PATH="$PWD/target/debug/uta-fcpe-worker"
-              export UTA_STUDIO_BASIC_PITCH_RUNTIME_PATH="$PWD/target/debug/uta-basic-pitch-worker"
-              export UTA_STUDIO_FIRERED_RUNTIME_PATH="$PWD/target/debug/uta-firered-worker"
-              export UTA_STUDIO_STARS_RUNTIME_PATH="$PWD/target/debug/uta-stars-worker"
-              export UTA_STUDIO_ROSVOT_RUNTIME_PATH="$PWD/target/debug/uta-rosvot-worker"
               export WINIT_UNIX_BACKEND=wayland
               export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"

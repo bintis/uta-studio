@@ -71,16 +71,7 @@ pub(crate) fn runtime_client() -> Result<RuntimeCliClient, String> {
 pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<RuntimeResourceRefWireV1> {
     match target {
         ModelDownloadTarget::RoFormer => RuntimeResourceRefWireV1::bundle("roformer"),
-        ModelDownloadTarget::FireRed => RuntimeResourceRefWireV1::model("firered_asr2_aed"),
-        ModelDownloadTarget::QwenAsr => RuntimeResourceRefWireV1::model("qwen3_asr_1_7b"),
-        ModelDownloadTarget::QwenAlign => {
-            RuntimeResourceRefWireV1::model("qwen3_forced_aligner_0_6b")
-        }
         ModelDownloadTarget::Pitch => RuntimeResourceRefWireV1::model("rmvpe"),
-        ModelDownloadTarget::Fcpe => RuntimeResourceRefWireV1::model("fcpe"),
-        ModelDownloadTarget::Game => RuntimeResourceRefWireV1::model("game"),
-        ModelDownloadTarget::Stars => RuntimeResourceRefWireV1::model("stars"),
-        ModelDownloadTarget::BasicPitch => RuntimeResourceRefWireV1::model("basic_pitch"),
     }
     .ok()
 }
@@ -91,23 +82,7 @@ fn status_copy(target: ModelDownloadTarget) -> (&'static str, &'static str) {
             "RoFormer audio processing",
             "Vocal, instrumental, harmony, denoise and dereverb resources.",
         ),
-        ModelDownloadTarget::FireRed => (
-            "FireRed ASR2 AED",
-            "Optional transcription challenger for comparison and diagnostics.",
-        ),
-        ModelDownloadTarget::QwenAsr => ("Qwen3-ASR-1.7B", "Primary local transcription resource."),
-        ModelDownloadTarget::QwenAlign => (
-            "Qwen3 Forced Aligner 0.6B",
-            "Word-level alignment against canonical or transcribed lyrics.",
-        ),
         ModelDownloadTarget::Pitch => ("RMVPE", "Primary continuous-pitch evidence."),
-        ModelDownloadTarget::Fcpe => ("FCPE", "Optional secondary pitch evidence."),
-        ModelDownloadTarget::Game => ("GAME", "Primary note and boundary evidence."),
-        ModelDownloadTarget::Stars => ("STARS", "Optional advanced note challenger."),
-        ModelDownloadTarget::BasicPitch => (
-            "Basic Pitch",
-            "Optional note/onset challenger for disagreement review.",
-        ),
     }
 }
 
@@ -134,10 +109,7 @@ fn status_for(
 
 fn backend_label(backend: NativeBackendWireV1) -> &'static str {
     match backend {
-        NativeBackendWireV1::OpenVino => "openvino",
-        NativeBackendWireV1::Vulkan => "vulkan",
-        NativeBackendWireV1::NativeDsp => "native",
-        NativeBackendWireV1::CpuReference => "diagnostic_cpu",
+        NativeBackendWireV1::Ggml => "ggml",
     }
 }
 
@@ -150,17 +122,8 @@ fn validation_label(validation: ValidationStateWireV1) -> &'static str {
     }
 }
 
-const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 9] = [
-    ModelDownloadTarget::RoFormer,
-    ModelDownloadTarget::FireRed,
-    ModelDownloadTarget::QwenAsr,
-    ModelDownloadTarget::QwenAlign,
-    ModelDownloadTarget::Pitch,
-    ModelDownloadTarget::Fcpe,
-    ModelDownloadTarget::Game,
-    ModelDownloadTarget::Stars,
-    ModelDownloadTarget::BasicPitch,
-];
+const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 2] =
+    [ModelDownloadTarget::RoFormer, ModelDownloadTarget::Pitch];
 
 fn model_install_statuses_from_statuses(
     statuses: &[RuntimeResourceStatusWireV1],
@@ -195,6 +158,18 @@ const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 6] = [
     (
         "instrumental_extraction",
         "Instrumental extraction",
+        "bs_roformer_leap_xe90_vocals",
+        "audio.extract_instrumental",
+    ),
+    (
+        "instrumental_direct",
+        "Direct instrumental extraction",
+        "bs_roformer_leap_xe90_instrumental",
+        "audio.extract_instrumental",
+    ),
+    (
+        "polarformer_ab",
+        "Experimental PolarFormer A/B",
         "bs_polarformer_public_instrumental",
         "audio.extract_instrumental",
     ),
@@ -205,13 +180,6 @@ const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 6] = [
         "audio.lead_isolate",
     ),
     ("pitch", "Continuous pitch", "rmvpe", "pitch.track"),
-    ("note_boundaries", "Note boundaries", "game", "notes.game"),
-    (
-        "japanese_note_boundaries",
-        "Japanese note boundaries",
-        "jbm555_cectc_80",
-        "notes.jbm555",
-    ),
 ];
 
 pub(super) fn strategy_resource_statuses_from_details(
@@ -328,10 +296,7 @@ pub(super) fn analysis_runtime_status_with_clients(
         ready: analysis_ready && runtime_client.is_some() && ffmpeg_available,
         runtime_contract_current: analysis_ready && runtime_client.is_some(),
         ffmpeg_available,
-        openvino_runtime_available: runtime_executable_ready("openvino_2026_3"),
-        ggml_vulkan_runtime_available: runtime_executable_ready("ggml_vulkan_v1"),
-        qwen_asr_runtime_available: runtime_executable_ready("qwen_asr_runtime"),
-        qwen_align_runtime_available: runtime_executable_ready("qwen_align_runtime"),
+        ggml_runtime_available: runtime_executable_ready("ggml_vulkan"),
         pitch_model_available: find_status(&statuses, "model:rmvpe")
             .is_some_and(|status| status.usable),
         selected_models_available,

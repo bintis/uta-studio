@@ -1,108 +1,262 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-05
-**Owner:** post-model feature closure agent; RMVPE native-backend evidence pending
+**Updated:** 2026-09-09 (after the Intel B580 sweep)
+**Owner:** Rust + upstream-GGML migration
 
-This file stores current effective state only. Long-form execution/completion logs are not retained. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
+This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
 
-Current source and focused tests override stale historical conclusions.
+## Current product model set
 
-## Model closure
+Studio has one model execution boundary: Rust-owned graphs calling the shared libraries built from upstream `ggml-org/ggml` revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a`. The package is upstream GGML plus exactly the backend patches `native-inference/ggml-worker/runtime-recipe.json` declares, and contains no app-owned C/C++ model graph, shim, model CLI, or model-inference subprocess. The repository contains no model conversion or model-rewrite script; container migration is `cargo xtask gguf`. Vulkan remains the default. CPU is an explicitly selected experimental reference mode; GPU and integrated-GPU requests never fall back to it.
 
-| Resource | State | integration_ready | production_ready | Current conclusion |
-| --- | --- | --- | --- | --- |
-| `rmvpe` | NEEDS_REVIEW | yes | no | Primary continuous-F0 now uses `uta-ggml-worker` plus a dedicated C++ GGML/Vulkan engine over the F32 `rmvpe-f32.gguf`; the OpenVINO execution/conversion route is removed. Runtime Manager, Analysis Engine schema-2 evidence, packaged multi-engine runtime, and CPU/fake-worker regressions are integrated. Catalog remains `BenchmarkCandidate`: the earlier full-song OpenVINO evidence is backend-specific and does not qualify native Vulkan stability or output parity. |
-| `game` | READY | yes | yes | The dedicated Rust GGUF runtime remains the accepted production implementation with CPU reference and WGPU/Vulkan execution. Its Vulkan path now requires `wgpu-vulkan-serial-v1` before device creation and selects the requested device class without fallback. Existing graph-specific evidence is retained; this implementation pass performed static validation only and did not create a GPU context. |
-| `qwen3_asr_1_7b` | READY | yes | yes | The pinned Vulkan worker now applies deterministic contiguous non-overlapping windows of at most 90 s, records complete per-window coverage/language/character evidence in schema 2, selects the aggregate language only from runtime-detected window evidence, cleans every raw/sliced intermediate and preserves fail-closed truncation. The 305.813375 s representative song completed as four windows without truncation and published 1,048 transcript characters; source media and boot ID were unchanged. Mixed `zh`/`en` detections and poor singing text remain a visible quality warning; the effective route is policy-promoted to `ProductionPinned`. |
-| `qwen3_forced_aligner_0_6b` | READY | yes | yes | Strict schema-2 Engine consumption and deterministic bounded long-input windowing are verified. Runtime Manager now resolves a managed converted Qwen generation to its exact GGUF file rather than the containing directory, with a regression test. The 305.813375 s fixture preserves complete lyrics, reaches 268.96 s, and repeats byte-identically; broad labeled quality remains an advisory warning under the explicit Production promotion. |
-| `melband_roformer_denoise_aufr33` | READY | yes | yes | Per user direction, GGML/Vulkan is the only advertised `ProductionPinned` route; OpenVINO must not launch. The exact GGUF completed the 305.813333 s full GuideVocals input in 152.887 s with batch size 1, no async submission and a serial pipeline, producing exact-duration decodable dry FLAC with no matching kernel GPU fault/reset. Broader quality remains an advisory warning; an license metadata is advisory and non-blocking. |
-| `melband_roformer_dereverb_anvuew` | READY | yes | yes | Per user direction, GGML/Vulkan is the only advertised `ProductionPinned` route; OpenVINO must not launch. The exact GGUF completed the 305.813333 s full GuideVocals input in 81.580 s with batch size 1, no async submission and a serial pipeline, producing exact-duration decodable noreverb FLAC with no matching kernel GPU fault/reset. Broader quality/packaging and exact checkpoint license identity remain visible advisory warnings. |
-| `melband_roformer_harmony` | READY | yes | yes | Per user direction, GGML/Vulkan is now the `ProductionPinned` route and OpenVINO must not be launched for this model. The authorized 305.813333 s full BS GuideVocals run completed in 151.525 s with exact-duration lead/residual FLACs and no matching kernel GPU fault/reset. Explicit stereo subtraction reconstructs input from lead+residual to -94.73 dB RMS error. Historical OpenVINO aggregate reset evidence remains recorded but no longer selects the effective route. |
-| `melband_roformer_inst_v2` | READY | yes | yes | Per user direction, GGML/Vulkan is now the `ProductionPinned` route and OpenVINO must not be launched for this model. The authorized 305.813333 s full mix completed in 174.533 s with exact-duration decodable non-silent Instrumental FLAC, unchanged source hash, clean exit and no matching kernel GPU fault/reset. The unused changed OpenVINO executable remains unqualified. |
-| `firered_asr2_aed` | READY | yes | yes | Per explicit owner direction, WGPU/Vulkan is the `ProductionPinned` default and native CPU is diagnostic. WGPU matched CPU exactly on the 2.320 s canonical `你好世界` fixture, including token IDs `1202,2246,1019,4710`, then completed the 216.880 s real Chinese `崔子格 - 卜卦` input in 80.792 s: all 94 windows ran, publishing 137 tokens / 161 Chinese characters across 25 non-empty windows. Peak RSS was 5,881,932 KiB; source identity, boot ID and kernel health remained stable, including the completed 420 s post-exit watch. |
-| `fcpe` | READY | yes | yes | Per explicit owner direction, WGPU/Vulkan is the `ProductionPinned` default and native CPU is diagnostic. The 6.000 s CPU/WGPU parity run matched all 601 frame times with maximum/mean F0 delta `0.0001`/`0.000001115 Hz`. The complete WGPU path processed the 305.813333 s representative input in 55.401 s and emitted 30,582 ordered finite F0 frames through 305.81 s. The mandatory serial profile, source identity, boot ID and kernel health passed. |
-| `basic_pitch` | READY | yes | yes | Per explicit owner direction, WGPU/Vulkan is the `ProductionPinned` default and native CPU is diagnostic. The 6.000 s parity run matched 2,589 numeric values to maximum/mean delta `3.784e-5`/`1.029e-6`. The WGPU CQT and activation CNN processed the 305.813333 s representative input in 30.224 s and emitted 26,340 frames / 131,709 finite numeric values. Source identity, boot ID and kernel health passed. |
-| `stars` | READY | yes | yes | Per explicit owner direction, the native Rust WGPU/Vulkan route is the `ProductionPinned` default; native CPU remains a BenchmarkCandidate. Its 1.200 s CPU/WGPU parity matched 628 numeric values to maximum/mean delta `3.6e-5`/`4.603e-6`. A 245.120 s real Chinese vocal input with 197 timed words completed 78 conditioned segments in 161.424 s, producing 312 notes, 521 technique entries, 78 style records and 88,619 finite numeric values at 647,004 KiB peak RSS. A Japanese fixture correctly failed closed on unsupported Chinese-G2P input and is not counted as success. Source identity, boot ID and kernel health passed. |
-| `rosvot` | READY | yes | yes | Per explicit owner direction, the native Rust WGPU/Vulkan route is the `ProductionPinned` default; native CPU remains a BenchmarkCandidate. The official conditioned 50,000-step checkpoint (`7501fb5f…3fcb`, 245 F32 tensors) was converted to F32 GGUF `a8d8eeb8…df6f`, passed genuine PyTorch-reference checks, and was deployed as an immutable generation without changing the staged OpenVINO generation. The 1.200 s CPU/WGPU run matched 492 numeric values to maximum delta `9.5e-5`. After correcting the original debug-worker run and keeping annotation-RMVPE GRU recurrence on Vulkan, the 305.813333 s release run completed 114/114 segments in 155.613 s with 57,340 frames, 397 regulated notes and 94,043 finite numeric values, 3.357× faster than the 522.403 s unoptimized release. Source identity, boot ID and kernel health passed. |
+The backend alignment is complete: every authorized model now runs through that one boundary, and the Runtime Manager catalog contains exactly these seventeen models and one `ggml_vulkan` shared-library runtime.
 
-### Native Rust WGPU follow-up
+| Resource | Capability | State | integration_ready | production_ready | Current conclusion |
+| --- | --- | --- | --- | --- | --- |
+| `bs_roformer_leap_xe90_vocals` | `audio.extract_vocals`, `audio.extract_instrumental` | NEEDS_REVIEW | yes | no | Default separation provider. One invocation emits guide vocals and the instrumental residual. A real AMD 780M run completed; comparison with the former GGML reference measured 60.36 dB SNR and mix reconstruction measured 122.10 dB SNR. Longer-input, performance, and accepted strict-parity coverage remain. |
+| `bs_polarformer_public_instrumental` | `audio.extract_vocals`, `audio.extract_instrumental` | NEEDS_REVIEW | yes | no | Explicit experimental separation option. Rust GGML execution completed on AMD 780M with finite outputs and vocal+instrumental reconstruction error at float epsilon. A former-implementation reference comparison and broader listening evidence remain. |
+| `melband_roformer_harmony` | `audio.lead_isolate` | NEEDS_REVIEW | yes | no | Rust GGML lead/residual isolation completed on AMD 780M with finite exact-duration output and float-epsilon residual reconstruction. Former-implementation reference vectors and longer-input coverage remain. |
+| `melband_roformer_denoise_aufr33` | `audio.denoise` | NEEDS_REVIEW | yes | no | Rust GGML execution completed on AMD 780M with finite 44.1 kHz stereo output. Former-implementation numerical/perceptual comparison and longer-input coverage remain. |
+| `melband_roformer_dereverb_anvuew` | `audio.dereverb` | NEEDS_REVIEW | yes | no | Rust GGML execution completed on AMD 780M with finite 44.1 kHz stereo output. Former-implementation numerical/perceptual comparison and longer-input coverage remain. |
+| `rmvpe` | `pitch.track` | NEEDS_REVIEW | yes | no | Rust owns the complete RMVPE graph and calls upstream GGML directly. A real AMD 780M run completed. Against the historical same-source fixture, 601 frames aligned, one voiced decision differed, common-voiced F0 RMSE was 0.35158 Hz (maximum 5.27094 Hz), and confidence RMSE was 0.008684. Intermediate-tensor investigation remains before strict parity can be accepted. |
+| `fcpe` | `pitch.secondary`, `pitch.secondary.fcpe` | NEEDS_REVIEW | yes | no | Optional secondary continuous-F0 expert, scheduled by default only in Maximum mode. CPU and AMD 780M Vulkan runs each produced 601 frames with zero voiced-state disagreements against the fresh OpenVINO reference. CPU/reference F0 RMSE was 0.10770 Hz (maximum 2.56958 Hz); Vulkan/reference RMSE was 0.17518 Hz (maximum 2.81871 Hz). Layerwise vectors, long-input performance, and broader material remain. |
+| `basic_pitch` | `notes.basic_pitch` | NEEDS_REVIEW | yes | no | Optional note challenger. CPU and AMD 780M runs each produced 516 frames with zero contour-class disagreements against the historical same-source CPU reference. Long-input and broader-material coverage remain. |
+| `game_1_0_3_small` | `notes.game` | NEEDS_REVIEW | yes | no | Selectable GAME size. A real 6-second AMD 780M worker request produced schema 4 evidence with 17 notes. Reference vectors and long-input coverage remain for this size. |
+| `game_1_0_3_medium` | `notes.game` | NEEDS_REVIEW | yes | no | Default note provider. Component graphs have bounded historical parity, and a 32-second AMD 780M run exercised dynamic 30-second chunking with 2-second overlap and 97 ordered notes. |
+| `game_1_0_3_large` | `notes.game` | NEEDS_REVIEW | yes | no | Selectable GAME size. A real 6-second AMD 780M worker request produced schema 4 evidence with 17 notes. Reference vectors and long-input coverage remain for this size. |
+| `jbm555_cectc_80` | `notes.jbm555` | NEEDS_REVIEW | yes | no | Mandatory mix + prepared-vocal dual input. CPU and AMD 780M runs matched the historical reference's single note, range, and MIDI; all score differences were below `0.0005`. Broader-material coverage remains. |
+| `stars` | `notes.stars`, `technique.analyze` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note/technique evidence; depends on `rmvpe`. Stage C and Stage E were validated against checkpoint-truth oracles on CPU and AMD 780M. A full B580 worker run completed with 24 notes plus technique evidence. It required the migrated GGUF; the installed container fails to load. Reference comparison remains. |
+| `rosvot` | `notes.rosvot` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note evidence; depends on `rmvpe`. CPU, AMD 780M, and B580 worker runs completed; the B580 run produced 15 notes. It required a regenerated migrated GGUF; the installed container fails to load. Reference comparison and long-input coverage remain. |
+| `firered_asr2_aed` | `speech.transcribe.challenger` | NEEDS_REVIEW | yes | no | Optional transcript challenger with a three-file named artifact set (`firered-f32.gguf`, `cmvn.ark`, `dict.txt`). Two defects were found and fixed: the encoder dropped its subsample output projection bias, and the subsampling convolutions used upstream's F16 im2col. With those plus the Vulkan F32 matmul patch, the encoder parity test passes on the CPU lane (`0.000555` from the checkpoint oracle), the AMD 780M (`0.000194`) and the Intel B580 (`0.000197`), and the whole chain transcribes the reference fixture as `你好世界` with tokens `[1202, 2246, 1019, 4710]` on all three, matching the historical implementation exactly. Long-input and broader-material coverage remain. |
+| `qwen3_asr_1_7b` | `speech.transcribe` | NEEDS_REVIEW | yes | no | Primary transcription. The pinned `Qwen3-ASR-1.7B-F16.gguf` is installed in the model store through `uta-runtime import`, generation `8719ea947b78b28301a6705c2c480bd7f62da369ea9a4a7520c8a85b3560b179`, and `uta-runtime resolve` reports `production_pinned` with no readiness reasons. Real AMD 780M and Intel B580 runs completed. Broader language/material coverage and performance measurement remain. |
+| `qwen3_forced_aligner_0_6b` | `speech.align` | NEEDS_REVIEW | yes | no | Word-level forced alignment with a Rust-owned timestamp decoder. Decoder parity was validated on CPU and AMD 780M against the official reference, and a B580 worker run produced four timed word items. Broader material coverage remains. |
 
-The dedicated JBM555, FCPE, Basic Pitch, FireRed, STARS and ROSVOT GGUF workers compile a Rust/WGPU/Vulkan lane. Analysis Engine routing, the shared non-Qwen accelerator gate, release builds, truthful `wgpu_vulkan` evidence labels, and worker-side `wgpu-vulkan-serial-v1` checks are integrated. The profile requires batch size 1, one bounded synchronous submission at a time, and a serial pipeline; errors fail closed without CPU fallback. WGPU is Vulkan/WGSL-only and does not invoke OpenVINO or Level Zero. Separately authorized CPU/GPU short parity and one serial representative full-song run pass for all six exact graphs on Intel Arc B580. The full runs were JBM555 312.083 s, FCPE 55.401 s, Basic Pitch 30.224 s, FireRed 80.792 s, STARS 161.424 s and optimized ROSVOT 155.613 s; outputs were structurally valid and finite, source files remained unchanged, the boot ID stayed `9f99eb95-3d27-46db-942f-8acc2dc25a30`, and sudo-readable kernel reviews found no GPU hang/fault/reset. Per explicit owner direction, all six WGPU capabilities are `ProductionPinned` defaults with `production_ready=yes`; broader repeat and quality qualification remain advisory rather than routing blockers, and CPU/OpenVINO evidence remains independently scoped.
+`rhythm.quantize`, Acoustic DSP, the Candidate graph, fusion, FFmpeg decoding, and the GPU probe are local Rust work, not models.
 
-## Task 23 candidate gates
+## Reimplementation queue
 
-| Candidate | State | integration_ready | production_ready | Current conclusion |
-| --- | --- | --- | --- | --- |
-| `bs_roformer_leap_xe90_vocals` | READY | yes | no | Default vocal specialist; EP317 is removed. The original 267,433,600-byte public F32 GGUF remains F32. Its public metadata/tensor schema now executes through the packaged GGML graph. A real 6.000 s vocal passage completed on Intel Arc B580 in 26.65 s of GGML/Vulkan compute with `--batch-size 1 --vulkan-no-async --serial-pipeline`, producing finite, non-silent 44.1 kHz stereo F32 audio. Full-song A/B remains advisory. |
-| `bs_polarformer_public_instrumental` | READY | yes | no | Default Instrumental specialist. Runtime Manager selects the public 108,325,429-byte FP16-weight ONNX while the graph deliberately computes in FP32; forcing all-GPU FP16 produced non-finite masks on Intel Arc and is rejected. The current worker compiles a static 10.00 s input shape with 50% overlap. A 12.000 s validation completed in 17.773 s at about 7,032.5 MiB whole-device VRAM from a 995.1 MiB baseline, emitted exact-duration finite stereo FLAC, and differed from the prior 6.67 s output by -39.40 dBFS RMS. With Ghostty absent and a 931.1 MiB baseline, a static 20.00 s retry still failed its first block with `CL_OUT_OF_RESOURCES`; afterward VRAM returned to 886.9 MiB with no GPU reset or driver-error increment. The retained low-memory/full-song evidence is the earlier 6.67 s run: 305.813333 s completed in 206.874 s with about 3,639,076 KiB worker VRAM versus the original 9,800,552 KiB, measuring 27.35/27.40 dB SI-SDR and -38.16 dBFS difference RMS against the FP32 output. Perceptual qualification remains advisory. The diagnostic GGUF still has no executable PoPE/Sin/Cos/Einsum graph, so OpenVINO remains the integrated route. |
-| `jbm555_cectc_80` | READY | yes | yes | The packaged `uta-jbm-worker` owns the dual-input frontend, GGUF weights, CE-CTC decoding, Japanese Maximum planning and normalized Candidate evidence. Its explicitly promoted WGPU/Vulkan route is the `ProductionPinned` default; native CPU is diagnostic. The 6.000 s CPU/WGPU parity run produced the same five notes, with 31 numeric values matching to maximum delta `2.4e-7`. The WGPU graph processed the 305.813333 s real mix plus GuideVocals in 312.083 s and emitted 33 valid notes / 196 finite numeric values. Source identity, boot ID and kernel health passed. |
-| `vocalparse_1_7b` | BLOCKED_NATIVE_RUNTIME | no | no | Apache-2.0 Hugging Face revision `4c617b1a88c8e663351d9072c549d81d7f78a36f` and source revision `e7b3946c940a9216a5314f9ba11a19fd70a6befb` publish the checkpoint/tokenizer, but no exact native extended-vocabulary Qwen route is proved. `score.vocalparse` is not advertised. |
-| `t3ms` | BLOCKED_UPSTREAM_ARTIFACT | no | no | Official source revision `467dcd1b065c0dcb2b1b7d21712431bd1af7e4db` publishes neither an executable checkpoint nor a license. `score.t3ms` is not advertised. |
-| `bs_roformer_124b_2026_07` | BLOCKED_UPSTREAM_ARTIFACT | no | no | No exact public runnable checkpoint/config was found; benchmark-table evidence is not a model artifact. It is not a Catalog resource. |
-| `bs_polarformer_124b_2026_06` | BLOCKED_UPSTREAM_ARTIFACT | no | no | No exact public runnable checkpoint/config was found; benchmark-table evidence is not a model artifact. It is not a Catalog resource. |
+Empty. Qwen ASR, Qwen Forced Aligner, FireRed, GAME, Basic Pitch, ROSVOT, STARS, and JBM555 all completed their staged Rust/upstream-GGML reimplementation and are catalog resources with typed worker routes, Analysis Engine wiring, workflow schema 7 nodes, and Settings/UI representation. Inst V2 remains permanently retired: no catalog entry, graph, worker route, or fallback.
 
-Current defaults are `bs_roformer_leap_xe90_vocals` and `bs_polarformer_public_instrumental`; JBM555 is the Japanese note challenger. EP317 is no longer a Catalog resource.
+The former C++/CLI/WGPU/OpenVINO execution code remains deleted; Git history and recorded artifacts are reference evidence only. Historical Qwen and retired-model measurements are evidence about deleted implementations only and do not establish current readiness.
 
-The repository owner's prior release policy still promotes accepted effective non-CPU routes and owning runtimes to `ProductionPinned`, but RMVPE is explicitly excluded because its new backend postdates that evidence. Its model route remains `BenchmarkCandidate`; structural validation, installation state, runtime availability and fail-closed execution checks remain mandatory.
+## Vulkan F32 matmul: diagnosed and patched
 
-Leap XE90 plus the four retained MelBand resources expose only GGML/Vulkan and must never launch through OpenVINO. Every invocation is forced to batch size 1, no async submission and a serial pipeline. The earlier 305.813333 s GGUF evidence for the retired EP317 remains historical Task 14 evidence and is not Leap evidence. Current Leap evidence is the isolated 6.000 s real-vocal run above. The durable default GGUF root is `<runtime-store>/ggml-models`, while `UTA_STUDIO_GGML_MODELS_DIR` remains an override. Existing user-managed cache files remain user data and are not deleted automatically.
+Upstream builds `pipeline_matmul_f32` from whichever shader family the device selected, and in the
+coopmat2, coopmat and fp16 families the matmul shader's `FLOAT_TYPE` is `float16_t`
+(`vulkan-shaders-gen.cpp` promotes it whenever `coopmat2 || fp16`). An all-F32 matrix multiply
+therefore ran on F16-rounded operands. `firered::encoder::tests::selected_backend_multiplies_f32_matrices_accurately`
+measures it against an exact f64 reference:
 
-The repository's license metadata policy is permissive: an explicit open-source/open-model license is sufficient for technical Production. Attribution, NC/SA, commercial-use, or redistribution conditions remain recorded and user-visible but are non-blocking; license identity is advisory metadata and never blocks technical readiness.
+| Device | before | after the patch |
+| --- | ---: | ---: |
+| CPU backend | 2.391e-7 | 2.391e-7 |
+| AMD Radeon 780M | 2.388e-3 | **4.234e-7** |
+| Intel Arc B580 | 2.388e-3 | **4.234e-7** |
 
-## Representative full-song evidence queue
+Before the patch the error grew with reduction depth (6.328e-3 at k=64, 1.596e-2 at k=1280) and no
+runtime option changed it: `GGML_VK_DISABLE_F16`, `DISABLE_COOPMAT`, `DISABLE_COOPMAT2`,
+`DISABLE_INTEGER_DOT_PRODUCT`, `DISABLE_DOT2`, `DISABLE_MMVQ`, `DISABLE_FUSION`,
+`DISABLE_GRAPH_OPTIMIZE` and an explicit `ggml_mul_mat_set_prec(GGML_PREC_F32)` were each tested
+alone and left it unchanged. Only disabling F16 *and* coopmat together reached the exact scalar
+shaders, at the cost of every model's fast path.
 
-Representative full-song WGPU execution passes serially for JBM555, FCPE, Basic Pitch, STARS, conditioned ROSVOT and FireRed on Chinese material, in addition to their short CPU/WGPU parity evidence. Per explicit owner direction, all six exact WGPU routes are `ProductionPinned` defaults; the policy promotion does not turn one run into repeat or broad quality evidence, which remains advisory. RMVPE's prior OpenVINO full-song run is historical and non-interchangeable, and a native GGML/Vulkan run remains pending. Task 14 remains closed for the routes tested at that time.
+Upstream is not wrong to ship this: `test-backend-ops` gives `MUL_MAT` an NMSE tolerance of `5e-4`
+against `1e-7` for ordinary operations, the pinned revision passes 1002/1002 on Vulkan, and current
+master keeps that tolerance. It suits quantised LLM weights. Uta! Studio's audio graphs are F32 end
+to end and decode greedily, so the same trade changed output.
 
-## Repository/release acceptance
+`native-inference/ggml-worker/patches/0001-vulkan-keep-f32-matmul-in-f32.patch` rebuilds only
+`pipeline_matmul_f32`, from the scalar `_fp32` shaders whose `FLOAT_TYPE` is `float`. Every F16,
+BF16 and quantised pipeline keeps the device's fast family. It also clears
+`mul_mat_l[GGML_TYPE_F32]`, because the large scalar tile is the one upstream turns off for AMD and
+Intel whenever coopmat is unavailable: keeping it cost Leap 71.3 s against 24.1 s.
+
+`runtime-recipe.json` declares the patch and its digest, so the recipe digest changed and a runtime
+built without the patch no longer validates. `build-ggml-runtime.sh` applies the declared patches to
+the verified checkout and restores it afterwards, and GGML then reports the pinned commit with a
+`-dirty` suffix, which `is_pinned_commit` accepts explicitly.
+
+Measured B580 cost, same twelve-second inputs before and after:
+
+| Model | before | after |
+| --- | ---: | ---: |
+| Basic Pitch | 2.61 s | 1.93 s |
+| RMVPE | 2.54 s | 2.28 s |
+| FCPE | 1.54 s | 1.68 s |
+| GAME medium | 2.20 s | 2.35 s |
+| Denoise | 7.73 s | 7.49 s |
+| Qwen ASR | 5.42 s | 6.40 s |
+| Leap separation | 21.34 s | 24.14 s |
+| FireRed | wrong output | 6.08 s |
+
+Only Leap pays a real cost, about 13%. Output change is small where it is not decisive: RMVPE's
+1,201 frames moved by at most `0.00167` Hz with no voiced-state flips, and Basic Pitch's activations
+are bit-identical, while FireRed went from an empty transcript to the reference text.
+
+## Installed artifact migration
+
+STARS, ROSVOT and FireRed were converted before this runtime existed, by a converter that recorded
+native PyTorch dimension order and, for the two conformer models, tensor names at or above GGML's
+64-character limit. Upstream GGML refuses to open those containers:
+
+- `rosvot`: `gguf_init_from_reader: tensor name 88 is too long: 64 >= 64`
+- `stars`: `gguf_init_from_reader: tensor name 77 is too long: 69 >= 64`
+- `firered_asr2_aed`: `tensor shape mismatch: encoder.input_preprocessor.conv.0.weight; expected [3, 3, 1, 32], found [32, 1, 3, 3]`
+
+`cargo xtask gguf <stars|rosvot|firered> SOURCE OUTPUT` performs the container migration in Rust:
+payload bytes and offsets are copied verbatim, dimensions are reversed into GGML order, and
+structural path components are abbreviated where a name would otherwise be too long. Its output is
+byte-identical to the historical Python scripts for all three models, checked against the surviving
+migrated containers.
+
+Migrated container identities:
+
+| Model | sha256 | bytes |
+| --- | --- | ---: |
+| `stars` | `2d845732ce308b8bf89304c0c854557246a76032f593df9f0dc42c447aa9a893` | 201,085,024 |
+| `rosvot` | `ae208457b04cc11ef2dcd063dabf2d0864785a17981955366aac888390c148c8` | 48,194,496 |
+| `firered_asr2_aed` | `7724d4f01ac8c208670be968cef236b73f4276eddd0de8f85441b56bb6e9d132` | 4,686,918,112 |
+
+The catalog previously pinned FireRed's **pre**-migration digest, so it pinned a file the runtime
+cannot load; it now pins the migrated container.
+
+The installed containers were migrated on 2026-09-09 under explicit user authorisation, and the
+originals were kept rather than deleted:
+
+- `stars` and `rosvot` gained a new generation directory named by the migrated digest, and only
+  `current` plus the two top-level symlinks moved. Their previous generation is untouched, so
+  rolling back is a one-line change to `current`.
+- `firered_asr2_aed` has a flat directory, so its pre-migration container was moved to
+  `~/.local/share/uta-studio/runtime/pre-migration-backup-20260909/firered-f32.gguf`.
+
+All three then resolved and executed on the B580 through their store paths, which is what
+`StorePaths::ggml_model_path` reads: STARS produced 24 notes plus technique evidence, ROSVOT 15
+notes, and FireRed the reference text `你好世界`. Evidence:
+`test-artifacts/b580-store-paths-20260909T1150Z`.
+
+`audio.lead_partition` is the one capability still reported as unimplemented. It is the lead/backing/harmony partition product feature tracked by `tasks/final-features/17_LEAD_BACKING_HARMONY_PARTITION.md`, not a model backend gap.
+
+The per-model migration outcome and its device evidence are summarized in `tasks/remaining-models/NEXT_WINDOW_HANDOFF.md`.
+
+## Current runtime boundary
+
+- `native-inference/ggml-runtime`: Rust GGUF loading, graph construction, CPU/Vulkan execution, WAV/STFT/iSTFT, and the RoFormer, RMVPE, FCPE, Basic Pitch, GAME, JBM555, STARS, ROSVOT, FireRed, and Qwen implementations.
+- `native-inference/ggml-worker`: machine-protocol worker calling the Rust graph implementations in-process.
+- `native-inference/gpu-probes`: read-only Vulkan enumeration used for diagnostics and device matching; it does not create a device or run inference.
+- `native-inference/runtime-lock.json`: schema 3, one upstream shared-library runtime.
+- FFmpeg remains an audio codec subprocess boundary; it is not used for model inference.
+- `tools/` holds only the operation-recording and host-observation utilities required by `docs/ROFORMER_OPERATION_RECORDING.md`. No model conversion, model rewrite, or model execution script is tracked.
+
+## Verification status
+
+Passing focused suites on the current tree:
+
+- `bash dev.sh --command cargo test --locked -p uta-analysis-engine -p uta-studio-core`
+- `bash dev.sh --command cargo test --locked -p uta-runtime-manager`
+- `bash dev.sh --command cargo test --locked -p uta-ggml-runtime -p uta-ggml-worker`
+- `bash dev.sh --command cargo test --locked -p uta-studio-desktop`
+
+`cargo check --locked -p uta-ggml-runtime -p uta-ggml-worker --all-targets` is warning-free.
+
+Real AMD 780M smoke evidence exists for RMVPE, FCPE, Leap, PolarFormer, Denoise, Dereverb, Harmony, Basic Pitch, GAME small/medium/large, JBM555, ROSVOT, Qwen ASR, the Qwen aligner decoder, and the STARS/FireRed stages and model loads listed above.
+
+Real Intel Arc B580 evidence now exists for fifteen of the seventeen models: Basic Pitch, JBM555, FCPE, RMVPE, ROSVOT, STARS, GAME small/medium/large, PolarFormer, Leap, Denoise, Dereverb, Harmony, and the Qwen aligner all executed on the discrete B580 and published their typed artifact with `backend: ggml_vulkan`. Every published audio artifact is FLAC, 44.1 kHz, stereo, exactly 12.000 s, and non-silent. The boot ID stayed `582d1c5a-d3c9-44b6-b2d1-a1dd0f1a0fb6` across the whole sweep, so no host reset occurred during these bounded runs; that does not retire the previously recorded whole-machine power-off failures. Evidence: `test-artifacts/b580-all-models-20260909T0910Z/`.
+
+An invalid explicit Vulkan index failed with `selected Vulkan physical device is unavailable`, produced no model artifact, and did not fall back to CPU. Smoke success, finite output, and bounded parity do not establish broad production qualification.
+
+## Full-song Intel B580 validation (2026-09-09)
+
+One real 354.88-second song, 44.1 kHz stereo, every model in dependency order on the patched
+runtime, one worker process each. **All seventeen executions passed**, the boot ID never changed,
+and total GPU time was 21.9 minutes.
+
+| Execution | Wall | Output |
+| --- | ---: | --- |
+| RMVPE | 8.9 s | 35,489 frames to 354.88 s |
+| FCPE | 3.3 s | 35,489 frames to 354.88 s |
+| Basic Pitch | 9.5 s | 30,566 frames to 354.86 s |
+| GAME small | 14.7 s | 705 notes |
+| Leap separation | 428.6 s | vocals + instrumental, 354.880 s each |
+| GAME medium | 25.7 s | 721 notes |
+| GAME large | 46.7 s | 737 notes |
+| Denoise | 164.1 s | 354.880 s |
+| Dereverb | 82.6 s | 354.880 s |
+| Harmony | 164.8 s | lead + residual |
+| PolarFormer | 269.5 s | vocals + instrumental |
+| JBM555 | 8.5 s | 40 notes, chunked |
+| STARS | 18.9 s | 659 notes plus technique evidence |
+| ROSVOT | 5.6 s | 666 notes |
+| Qwen ASR | 25.1 s | multilingual transcript, 1 unfinished window |
+| Qwen aligner | 4.4 s | 8 timed word items |
+| FireRed | 35.6 s | transcript over 268 windows, 1 unfinished |
+
+The chain used real upstream outputs: Denoise, Dereverb, Harmony and JBM555 took Leap's published
+guide vocals, and STARS and ROSVOT took the RMVPE evidence from the same run. Evidence and ledger:
+`test-artifacts/b580-fullsong-final-20260909T1230Z`.
+
+An earlier run of the same sweep failed three executions on fixed budgets that only a full-length
+input reaches, and those are now fixed: JBM555 built one graph over the whole song and asked for a
+13 GB buffer, while Qwen ASR and FireRed failed the whole track because a decoder with nothing to
+transcribe runs to its token budget instead of predicting EOS. Instrumental windows are certain in
+a song, so both now drop that window and count it in the published evidence.
+
+### The three long-input limits this exposed, and their repairs
+
+None of them was a device or artifact problem. Every installed artifact loaded, including the three
+migrated containers and the newly imported Qwen F16, and every failure was a fixed budget that only
+a full-length input reaches.
+
+- **JBM555** built one graph over the whole input with a fixed 16 MiB graph arena
+  (`GRAPH_MEMORY_BYTES` in `native-inference/ggml-runtime/src/jbm555/graph.rs`). A 354.88-second
+  input needs more graph metadata than that, so `ggml_new_graph_custom` returned null and the
+  allocator then asked for 13 GB. It now runs `run_features_chunked` over 1,024-frame chunks with
+  64 frames of context, the same shape GAME and the RoFormers already used.
+- **Qwen ASR** allowed `DEFAULT_MAX_NEW_TOKENS = 256` per window, and window 9 of the song
+  exhausted it. The window was instrumental, so the decoder had nothing to transcribe and ran to
+  its budget instead of predicting EOS. Unfinished windows are now dropped and counted in
+  `unfinished_windows`; the run fails only when every window is unfinished.
+- **FireRed** allowed `MAX_GENERATED_TOKENS = 11` per ~2.3-second window. The reference speech
+  fixture needs five, so the value passed the unit fixture and was far too small for sung audio. It
+  is now `ENCODER_FRAMES`, and unfinished windows are handled the same way as Qwen's.
+
+## STARS and ROSVOT are not resolvable in production
+
+Every STARS and ROSVOT run recorded above, including the full-song validation, was given a model
+path directly out of `test-artifacts/`. Neither model has an installed generation in the managed
+store: `~/Documents/uta-studio/models/` holds only `source-models/stars-chinese-.../
+model_ckpt_steps_200000.ckpt`, and the only `stars-f32.gguf` and `rosvot-f32.gguf` on this machine
+are under `test-artifacts/`. `uta-runtime resolve model:stars` therefore answers `resource_missing`,
+so a real production analysis cannot reach either model even though both execute correctly.
+
+The catalog already declares the right filenames (`runtime-manager/src/catalog.rs`), so this is a
+missing installation and its provenance, not a code defect. The operator authorised fixing it in
+the post-measurement modification phase on 2026-09-09.
+
+## Next actions
+
+1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
+   digests, and confirm `uta-runtime resolve` answers for both.
+2. Act on `docs/PERFORMANCE_DIRECTION_2026-09-09.md`, in its measured order: overlap host work with
+   GPU execution, then make the CPU frontend fast, then cross-GPU chunk splitting, session reuse,
+   input caching, weight prefetch.
+3. Revisit the historical GPU-versus-reference differences (Basic Pitch `0.00344658`, RMVPE's
+   `282.36` Hz frame) now that Vulkan F32 matmul is exact; they were most likely that rounding.
+4. Add reference comparisons still missing per model: STARS/ROSVOT note evidence, PolarFormer,
+   Denoise, Dereverb, and Harmony former-implementation vectors, and FCPE layerwise vectors.
+5. Compare RMVPE frontend/CNN/GRU/decoder intermediate tensors around the remaining low-confidence
+   onset difference.
+6. Complete workspace formatting/check/test/clippy, product build, Nix packaging, identity scan, and
+   model-subprocess scan during the explicit release pass.
+
+## Release status
 
 | Scope | State | Current conclusion |
 | --- | --- | --- |
-| Final repository and packaged integration acceptance | NEEDS_REVIEW | The explicitly requested current `nix build .` passes. Follow-up 21J and card 22 have returned to `READY` after focused current-source repairs and regressions; card 21 still needs a fresh static parity reread. Whole-workspace plus wrapped-application smoke/final packaged acceptance remain a later explicit release pass. |
-| Production model release | NEEDS_REVIEW | RMVPE's newly integrated GGML/Vulkan route remains `BenchmarkCandidate` pending accepted real Vulkan evidence. Other model conclusions are unchanged; formal packaged release acceptance remains reserved. |
+| Model backend alignment to upstream GGML | DONE | All seventeen catalog models execute through Rust-owned graphs on the pinned upstream shared libraries. No app-owned C/C++ model source and no tracked model script remain. |
+| Current Rust GGML integration | NEEDS_REVIEW | Focused control-plane, runtime, worker, and desktop suites pass, and fifteen of seventeen models executed on both AMD 780M and Intel B580. FireRed's whole-chain decoder, the installed/pinned GGUF container mismatch, the missing Qwen ASR F16 artifact, strict numerical/perceptual parity, and runtime-manifest hardening remain. |
+| Final repository/package acceptance | PENDING | Whole-workspace, packaged-product, and Nix release checks are reserved for the explicit release pass. |
+| Production model release | PENDING | Do not infer production readiness from historical implementations or current smoke runs. |
 
-## Pending execution tasks
+## Operation provenance
 
-| # | Task | State | Gate |
-| ---: | --- | --- | --- |
-| 14 | `14_GLOBAL_BUBBLE_SMOKE.md` | READY | Bubbles A–E remain accepted for the exact routes tested at closure. The RMVPE leg used the retired OpenVINO route and does not qualify the later GGML/Vulkan implementation; RoFormer, FCPE, Basic Pitch, FireRed, cancellation and recovery evidence remains scoped to its tested backend. |
-| 15 | `../final-features/15_COMPILED_WORKFLOW_EXECUTOR.md` | READY | Studio serializes capability topology plus versioned typed fusion/provider intent through independently owned `uta.workflow_execution.v1` DTOs; it does not author backend node IDs, executable/runtime recipes or private worker parameters. `uta-analyze` independently validates schema, identity, providers, ports, semantic roles, required bindings, cycles and reachable outputs, then Engine/Runtime Manager resolve the exact executable DAG/runtime. App-core validates request/plan identity while accepting Engine-owned private resolution. Dependency order, ready-node priority, duplicate instances, exact analyzer attachments, disabled/deferred nodes, cancellation and CLI stdout purity remain covered by CPU fixtures. |
-| 16 | `../final-features/16_CONDITIONAL_EXPERT_SCHEDULER.md` | READY | `uta.conditional-scheduler.v1` implements `Always`, `Disabled`, `MaximumOnly`, `OnDisagreement` and legacy-equivalent `DisagreementWindows` as typed full-input/window/skip decisions. Relevant canonical regions receive deterministic 250 ms padding and 100 ms coalescing; FCPE and Basic Pitch consume only authorized bounded FLAC windows and map evidence back to canonical time. Unsupported bounded experts never silently run the full song. Optional unavailability remains explicit degradation, required loss fails closed, schedule decisions are retained in diagnostics, correlated dependency metadata remains preserved for Fusion, and cancellation stops later windows. Acceptance used deterministic CPU/fake fixtures only. |
-| 17 | `../final-features/17_LEAD_BACKING_HARMONY_PARTITION.md` | READY | The earlier card framing conflicted with the authoritative separation design. `audio.lead_isolate` is foreground/support isolation and truthfully yields LeadVocal plus VocalResidual; `audio.lead_partition` means partitioning simultaneous foreground singers and remains future/optional with `implementation_exists=false`. Engine and GGML/OpenVINO protocols no longer publish subtraction residual as BackingVocal, Processing Studio no longer advertises/inserts a fake Backing/Harmony partition node, and Backing/Harmony stem requests fail closed before model execution. Editor Lead/Harmony/Backing/Adlib remain chart roles. Focused CPU tests pass without model or accelerator execution. |
-| 17A | `../final-features/17A_BACKING_HARMONY_SEMANTIC_ROUTE_AUDIT.md` | SKIPPED_ALREADY_CLOSED | Internet/source audit still found no authoritative model that emits independent product BackingVocal and HarmonyVocal roles; UVR Karaoke is one-target lead isolation and MedleyVox is generic main-vs-rest/N-singer separation. The authoritative final-v1 design already declares multiple-foreground `audio.lead_partition` future/optional, so no new model route is required to close final-v1. No weights or runtime were downloaded. |
-| 18 | `../final-features/18_STARS_TECHNIQUE_STYLE_P1.md` | READY | Exact-checkpoint P1 Stage D/E conversion, Runtime Manager import with immutable provenance metadata, PyTorch/ORT/OpenVINO CPU parity, real CPU repeat/cancellation, and explicitly authorized bounded Intel GPU parity all pass. `technique.analyze` is typed and reachable through workflow execution, artifact persistence and Studio's read-only uncalibrated evidence strip; technique/style evidence never changes GAME note boundaries or creates notes. Installed generation is `6317f593…484b2`, manifest `37036e22…bef9e`; the effective OpenVINO route is policy-admitted as `ProductionPinned`, while unresolved license identity and broad P1 quality remain visible advisory caveats. |
-| 19 | `../final-features/19_ENGINE_RHYTHM_QUANTIZATION.md` | READY | Engine-owned `rhythm-grid-dp-v1` now transforms only symbolic Candidate note ranges between `fusion.candidate_graph` and `finalize.vocal_chart`. It requires explicit BPM/grid and Candidate output, preserves source bounds, positive rests, minimum duration, non-overlap and caller hard boundaries, and leaves continuous F0/raw evidence plus unquantized SingingAnalysis unchanged. Typed quantization reports cross the independently owned `uta-analyze`/app-core wire and enter Candidate/result provenance and fingerprinting. Settings intent is persisted and missing BPM blocks Preview; Editor quantize remains a separate Authored command. CPU suites/process-boundary scans pass with no model or accelerator execution. |
-| 20A | `../final-features/20A_STUDIO_BACKEND_UI_PARITY_CLOSURE.md` | READY | Studio now reads exact model/capability readiness for vocal extraction, instrumental extraction, lead isolation, RMVPE and GAME through app-core `RuntimeCliClient` DTOs rather than RoFormer bundle health. Canonical-path advanced controls that were not encoded into AnalyzeRequest/Workflow are retired. Processing Studio explicitly selects all five Engine execution conditions including `MaximumOnly`, separates priority from hard dependencies, labels `LeadVocal + VocalResidual`, and routes `Preview run…` through exact Engine Preview with visible Workflow identity. Runtime validation badges are fact-driven; quantization and read-only uncalibrated technique evidence are reachable; Candidate/Review/Editor affordances have typed UI action coverage. app-core 470 and Desktop 243 CPU/UI tests pass; decoupling and line-limit scans are clean with no model or accelerator execution. |
-| 20 | `../final-features/20_PRODUCT_E2E_FEATURE_BUBBLE.md` | READY | Product Workflow/process, semantic lanes, conditional Candidate/Fusion, Chinese/English supplied-canonical plans, Editor/Workbench, cancellation and Studio-owned UTZ/UltraStar export passed through live control-plane or explicitly labeled replay/fail-closed model seams. The focused Editor blocker is closed: USDX chart text is no longer treated as original audio; the authorized declared audio is resolved, non-audio preview failure preserves source/removes partial output, and diagnostics decode/prepare instrumental, original and vocal roles. No new model/GPU context was created; existing advisory model quality, calibration, provenance and license caveats are unchanged. |
-| 21 | `../final-features/21_FINAL_DESIGN_PARITY_AUDIT.md` | NEEDS_REVIEW | Follow-ups 21E–21J and card 22 are now closed in current source. Card 21 still requires a fresh static parity reread over those late repairs before its conclusion can be restored; the reserved whole-workspace/Nix/final packaged acceptance remains a later explicit release pass. |
-| 21D | `../final-features/followups/21D_ANALYSIS_EXPERT_SYSTEM_COMPLETION.md` | READY | All phases A–J are implemented. The final tranche narrows the Studio workflow extension to capability topology plus versioned typed fusion/provider intent; Engine/Runtime Manager own backend DAG/runtime/private parameters. Plan Preview queues its exact Engine request, Analysis exposes an independent multi-output run sheet, Preview remains read-only, and model lifecycle is confined to Models & runtime. EN/zh-CN/ja catalogs, user guides, API/UI capability coverage, focused CPU suites, decoupling scans and source-size checks are current. |
-| 21E | `../final-features/followups/21E_AI_JUDGMENT_FUSION_CLOSURE.md` | READY | Runtime Manager owns/configures/resolves manifest-verified `tool:fusion_agent_adapter`; Studio carries typed decision intent only. Engine bounds and supervises adapter I/O, limits AI to verbatim real Candidate selection, hard-fails without Algorithm fallback, validates the shared final path and records mode-specific adapter/candidate/response provenance with preserved-revision-only AI reuse semantics. Preview/privacy/error copy and EN/zh-CN/ja/user guides are current. |
-| 21F | `../final-features/followups/21F_EXPORT_AND_EDITOR_EVIDENCE_CLOSURE.md` | READY | UltraStar bundles stage all files, publish no-replace assets before a chart commit marker, roll back only export-owned outputs and clean staging. App Core independently validates current Engine SingingAnalysis candidates, selection provenance/digests/units and projects real read-only Editor evidence without backend crate imports or fabricated confidence. |
-| 21G | `../final-features/followups/21G_FINAL_AUDIT_RUNTIME_AND_AUDITION_CLOSURE.md` | READY | Adapter request writing is bounded and shares timeout/cancel/process-tree supervision with output; already-semantic Lead/CleanLead outputs materialize lossless source without another model pass; Editor exposes typed immutable artifact A/B, historical revision and independent waveform selection. |
-| 21H | `../final-features/followups/21H_EDITOR_ARTIFACT_AUDITION_LIFECYCLE_CLOSURE.md` | READY | Artifact A/B/direct playback/waveform bindings reconcile against current authorized revisions and verified immutable backing files. Missing or invalidated sources stop/fall back safely; every waveform decode requires freshly confirmed stopped native playback, including Linux asynchronous GStreamer pause/stop transitions. Final focused reread found no remaining High/Medium lifecycle issue. |
-| 21I | `../final-features/followups/21I_STEP4_FINAL_FUSION_POLICY_CONVERGENCE.md` | READY | Step 4 now authors only Algorithm versus AI judgment; Stage 3 exclusively controls evidence participation. Engine resolves contour, GAME/F0 segmentation and onset/context use internally, constructs one selector-independent Candidate pool, records explicit FCPE/RMVPE provenance with source-correct uncertainty, preserves Basic Pitch plus Acoustic context, and keeps unavailable saved AI intent visible and fail-closed. EN/zh-CN/ja copy, exact Plan Preview, migration, planner, selector and common-validation regressions pass. |
-| 21J | `../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md` | READY | Current source closes the late melody-path findings: persistence-aware trustworthy F0 handling, auditable F0 consolidation alternatives, exact bounded second-order decoding, collision-safe expanded identities, target-relative peer support and selector-independent hard-boundary/path validation are covered by deterministic regressions. |
-| 22 | `../final-features/22_UI_WORKFLOW_EXECUTION_UX_CONVERGENCE.md` | READY | Exact bindings remain inspectable while only one active continuation per source is solid and secondary bindings are dashed. Node percentages require task-correlated completed/total units; split invocations retain presentation identity; Charts opens editor-ready songs directly and exposes compatibility-only chart deletion; exact compatibility-path pins are recognized with localized failure copy; partial Preview trims unrequested invocation capabilities and output ports. Focused Analysis Engine, app-core and Desktop suites pass. |
-| 23 | `../final-features/23_2026_SOTA_SEPARATION_AND_NOTE_TRANSCRIPTION_UPGRADE.md` | READY | Leap XE90 and public PolarFormer are the independent default native separators; JBM555 is an executable Japanese Maximum challenger feeding the shared Candidate pool. Workflow schema 3, Processing Studio DAG and Models & runtime settings expose all three. Leap's original F32 GGUF runs through GGML/Vulkan with the three required safety controls; PolarFormer converts losslessly by tensor type but needs a distinct GGML graph; JBM555 now runs through its dedicated Rust GGUF worker with WGPU/Vulkan as the explicitly promoted `ProductionPinned` default and CPU as diagnostic. An earlier seven-frame GGML CPU probe was conversion research only, not the current backend. Focused suites and `nix build .` pass. Future VocalParse/T3MS/124-band resources remain separately out of scope. |
-
-## State rules
-
-Allowed states:
-
-```text
-PENDING
-RUNNING
-READY
-BLOCKED
-FAILED_SAFE
-SKIPPED_ALREADY_CLOSED
-SKIPPED_PRECONDITION
-NEEDS_REVIEW
-```
-
-`RUNNING` is progress metadata only; it is not a concurrency gate.
-
-A repair that reaches `READY` updates the resource's effective current row directly. Do not recreate historical failure logs; retain only the current conclusion and any blocker that still matters.
-
-Cards 15–21 and 20A must obey `tasks/final-features/PROCESS_BOUNDARY_RULES.md` and `tasks/final-features/STUDIO_BACKEND_UI_PARITY.md`.
-
-For accelerator authorization, follow `AGENTS.md`: non-Qwen Vulkan/Level Zero calls require explicit user permission; Qwen is exempt; other calls have no repository GPU restriction.
+Per the user's 2026-09-07 direction, each independent change and subsequent execution is committed and recorded with `tools/record-operation.py`. A missing completion record means unknown outcome. See `docs/ROFORMER_OPERATION_RECORDING.md`.

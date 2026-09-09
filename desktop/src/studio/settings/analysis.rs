@@ -105,7 +105,7 @@ pub(crate) fn spawn_analysis_settings(
         "03 · LYRICS & ALIGNMENT",
         "Transcript authority and timing defaults",
         "Online lyric search is an explicit Song Detail action. Preview never downloads or writes lyrics; supplied canonical text, reference text and generated transcription retain distinct authority.",
-        "Automatic · Qwen baseline",
+        "Qwen3-ASR + Qwen3 Forced Aligner · Rust/GGML",
         None,
         None,
         |group| {
@@ -114,7 +114,7 @@ pub(crate) fn spawn_analysis_settings(
                 font.clone(),
                 theme,
                 "Lyrics execution",
-                "The Engine requests transcription and forced alignment only when the selected outputs require them. Optional challengers never replace caller-canonical lyrics.",
+                "Generated transcription uses Qwen3-ASR 1.7B and word timing uses Qwen3 Forced Aligner 0.6B through the packaged Rust/GGML Engine. Caller-provided lyrics keep their own authority.",
                 None::<(&str, UiAction)>,
             );
         },
@@ -126,7 +126,7 @@ pub(crate) fn spawn_analysis_settings(
         "04 · PITCH, NOTES & FUSION",
         "Continuous evidence and semantic-note policy",
         "Continuous F0, note boundaries, onset support and global Candidate fusion remain separate concepts. Per-song expert policy is configured in Processing Studio.",
-        "RMVPE + GAME · managed fusion",
+        "RMVPE + GAME · optional GGML experts",
         None,
         None,
         |group| {
@@ -135,7 +135,7 @@ pub(crate) fn spawn_analysis_settings(
                 font.clone(),
                 theme,
                 "Expert policy",
-                "Plan Preview is authoritative for the selected primary evidence, conditional challengers, degraded fallback and requested outputs.",
+                "Plan Preview is authoritative for the resolved RMVPE pitch route, GAME size, optional FCPE/Basic Pitch/JBM555/STARS/ROSVOT experts, and Engine-owned fusion policy for this request.",
                 None::<(&str, UiAction)>,
             );
         },

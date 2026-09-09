@@ -24,17 +24,19 @@ The separated-architecture handoff supersedes earlier monolithic Singing/Audio d
 - Studio owns product workflow/control-plane behavior and does not prepare model tensors.
 - Studio communicates with backend components through packaged CLI machine protocols; it does not import backend implementation crates.
 - Production resolution is fail-closed: installed, validated, and usable are distinct states.
-- The current release explicitly admits every packaged model's effective non-CPU route as `ProductionPinned`; CPU reference routes remain diagnostic/Experimental, and missing installation/runtime/structural requirements still fail closed.
-- Normal Studio analysis sends `RuntimePolicy::Production`; only an explicit CPU diagnostic request may use Experimental policy.
+- Every model's inference is Rust-owned graph construction over the pinned upstream GGML shared-library ABI. Vulkan is the default; CPU is explicit experimental mode, and GPU/integrated-GPU failures never fall back to it.
+- Normal Studio analysis sends `RuntimePolicy::Production`; missing installation, runtime, model implementation, or structural requirements fail closed.
 - Runtime generations are immutable and atomically published/leased.
 - Candidate analysis never overwrites Authored chart truth.
-- The baseline singing chain is vocal extraction -> lead isolation -> Qwen ASR/Aligner + RMVPE + GAME + DSP -> Fusion/Candidate -> Stage-4 decision. Algorithm/HSMM is the deterministic default; explicit AI judgment is the constrained external alternative.
-- GAME remains the preferred semantic note-region baseline; F0-derived regions are an explicit degraded fallback governed by the expert-fusion repair addendum, never a silent GAME replacement.
-- Instrumental extraction is an independent branch from the original mix.
+- The current singing chain is optional vocal extraction/lead cleanup -> transcription and forced alignment -> RMVPE + Maximum-only FCPE + Acoustic DSP -> GAME note evidence with optional challengers -> Fusion/Candidate -> Stage-4 decision. Algorithm/HSMM is the deterministic default; explicit AI judgment is the constrained external alternative.
+- Generated transcription and forced alignment run on Rust/upstream-GGML Qwen3 providers, with FireRed as an optional never-substituting transcript challenger; caller-provided lyrics remain independent input.
+- Leap XE90 owns one dual-output invocation for vocals and the instrumental residual. PolarFormer is an explicit experimental strategy, not an independently scheduled default instrumental branch.
 - `audio.lead_partition` is future capability work, not a v1 baseline prerequisite.
 - Stage 4 defaults to deterministic Algorithm fusion; explicit AI judgment is allowed in normal Production analysis, may use a networked provider, and may only select from real Engine candidates.
 - Runtime Manager owns the external `tool:fusion_agent_adapter` executable/readiness; Studio selects decision mode but does not send a raw adapter path to Analysis Engine.
 - AI-judgment failure never silently falls back to Algorithm, and fresh AI decisions are not assumed deterministic-cache reusable.
+
+Older linked specifications may contain historical model examples. The current executable inventory and schema-7 behavior in `tasks/remaining-models/STATE.md`, `docs/AUDIO_MODELS.md`, and `docs/KEY_CONCLUSIONS.md` override those examples.
 
 ## Supporting specifications
 

@@ -211,22 +211,14 @@ fn median(mut samples: Vec<u64>) -> Option<u64> {
 /// those measurements; Leap is extrapolated from its current 6-second run.
 fn fallback_weight(plan: &AnalysisPlanWireV1, capability: &str, model: Option<&str>) -> u64 {
     match model {
-        Some("bs_roformer_leap_xe90_vocals") => 1_358_000,
+        Some("bs_roformer_leap_xe90_vocals") | Some("bs_roformer_leap_xe90_instrumental") => {
+            1_358_000
+        }
         Some("bs_polarformer_public_instrumental") => 208_000,
-        Some("melband_roformer_inst_v2") => 174_533,
         Some("melband_roformer_harmony") => 151_525,
         Some("melband_roformer_denoise_aufr33") => 152_887,
         Some("melband_roformer_dereverb_anvuew") => 81_580,
-        Some("qwen3_asr_1_7b") => 150_000,
-        Some("qwen3_forced_aligner_0_6b") => 75_000,
-        Some("firered_asr2_aed") => 87_660,
         Some("rmvpe") => 37_000,
-        Some("game") => 19_950,
-        Some("fcpe") => 3_560,
-        Some("basic_pitch") => 3_800,
-        Some("stars") => 17_450,
-        Some("rosvot") => 13_050,
-        Some("jbm555_cectc_80") => 18_000,
         _ => match capability {
             "audio.decode" => 8_000,
             "analysis.acoustic_dsp" => 10_000,
@@ -248,20 +240,11 @@ fn fallback_weight(plan: &AnalysisPlanWireV1, capability: &str, model: Option<&s
 fn default_model_for_capability(capability: &str) -> Option<&'static str> {
     match capability {
         "audio.extract_vocals" => Some("bs_roformer_leap_xe90_vocals"),
-        "audio.extract_instrumental" => Some("bs_polarformer_public_instrumental"),
+        "audio.extract_instrumental" => Some("bs_roformer_leap_xe90_vocals"),
         "audio.lead_isolate" => Some("melband_roformer_harmony"),
         "audio.denoise" => Some("melband_roformer_denoise_aufr33"),
         "audio.dereverb" => Some("melband_roformer_dereverb_anvuew"),
-        "speech.transcribe" => Some("qwen3_asr_1_7b"),
-        "speech.transcribe.challenger" => Some("firered_asr2_aed"),
-        "speech.align" => Some("qwen3_forced_aligner_0_6b"),
         "pitch.track" | "pitch.secondary.rmvpe" => Some("rmvpe"),
-        "pitch.secondary" | "pitch.secondary.fcpe" => Some("fcpe"),
-        "notes.game" => Some("game"),
-        "notes.basic_pitch" => Some("basic_pitch"),
-        "notes.rosvot" => Some("rosvot"),
-        "notes.stars" | "technique.analyze" => Some("stars"),
-        "notes.jbm555" => Some("jbm555_cectc_80"),
         _ => None,
     }
 }
@@ -301,15 +284,15 @@ mod tests {
             file_hash.to_string(),
             EngineProgressState {
                 units: BTreeMap::from([(
-                    "invocation:notes.stars".to_string(),
+                    "invocation:pitch.track".to_string(),
                     ProgressUnit {
                         weight: 100,
                         fraction: 0.0,
                     },
                 )]),
                 node_to_unit: HashMap::from([(
-                    "stars".to_string(),
-                    "invocation:notes.stars".to_string(),
+                    "pitch".to_string(),
+                    "invocation:pitch.track".to_string(),
                 )]),
             },
         );
@@ -317,11 +300,11 @@ mod tests {
             frame_type: "node_progress".to_string(),
             schema_version: 1,
             request_id: "request".to_string(),
-            node_id: "stars".to_string(),
-            presentation_node_id: Some("notes.stars".to_string()),
-            capability_id: "notes.stars".to_string(),
-            model_id: Some("stars".to_string()),
-            implementation: "openvino".to_string(),
+            node_id: "pitch".to_string(),
+            presentation_node_id: Some("pitch.track".to_string()),
+            capability_id: "pitch.track".to_string(),
+            model_id: Some("rmvpe".to_string()),
+            implementation: "ggml".to_string(),
             progress: Some(0.37),
             work_units_completed: None,
             work_units_total: None,
@@ -351,14 +334,14 @@ mod tests {
                 &plan,
                 "audio.extract_vocals",
                 Some("bs_roformer_leap_xe90_vocals")
-            ) > fallback_weight(&plan, "pitch.secondary.fcpe", Some("fcpe"))
+            ) > fallback_weight(&plan, "pitch.track", Some("rmvpe"))
         );
         assert!(
             fallback_weight(
                 &plan,
                 "audio.extract_instrumental",
-                Some("bs_polarformer_public_instrumental")
-            ) > fallback_weight(&plan, "notes.game", Some("game"))
+                Some("bs_roformer_leap_xe90_vocals")
+            ) > fallback_weight(&plan, "analysis.acoustic_dsp", None)
         );
     }
 

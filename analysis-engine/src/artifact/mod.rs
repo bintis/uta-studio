@@ -21,10 +21,8 @@ pub use advanced_notes::{
     AdvancedRawTechniqueV1, DependencyIdentity, DependencyKind, GlobalStyleIntervalV1,
     TechniqueEvidenceV1, TechniqueIntervalV1, parse_advanced_note_evidence,
 };
-pub use alignment::{
-    AlignmentArtifactV1, AlignmentItemV1, parse_qwen_alignment, qwen_alignment_uses_coarse_fallback,
-};
-pub use basic_pitch::{BasicPitchEvidenceV3, BasicPitchFrameV3, parse_basic_pitch_evidence};
+pub use alignment::{AlignmentArtifactV1, AlignmentItemV1, parse_alignment_artifact};
+pub use basic_pitch::{BasicPitchEvidenceV1, BasicPitchFrameV1, parse_basic_pitch_evidence};
 pub use firered::parse_firered_transcript;
 pub use game::{GameEvidenceV1, GameNoteEvidenceV1, parse_game_evidence};
 pub use io::{artifact_ref_for_existing, write_json_artifact};
@@ -43,6 +41,6 @@ pub use timed_notes::{
     TimedNoteHypothesisV1,
 };
 pub use transcript::{
-    TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1, parse_qwen_transcript,
+    TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1, parse_transcript_artifact,
 };
 pub use vocal_chart::{CandidateVocalChartV1, finalize_candidate_vocal_chart};

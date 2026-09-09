@@ -24,9 +24,9 @@ pub mod smoke;
 pub use acquire::{AcquisitionTransport, HttpAcquisitionTransport};
 pub use catalog::{
     AcquisitionMethod, AcquisitionSpec, AlgorithmIdentity, BackendCapability, BundleCatalogEntry,
-    ConvertedArtifactIdentity, LicenseInfo, ModelCatalogEntry, NativeBackend, NativeDeviceClass,
-    NativeModelRuntime, ResourceCatalog, RuntimeCatalogEntry, SourceArtifactIdentity,
-    SourceIdentity, ToolCatalogEntry,
+    ConvertedArtifactIdentity, LicenseInfo, ModelArtifactSpec, ModelCatalogEntry, NativeBackend,
+    NativeDeviceClass, NativeModelRuntime, ResourceCatalog, RuntimeCatalogEntry,
+    SourceArtifactIdentity, SourceIdentity, ToolCatalogEntry,
 };
 pub use doctor::{DiagnosticCheck, DiagnosticSeverity, DoctorReport};
 pub use error::{RuntimeManagerError, RuntimeManagerResult};
@@ -45,12 +45,9 @@ pub use resolver::{
     ResolvedModel, ResolvedTool, ResourceDetails, ResourceMetadata, RuntimeManager,
 };
 pub use resource::{ModelId, ResourceKind, ResourceRef};
-pub use runtime_lock::{GGML_RUNTIME_RECIPE_SHA256, OPENVINO_WORKER_RECIPE_SHA256};
 pub use runtime_lock::{
-    GenericRuntimePolicyLock, NativeRuntimeLock, OpenVinoLock, QwenAlignLock, QwenAsrLock,
-    RMVPE_GGUF_CONVERSION_RECIPE_SHA256, RMVPE_GGUF_SHA256, RMVPE_GGUF_SIZE_BYTES,
-    RMVPE_SOURCE_SHA256, RUNTIME_LOCK_JSON, RuntimeComponents, RuntimePolicyLock,
-    native_runtime_lock, runtime_recipe_digest,
+    GGML_RUNTIME_RECIPE_SHA256, NativeRuntimeLock, RMVPE_GGUF_SHA256, RMVPE_GGUF_SIZE_BYTES,
+    RUNTIME_LOCK_JSON, RuntimePolicyLock, native_runtime_lock, runtime_recipe_digest,
 };
 pub use smoke::SmokeReport;
 pub use state::{

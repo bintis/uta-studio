@@ -1,4 +1,4 @@
-use crate::artifact::{AcousticEvidenceV1, BasicPitchEvidenceV3};
+use crate::artifact::{AcousticEvidenceV1, BasicPitchEvidenceV1};
 
 use super::baseline::{BoundaryEvidenceSet, decide_fractional_target};
 use super::{
@@ -182,7 +182,7 @@ fn has_word_edge(words: &[CanonicalWordBoundary], time: u64) -> bool {
     })
 }
 
-fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidenceV3>, time: u64) -> bool {
+fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidenceV1>, time: u64) -> bool {
     evidence.is_some_and(|evidence| {
         let start = time.saturating_sub(BOUNDARY_EVIDENCE_TOLERANCE);
         let end = time.saturating_add(BOUNDARY_EVIDENCE_TOLERANCE);
@@ -241,7 +241,7 @@ fn consolidation_range_is_clear(
     words: &[CanonicalWordBoundary],
     curve: &[F0Point],
     acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     caller_boundaries: &[BoundaryAlternative],
     persistent_shifts: &[(u64, f32)],
 ) -> bool {
@@ -341,7 +341,7 @@ pub(crate) fn f0_consolidation_challengers(
     primary_pitch_owner: &str,
     curve: &[F0Point],
     acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     caller_boundaries: &[BoundaryAlternative],
 ) -> Result<Vec<BoundaryAlternative>, String> {
     if boundaries.kind == BoundaryEvidenceKind::F0Derived || boundaries.segments.len() < 2 {
@@ -458,7 +458,7 @@ pub(crate) fn validate_candidate_context_relations(
     rmvpe_curve: &[F0Point],
     fcpe_curve: &[F0Point],
     acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
 ) -> Result<(), String> {
     let acoustic_window = acoustic.map(|evidence| {
         u64::from(evidence.window_samples).saturating_mul(1_000_000)
@@ -948,15 +948,15 @@ mod tests {
 
     #[test]
     fn an_internal_measured_attack_blocks_the_whole_consolidated_range() {
-        let basic_pitch = BasicPitchEvidenceV3 {
-            frames: vec![crate::artifact::BasicPitchFrameV3 {
+        let basic_pitch = BasicPitchEvidenceV1 {
+            frames: vec![crate::artifact::BasicPitchFrameV1 {
                 time: 250_000,
                 note_activation: 0.9,
                 onset_activation: 0.95,
                 contour_class: 42,
                 contour_activation: 0.8,
             }],
-            model_manifest_sha256: "a".repeat(64),
+            model_gguf_size_bytes: 144_512,
             runtime_manifest_sha256: "b".repeat(64),
         };
         let challengers = f0_consolidation_challengers(

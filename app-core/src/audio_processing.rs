@@ -14,9 +14,8 @@ use crate::backend_cli::{
 fn studio_audio_operation(model_id: &str) -> Option<&'static str> {
     match model_id {
         "bs_roformer_leap_xe90_vocals" => Some("separate_vocals"),
+        "bs_roformer_leap_xe90_instrumental" => Some("separate_instrumental"),
         "bs_polarformer_public_instrumental" => Some("separate_instrumental"),
-        "jbm555_cectc_80" => Some("transcribe_singing_notes"),
-        "melband_roformer_inst_v2" => Some("separate_instrumental"),
         "melband_roformer_harmony" => Some("separate_harmony"),
         "melband_roformer_denoise_aufr33" => Some("denoise"),
         "melband_roformer_dereverb_anvuew" => Some("dereverb"),
@@ -119,17 +118,11 @@ fn audio_model_status_from_details(
         purpose: details.metadata.purpose,
         architecture: match model_id {
             "bs_polarformer_public_instrumental" => "polarformer",
-            "jbm555_cectc_80" => "jbm555_cectc",
             _ => "roformer",
         }
         .to_string(),
         operation: operation.to_string(),
-        runner: match model_id {
-            "bs_roformer_leap_xe90_vocals" | "bs_polarformer_public_instrumental" => "native_ggml",
-            "jbm555_cectc_80" => "native_gguf",
-            _ => "native_roformer",
-        }
-        .to_string(),
+        runner: "native_ggml".to_string(),
         supported_backends: details
             .metadata
             .backends
@@ -158,10 +151,7 @@ fn audio_model_status_from_details(
 
 fn native_backend_label(backend: NativeBackendWireV1) -> &'static str {
     match backend {
-        NativeBackendWireV1::OpenVino => "openvino",
-        NativeBackendWireV1::Vulkan => "vulkan",
-        NativeBackendWireV1::NativeDsp => "native_dsp",
-        NativeBackendWireV1::CpuReference => "cpu_reference",
+        NativeBackendWireV1::Ggml => "ggml",
     }
 }
 

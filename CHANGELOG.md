@@ -2,6 +2,15 @@
 
 This changelog is generated from git history.
 
+## 0.8.4 — 2026-09-10
+
+### Upstream GGML Migration and Protocol Stabilization
+
+- Migrated native audio model inference to pure Rust graphs calling upstream GGML shared libraries, removing custom C/C++ shims, subprocess runners, and legacy OpenVINO/WGPU execution routes.
+- Stabilized the GGML runtime manifest with unnumbered, capability-based fields, removing rigid schema and recipe version checks.
+- Streamlined the native worker protocol by eliminating numeric protocol version fields and standardizing on fixed message types with component verification.
+- Stabilized the Runtime Manager runtime identifier to `ggml_vulkan` and decoupled catalog, manifest, and lock structures from arbitrary version constraints.
+
 ## 0.8.3 — 2026-09-02
 
 ### Lyrics Workbench

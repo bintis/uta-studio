@@ -196,9 +196,7 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
         data_path: None,
         cache_paths: config.cache_paths.clone(),
         compute_backend: match config.compute_backend.as_deref() {
-            Some("openvino") => app_core::ComputeBackend::OpenVino,
-            Some("vulkan") => app_core::ComputeBackend::Vulkan,
-            Some("diagnostic_cpu") => app_core::ComputeBackend::DiagnosticCpu,
+            Some("ggml" | "ggml_vulkan" | "vulkan") => app_core::ComputeBackend::Ggml,
             _ => app_core::ComputeBackend::Auto,
         },
         model_target: request.target,

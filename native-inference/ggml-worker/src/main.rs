@@ -1,11 +1,22 @@
+#![allow(clippy::all)]
+
 mod audio;
 mod engine;
+mod firered;
+mod game;
+mod jbm555;
+mod pitch_input;
 mod protocol;
+mod qwen;
+mod qwen_asr;
+mod rosvot;
 mod runtime;
+mod stars;
+mod stars_g2p;
 
 use std::io::BufRead;
 
-use protocol::{PROTOCOL_VERSION, WorkerCommand, WorkerFrame, emit};
+use protocol::{WorkerCommand, WorkerFrame, emit};
 
 fn run_task(
     task_id: &str,
@@ -20,10 +31,24 @@ fn run_task(
     let source = input_artifacts
         .first()
         .ok_or_else(|| "GGML task has no input audio artifact".to_string())?;
+    let secondary_source = if matches!(model_id, "jbm555_cectc_80" | "stars" | "rosvot") {
+        if input_artifacts.len() != 2 {
+            let expected = if model_id == "jbm555_cectc_80" {
+                "JBM555 requires exactly two input artifacts: original mix and prepared vocal"
+            } else {
+                "STARS and ROSVOT require exactly two input artifacts: prepared vocal and shared RMVPE evidence"
+            };
+            return Err(expected.to_string());
+        }
+        input_artifacts.get(1).map(std::path::PathBuf::as_path)
+    } else {
+        None
+    };
     let outputs = engine::run(
         task_id,
         model_id,
         source,
+        secondary_source,
         output_dir,
         config,
         |fraction, message, work_units| {
@@ -58,9 +83,7 @@ fn main() {
         std::process::exit(2);
     }
     if emit(WorkerFrame::Ready {
-        protocol: PROTOCOL_VERSION,
         component: "uta-ggml-worker",
-        runtime_recipe_digest: runtime::RECIPE_DIGEST,
     })
     .is_err()
     {
@@ -88,18 +111,22 @@ fn main() {
                 continue;
             }
         };
-        if protocol::command_protocol(&command) != PROTOCOL_VERSION {
-            let _ = emit(WorkerFrame::Error {
-                task_id: None,
-                code: "unsupported_protocol",
-                message: "unsupported native worker protocol",
-                retryable: false,
-            });
-            continue;
-        }
         match command {
-            WorkerCommand::Quit { .. } => break,
-            WorkerCommand::Cancel { task_id, .. } => {
+            WorkerCommand::Quit => break,
+            WorkerCommand::Devices => match engine::device_inventory() {
+                Ok(devices) => {
+                    let _ = emit(WorkerFrame::Devices { devices: &devices });
+                }
+                Err(message) => {
+                    let _ = emit(WorkerFrame::Error {
+                        task_id: None,
+                        code: "device_enumeration_failed",
+                        message: &message,
+                        retryable: false,
+                    });
+                }
+            },
+            WorkerCommand::Cancel { task_id } => {
                 let _ = emit(WorkerFrame::Error {
                     task_id: Some(&task_id),
                     code: "cancelled",

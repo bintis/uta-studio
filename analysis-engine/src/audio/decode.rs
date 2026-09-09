@@ -206,7 +206,7 @@ pub(crate) fn decode_audio_with_cancellation(
         };
         carry.extend_from_slice(&bytes);
         let complete = carry.len() / 4 * 4;
-        for sample in carry[..complete].chunks_exact(4) {
+        for sample in carry[..complete].as_chunks::<4>().0 {
             let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
             if !value.is_finite() {
                 invalid_sample = true;
@@ -332,131 +332,6 @@ pub(crate) fn decode_audio_with_cancellation(
         metrics,
         profile,
     })
-}
-
-pub(crate) fn extract_audio_window(
-    ffmpeg: &Path,
-    source: &Path,
-    output: &Path,
-    source_offset: u64,
-    duration: u64,
-    cancellation: &CancellationToken,
-) -> EngineResult<()> {
-    if duration == 0 {
-        return Err(EngineError::new(
-            EngineErrorCode::TimelineInvalid,
-            "conditional audio window has zero duration",
-        ));
-    }
-    let parent = output.parent().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            "conditional audio window has no parent directory",
-        )
-    })?;
-    std::fs::create_dir_all(parent).map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            format!("could not create conditional audio directory: {error}"),
-        )
-    })?;
-    let offset = format!(
-        "{:.6}",
-        source_offset as f64 / f64::from(CANONICAL_TIMEBASE)
-    );
-    let duration = format!("{:.6}", duration as f64 / f64::from(CANONICAL_TIMEBASE));
-    let mut command = Command::new(ffmpeg);
-    command
-        .args(["-v", "error", "-nostdin", "-ss", &offset, "-i"])
-        .arg(source)
-        .args([
-            "-t",
-            &duration,
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "-1",
-            "-vn",
-            "-c:a",
-            "flac",
-            "-y",
-        ])
-        .arg(output)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not start ffmpeg conditional extraction: {error}"),
-        )
-    })?;
-    let mut stderr = child.stderr.take().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            "ffmpeg conditional extraction stderr was not captured",
-        )
-    })?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            match stderr.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(count) if bytes.len() < 64 * 1024 => {
-                    let remaining = 64 * 1024 - bytes.len();
-                    bytes.extend_from_slice(&buffer[..count.min(remaining)]);
-                }
-                Ok(_) => {}
-            }
-        }
-        bytes
-    });
-    let status = loop {
-        if cancellation.is_cancelled() {
-            kill_decode_process(&mut child);
-            let _ = child.wait();
-            let _ = stderr_reader.join();
-            let _ = std::fs::remove_file(output);
-            return Err(EngineError::new(
-                EngineErrorCode::Cancelled,
-                "conditional audio extraction was cancelled",
-            ));
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(error) => {
-                kill_decode_process(&mut child);
-                let _ = child.wait();
-                let _ = stderr_reader.join();
-                let _ = std::fs::remove_file(output);
-                return Err(EngineError::new(
-                    EngineErrorCode::DecodeFailed,
-                    format!("could not wait for conditional audio extraction: {error}"),
-                ));
-            }
-        }
-    };
-    let stderr = stderr_reader.join().unwrap_or_default();
-    if !status.success() || !output.is_file() {
-        let _ = std::fs::remove_file(output);
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            if detail.is_empty() {
-                format!("ffmpeg conditional audio extraction failed with {status}")
-            } else {
-                format!("ffmpeg conditional audio extraction failed: {detail}")
-            },
-        ));
-    }
-    Ok(())
 }
 
 fn kill_decode_process(child: &mut std::process::Child) {

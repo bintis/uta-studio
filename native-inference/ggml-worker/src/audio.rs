@@ -89,6 +89,48 @@ pub fn decode_mono_wav(source: &Path, output_dir: &Path, task_id: &str) -> Resul
     decode_wav(source, output_dir, task_id, "16000", "1")
 }
 
+pub fn decode_basic_pitch_wav(
+    source: &Path,
+    output_dir: &Path,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    decode_wav(source, output_dir, task_id, "22050", "1")
+}
+
+pub fn decode_game_wav(source: &Path, output_dir: &Path, task_id: &str) -> Result<PathBuf, String> {
+    decode_wav(source, output_dir, task_id, "44100", "1")
+}
+
+pub fn decode_stars_wav(
+    source: &Path,
+    output_dir: &Path,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    decode_wav(
+        source,
+        output_dir,
+        &format!("{task_id}-stars"),
+        "24000",
+        "1",
+    )
+}
+
+pub fn decode_jbm555_wavs(
+    mix: &Path,
+    vocal: &Path,
+    output_dir: &Path,
+    task_id: &str,
+) -> Result<[PathBuf; 2], String> {
+    let mix_input = decode_wav(mix, output_dir, &format!("{task_id}-mix"), "44100", "1")?;
+    match decode_wav(vocal, output_dir, &format!("{task_id}-vocal"), "44100", "1") {
+        Ok(vocal_input) => Ok([mix_input, vocal_input]),
+        Err(error) => {
+            let _ = std::fs::remove_file(mix_input);
+            Err(error)
+        }
+    }
+}
+
 pub fn encode_flac(source: &Path, destination: &Path) -> Result<(), String> {
     if !source.is_file() || destination.exists() {
         return Err("GGML FLAC publication paths are invalid".to_string());

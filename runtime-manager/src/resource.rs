@@ -190,8 +190,8 @@ mod tests {
             ResourceRef::model("rmvpe").unwrap()
         );
         assert_eq!(
-            "runtime:openvino_2026_3".parse::<ResourceRef>().unwrap(),
-            ResourceRef::runtime("openvino_2026_3").unwrap()
+            "runtime:ggml_vulkan".parse::<ResourceRef>().unwrap(),
+            ResourceRef::runtime("ggml_vulkan").unwrap()
         );
     }
 

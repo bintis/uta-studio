@@ -7,14 +7,7 @@ use crate::fusion::TimeRange;
 
 const MAX_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NOTES: usize = 1_000_000;
-#[cfg(test)]
-const GAME_SOURCE_ASSET_SHA256: &str =
-    "5b7a21e64c6310efac399f5d12838fffa70565be162436b5a4a65f290721e7d8";
 const GAME_SOURCE_COMMIT: &str = "475a8ee781fe8cca980b3b12fbe6c80c768a813a";
-#[cfg(test)]
-const GAME_MANIFEST_SHA256: &str =
-    "aa9f3a4c2d107527913ef3947f337b41bff7b6de39de6c91ce46b82ced15ac87";
-const ESTIMATOR_NOTE_BUCKETS: [usize; 6] = [32, 64, 128, 256, 512, 1_024];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameNoteEvidenceV1 {
@@ -32,15 +25,14 @@ pub struct GameEvidenceV1 {
     pub schema_version: u32,
     pub model_id: String,
     pub variant: String,
-    pub source_asset_sha256: String,
     pub source_commit: String,
-    pub model_manifest_sha256: String,
+    pub model_gguf_size_bytes: u64,
     pub runtime_manifest_sha256: String,
     pub backend: String,
+    pub semantic_output: String,
     pub sample_rate: usize,
     pub timestep_ms: u32,
     pub d3pm_steps: usize,
-    pub estimator_note_buckets: Vec<usize>,
     pub notes: Vec<GameNoteEvidenceV1>,
 }
 
@@ -50,15 +42,14 @@ struct WorkerGameEvidence {
     schema_version: u32,
     model_id: String,
     variant: String,
-    source_asset_sha256: String,
     source_commit: String,
-    model_manifest_sha256: String,
+    model_gguf_size_bytes: u64,
     runtime_manifest_sha256: String,
     backend: String,
+    semantic_output: String,
     sample_rate: usize,
     timestep_ms: u32,
     d3pm_steps: usize,
-    estimator_note_buckets: Vec<usize>,
     boundary_decision_threshold: f32,
     presence_decision_threshold: f32,
     notes: Vec<WorkerGameNote>,
@@ -90,16 +81,17 @@ pub fn parse_game_evidence(
     .map_err(|error| invalid(format!("GAME evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 1
         || raw.model_id != "game"
-        || raw.variant != "GAME-1.0.3-medium-onnx"
-        || raw.source_commit != GAME_SOURCE_COMMIT
         || !matches!(
-            raw.backend.as_str(),
-            "openvino_gpu" | "openvino_cpu" | "game_native"
+            raw.variant.as_str(),
+            "GAME-1.0.3-small-onnx" | "GAME-1.0.3-medium-onnx" | "GAME-1.0.3-large-onnx"
         )
+        || raw.source_commit != GAME_SOURCE_COMMIT
+        || raw.model_gguf_size_bytes == 0
+        || !matches!(raw.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || raw.semantic_output != "note_candidate_evidence"
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10
         || raw.d3pm_steps != 8
-        || raw.estimator_note_buckets != ESTIMATOR_NOTE_BUCKETS
         || !valid_threshold(raw.boundary_decision_threshold)
         || !valid_threshold(raw.presence_decision_threshold)
         || raw.notes.is_empty()
@@ -150,15 +142,14 @@ pub fn parse_game_evidence(
         schema_version: raw.schema_version,
         model_id: raw.model_id,
         variant: raw.variant,
-        source_asset_sha256: raw.source_asset_sha256,
         source_commit: raw.source_commit,
-        model_manifest_sha256: raw.model_manifest_sha256,
+        model_gguf_size_bytes: raw.model_gguf_size_bytes,
         runtime_manifest_sha256: raw.runtime_manifest_sha256,
         backend: raw.backend,
+        semantic_output: raw.semantic_output,
         sample_rate: raw.sample_rate,
         timestep_ms: raw.timestep_ms,
         d3pm_steps: raw.d3pm_steps,
-        estimator_note_buckets: raw.estimator_note_buckets,
         notes,
     })
 }
@@ -192,15 +183,14 @@ mod tests {
                 "schema_version": 1,
                 "model_id": "game",
                 "variant": "GAME-1.0.3-medium-onnx",
-                "source_asset_sha256": GAME_SOURCE_ASSET_SHA256,
                 "source_commit": GAME_SOURCE_COMMIT,
-                "model_manifest_sha256": GAME_MANIFEST_SHA256,
+                "model_gguf_size_bytes": 123_456,
                 "runtime_manifest_sha256": "d".repeat(64),
-                "backend": "openvino_gpu",
+                "backend": "ggml_vulkan",
+                "semantic_output": "note_candidate_evidence",
                 "sample_rate": 44100,
                 "timestep_ms": 10,
                 "d3pm_steps": 8,
-                "estimator_note_buckets": ESTIMATOR_NOTE_BUCKETS,
                 "boundary_decision_threshold": 0.2,
                 "presence_decision_threshold": 0.2,
                 "notes": [
@@ -219,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_game_native_evidence() {
+    fn parses_game_native_cpu_evidence() {
         let path =
             std::env::temp_dir().join(format!("uta-game-native-{}.json", std::process::id()));
         std::fs::write(
@@ -228,15 +218,14 @@ mod tests {
                 "schema_version": 1,
                 "model_id": "game",
                 "variant": "GAME-1.0.3-medium-onnx",
-                "source_asset_sha256": "a".repeat(64),
                 "source_commit": GAME_SOURCE_COMMIT,
-                "model_manifest_sha256": "b".repeat(64),
+                "model_gguf_size_bytes": 123_456,
                 "runtime_manifest_sha256": "uta-game-worker-native-v1",
-                "backend": "game_native",
+                "backend": "ggml_cpu",
+                "semantic_output": "note_candidate_evidence",
                 "sample_rate": 44100,
                 "timestep_ms": 10,
                 "d3pm_steps": 8,
-                "estimator_note_buckets": ESTIMATOR_NOTE_BUCKETS,
                 "boundary_decision_threshold": 0.2,
                 "presence_decision_threshold": 0.2,
                 "notes": [
@@ -247,7 +236,7 @@ mod tests {
         )
         .unwrap();
         let evidence = parse_game_evidence(&path, 0, 1_000_000).unwrap();
-        assert_eq!(evidence.backend, "game_native");
+        assert_eq!(evidence.backend, "ggml_cpu");
         assert_eq!(evidence.notes.len(), 1);
         assert_eq!(evidence.notes[0].midi, 60.0);
         std::fs::remove_file(path).unwrap();

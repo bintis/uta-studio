@@ -1,7 +1,7 @@
 use super::*;
 use crate::artifact::{
     ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrameV1,
-    BasicPitchEvidenceV3, BasicPitchFrameV3, GameNoteEvidenceV1, TechniqueEvidenceV1,
+    BasicPitchEvidenceV1, BasicPitchFrameV1, GameNoteEvidenceV1, TechniqueEvidenceV1,
     TechniqueIntervalV1,
 };
 use crate::fingerprint::{ACOUSTIC_DSP_VERSION, FUSION_VERSION};
@@ -45,15 +45,14 @@ fn game(midi: f32) -> GameEvidenceV1 {
         schema_version: 1,
         model_id: "game".to_string(),
         variant: "fixture".to_string(),
-        source_asset_sha256: "b".repeat(64),
         source_commit: "fixture".to_string(),
-        model_manifest_sha256: "c".repeat(64),
+        model_gguf_size_bytes: 1,
         runtime_manifest_sha256: "d".repeat(64),
-        backend: "openvino_gpu".to_string(),
+        backend: "ggml_cpu".to_string(),
+        semantic_output: "note_candidate_evidence".to_string(),
         sample_rate: 44_100,
         timestep_ms: 10,
         d3pm_steps: 8,
-        estimator_note_buckets: vec![32],
         notes: vec![GameNoteEvidenceV1 {
             range: TimeRange::new(100_000, 500_000).unwrap(),
             midi,
@@ -365,16 +364,16 @@ fn fcpe_records_support_and_disagreement_without_replacing_rmvpe() {
 
 #[test]
 fn basic_pitch_is_source_local_onset_support_not_note_authority() {
-    let evidence = BasicPitchEvidenceV3 {
+    let evidence = BasicPitchEvidenceV1 {
         frames: vec![
-            BasicPitchFrameV3 {
+            BasicPitchFrameV1 {
                 time: 110_000,
                 note_activation: 0.9,
                 onset_activation: 0.8,
                 contour_class: 42,
                 contour_activation: 0.7,
             },
-            BasicPitchFrameV3 {
+            BasicPitchFrameV1 {
                 time: 300_000,
                 note_activation: 0.9,
                 onset_activation: 0.99,
@@ -382,7 +381,7 @@ fn basic_pitch_is_source_local_onset_support_not_note_authority() {
                 contour_activation: 0.7,
             },
         ],
-        model_manifest_sha256: "a".repeat(64),
+        model_gguf_size_bytes: 144_512,
         runtime_manifest_sha256: "b".repeat(64),
     };
     let fused = fuse_singing_evidence(
@@ -414,23 +413,23 @@ fn basic_pitch_is_source_local_onset_support_not_note_authority() {
 
 #[test]
 fn basic_pitch_onset_creates_a_real_contextual_split_path() {
-    let evidence = BasicPitchEvidenceV3 {
+    let evidence = BasicPitchEvidenceV1 {
         frames: vec![
-            BasicPitchFrameV3 {
+            BasicPitchFrameV1 {
                 time: 100_000,
                 note_activation: 0.8,
                 onset_activation: 0.1,
                 contour_class: 42,
                 contour_activation: 0.7,
             },
-            BasicPitchFrameV3 {
+            BasicPitchFrameV1 {
                 time: 300_000,
                 note_activation: 0.9,
                 onset_activation: 0.95,
                 contour_class: 42,
                 contour_activation: 0.8,
             },
-            BasicPitchFrameV3 {
+            BasicPitchFrameV1 {
                 time: 400_000,
                 note_activation: 0.8,
                 onset_activation: 0.1,
@@ -438,7 +437,7 @@ fn basic_pitch_onset_creates_a_real_contextual_split_path() {
                 contour_activation: 0.7,
             },
         ],
-        model_manifest_sha256: "a".repeat(64),
+        model_gguf_size_bytes: 144_512,
         runtime_manifest_sha256: "b".repeat(64),
     };
     let f0 = [110_000, 200_000, 310_000, 400_000]
@@ -852,15 +851,15 @@ fn acoustic_evidence_is_optional() {
 
 #[test]
 fn basic_pitch_onset_survives_without_acoustic_dsp() {
-    let evidence = BasicPitchEvidenceV3 {
-        frames: vec![BasicPitchFrameV3 {
+    let evidence = BasicPitchEvidenceV1 {
+        frames: vec![BasicPitchFrameV1 {
             time: 110_000,
             note_activation: 0.9,
             onset_activation: 0.8,
             contour_class: 42,
             contour_activation: 0.7,
         }],
-        model_manifest_sha256: "a".repeat(64),
+        model_gguf_size_bytes: 144_512,
         runtime_manifest_sha256: "b".repeat(64),
     };
     let fused = fuse_singing_evidence(

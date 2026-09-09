@@ -1,7 +1,9 @@
 fn isolated_runtime_client(label: &str) -> crate::backend_cli::RuntimeCliClient {
     crate::backend_cli::RuntimeCliClient::discover()
         .expect("uta-runtime debug CLI is required for process-contract tests")
-        .with_store(std::env::temp_dir().join(format!("uta-studio-runtime-{label}-{}", std::process::id())))
+        .with_store(
+            std::env::temp_dir().join(format!("uta-studio-runtime-{label}-{}", std::process::id())),
+        )
 }
 
 #[test]
@@ -15,19 +17,13 @@ fn runtime_status_is_read_only_and_reports_backend_protocol_fields() {
     assert!(status.runtime_contract_current);
     assert!(status.ffmpeg_path.is_none());
     let serialized = serde_json::to_value(&status).expect("runtime status serializes");
-    assert!(serialized.get("openvinoRuntimeAvailable").is_some());
+    assert!(serialized.get("ggmlRuntimeAvailable").is_some());
 }
 
 #[test]
 fn production_model_statuses_name_the_native_families() {
     let statuses = model_install_statuses_with_client(&isolated_runtime_client("models"));
-    for target in [
-        ModelDownloadTarget::RoFormer,
-        ModelDownloadTarget::FireRed,
-        ModelDownloadTarget::QwenAsr,
-        ModelDownloadTarget::QwenAlign,
-        ModelDownloadTarget::Pitch,
-    ] {
+    for target in [ModelDownloadTarget::RoFormer, ModelDownloadTarget::Pitch] {
         assert!(statuses.iter().any(|status| status.target == target));
     }
 }
@@ -46,13 +42,13 @@ fn exact_strategy_status_crosses_the_runtime_cli_without_bundle_projection() {
     }));
     assert!(statuses.iter().any(|status| {
         status.strategy_id == "instrumental_extraction"
-            && status.model_id == "bs_polarformer_public_instrumental"
+            && status.model_id == "bs_roformer_leap_xe90_vocals"
             && status.capability == "audio.extract_instrumental"
     }));
     assert!(statuses.iter().any(|status| {
-        status.strategy_id == "japanese_note_boundaries"
-            && status.model_id == "jbm555_cectc_80"
-            && status.capability == "notes.jbm555"
+        status.strategy_id == "instrumental_direct"
+            && status.model_id == "bs_roformer_leap_xe90_instrumental"
+            && status.capability == "audio.extract_instrumental"
     }));
 }
 
@@ -88,7 +84,7 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
                 "executable_ready": usable,
                 "usable": usable,
                 "reasons": if usable { serde_json::json!([]) } else { serde_json::json!(["corrupt"]) },
-                "selected_backend": if usable { serde_json::json!("open_vino") } else { serde_json::Value::Null },
+                "selected_backend": if usable { serde_json::json!("ggml") } else { serde_json::Value::Null },
                 "runtime_resource": null,
                 "generation": null
             }
@@ -97,24 +93,24 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
     }
 
     let mut returned = vec![
+        details("bs_roformer_leap_xe90_vocals", "audio.extract_vocals", true),
         details(
             "bs_roformer_leap_xe90_vocals",
-            "audio.extract_vocals",
-            true,
+            "audio.extract_instrumental",
+            false,
         ),
+        details("melband_roformer_harmony", "audio.lead_isolate", false),
+        details("rmvpe", "pitch.track", false),
         details(
             "bs_polarformer_public_instrumental",
             "audio.extract_instrumental",
             false,
         ),
         details(
-            "melband_roformer_harmony",
-            "audio.lead_isolate",
+            "bs_roformer_leap_xe90_instrumental",
+            "audio.extract_instrumental",
             false,
         ),
-        details("rmvpe", "pitch.track", false),
-        details("game", "notes.game", false),
-        details("jbm555_cectc_80", "notes.jbm555", false),
     ];
     returned.push(details(
         "melband_roformer_denoise_aufr33",

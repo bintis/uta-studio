@@ -14,21 +14,13 @@ use crate::catalog::{
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::lease::ResourceLease;
 use crate::manifest::{
-    INSTALL_MANIFEST_SCHEMA, INSTALL_MANIFEST_SCHEMA_VERSION, InstallManifest, InstalledFile,
-    generation_id, is_generation_id, safe_relative_path, verify_generation,
+    INSTALL_MANIFEST_SCHEMA, InstallManifest, InstalledFile, generation_id, is_generation_id,
+    safe_relative_path, verify_generation,
 };
 use crate::resolver::{RuntimeManager, generation_lease_key};
 use crate::resource::{ResourceKind, ResourceRef};
 use crate::state::{InstallState, ReadinessReason, ResourceOrigin, RuntimePolicy, ValidationState};
 use crate::store::{CurrentPointer, StorePaths};
-
-mod advanced_notes;
-mod game;
-mod optional_experts;
-mod roformer_denoise;
-mod roformer_dereverb;
-mod roformer_harmony;
-mod roformer_inst_v2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcePlan {
@@ -243,75 +235,41 @@ impl RuntimeManager {
             .converted_artifact
             .as_ref()
             .filter(|artifact| artifact.format.starts_with("gguf"));
-        if source.is_dir() && converted_file.is_none() {
-            let imported = match resource.id.as_str() {
-                "game" => Some(game::import_game_ir_directory(
-                    self, resource, model, source,
-                )?),
-                "melband_roformer_inst_v2" => {
-                    Some(roformer_inst_v2::import_roformer_inst_v2_ir_directory(
-                        self, resource, model, source,
-                    )?)
-                }
-                "melband_roformer_harmony" => {
-                    Some(roformer_harmony::import_roformer_harmony_ir_directory(
-                        self, resource, model, source,
-                    )?)
-                }
-                "melband_roformer_denoise_aufr33" => {
-                    Some(roformer_denoise::import_roformer_denoise_ir_directory(
-                        self, resource, model, source,
-                    )?)
-                }
-                "melband_roformer_dereverb_anvuew" => {
-                    Some(roformer_dereverb::import_roformer_dereverb_ir_directory(
-                        self, resource, model, source,
-                    )?)
-                }
-                "stars" | "rosvot" => Some(advanced_notes::import_advanced_note_ir_directory(
-                    self, resource, model, source,
-                )?),
-                "firered_asr2_aed" | "fcpe" | "basic_pitch" => {
-                    Some(optional_experts::import_optional_expert_ir_directory(
-                        self, resource, model, source,
-                    )?)
-                }
-                _ => None,
-            };
-            if imported.is_some() {
-                return Ok(MutationResult {
-                    changed: vec![resource.clone()],
-                    unchanged: Vec::new(),
-                });
-            }
-        }
-        let filename = converted_file
-            .map(|artifact| artifact.manifest_filename.as_str())
-            .or(model.source.filename.as_deref())
-            .ok_or_else(|| {
-                not_acquirable(
-                    resource,
-                    "the catalog does not declare an installed filename",
-                )
-            })?;
-        if filename.contains('/') || filename.contains('\\') || filename.contains(':') {
+        if model.runtime_artifacts.is_empty() {
             return Err(RuntimeManagerError::new(
                 "invalid_catalog",
-                "catalog installed filename is not a safe leaf name",
+                "catalog model has no named runtime artifact set",
             )
             .with_resource(resource));
         }
-        let source_file = if source.is_dir() {
-            source.join(filename)
+        let source_files = if source.is_dir() {
+            model
+                .runtime_artifacts
+                .iter()
+                .map(|artifact| {
+                    validate_leaf_filename(&artifact.filename)
+                        .map_err(|error| error.with_resource(resource))?;
+                    Ok((
+                        source.join(&artifact.filename),
+                        PathBuf::from(&artifact.filename),
+                    ))
+                })
+                .collect::<RuntimeManagerResult<Vec<_>>>()?
+        } else if model.runtime_artifacts.len() == 1 {
+            let artifact = &model.runtime_artifacts[0];
+            validate_leaf_filename(&artifact.filename)
+                .map_err(|error| error.with_resource(resource))?;
+            vec![(source.to_path_buf(), PathBuf::from(&artifact.filename))]
         } else {
-            source.to_path_buf()
+            return Err(not_acquirable(
+                resource,
+                "this model requires importing its complete named artifact directory",
+            ));
         };
-        let _generation = publish_single_file(
+        let _generation = publish_file_set(
             self.paths(),
             resource,
-            &self.catalog().catalog_version,
-            &source_file,
-            Path::new(filename),
+            &source_files,
             PublishIdentity {
                 source: Some(model.source.clone()),
                 source_sha256: converted_file
@@ -568,6 +526,16 @@ fn acquire_managed_model(
     transport: &dyn AcquisitionTransport,
 ) -> RuntimeManagerResult<()> {
     let resource = model.resource();
+    if model.runtime_artifacts.len() != 1
+        || model.runtime_artifacts[0].name != "model"
+        || model.runtime_artifacts[0].filename
+            != model.source.filename.as_deref().unwrap_or_default()
+    {
+        return Err(not_acquirable(
+            &resource,
+            "managed download requires one catalog-pinned model artifact",
+        ));
+    }
     let filename =
         model.source.filename.as_deref().ok_or_else(|| {
             not_acquirable(&resource, "the catalog has no pinned artifact filename")
@@ -604,7 +572,6 @@ fn acquire_managed_model(
     publish_single_file(
         manager.paths(),
         &resource,
-        &manager.catalog().catalog_version,
         &temporary,
         Path::new(filename),
         PublishIdentity {
@@ -820,7 +787,6 @@ struct PublishIdentity {
 fn publish_single_file(
     paths: &StorePaths,
     resource: &ResourceRef,
-    catalog_version: &str,
     source: &Path,
     relative: &Path,
     identity: PublishIdentity,
@@ -828,7 +794,6 @@ fn publish_single_file(
     publish_file_set(
         paths,
         resource,
-        catalog_version,
         &[(source.to_path_buf(), relative.to_path_buf())],
         identity,
     )
@@ -837,7 +802,6 @@ fn publish_single_file(
 fn publish_file_set(
     paths: &StorePaths,
     resource: &ResourceRef,
-    catalog_version: &str,
     sources: &[(PathBuf, PathBuf)],
     identity: PublishIdentity,
 ) -> RuntimeManagerResult<String> {
@@ -887,9 +851,9 @@ fn publish_file_set(
     installed_files.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = InstallManifest {
         schema: INSTALL_MANIFEST_SCHEMA.to_string(),
-        schema_version: INSTALL_MANIFEST_SCHEMA_VERSION,
+        schema_version: None,
         resource: resource.clone(),
-        catalog_version: catalog_version.to_string(),
+        catalog_version: None,
         source: identity.source,
         source_sha256: identity.source_sha256,
         model_recipe_digest: identity.model_recipe_digest,
@@ -1237,4 +1201,50 @@ fn publish_io(error: std::io::Error) -> RuntimeManagerError {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_import_publishes_a_complete_named_artifact_set() {
+        let root = std::env::temp_dir().join(format!(
+            "uta-runtime-artifact-import-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let store = root.join("store");
+        std::fs::create_dir_all(&source).unwrap();
+        for (filename, bytes) in [
+            ("firered-f32.gguf", b"model".as_slice()),
+            ("cmvn.ark", b"cmvn".as_slice()),
+            ("dict.txt", b"tokens".as_slice()),
+        ] {
+            std::fs::write(source.join(filename), bytes).unwrap();
+        }
+        let manager = RuntimeManager::with_default_catalog(StorePaths::new(&store)).unwrap();
+        let resource = ResourceRef::model("firered_asr2_aed").unwrap();
+        manager
+            .import_resource(&resource, &source, &MutationOptions { confirmed: true })
+            .unwrap();
+        let pointer =
+            crate::store::read_current_pointer(&store.join("models/firered_asr2_aed/current.json"))
+                .unwrap();
+        let generation = store
+            .join("models/firered_asr2_aed/generations")
+            .join(pointer.generation);
+        let manifest = crate::manifest::read_install_manifest(&generation).unwrap();
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|file| file.path.as_path())
+                .collect::<Vec<_>>(),
+            [
+                Path::new("cmvn.ark"),
+                Path::new("dict.txt"),
+                Path::new("firered-f32.gguf"),
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

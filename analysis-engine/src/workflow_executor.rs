@@ -310,22 +310,18 @@ mod tests {
                 "definition_digest":"a".repeat(32),
                 "nodes":[
                     {"instance_id":"source","capability_id":"audio.source","execution_policy":"always","priority":100},
-                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","provider_preferences":{"primary":"bs_roformer_leap_xe90_vocals"},"execution_invocations":[{"invocation_id":"split.vocal","provider_id":"bs_roformer_leap_xe90_vocals","capabilities":["audio.extract_vocals"],"output_ports":["vocal"]}],"execution_policy":"always","priority":90},
+                    {"instance_id":"split","capability_id":"audio.separate_vocal_bgm","provider_preferences":{"primary":"bs_roformer_leap_xe90_vocals","instrumental":"bs_roformer_leap_xe90_vocals"},"execution_invocations":[{"invocation_id":"split","provider_id":"bs_roformer_leap_xe90_vocals","capabilities":["audio.extract_vocals","audio.extract_instrumental"],"output_ports":["vocal","instrumental"]}],"execution_policy":"always","priority":90},
                     {"instance_id":"lead","capability_id":"audio.lead_isolate","provider_preferences":{"primary":"melband_roformer_harmony"},"execution_policy":"always","priority":80},
                     {"instance_id":"denoise-a","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":20},
                     {"instance_id":"denoise-b","capability_id":"audio.denoise","provider_preferences":{"primary":"melband_roformer_denoise_aufr33"},"execution_policy":"always","priority":10},
-                    {"instance_id":"pitch","capability_id":"analysis.pitch_f0","provider_preferences":{"primary":"rmvpe"},"execution_policy":"always","priority":30},
-                    {"instance_id":"fcpe","capability_id":"analysis.pitch_f0","provider_preferences":{"primary":"fcpe"},"execution_policy":"on_disagreement","priority":40},
-                    {"instance_id":"off","capability_id":"analysis.note_boundary","provider_preferences":{"primary":"basic_pitch"},"execution_policy":"disabled","priority":1000}
+                    {"instance_id":"pitch","capability_id":"analysis.pitch_f0","provider_preferences":{"primary":"rmvpe"},"execution_policy":"always","priority":30}
                 ],
                 "bindings":[
                     {"from_node":"source","from_port":"mix","to_node":"split","to_port":"audio","semantic_type":"audio","audio_role":"source_mix","execution_active":true,"analyzer_attachment":false},
                     {"from_node":"split","from_port":"vocal","to_node":"lead","to_port":"audio","semantic_type":"audio","audio_role":"vocal","execution_active":true,"analyzer_attachment":false},
                     {"from_node":"lead","from_port":"lead","to_node":"denoise-a","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
                     {"from_node":"denoise-a","from_port":"audio","to_node":"denoise-b","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":false},
-                    {"from_node":"denoise-b","from_port":"audio","to_node":"pitch","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
-                    {"from_node":"denoise-b","from_port":"audio","to_node":"fcpe","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true},
-                    {"from_node":"denoise-b","from_port":"audio","to_node":"off","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":false,"analyzer_attachment":true}
+                    {"from_node":"denoise-b","from_port":"audio","to_node":"pitch","to_port":"audio","semantic_type":"audio","audio_role":"lead_vocal","execution_active":true,"analyzer_attachment":true}
                 ],
                 "terminal_outputs":[{"node":"pitch","port":"pitch","semantic_type":"pitch_evidence"}]
             }),
@@ -356,18 +352,10 @@ mod tests {
         assert_eq!(plan.ready_nodes_for_capability("audio.denoise").count(), 2);
         assert_eq!(plan.fusion_mode, FusionModeV1::Algorithm);
         assert_eq!(
-            plan.node_for_capability("pitch.secondary")
+            plan.node_for_capability("pitch.track")
                 .unwrap()
                 .execution_state,
-            WorkflowNodeExecutionStateV1::Deferred
-        );
-        assert_eq!(
-            plan.nodes
-                .iter()
-                .find(|node| node.instance_id == "off")
-                .unwrap()
-                .execution_state,
-            WorkflowNodeExecutionStateV1::Disabled
+            WorkflowNodeExecutionStateV1::Ready
         );
     }
 
@@ -448,6 +436,11 @@ mod tests {
             .execution_invocations;
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].invocation_id, "split.dual");
+        assert_eq!(
+            invocations[0].capabilities,
+            ["audio.extract_vocals", "audio.extract_instrumental"]
+        );
+        assert_eq!(invocations[0].output_ports, ["vocal", "instrumental"]);
     }
 
     #[test]
@@ -503,11 +496,12 @@ mod tests {
         assert_eq!(pitch.input_bindings[0].from_node, "denoise-b");
         assert!(pitch.input_bindings[0].analyzer_attachment);
 
-        // FCPE has a higher priority than pitch, but neither gains a dependency
-        // on the other. Priority may choose dispatch order only.
-        let fcpe = plan.node_for_capability("pitch.secondary").unwrap();
-        assert!(!pitch.depends_on.contains(&fcpe.analysis_node));
-        assert!(!fcpe.depends_on.contains(&pitch.analysis_node));
+        assert!(
+            pitch
+                .depends_on
+                .iter()
+                .any(|dependency| dependency.as_str().contains("denoise-b"))
+        );
     }
 
     #[test]

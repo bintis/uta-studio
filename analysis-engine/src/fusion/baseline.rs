@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{
-    AcousticEvidenceV1, BasicPitchEvidenceV3, GameEvidenceV1, TechniqueEvidenceV1,
+    AcousticEvidenceV1, BasicPitchEvidenceV1, GameEvidenceV1, TechniqueEvidenceV1,
 };
 
 use super::candidate_states::{
@@ -48,7 +48,7 @@ impl BoundaryEvidenceSet {
         Ok(Self {
             source_expert: game.model_id.clone(),
             kind: BoundaryEvidenceKind::Game,
-            model_hash: Some(game.model_manifest_sha256.clone()),
+            model_hash: None,
             runtime_identity: Some(game.runtime_manifest_sha256.clone()),
             segments: game
                 .notes
@@ -364,7 +364,7 @@ fn summarize_acoustic(
     })
 }
 
-fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidenceV3) -> Result<(), String> {
+fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidenceV1) -> Result<(), String> {
     if evidence.frames.is_empty()
         || evidence
             .frames
@@ -388,7 +388,7 @@ fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidenceV3) -> Result<(), 
 
 fn summarize_basic_pitch(
     range: TimeRange,
-    evidence: &BasicPitchEvidenceV3,
+    evidence: &BasicPitchEvidenceV1,
 ) -> Result<BasicPitchCandidateFeatures, String> {
     const ONSET_WINDOW: u64 = 60_000;
     let onset_window_start = range.start.saturating_sub(ONSET_WINDOW);
@@ -436,7 +436,7 @@ fn summarize_basic_pitch(
 
 fn basic_pitch_onset_challengers(
     boundaries: &BoundaryEvidenceSet,
-    evidence: &BasicPitchEvidenceV3,
+    evidence: &BasicPitchEvidenceV1,
 ) -> Result<Vec<BoundaryAlternative>, String> {
     validate_basic_pitch_evidence(evidence)?;
     const ONSET_THRESHOLD: f32 = 0.5;
@@ -865,7 +865,7 @@ fn build_segment_candidate(
     fcpe_grid: Option<PitchGrid>,
     acoustic: Option<&AcousticEvidenceV1>,
     acoustic_onset_enabled: bool,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     technique_evidence: &[TechniqueEvidenceIndex<'_>],
     all_boundary_evidence: &[BoundaryAlternative],
 ) -> Result<SegmentCandidate, String> {
@@ -1031,7 +1031,7 @@ pub fn fuse_singing_evidence(
     fcpe_curve: &[F0Point],
     fcpe_grid: Option<PitchGrid>,
     acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
 ) -> Result<SingingFusionEvidence, String> {
     fuse_singing_evidence_with_challengers(
         words,
@@ -1062,7 +1062,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     fcpe_grid: Option<PitchGrid>,
     acoustic: Option<&AcousticEvidenceV1>,
     acoustic_onset_enabled: bool,
-    basic_pitch: Option<&BasicPitchEvidenceV3>,
+    basic_pitch: Option<&BasicPitchEvidenceV1>,
     boundary_challengers: &[BoundaryAlternative],
     technique_evidence: &[TechniqueEvidenceV1],
 ) -> Result<SingingFusionEvidence, String> {
@@ -1363,7 +1363,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
         }
     }
     Ok(SingingFusionEvidence {
-        schema_version: 2,
+        schema_version: 1,
         candidates: expand_pitch_alternative_states(candidates)?,
         hard_boundaries: HardBoundarySetV1::default(),
     })

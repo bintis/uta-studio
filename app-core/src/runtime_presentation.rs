@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::backend_cli::{
-    NativeBackendWireV1, RuntimeCliClient, RuntimeFusionProviderReportWireV1, RuntimePolicyWireV1,
+    InstallStateWireV1, NativeBackendWireV1, ReadinessReasonWireV1, ResourceOriginWireV1,
+    RuntimeCliClient, RuntimeFusionProviderReportWireV1, RuntimePolicyWireV1,
     RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1, ValidationStateWireV1,
 };
 
@@ -13,10 +14,7 @@ pub const FUSION_AGENT_ADAPTER_RESOURCE_ID: &str = "fusion_agent_adapter";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeBackendPresentation {
-    OpenVino,
-    Vulkan,
-    NativeDsp,
-    CpuReference,
+    Ggml,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +37,18 @@ pub struct RuntimeBackendCapabilityPresentation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeModelPresentation {
     pub model_id: String,
+    pub display_name: String,
+    pub purpose: String,
+    pub capabilities: Vec<String>,
     pub component_id: String,
+    pub install_state: InstallStateWireV1,
+    pub origin: ResourceOriginWireV1,
+    pub runnable: bool,
+    pub usable: bool,
+    #[serde(default)]
+    pub reasons: Vec<ReadinessReasonWireV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
     pub backends: Vec<RuntimeBackendCapabilityPresentation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_backend: Option<RuntimeBackendPresentation>,
@@ -99,7 +108,16 @@ fn load_runtime_presentations() -> Vec<RuntimeModelPresentation> {
                 .to_string();
             Some(RuntimeModelPresentation {
                 model_id: value.to_string(),
+                display_name: details.metadata.display_name,
+                purpose: details.metadata.purpose,
+                capabilities: details.metadata.capabilities,
                 component_id,
+                install_state: details.status.install_state,
+                origin: details.status.origin,
+                runnable: details.status.runnable,
+                usable: details.status.usable,
+                reasons: details.status.reasons,
+                generation: details.status.generation,
                 backends: details
                     .metadata
                     .backends
@@ -213,10 +231,7 @@ pub fn runtime_model_presentations() -> Vec<RuntimeModelPresentation> {
 
 pub(crate) fn map_backend(value: NativeBackendWireV1) -> RuntimeBackendPresentation {
     match value {
-        NativeBackendWireV1::OpenVino => RuntimeBackendPresentation::OpenVino,
-        NativeBackendWireV1::Vulkan => RuntimeBackendPresentation::Vulkan,
-        NativeBackendWireV1::NativeDsp => RuntimeBackendPresentation::NativeDsp,
-        NativeBackendWireV1::CpuReference => RuntimeBackendPresentation::CpuReference,
+        NativeBackendWireV1::Ggml => RuntimeBackendPresentation::Ggml,
     }
 }
 
