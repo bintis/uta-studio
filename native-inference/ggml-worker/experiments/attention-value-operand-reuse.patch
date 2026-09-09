@@ -1,0 +1,44 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -494,3 +494,36 @@
++#if MATBC == 8 && defined(FA_O_F32)
++                // The M8 multiply covers only half of a sixteen-query tile.
++                // Reuse each V operand across its query-row accumulators instead
++                // of loading V once per row tile. Each accumulator still visits
++                // kv_chunk in the original order; shared-memory barriers, tail
++                // staging, probability precision and the Of update are unchanged.
++                coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator> products[Br / MatBc];
++                [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                    products[row_tile] = coopmat<O_TYPE, gl_ScopeSubgroup, MatBc, MatBr, gl_MatrixUseAccumulator>(0);
++                }
++                [[unroll]] for (uint32_t kv_chunk = 0; kv_chunk < Bc / MatK; ++kv_chunk) {
++                    if (SHMEM_STAGING == 0) {
++                        if (!USE_DECODE_V && (!KV_bounds_check || (j < KV / Bc && ((HSK | HSV) & 15) == 0 && ((k_stride | v_stride) & 7) == 0))) {
++                            const uint value_row = j * Bc + kv_chunk * MatK;
++                            const uint value_offset = v_offset / 4 + value_row * v_stride / 4 + hsv_offset / 4;
++                            coopMatLoad(QMat, data_vv4, value_offset, v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
++                        } else {
++                            const uint value_offset = kv_chunk * MatK * v_cols + gl_SubgroupID * (MatBr / 4);
++                            coopMatLoad(QMat, kvsh, value_offset, vsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                        }
++                    } else {
++                        const uint value_offset = kv_chunk * MatK * kvsh_stride + (hsv_tile * row_split + gl_SubgroupID) * (MatBr / 4);
++                        coopMatLoad(QMat, kvsh, value_offset, kvsh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                    }
++                    [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                        coopMatLoad(KMat, Psh, kv_chunk * MatK * psh_stride + row_tile * MatBc / 4, psh_stride, gl_CooperativeMatrixLayoutColumnMajor);
++                        products[row_tile] = coopMatMulAdd(KMat, QMat, products[row_tile]);
++                    }
++                }
++                [[unroll]] for (uint32_t row_tile = 0; row_tile < Br / MatBc; ++row_tile) {
++                    coopMatStore(products[row_tile], pvsh, o_offset + row_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
++                }
++#else
+                 // The accumulator's M spans Br. Where M is smaller than Br the
+                 // rows are covered by successive tiles rather than one.
+                 [[unroll]] for (uint32_t br_tile = 0; br_tile < Br / MatBc; ++br_tile) {
+@@ -522,3 +555,4 @@
+                     // Store PVMat to pvsh and load into Of
+                     coopMatStore(PVMat, pvsh, o_offset + br_tile * MatBc * osh_stride, osh_stride, gl_CooperativeMatrixLayoutRowMajor);
+                 }
++#endif
