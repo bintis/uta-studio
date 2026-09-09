@@ -6,7 +6,7 @@ diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
  
 +    if (intel_m8_h64) {
 +        const char * query_rows = std::getenv("UTA_STUDIO_GGML_FA_QUERY_ROWS");
-+        const uint32_t requested_rows = query_rows ? std::atoi(query_rows) : 32;
++        const uint32_t requested_rows = query_rows ? std::atoi(query_rows) : 16;
 +        if (requested_rows == 16 || requested_rows == 32 || requested_rows == 64) {
 +            result.block_rows = requested_rows;
 +        }

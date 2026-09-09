@@ -1,17 +1,19 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -3817,12 +3817,25 @@
+@@ -3817,12 +3817,27 @@
      result.block_rows = coopmat_block_rows;
      result.block_cols = coopmat_block_cols * num_subgroups;
      result.row_split = num_subgroups;
      result.subgroup_size = device->subgroup_size;
-+    // H64 has only sixteen vec4 output columns. Avoid half-empty SIMD32 rows.
++    // Preserve the native subgroup: measured B580 H64 attention is faster with
++    // SIMD32. Keep SIMD16 available only for explicit diagnostic comparisons.
 +    const bool intel_m8_h64 = device->architecture == vk_device_architecture::INTEL_XE2 &&
 +                              fa_m == 8 && hsk == 64 && hsv == 64 && f32acc &&
 +                              k_type == GGML_TYPE_F16 && v_type == GGML_TYPE_F16;
 +    if (intel_m8_h64 && device->subgroup_size_control &&
 +        device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16 &&
++        std::getenv("UTA_STUDIO_GGML_FA_SMALL_SUBGROUP") != nullptr &&
 +        std::getenv("UTA_STUDIO_GGML_FA_SG32") == nullptr) {
 +        result.subgroup_size = 16;
 +    }

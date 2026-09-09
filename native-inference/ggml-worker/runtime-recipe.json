@@ -32,15 +32,15 @@
       },
       {
         "file": "native-inference/ggml-worker/patches/0004-vulkan-intel-h64-attention-subgroups.patch",
-        "sha256": "301d9769410296859469b60b3df51c1ff8bfa307a148f38ac810be2c87be018b",
+        "sha256": "3959cee57ac91f53b3f361cfe2d2775224bb462150bd10befd4fe5744454cf57",
         "scope": "Intel Xe2 M8 cooperative attention with F16 K/V, H64 and F32 accumulation only",
-        "reason": "Use a supported 16-lane subgroup for the sixteen vec4 output columns rather than leave half a 32-lane row group inactive. Keep Br=16, Bc=32, four subgroups, full context and F32 accumulators. UTA_STUDIO_GGML_FA_SG32 restores the prior subgroup and UTA_STUDIO_GGML_FA_STAGE_KV explicitly tests full shared-memory staging for development comparisons."
+        "reason": "Preserve the native subgroup by default: matched B580 measurements found sixteen-lane subgroups slower despite fewer inactive output lanes. UTA_STUDIO_GGML_FA_SMALL_SUBGROUP explicitly tests SIMD16; the existing UTA_STUDIO_GGML_FA_SG32 override takes precedence and retains the native subgroup. UTA_STUDIO_GGML_FA_STAGE_KV tests full staging. Query/key context, F32 accumulators and other device/type paths are unchanged."
       },
       {
         "file": "native-inference/ggml-worker/patches/0005-vulkan-coopmat-attention-query-tiles.patch",
-        "sha256": "677dc08f3be4af08b335f86d21c9c85602de138b8bde166ee93185a65e8301a2",
-        "scope": "Cooperative attention query tiling; larger tiles selected only for Intel Xe2 F16 H64 F32-accumulator attention",
-        "reason": "Reuse each K matrix load across multiple sixteen-query tiles instead of launching a new workgroup per sixteen queries. The default experiment uses 32 queries; UTA_STUDIO_GGML_FA_QUERY_ROWS accepts 16, 32 or 64 for recorded comparisons. Key context, masks, query layout and accumulator precision are unchanged."
+        "sha256": "6b3a4ced412c5c66b7164205e710de48cc4fc2f7afdcde71c8e7826fa339850a",
+        "scope": "Cooperative attention query tiling; explicit larger-tile experiments only for Intel Xe2 F16 H64 F32-accumulator attention",
+        "reason": "Reuse each K matrix load across multiple sixteen-query tiles when explicitly requested. Keep the measured sixteen-query default: larger query tiles increase shared memory, cause register spills and regress B580 attention. UTA_STUDIO_GGML_FA_QUERY_ROWS accepts 16, 32 or 64 for recorded comparisons. Key context, masks, query layout and accumulator precision are unchanged. See docs/ROFORMER_B580_ATTENTION.md."
       }
     ]
   },
