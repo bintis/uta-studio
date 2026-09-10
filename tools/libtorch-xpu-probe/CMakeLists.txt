@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.18)
+project(uta_studio_operator_probe LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration")
+set(TORCH_ROOT "" CACHE PATH "Private extracted torch package, containing include and lib")
+set(XPU_DEPENDENCY_LIB "" CACHE PATH "Private wheel dependency library directory")
+set(GGML_INCLUDE_DIR "" CACHE PATH "Pinned GGML include directory")
+set(GGML_LIBRARY_DIR "" CACHE PATH "Read-only selected GGML runtime lib directory")
+
+add_executable(torch-probe torch_probe.cpp)
+target_include_directories(torch-probe SYSTEM PRIVATE "${TORCH_ROOT}/include" "${TORCH_ROOT}/include/torch/csrc/api/include")
+target_compile_options(torch-probe PRIVATE -O3)
+# Keep device registration libraries loaded even when no direct symbol references remain.
+target_link_options(torch-probe PRIVATE "-Wl,--no-as-needed" "-Wl,-rpath-link,${XPU_DEPENDENCY_LIB}")
+target_link_libraries(torch-probe PRIVATE "${TORCH_ROOT}/lib/libtorch.so" "${TORCH_ROOT}/lib/libtorch_xpu.so" "${TORCH_ROOT}/lib/libtorch_cpu.so" "${TORCH_ROOT}/lib/libc10_xpu.so" "${TORCH_ROOT}/lib/libc10.so")
+set_target_properties(torch-probe PROPERTIES BUILD_RPATH "${TORCH_ROOT}/lib;${XPU_DEPENDENCY_LIB}")
+
+add_executable(ggml-probe ggml_probe.cpp)
+target_include_directories(ggml-probe SYSTEM PRIVATE "${GGML_INCLUDE_DIR}")
+target_compile_options(ggml-probe PRIVATE -O3)
+target_link_libraries(ggml-probe PRIVATE "${GGML_LIBRARY_DIR}/libggml.so.0" "${GGML_LIBRARY_DIR}/libggml-base.so.0")
+set_target_properties(ggml-probe PROPERTIES BUILD_RPATH "${GGML_LIBRARY_DIR}")
