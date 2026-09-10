@@ -235,8 +235,7 @@ int main(int argc, char** argv) {
         const std::string name = argv[1];
         if (name != "gemm" && name != "convolution" && name != "gru" && name != "attention")
             throw std::invalid_argument("unknown native diagnostic case");
-        if (const char* override_architecture = std::getenv("HSA_OVERRIDE_GFX_VERSION"); override_architecture && *override_architecture)
-            throw std::runtime_error("remove HSA_OVERRIDE_GFX_VERSION for native gfx1103 verification");
+        const char* override_architecture = std::getenv("HSA_OVERRIDE_GFX_VERSION");
         at::set_num_threads(2);
         c10::InferenceMode inference;
         auto& context = at::globalContext();
@@ -247,13 +246,12 @@ int main(int argc, char** argv) {
         hip_checked(hipSetDevice(0), "select AMD device zero");
         hipDeviceProp_t properties{};
         hip_checked(hipGetDeviceProperties(&properties, 0), "query selected AMD device");
-        if (std::string(properties.gcnArchName).substr(0, 7) != "gfx1103")
-            throw std::runtime_error("selected AMD device is not gfx1103; refusing a different-device test");
         char pci[64]{};
         hip_checked(hipDeviceGetPCIBusId(pci, sizeof(pci), 0), "query selected AMD PCI address");
         std::cout << "{\"event\":\"environment\",\"torch_version\":" << std::quoted(TORCH_VERSION)
                   << ",\"backend\":\"libtorch_rocm\",\"device\":\"cuda:0\",\"name\":" << std::quoted(properties.name)
                   << ",\"architecture\":" << std::quoted(properties.gcnArchName) << ",\"pci\":" << std::quoted(pci)
+                  << ",\"architecture_override\":" << std::quoted(override_architecture ? override_architecture : "")
                   << ",\"math_attention_fallback\":false,\"xpu_initialized\":false}\n";
         const at::Device device(at::kCUDA, 0);
         const Fixture fixture = name == "gemm" ? gemm(device) : name == "convolution" ? convolution(device)

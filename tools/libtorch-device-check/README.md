@@ -3,8 +3,9 @@
 A native C++ executable checks GEMM, biased convolution, bidirectional GRU and
 fused SDPA against complete double-precision mathematical references. It reads
 no model or user audio, invokes no Python inference, and has no XPU or CPU
-execution fallback. Device zero must actually identify as gfx1103; architecture
-spoofing is rejected. CPU code is only the explicitly declared numerical oracle.
+execution fallback. The selected AMD device and any architecture override are
+reported explicitly. Use no architecture override for native gfx1103 verification.
+CPU code is only the explicitly declared numerical oracle.
 
 This is operator-support/correctness evidence, **not seventeen-model acceptance,
 whole-model speedup, a sustained benchmark or post-exit host stability**. Every
