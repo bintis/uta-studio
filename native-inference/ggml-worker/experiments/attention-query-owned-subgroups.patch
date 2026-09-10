@@ -1,5 +1,5 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
-index 7bb339b..b909307 100644
+index 7bb339b..8cabe9e 100644
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -3694,6 +3694,7 @@ struct vk_fa_tuning_params {
@@ -64,18 +64,18 @@ index 7bb339b..b909307 100644
  static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
      GGML_UNUSED(v_type);
 +    if (params.query_owned) {
-+        // 3584 bytes per subgroup plus the 32-byte IQ table from types.glsl.
-+        return params.row_split * 3584u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // 4608 bytes per subgroup plus the 32-byte IQ table from types.glsl.
++        return params.row_split * 4608u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
 +    }
      // Needs to be kept up to date on shader changes
      const uint32_t Br = params.block_rows;
      const uint32_t Bc = params.block_cols;
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 new file mode 100644
-index 0000000..70d0e76
+index 0000000..90561ed
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,245 @@
 +#version 450
 +#extension GL_EXT_control_flow_attributes : enable
 +#extension GL_EXT_shader_16bit_storage : require
@@ -100,12 +100,13 @@ index 0000000..70d0e76
 +layout(binding = 2) readonly buffer ValueVectors { f16vec4 value_vectors[]; };
 +layout(binding = 3) readonly buffer Mask { float16_t mask_data[]; };
 +
-+// Per subgroup: 1024-byte query/tail workspace, 2048-byte score/output
-+// workspace and 512-byte probabilities. Lifetimes are separated by subgroup
-+// barriers, including the last reads before either workspace is overwritten.
++// Per subgroup: separate 1024-byte query and tail workspaces, 2048-byte
++// score/output workspace and 512-byte probabilities. Subgroup barriers protect
++// each reuse; the query tile stays read-only throughout the key traversal.
 +shared f16vec4 operand_workspace[row_split * 128];
 +shared vec4 float_workspace[row_split * 128];
 +shared f16vec4 probability_workspace[row_split * 64];
++shared f16vec4 query_workspace[row_split * 128];
 +
 +void main() {
 +    init_indices();
@@ -140,13 +141,7 @@ index 0000000..70d0e76
 +            query = vec4(query_data[address], query_data[address + 1],
 +                         query_data[address + 2], query_data[address + 3]);
 +        }
-+        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
-+    }
-+    subgroupBarrier();
-+    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
-+    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
-+        coopMatLoad(queries[depth_tile], operand_workspace,
-+                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
++        query_workspace[operand_base + index] = f16vec4(query * p.scale);
 +    }
 +    subgroupBarrier();
 +
@@ -183,7 +178,10 @@ index 0000000..70d0e76
 +                    subgroupBarrier();
 +                    coopMatLoad(keys, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutColumnMajor);
 +                }
-+                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
++                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> query;
++                coopMatLoad(query, query_workspace, operand_base + depth_tile * 4,
++                            16, gl_CooperativeMatrixLayoutRowMajor);
++                scores = coopMatMulAdd(query, keys, scores);
 +                // Protect the local operand tile before another contraction overwrites it.
 +                if (key_row + 16 > KV || (k_stride & 7) != 0) {
 +                    subgroupBarrier();
