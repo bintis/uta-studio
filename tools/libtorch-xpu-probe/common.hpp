@@ -171,7 +171,8 @@ inline void report(const std::string& backend, const Shape& current, const std::
     double squares = 0;
     for (double value : timing.measured) squares += (value - mean) * (value - mean);
     const double deviation = timing.measured.size() > 1 ? std::sqrt(squares / (timing.measured.size() - 1)) : 0;
-    const bool passed = accuracy.finite == accuracy.count && std::isfinite(accuracy.nmse) && accuracy.nmse < 5e-4;
+    const double tolerance = !current.attention && precision == "f32" ? 1e-10 : 5e-4;
+    const bool passed = accuracy.finite == accuracy.count && std::isfinite(accuracy.nmse) && accuracy.nmse < tolerance;
     std::cout << std::setprecision(12) << "PROBE_RESULT {\"backend\":" << quote(backend)
         << ",\"case\":" << quote(current.name) << ",\"precision\":" << quote(precision)
         << ",\"batch\":" << current.batch << ",\"rows\":" << current.rows

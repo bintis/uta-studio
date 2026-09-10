@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 project(uta_studio_operator_probe LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration")
 set(TORCH_ROOT "" CACHE PATH "Private extracted torch package, containing include and lib")

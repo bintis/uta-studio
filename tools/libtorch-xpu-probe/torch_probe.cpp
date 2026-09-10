@@ -5,6 +5,8 @@
 #include <ATen/Parallel.h>
 #include <ATen/ops/_fused_sdp_choice.h>
 #include <c10/core/InferenceMode.h>
+#include <c10/core/Event.h>
+#include <c10/core/impl/VirtualGuardImpl.h>
 #include <torch/version.h>
 #include <torch/xpu.h>
 
@@ -66,12 +68,28 @@ int main(int argc, char** argv) {
         torch::xpu::synchronize(0);
         const double preparation = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
         std::cout << "PROBE_READY " << probe::quote(current.name + ":" + precision) << " sdpa_choice=" << sdpa_choice << '\n';
+        c10::impl::VirtualGuardImpl guard(at::kXPU);
+        const auto stream = guard.getStream(device);
+        c10::Event begin(at::kXPU, c10::EventFlag::BACKEND_DEFAULT);
+        c10::Event end(at::kXPU, c10::EventFlag::BACKEND_DEFAULT);
+        probe::Timing gpu_timing;
+        int iteration = 0;
         const auto timing = probe::measure([&] {
+            begin.record(stream);
             output = current.attention
                 ? at::scaled_dot_product_attention(left, right, values, {}, 0.0, false).to(at::kFloat)
                 : at::matmul(left, right).to(at::kFloat);
+            end.record(stream);
             torch::xpu::synchronize(0);
+            const double milliseconds = begin.elapsedTime(end);
+            (iteration++ < warmup ? gpu_timing.warmup : gpu_timing.measured).push_back(milliseconds);
         }, warmup, repeats);
+        const double gpu_mean = std::accumulate(gpu_timing.measured.begin(), gpu_timing.measured.end(), 0.0) / gpu_timing.measured.size();
+        std::cout << std::setprecision(12) << "PROBE_GPU_TIMING {\"case\":" << probe::quote(current.name)
+                  << ",\"precision\":" << probe::quote(precision) << ",\"mean_ms\":" << gpu_mean
+                  << ",\"effective_tflops\":" << current.flops() / (gpu_mean * 1e9)
+                  << ",\"warmup_ms\":"; probe::array(gpu_timing.warmup);
+        std::cout << ",\"measured_ms\":"; probe::array(gpu_timing.measured); std::cout << "}\n";
         auto host = (current.attention ? output.permute({0, 2, 1, 3}) : output).contiguous().to(at::kCPU);
         const auto accuracy = probe::validate(current, precision, host.const_data_ptr<float>());
         probe::report("libtorch_xpu", current, precision, timing, accuracy, note, preparation);
