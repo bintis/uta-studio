@@ -21,6 +21,7 @@ pub struct Qwen {
     pub tokenizer: Tokenizer,
     pub(crate) backend: GgmlBackendHandle,
     pub(crate) weight_context: ContextPtr,
+    pub(crate) retain_intermediates: bool,
     weight_buffer: BufferPtr,
 }
 
@@ -52,9 +53,14 @@ impl Qwen {
             backend,
             weight_context: std::ptr::null_mut(),
             weight_buffer: std::ptr::null_mut(),
+            retain_intermediates: false,
         };
         model.load_weights(model_path)?;
         Ok(model)
+    }
+
+    pub fn retain_audio_intermediates(&mut self, enabled: bool) {
+        self.retain_intermediates = enabled;
     }
 
     pub(crate) fn api(&self) -> &ModelApi {

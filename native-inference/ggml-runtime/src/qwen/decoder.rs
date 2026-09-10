@@ -288,7 +288,9 @@ impl Qwen {
             let start = offset * self.config.hidden;
             let end = start + encoded.rows * self.config.hidden;
             mask_values[start..end].fill(0.0);
-            override_values[start..end].copy_from_slice(&encoded.values);
+            if encoded.resident.is_none() {
+                override_values[start..end].copy_from_slice(&encoded.values);
+            }
         }
         let mut attention_values = vec![-1.0e8_f32; rows * rows];
         for query in 0..rows {
@@ -300,6 +302,11 @@ impl Qwen {
         set_i32(api, position_input, &positions)?;
         set_f32(api, embedding_mask, &mask_values)?;
         set_f32(api, embedding_override, &override_values)?;
+        if let Some((encoded, offset)) = audio
+            && let Some(resident) = &encoded.resident
+        {
+            resident.inject(run.context, embedding_override, offset)?;
+        }
         set_f32(api, attention_mask_input, &attention_values)?;
         set_i32(api, selected_input, &selected)?;
         run.compute(&self.backend)?;
@@ -933,7 +940,9 @@ impl DecoderSession<'_> {
             let start = offset * self.model.config.hidden;
             let audio_end = start + encoded.rows * self.model.config.hidden;
             mask_values[start..audio_end].fill(0.0);
-            override_values[start..audio_end].copy_from_slice(&encoded.values);
+            if encoded.resident.is_none() {
+                override_values[start..audio_end].copy_from_slice(&encoded.values);
+            }
         }
         let mut attention_values = vec![-1.0e8_f32; rows * end];
         for query in 0..rows {
@@ -947,6 +956,11 @@ impl DecoderSession<'_> {
         set_i32(api, position_input, &positions)?;
         set_f32(api, embedding_mask, &mask_values)?;
         set_f32(api, embedding_override, &override_values)?;
+        if let Some((encoded, offset)) = audio
+            && let Some(resident) = &encoded.resident
+        {
+            resident.inject(run.context, embedding_override, offset)?;
+        }
         set_f32(api, attention_mask_input, &attention_values)?;
         set_i32(api, selected_input, &selected_value)?;
         self.failed = true;
@@ -1151,6 +1165,7 @@ mod tests {
         let model = Qwen::load(runtime, &device, &path("UTA_TEST_QWEN_GGUF")).unwrap();
         let reference = path("UTA_TEST_QWEN_DECODER_REFERENCE_DIR");
         let audio = EncodedAudio {
+            resident: None,
             values: read_f32(reference.join("enc.proj.out.f32")),
             rows: 156,
             width: 1_024,

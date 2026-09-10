@@ -74,7 +74,14 @@ pub fn infer(
     if request.model_content_digest.trim().is_empty() {
         return Err("Qwen ASR requires model provenance".to_string());
     }
-    let qwen = Qwen::load(runtime, device, model_path)?;
+    let mut qwen = Qwen::load(runtime, device, model_path)?;
+    qwen.retain_audio_intermediates(
+        config
+            .get("turbo_acceleration")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            && device.kind != uta_ggml_runtime::DeviceKind::Cpu,
+    );
     let forced_language = request.language.as_deref().and_then(qwen_language_name);
     let transcription = qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS, forced_language)?;
     progress(1, 1);

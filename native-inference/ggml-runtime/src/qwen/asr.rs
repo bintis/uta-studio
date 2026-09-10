@@ -157,6 +157,7 @@ impl Qwen {
                 .ok_or("Qwen ASR decoder capacity overflow")?;
             let mut decoder = self.decoder_session(capacity)?;
             let mut logits = decoder.decode(&prompt, Some((&audio, audio_offset)))?;
+            drop(audio); // Prefill is the final consumer of the encoder embeddings.
             for step in 0..max_new_tokens {
                 let token = argmax(&logits.values)?;
                 generated_tokens.push(token);

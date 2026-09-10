@@ -168,6 +168,7 @@ impl Qwen {
 
         let decoder_started = Instant::now();
         let logits = self.classify_prompt(&tokens, Some((&audio, 1)), &selected)?;
+        drop(audio); // The classifier has consumed the retained encoder output.
         let decoder_seconds = decoder_started.elapsed().as_secs_f64();
         let raw_classes = logits
             .values

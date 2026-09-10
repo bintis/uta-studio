@@ -142,6 +142,8 @@ model_api! {
     fn ggml_backend_tensor_set(tensor: TensorPtr, data: *const c_void, offset: usize, size: usize) -> ();
     fn ggml_backend_tensor_get(tensor: *const GgmlTensor, data: *mut c_void, offset: usize, size: usize) -> ();
     fn ggml_backend_buffer_free(buffer: BufferPtr) -> ();
+    fn ggml_backend_tensor_copy(source: *const GgmlTensor, destination: TensorPtr) -> ();
+    fn ggml_backend_view_init(tensor: TensorPtr) -> GgmlStatus;
     fn ggml_gallocr_new(buffer_type: BufferTypePtr) -> AllocatorPtr;
     fn ggml_gallocr_free(allocator: AllocatorPtr) -> ();
     fn ggml_gallocr_reserve(allocator: AllocatorPtr, graph: GraphPtr) -> bool;

@@ -24,9 +24,11 @@ macro_rules! ggml {
     }};
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct EncodedAudio {
-    /// Row-major `[rows, width]` audio embeddings.
+    pub(super) resident: Option<std::rc::Rc<super::resident_audio::ResidentAudio>>,
+    /// Row-major `[rows, width]` embeddings in ordinary mode; device-resident
+    /// super mode does not materialize this host copy outside explicit observation.
     pub values: Vec<f32>,
     pub rows: usize,
     pub width: usize,
@@ -122,14 +124,34 @@ impl Qwen {
         set_f32(api, input, &packed)?;
         set_f32(api, positions, &position)?;
         run.compute(&self.backend)?;
-        let values = get_f32(api, graph.output)?;
         let expected = geometry
             .valid_rows
             .checked_mul(self.config.encoder_output_dim)
             .ok_or("Qwen encoder output shape overflow")?;
-        if values.len() != expected {
+        if ggml!(api, ggml_nelements(graph.output)) != expected as i64 {
             return Err("Qwen encoder output tensor shape is invalid".to_string());
         }
+        let resident = if self.retain_intermediates {
+            match super::resident_audio::ResidentAudio::capture(
+                &self.backend,
+                graph.output,
+                self.config.encoder_output_dim,
+                geometry.valid_rows,
+            ) {
+                Ok(audio) => Some(std::rc::Rc::new(audio)),
+                Err(error) => {
+                    eprintln!("[super acceleration] resident audio allocation skipped: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let values = if resident.is_none() || observe {
+            get_f32(api, graph.output)?
+        } else {
+            Vec::new()
+        };
         let observations = observe
             .then(|| {
                 observed
@@ -140,6 +162,7 @@ impl Qwen {
             .transpose()?;
         Ok((
             EncodedAudio {
+                resident,
                 values,
                 rows: geometry.valid_rows,
                 width: self.config.encoder_output_dim,

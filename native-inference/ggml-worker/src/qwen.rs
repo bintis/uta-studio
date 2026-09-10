@@ -78,7 +78,14 @@ pub fn infer(
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("Qwen forced-alignment request is invalid: {error}"))?;
     validate_request(&request)?;
-    let qwen = Qwen::load(runtime, device, model_path)?;
+    let mut qwen = Qwen::load(runtime, device, model_path)?;
+    qwen.retain_audio_intermediates(
+        config
+            .get("turbo_acceleration")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            && device.kind != uta_ggml_runtime::DeviceKind::Cpu,
+    );
     let texts = request
         .words
         .iter()
